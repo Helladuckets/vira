@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Vira</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/favicon.ico" sizes="32x32">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <button class="brand" id="brand-btn" title="Launchpad"><svg class="brand-solar" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/></svg>VIRA</button>
+  <span class="inst-badge" id="inst-badge" hidden>TEST</span>
+  <div class="topbar-sub" id="status-line">connecting…</div>
+  <button class="icon-btn" id="settings-btn" title="Settings">config</button>
+</header>
+
+<!-- AI-backend down banner: shown only when the deterministic health probe
+     reports red. Deterministic surface — it renders even when the model is
+     completely unreachable, which is the whole point. -->
+<div class="ai-banner" id="ai-banner" hidden>
+  <span class="ai-banner-dot" aria-hidden="true"></span>
+  <span class="ai-banner-text" id="ai-banner-text"></span>
+  <button class="ai-banner-btn" id="ai-banner-recheck">Recheck</button>
+</div>
+
+<main id="main">
+  <!-- DAILY BRIEF -->
+  <section id="view-brief" class="view">
+    <div class="section-head">
+      <h2>Daily Brief</h2>
+      <button class="fchip" id="brief-refresh" style="margin-left:auto">Refresh</button>
+    </div>
+    <div class="brief-date" id="brief-date"></div>
+    <div id="brief-body"></div>
+  </section>
+
+  <!-- JOURNAL (the record of everything told to Vira, moved out of the brief) -->
+  <section id="view-journal" class="view">
+    <div class="section-head"><h2>Journal</h2>
+      <button class="fchip sm" id="journal-export" style="margin-left:auto" hidden
+              title="Copy every instruction Vira couldn't apply as one prompt for a full-access session">Export as prompt</button>
+      <button class="fchip sm" id="journal-refresh">Refresh</button>
+    </div>
+    <div class="radar-sub journal-sub"><span>What you've told Vira</span>
+      <span class="hint">saved verbatim — each note shows what Vira did with it</span></div>
+    <div id="journal-list" class="list"></div>
+  </section>
+
+  <!-- FEED -->
+  <section id="view-feed" class="view active">
+    <div class="section-head">
+      <h2>Incoming</h2>
+      <span class="live-dot" id="live-dot" title="live"></span>
+      <button class="fchip sm" id="feed-markread" style="margin-left:auto">Mark all read</button>
+    </div>
+    <div id="feed-filters" class="fchips"></div>
+    <div id="feed-list" class="list"></div>
+  </section>
+
+  <!-- PEOPLE -->
+  <section id="view-people" class="view">
+    <div class="section-head">
+      <h2>People</h2>
+      <button class="fchip" id="triage-toggle" style="margin-left:auto">Triage</button>
+    </div>
+    <input id="people-search" class="search" type="search"
+           placeholder="Search name, email, phone" autocomplete="off">
+    <div id="people-sort" class="fchips"></div>
+    <div id="people-list" class="list"></div>
+  </section>
+
+  <!-- ACTIONS -->
+  <section id="view-actions" class="view">
+    <div class="section-head"><h2>Actions</h2></div>
+    <div class="runbar">
+      <input id="free-prompt" class="search" type="text"
+             placeholder="Ask Claude anything, or tap a card below">
+      <button class="btn primary" id="free-run">Run</button>
+    </div>
+    <div id="jobs-strip"></div>
+    <div id="actions-grid" class="grid"></div>
+  </section>
+
+  <!-- TRIAGE (desktop mini-app window; mobile reaches triage via People) -->
+  <section id="view-triage" class="view">
+    <div class="section-head">
+      <h2>Triage</h2>
+      <button class="fchip sm" id="triage-win-refresh" style="margin-left:auto">Refresh</button>
+    </div>
+    <div id="triage-list" class="list"></div>
+  </section>
+
+  <!-- JOBS + NOTIFICATIONS + LEDGER HISTORY (desktop mini-app window) -->
+  <section id="view-jobs" class="view">
+    <div class="seg ideas-tabs" id="jobs-tabs">
+      <button data-tab="live" class="seg-btn on">Live</button>
+      <button data-tab="history" class="seg-btn">History</button>
+    </div>
+    <div id="jobs-live-pane">
+      <div class="jobs-sub">Recent jobs</div>
+      <div id="jobs-list" class="list"></div>
+      <div class="jobs-sub">Notifications sent</div>
+      <div id="notify-list" class="list"></div>
+    </div>
+    <div id="jobs-history-pane" style="display:none">
+      <div class="jobs-sub">Job ledger — every run, durable across restarts</div>
+      <div id="jobs-history" class="list"></div>
+    </div>
+  </section>
+
+  <section id="view-search" class="view">
+    <div class="section-head"><h2>Search</h2></div>
+    <div id="search-root"></div>
+  </section>
+
+  <!-- IDEAS & ON-HOLD + CHANGE LOG (dock window on desktop, tab on mobile) -->
+  <section id="view-ideas" class="view">
+    <div class="section-head"><h2>Ideas &amp; On-Hold</h2></div>
+    <div class="seg ideas-tabs" id="ideas-tabs">
+      <button data-tab="ideas" class="seg-btn on">Ideas</button>
+      <button data-tab="log" class="seg-btn">Change log</button>
+    </div>
+    <div id="ideas-pane">
+      <p class="hint ideas-hint">The backlog Vira carries across sessions.
+        Add items as they occur to you — <code>/resume</code> reads this list.</p>
+      <div class="runbar">
+        <input id="idea-input" class="search" type="text"
+               placeholder="Add an idea or on-hold item…" autocomplete="off">
+        <select id="idea-add-project" class="idea-sort"
+                title="Project this idea belongs to"></select>
+        <button class="btn primary" id="idea-add">Add</button>
+      </div>
+      <div class="ideas-sortbar">
+        <label for="idea-project-filter">Project</label>
+        <select id="idea-project-filter" class="idea-sort"></select>
+        <label for="idea-sort">Sort</label>
+        <select id="idea-sort" class="idea-sort"></select>
+      </div>
+      <div id="ideas-list" class="list"></div>
+    </div>
+    <div id="changelog-pane" style="display:none">
+      <p class="hint ideas-hint">Every change per session, newest first, all
+        the way back to the first Vira session.</p>
+      <div id="changelog-list" class="list"></div>
+    </div>
+  </section>
+
+  <section id="view-applications" class="view">
+    <div class="section-head"><h2>Applications</h2></div>
+    <p class="hint">The adjudicated candidate universe: your eight
+      frontier-fit picks on top, then the v2 tiers; the sales/marketing lane
+      is cut on your 2026-07-14 call and demoted, labeled, never hidden.
+      Star, note, track — Apply dispatches an agent that drafts the full
+      package in the self-record. Nothing is ever submitted for you.
+      "All boards" adds every raw posting newer than the last repass.</p>
+    <div class="seg ideas-tabs" id="apps-view">
+      <button data-appsview="universe" class="seg-btn on">Universe</button>
+      <button data-appsview="all" class="seg-btn">All boards</button>
+    </div>
+    <div id="app-boards" class="app-boards" style="display:none">
+      <span id="app-boards-line" class="hint"></span>
+      <button id="app-refresh" class="btn"
+              title="Fetch every registered board now, diff, and ping on new eligible roles">Refresh</button>
+      <button id="app-score" class="btn" style="display:none"
+              title="Dispatch an agent session that deep-reads and two-scores the unscored eligible roles into the universe">Score new</button>
+      <button id="app-add-board" class="btn"
+              title="Register a new company board (one registry entry; the next poll sweeps it)">+ board</button>
+    </div>
+    <div class="app-filters">
+      <select id="app-company" class="idea-sort" title="Company"></select>
+      <select id="app-tier" class="idea-sort" title="Tier">
+        <option value="">Any tier</option>
+        <option value="shortlist">Your eight picks</option>
+        <option value="cut">Cut lane</option>
+        <option value="1">Tier 1</option>
+        <option value="2">Tier 2</option>
+        <option value="3">Tier 3</option>
+        <option value="pass">Passed on</option>
+        <option value="untriaged">Untriaged</option>
+        <option value="fresh">New on the boards</option>
+      </select>
+      <select id="app-comp" class="idea-sort" title="Comp structure">
+        <option value="">Any comp</option>
+        <option value="base">Base salary</option>
+        <option value="ote">OTE / quota</option>
+      </select>
+      <select id="app-fit" class="idea-sort" title="Fit floor">
+        <option value="">All fits</option>
+        <option value="scored">Scored only</option>
+        <option value="85">Fit 85+</option>
+        <option value="70">Fit 70+</option>
+      </select>
+      <select id="app-status" class="idea-sort" title="Status">
+        <option value="">Any status</option>
+        <option value="none">Untouched</option>
+        <option value="applied">Applied</option>
+        <option value="interviewing">Interviewing</option>
+        <option value="offer">Offer</option>
+        <option value="closed">Closed</option>
+        <option value="skipped">Skipped</option>
+      </select>
+      <button id="app-starred" class="btn" title="Show starred only">Starred</button>
+    </div>
+    <div class="runbar">
+      <input id="app-search" class="search" type="text"
+             placeholder="Search roles, teams, tags…" autocomplete="off">
+    </div>
+    <div id="app-summary" class="hint"></div>
+    <div id="app-list" class="list"></div>
+    <div class="runbar">
+      <button id="app-more" class="btn" style="display:none">Show more</button>
+    </div>
+  </section>
+
+  <!-- SUBSCRIPTIONS (dock window on desktop, tab on mobile) -->
+  <section id="view-subs" class="view">
+    <div class="section-head"><h2>Subscriptions</h2>
+      <button class="btn small" id="subs-refresh"
+              title="Poll Mercury now and re-reconcile">Refresh</button>
+    </div>
+    <div id="subs-root"><p class="hint">Loading the ledger…</p></div>
+  </section>
+
+  <!-- MORNING PICKER (subs-visuals: TC-IL keyframe picker -> headless apply).
+       Desktop dock window; on mobile it opens via the #subs-visuals deep link
+       from the 06:00 iMessage (no bottom tab — a once-a-day surface). -->
+  <section id="view-subsviz" class="view">
+    <div class="section-head"><h2>Morning Picker</h2>
+      <button class="btn small" id="subsviz-refresh"
+              title="Re-check for a pending batch">Refresh</button>
+    </div>
+    <div class="subsviz-meta hint" id="subsviz-meta"></div>
+    <div class="subsviz-empty" id="subsviz-empty" style="display:none"></div>
+    <iframe class="subsviz-frame" id="subsviz-frame" style="display:none"
+            title="Subscription keyframe picker"></iframe>
+  </section>
+
+  <!-- BRAIN (grounded chat over the knowledge vault; lab/brain, localized) -->
+  <section id="view-brain" class="view">
+    <div class="section-head"><h2>Brain</h2>
+      <span class="hint" id="brain-status" style="margin-left:auto"></span>
+    </div>
+    <div id="brain-log" class="brain-log">
+      <div class="brain-empty" id="brain-empty">
+        <p class="hint">Ask anything your vault knows — companies, people,
+          decisions, past sessions. Answers cite the notes they came from;
+          tap a chip to open the note.</p>
+        <div class="brain-examples" id="brain-examples"></div>
+      </div>
+    </div>
+    <div class="runbar brain-bar">
+      <input id="brain-input" class="search" type="text" autocomplete="off"
+             placeholder="Ask your second brain…">
+      <button class="btn primary" id="brain-ask">Ask</button>
+    </div>
+  </section>
+
+  <!-- RADAR (who to talk to + who to introduce) -->
+  <section id="view-radar" class="view">
+    <div class="section-head"><h2>Radar</h2>
+      <button class="fchip sm" id="radar-refresh" style="margin-left:auto">Refresh</button>
+    </div>
+    <div class="radar-sub">Talk to next <span class="hint">scored live — every row says why</span></div>
+    <div id="radar-people" class="list"></div>
+    <div class="radar-sub">Introductions <span class="hint" id="radar-intros-meta"></span>
+      <button class="fchip sm" id="radar-intros-refresh">Rescan</button></div>
+    <div id="radar-intros" class="list"></div>
+  </section>
+
+  <!-- VISUAL NETWORK (the face-graph of interconnection) -->
+  <section id="view-atlas" class="view">
+    <div class="section-head"><h2>Visual Network</h2>
+      <span class="hint" id="atlas-meta" style="margin-left:auto"></span>
+      <button class="fchip sm" id="atlas-rescan">Rescan</button>
+    </div>
+    <div class="atlas-bar">
+      <input id="atlas-search" class="search" type="search"
+             placeholder="Find a person… (Enter adds to selection)"
+             autocomplete="off">
+      <button class="fchip" id="atlas-path" title="Shortest connection between two people — click two nodes">Path</button>
+      <button class="fchip" id="atlas-ego" title="Hide the center node — the pure contact-to-contact mesh">Hide me</button>
+    </div>
+    <div class="atlas-legend" id="atlas-legend"></div>
+    <div class="atlas-stage" id="atlas-stage">
+      <canvas id="atlas-canvas"></canvas>
+      <div class="atlas-iso" id="atlas-iso" style="display:none"></div>
+      <div class="atlas-tip" id="atlas-tip" style="display:none"></div>
+      <div class="atlas-card" id="atlas-card" style="display:none"></div>
+      <div class="atlas-status" id="atlas-status" style="display:none"></div>
+      <div class="atlas-empty" id="atlas-empty" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- SYSTEM MAP (the Modules atlas page: module registry rendered live) -->
+  <section id="view-map" class="view">
+    <div class="section-head"><h2>System Map</h2>
+      <a class="fchip sm" id="map-fulltab" href="/explainer/modules.html"
+         target="_blank" rel="noopener"
+         style="margin-left:auto; text-decoration:none">Open full tab</a>
+    </div>
+    <iframe class="map-frame" id="map-frame" title="System map — every
+            module, what it does, how they connect" loading="lazy"></iframe>
+  </section>
+
+  <section id="view-design" class="view">
+    <div class="section-head"><h2>Design Studio</h2>
+      <a class="fchip sm" id="design-fulltab" href="/design/studio.html"
+         target="_blank" rel="noopener"
+         style="margin-left:auto; text-decoration:none">Open full tab</a>
+    </div>
+    <iframe class="design-frame" id="design-frame" title="Design Studio —
+            the design-foundation specimen book with live token editing"
+            loading="lazy"></iframe>
+  </section>
+
+  <!-- READER (launcher for personal reading-room pages under /reading/;
+       dock icon and tab remove themselves when no pages exist) -->
+  <section id="view-reader" class="view">
+    <div class="section-head"><h2>Reader</h2>
+      <div class="reader-pages" id="reader-pages"></div>
+      <a class="fchip sm" id="reader-fulltab" href="#" target="_blank"
+         rel="noopener" style="margin-left:auto; text-decoration:none">Open full tab</a>
+    </div>
+    <iframe class="reader-frame" id="reader-frame"
+            title="Reader — personal reading pages" loading="lazy"></iframe>
+  </section>
+
+  <!-- CIRCUITS (multi-model agent pipelines; lab/breadboard, executable) -->
+  <section id="view-circuits" class="view">
+    <div class="section-head"><h2>Circuits</h2>
+      <span class="hint" style="margin-left:auto">multi-model pipelines on the session engine</span>
+    </div>
+    <div class="seg ideas-tabs" id="circuits-tabs">
+      <button data-tab="run" class="seg-btn on">Run</button>
+      <button data-tab="runs" class="seg-btn">Runs</button>
+    </div>
+    <div id="circuits-run-pane">
+      <div id="circuits-list"></div>
+    </div>
+    <div id="circuits-runs-pane" style="display:none">
+      <div id="circuit-runs" class="list"></div>
+    </div>
+  </section>
+
+  <!-- ROUTINES (standing agent loops: muse, watchers, digests) -->
+  <section id="view-routines" class="view">
+    <div class="section-head"><h2>Agent Loops</h2>
+      <button class="fchip sm" id="routine-add-btn" style="margin-left:auto">New loop</button>
+    </div>
+    <p class="hint ideas-hint">Standing loops Vira runs on their own — the muse
+      proposes ideas each morning; watchers and digests run on any cadence.
+      Every run is a normal job with a terminal.</p>
+    <div id="routine-form" class="routine-form" style="display:none"></div>
+    <div id="routines-list" class="list"></div>
+  </section>
+
+  <!-- LAUNCHPAD (every app as an icon grid; on desktop this section lives
+       in a floating window and curates the dock — on mobile the launcher
+       is the #launchpad overlay instead, opened from the brand button) -->
+  <section id="view-launchpad" class="view">
+    <div class="lp-grid" id="lp-grid-view"></div>
+    <p class="hint lp-hint" id="lp-hint">Right-click an app to add it to or
+      remove it from the dock.</p>
+  </section>
+</main>
+
+<!-- PERSON PANEL -->
+<div id="person-panel" class="panel">
+  <div class="panel-head">
+    <button class="icon-btn" id="person-back">back</button>
+    <div class="panel-title" id="person-title"></div>
+  </div>
+  <div class="panel-body" id="person-body"></div>
+</div>
+
+<!-- JOB PANEL — Claude-branded live terminal -->
+<div id="job-panel" class="panel term-panel">
+  <div class="panel-head term-head">
+    <button class="icon-btn" id="job-back">back</button>
+    <span class="term-brand">
+      <svg class="term-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <g stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+          <line x1="16" y1="16" x2="16" y2="3.5"/><line x1="16" y1="16" x2="16" y2="28.5"/>
+          <line x1="16" y1="16" x2="3.5" y2="16"/><line x1="16" y1="16" x2="28.5" y2="16"/>
+          <line x1="16" y1="16" x2="7.2" y2="7.2"/><line x1="16" y1="16" x2="24.8" y2="24.8"/>
+          <line x1="16" y1="16" x2="7.2" y2="24.8"/><line x1="16" y1="16" x2="24.8" y2="7.2"/>
+          <line x1="16" y1="16" x2="10.6" y2="4.4"/><line x1="16" y1="16" x2="21.4" y2="27.6"/>
+          <line x1="16" y1="16" x2="27.6" y2="10.6"/><line x1="16" y1="16" x2="4.4" y2="21.4"/>
+        </g>
+      </svg>
+      <span>claude</span>
+    </span>
+    <span class="term-dot" id="job-runled"></span>
+    <div class="term-meta" id="job-title">job</div>
+  </div>
+  <div class="panel-body term-body">
+    <div id="job-banner" class="cc-bannerwrap"></div>
+    <div id="job-output" class="term-screen"></div>
+    <div id="job-pending" class="perm-stack"></div>
+  </div>
+  <div class="term-composebar off" id="job-composebar">
+    <input id="job-say" type="text" spellcheck="false" autocomplete="off"
+           placeholder="Steer this session — delivered at the next turn">
+    <button class="btn small" id="job-send">Send</button>
+    <button class="btn small term-stop" id="job-stop"
+            title="End the current turn — takes effect at the next boundary; queued messages still deliver">Stop</button>
+  </div>
+  <div class="cc-statusbar" id="job-statusbar"></div>
+</div>
+
+<!-- NOTE PANEL (a vault note opens here as a focus window — the Brain's
+     citation chips and person-page vault rows land here) -->
+<div id="note-panel" class="panel note-panel">
+  <div class="panel-head">
+    <button class="icon-btn" id="note-back">back</button>
+    <div class="panel-title" id="note-title">Note</div>
+  </div>
+  <div class="panel-body note-body" id="note-body"></div>
+</div>
+
+<!-- MEDIA VIEWER PANEL (a photo/video opens here as a focus window, over a
+     blurred backdrop, the same way a profile does) -->
+<div id="viewer-panel" class="panel viewer-panel">
+  <div class="panel-head">
+    <button class="icon-btn" id="viewer-back">back</button>
+    <div class="panel-title" id="viewer-title">Photo</div>
+    <a class="icon-btn" id="viewer-newtab" target="_blank" rel="noopener"
+       title="Open in a new tab" style="margin-left:auto">open tab</a>
+  </div>
+  <div class="panel-body viewer-body">
+    <iframe id="viewer-frame" title="Media viewer"></iframe>
+  </div>
+</div>
+
+<!-- RUN SHEET -->
+<div id="run-sheet" class="sheet">
+  <div class="sheet-card">
+    <div class="run-kind" id="run-kind"></div>
+    <h3 id="run-name"></h3>
+    <p class="hint" id="run-desc"></p>
+    <div id="run-fields"></div>
+    <label class="field" id="run-args-label">Arguments (optional)
+      <input id="run-args" type="text" spellcheck="false" placeholder=""></label>
+    <label class="field">Working directory
+      <input id="run-cwd" type="text" spellcheck="false"></label>
+    <div class="row-end">
+      <button class="btn" id="run-cancel">Cancel</button>
+      <button class="btn primary" id="run-go">Run</button>
+    </div>
+  </div>
+</div>
+
+<!-- RUN IDEA SHEET (Plan / Implement a backlog idea as a headless Vira job) -->
+<div id="idea-run-sheet" class="sheet">
+  <div class="sheet-card">
+    <div class="run-kind" id="idea-run-mode"></div>
+    <h3 id="idea-run-title">Run idea</h3>
+    <p class="hint" id="idea-run-text"></p>
+    <label class="field">Target repository
+      <input id="idea-run-cwd" type="text" spellcheck="false"
+             placeholder="~/workspace/vira"></label>
+    <label class="field">Model
+      <select id="idea-run-model">
+        <option value="">Default (config)</option>
+        <option value="fable">Fable 5</option>
+        <option value="opus">Opus 4.8</option>
+        <option value="sonnet">Sonnet 5</option>
+        <option value="haiku">Haiku 4.5</option>
+      </select>
+    </label>
+    <label class="field">Additional instructions (optional)
+      <textarea id="idea-run-extra" rows="3" spellcheck="false"
+                placeholder="Anything else Vira should know or do…"></textarea></label>
+    <label class="run-flag" id="idea-run-auto">
+      <input type="checkbox" id="idea-run-autopilot">
+      <span>autopilot — no permission prompts (full bypass)</span></label>
+    <p class="hint" id="idea-run-note"></p>
+    <div class="row-end">
+      <button class="btn" id="idea-run-cancel">Cancel</button>
+      <button class="btn primary" id="idea-run-go">Launch</button>
+    </div>
+  </div>
+</div>
+
+<!-- APPLY SHEET (dispatch the application-package agent for a role) -->
+<div id="app-run-sheet" class="sheet">
+  <div class="sheet-card">
+    <div class="run-kind">Apply</div>
+    <h3 id="app-run-title">Apply</h3>
+    <p class="hint" id="app-run-text"></p>
+    <p class="hint warn" id="app-run-cut"></p>
+    <label class="field">Model
+      <select id="app-run-model">
+        <option value="">Default (config)</option>
+        <option value="fable">Fable 5</option>
+        <option value="opus">Opus 4.8</option>
+        <option value="sonnet">Sonnet 5</option>
+        <option value="haiku">Haiku 4.5</option>
+      </select>
+    </label>
+    <label class="field">Additional instructions (optional)
+      <textarea id="app-run-extra" rows="3" spellcheck="false"
+                placeholder="Anything else Vira should tailor or emphasize…"></textarea></label>
+    <p class="hint" id="app-run-note">Drafts the full package (CV, cover letter,
+      answers, prep) in the self-record. Nothing is ever submitted for you.</p>
+    <div class="row-end">
+      <button class="btn" id="app-run-cancel">Cancel</button>
+      <button class="btn" id="app-run-copy">Copy for another session</button>
+      <button class="btn primary" id="app-run-go">Apply in Vira</button>
+    </div>
+  </div>
+</div>
+
+<!-- ADD TO CRM SHEET -->
+<div id="add-sheet" class="sheet">
+  <div class="sheet-card">
+    <h3>Add to CRM</h3>
+    <p class="hint" id="add-handle-line"></p>
+    <label class="field">Name
+      <input id="add-name" type="text" spellcheck="false" placeholder="Full name"></label>
+    <div class="seg" id="add-class-seg">
+      <button data-v="friend" class="seg-btn">Friend</button>
+      <button data-v="family" class="seg-btn">Family</button>
+      <button data-v="business" class="seg-btn">Business</button>
+      <button data-v="service" class="seg-btn">Service</button>
+      <button data-v="company" class="seg-btn">Company</button>
+    </div>
+    <p class="hint" id="add-evidence"></p>
+    <div class="row-end">
+      <button class="btn" id="add-cancel">Cancel</button>
+      <button class="btn primary" id="add-save">Add</button>
+    </div>
+  </div>
+</div>
+
+<!-- SETTINGS SHEET -->
+<div id="settings-sheet" class="sheet">
+  <div class="sheet-card">
+    <h3>Assistant backend</h3>
+    <div class="seg" id="backend-seg">
+      <button data-v="cli" class="seg-btn">Max plan (claude CLI)</button>
+      <button data-v="api" class="seg-btn">API</button>
+    </div>
+    <label class="field">CLI model
+      <input id="cfg-cli-model" type="text" spellcheck="false"></label>
+    <label class="field">API model
+      <input id="cfg-api-model" type="text" spellcheck="false"></label>
+    <p class="hint" id="cfg-api-hint"></p>
+    <h3 class="sheet-sub">Mail accounts</h3>
+    <div id="mail-accounts"></div>
+    <div class="runbar">
+      <input id="graph-email" class="search" type="email"
+             placeholder="you@yourtenant.com" spellcheck="false">
+      <button class="btn" id="graph-connect">Connect M365</button>
+    </div>
+    <p class="hint" id="graph-hint"></p>
+    <h3 class="sheet-sub">Notifications</h3>
+    <div class="seg" id="notify-seg">
+      <button data-v="on" class="seg-btn">On</button>
+      <button data-v="off" class="seg-btn">Off</button>
+    </div>
+    <label class="field">iMessage handle for pings
+      <input id="notify-handle" type="text" spellcheck="false" placeholder="+1917…"></label>
+    <p class="hint">Email from an active-tier contact pings this handle over
+      iMessage. Throttled: one per sender per 6h, 20 a day max.</p>
+    <div class="runbar" style="margin-bottom:0">
+      <button class="btn small" id="notify-test">Send test message</button>
+      <span class="hint" id="notify-hint" style="align-self:center"></span>
+    </div>
+    <h3 class="sheet-sub">Updates</h3>
+    <p class="hint" id="upd-current">Checking…</p>
+    <div class="runbar" style="margin-bottom:0">
+      <button class="btn small" id="upd-check">Check for updates</button>
+      <button class="btn small primary" id="upd-apply" style="display:none">Update &amp; restart</button>
+      <span class="hint" id="upd-hint" style="align-self:center"></span>
+    </div>
+    <div class="row-end">
+      <button class="btn" id="settings-close">Close</button>
+      <button class="btn primary" id="settings-save">Save</button>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+<script src="/atlas.js"></script>
+</body>
+</html>

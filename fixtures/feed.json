@@ -1,0 +1,14 @@
+[
+ {"rowid": "vira-w3", "when": "2026-07-09T08:35:00", "channel": "imessage",
+  "text": "When you're ready to make this real: data/config.json, then point crm_root at your people. I'll get out of the way.",
+  "handle": "vira@vira.local", "group": false, "group_name": null,
+  "person_id": "p_v1raf1x70000", "person_name": "Vira", "known": true, "has_photo": true},
+ {"rowid": "vira-w2", "when": "2026-07-09T08:34:30", "channel": "imessage",
+  "text": "Shared media below this thread has my reading list for you. The suggested-reply buttons above the compose box work too — try drafting a reply to me.",
+  "handle": "vira@vira.local", "group": false, "group_name": null,
+  "person_id": "p_v1raf1x70000", "person_name": "Vira", "known": true, "has_photo": true},
+ {"rowid": "vira-w1", "when": "2026-07-09T08:30:00", "channel": "imessage",
+  "text": "Morning. I'm Vira — your AI chief of staff. This conversation is the tour. Tap this card to open my page.",
+  "handle": "vira@vira.local", "group": false, "group_name": null,
+  "person_id": "p_v1raf1x70000", "person_name": "Vira", "known": true, "has_photo": true}
+]

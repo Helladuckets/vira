@@ -1,0 +1,18 @@
+{
+ "photos": [],
+ "links": [
+  {"id": -201, "url": "https://github.com/Helladuckets/vira#readme",
+   "title": "Vira — README: setup, configuration, the code/data seam",
+   "domain": "github.com", "from_me": false, "when": "2026-07-09T08:34:30",
+   "context": "Start here — the first open loop on my page walks you through it."},
+  {"id": -202, "url": "https://code.claude.com/docs/en/overview",
+   "title": "Claude Code documentation — the engine behind the Actions cockpit",
+   "domain": "code.claude.com", "from_me": false, "when": "2026-07-09T08:34:32",
+   "context": "The cockpit dispatches headless claude jobs; this is what those can do."},
+  {"id": -203, "url": "https://tailscale.com/kb/1017/install",
+   "title": "Tailscale — reach Vira from your phone",
+   "domain": "tailscale.com", "from_me": false, "when": "2026-07-09T08:34:34",
+   "context": "Vira binds 0.0.0.0:8377, so once your tailnet is up the phone URL just works."}
+ ],
+ "docs": []
+}

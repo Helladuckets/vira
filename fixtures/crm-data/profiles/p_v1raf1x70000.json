@@ -1,0 +1,70 @@
+{
+ "id": "p_v1raf1x70000",
+ "name": "Vira",
+ "schema_version": 1,
+ "relationship_class": "AI chief of staff",
+ "relationship_summary": "Vira is the front door to everything happening in your communications: a live feed of who just messaged, dossiers on every contact, a morning brief of who deserves attention, semantic search over everything ever shared, and a cockpit that runs coding agents. You are looking at fixture mode — a demo dataset with one contact (me) so the app has something to show. Point crm_root in data/config.json at your real contact data and this page becomes your actual network.",
+ "comms_style": "Direct, brief, no filler. Sends you usage tips as messages. Never notifies you about things your phone already notifies you about.",
+ "how_we_met": "You cloned the repo.",
+ "personal_facts": [
+  "Named after Viracocha",
+  "Runs entirely on this machine — nothing leaves it except drafts you explicitly send to Claude",
+  "Everything deterministic is deterministic; the AI is only invoked for drafting and cockpit jobs"
+ ],
+ "topics": ["getting started", "configuration", "features"],
+ "cadence": "Whenever something deserves your attention.",
+ "hooks": [
+  {
+   "angle": "Open the Brief window and ask who deserves attention today",
+   "grounded_in": "manual",
+   "detail": "The Daily Brief merges your calendar, unreplied threads, open loops, and going-quiet contacts into one morning view. It works as soon as chat.db and Calendar access are granted."
+  },
+  {
+   "angle": "Press Cmd-K and type a contact's name",
+   "grounded_in": "manual",
+   "detail": "The command palette opens any window and jumps to any person. Arrow keys + Enter to navigate."
+  },
+  {
+   "angle": "Try the Search window: 'didn't someone send me a snowmobile picture?'",
+   "grounded_in": "manual",
+   "detail": "Ask Vira parses the question, runs hybrid semantic search over every photo, link, and document ever shared, and answers honestly — including when your memory of who sent it is wrong."
+  },
+  {
+   "angle": "Tap any hook on a person page to draft an opener",
+   "grounded_in": "manual",
+   "detail": "Hooks are conversation starters mined from your actual history. Tapping one drafts a voice-matched message into the compose box — like this one would, if I had a shared history with you yet."
+  }
+ ],
+ "open_loops": [
+  {
+   "what": "Copy config.example.json to data/config.json and fill in your values",
+   "owed_by": "me",
+   "since": "2026-07-09",
+   "channel": "setup",
+   "status": "open"
+  },
+  {
+   "what": "Grant Full Disk Access to .venv/bin/python so the live iMessage feed works (System Settings > Privacy & Security)",
+   "owed_by": "me",
+   "since": "2026-07-09",
+   "channel": "setup",
+   "status": "open"
+  },
+  {
+   "what": "Point crm_root at your contact data (people.json / profiles/ — see README for the shape)",
+   "owed_by": "me",
+   "since": "2026-07-09",
+   "channel": "setup",
+   "status": "open"
+  },
+  {
+   "what": "Connect a mailbox in Settings (IMAP app password in the Keychain, or M365 device login)",
+   "owed_by": "me",
+   "since": "2026-07-09",
+   "channel": "setup",
+   "status": "open"
+  }
+ ],
+ "stats": {"messages": 12, "span": "today"},
+ "generated_at": "2026-07-09T00:00:00"
+}

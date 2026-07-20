@@ -1,0 +1,24 @@
+[
+ {"merchant_id": "nimbus-cloud", "amount": 24.00, "days_ago": 94, "desc": "NIMBUS CLOUD"},
+ {"merchant_id": "nimbus-cloud", "amount": 24.00, "days_ago": 63, "desc": "NIMBUS CLOUD"},
+ {"merchant_id": "nimbus-cloud", "amount": 24.00, "days_ago": 33, "desc": "NIMBUS CLOUD"},
+ {"merchant_id": "nimbus-cloud", "amount": 24.00, "days_ago": 3, "desc": "NIMBUS CLOUD", "note": "team plan"},
+
+ {"merchant_id": "quill-notes", "amount": 96.00, "days_ago": 361, "desc": "QUILL NOTES ANNUAL"},
+
+ {"merchant_id": "hexagon-ai", "amount": 29.00, "days_ago": 95, "desc": "HEXAGON AI SUB"},
+ {"merchant_id": "hexagon-ai", "amount": 29.00, "days_ago": 64, "desc": "HEXAGON AI SUB"},
+ {"merchant_id": "hexagon-ai", "amount": 29.00, "days_ago": 34, "desc": "HEXAGON AI SUB"},
+ {"merchant_id": "hexagon-ai", "amount": 29.00, "days_ago": 4, "desc": "HEXAGON AI SUB"},
+ {"merchant_id": "hexagon-ai", "amount": 12.00, "days_ago": 41, "desc": "HEXAGON AI ADDON"},
+ {"merchant_id": "hexagon-ai", "amount": 12.00, "days_ago": 11, "desc": "HEXAGON AI ADDON"},
+ {"merchant_id": "hexagon-ai", "amount": 45.00, "days_ago": 20, "desc": "HEXAGON AI USAGE"},
+ {"merchant_id": "hexagon-ai", "amount": 85.00, "days_ago": 6, "desc": "HEXAGON AI USAGE"},
+
+ {"merchant_id": "photon-vpn", "amount": 9.99, "days_ago": 132, "desc": "PHOTON VPN"},
+ {"merchant_id": "photon-vpn", "amount": 9.99, "days_ago": 101, "desc": "PHOTON VPN"},
+ {"merchant_id": "photon-vpn", "amount": 9.99, "days_ago": 71, "desc": "PHOTON VPN"},
+
+ {"merchant_id": "datastream", "amount": 180.00, "days_ago": 152, "desc": "DATASTREAM ANALYTICS"},
+ {"merchant_id": "datastream", "amount": 180.00, "days_ago": 61, "desc": "DATASTREAM ANALYTICS"}
+]

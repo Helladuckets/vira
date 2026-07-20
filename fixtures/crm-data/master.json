@@ -1,0 +1,13 @@
+[
+ {
+  "id": "p_v1raf1x70000",
+  "full_name": "Vira",
+  "company": "This Mac",
+  "title": "AI Chief of Staff",
+  "relationship": "Your assistant",
+  "tier": "active",
+  "evidence": "Named after Viracocha. Lives entirely on this machine: reads your Messages, contacts, calendar, and mail in place, and never sends any of it anywhere. This dossier is the demo dataset — point crm_root at your real contact data and Vira disappears into the background.",
+  "emails": ["vira@vira.local"],
+  "phones": []
+ }
+]

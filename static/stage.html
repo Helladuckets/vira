@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vira — stage</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #0a0a0c; color: #cfcfd4;
+    font: 12px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  #bar { height: 42px; display: flex; align-items: center; gap: 12px;
+    padding: 0 16px; border-bottom: 1px solid #1d1d22; }
+  #bar .brand { letter-spacing: .35em; font-weight: 700; color: #e8e8ec; }
+  #badge { padding: 2px 9px; border-radius: 4px; font-weight: 700;
+    letter-spacing: .08em; background: #333; color: #ddd; }
+  #badge.test { background: #b0563a; color: #fff; }
+  #meta { color: #6f6f78; }
+  #stage { position: absolute; inset: 42px 0 0 0; display: flex;
+    gap: 14px; padding: 14px; }
+  /* Desktop canvas: the iframe ALWAYS carries an explicit width >= the
+     app's 1100px desktop breakpoint — natural size when the column
+     affords it, the 1280px design width scaled down when it doesn't.
+     Never a percentage: app.js reloads itself when that media query
+     flips, and a transient dip under 1100 causes a reload storm. */
+  #canvas-box { flex: 1; position: relative; overflow: hidden;
+    border: 1px solid #1d1d22; border-radius: 10px; background: #0a0a0c; }
+  #desktop { position: absolute; top: 0; left: 0; border: 0;
+    width: 1280px; height: 800px; background: #0a0a0c; }
+  #phone-dock { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 8px; }
+  #phone-shell { position: relative; border: 7px solid #1b1b20;
+    border-radius: 30px; overflow: hidden; background: #000;
+    box-shadow: 0 12px 40px rgba(0,0,0,.55); }
+  #phone { border: 0; width: 402px; height: 874px;
+    transform-origin: 0 0; background: #0a0a0c; }
+  #phone-label { color: #6f6f78; }
+  @media (max-width: 1180px) { #phone-dock { display: none; } }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span class="brand">VIRA</span>
+  <span id="badge">STAGE</span>
+  <span id="meta">desktop 1280 &middot; mobile 402&times;874 &middot; the Design Studio display</span>
+</div>
+<div id="stage">
+  <div id="canvas-box"><iframe id="desktop" src="/" title="Desktop"></iframe></div>
+  <div id="phone-dock">
+    <div id="phone-shell"><iframe id="phone" src="/" title="Mobile parallel"></iframe></div>
+    <div id="phone-label">mobile</div>
+  </div>
+</div>
+<script>
+(function () {
+  "use strict";
+  var BREAK = 1100, DESK_W = 1280, PHONE_W = 402, PHONE_H = 874;
+  function $(s) { return document.querySelector(s); }
+
+  function layout() {
+    var box = $("#canvas-box"), f = $("#desktop");
+    var w = box.clientWidth, h = box.clientHeight;
+    if (w && h) {
+      if (w >= BREAK) {
+        f.style.width = w + "px";
+        f.style.height = h + "px";
+        f.style.transform = "";
+      } else {
+        var k = w / DESK_W;
+        f.style.width = DESK_W + "px";
+        f.style.height = Math.round(h / k) + "px";
+        f.style.transform = "scale(" + k + ")";
+        f.style.transformOrigin = "0 0";
+      }
+    }
+    var stageH = $("#stage").clientHeight - 28;
+    var pk = Math.min(1, stageH / PHONE_H);
+    var p = $("#phone"), shell = $("#phone-shell");
+    p.style.transform = "scale(" + pk + ")";
+    shell.style.width = Math.round(PHONE_W * pk) + "px";
+    shell.style.height = Math.round(PHONE_H * pk) + "px";
+  }
+
+  addEventListener("resize", layout);
+  if (window.ResizeObserver) new ResizeObserver(layout).observe($("#canvas-box"));
+  layout();
+
+  fetch("/api/config").then(function (r) { return r.json(); }).then(function (c) {
+    var b = $("#badge");
+    if (c && c.passive) { b.textContent = "TEST :" + location.port; b.className = "test"; }
+    else { b.textContent = "LIVE :" + (location.port || "8377"); }
+    document.title = "Vira — stage " + b.textContent;
+  }).catch(function () {});
+})();
+</script>
+</body>
+</html>

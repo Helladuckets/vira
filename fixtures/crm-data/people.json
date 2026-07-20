@@ -1,0 +1,22 @@
+{
+ "people": [
+  {
+   "id": "p_v1raf1x70000",
+   "name": "Vira",
+   "class_hint": "assistant",
+   "refs": {"note": "Your AI chief of staff — the demo contact that ships with a fresh clone."},
+   "handles": {
+    "imessage": ["vira@vira.local"],
+    "phones10": [],
+    "emails": ["vira@vira.local"]
+   },
+   "master_tier": "active",
+   "profile_tier": "active",
+   "activity": {
+    "imsg_n": 12,
+    "imsg_last": "2026-07-09",
+    "email_n": 0
+   }
+  }
+ ]
+}

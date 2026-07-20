@@ -1,0 +1,31 @@
+# --- The personal layer: never committed (the code/data seam) ---
+# All instance state, indexes, caches, and canonical personal files.
+data/
+data
+
+# Real screenshots, private design docs, the private data map.
+docs/
+
+# The private operational spec for this instance (a scrubbed README ships
+# in its place).
+CLAUDE.md
+
+# System-atlas explainer: diagram exports carry instance-specific detail.
+static/explainer/
+
+# Personal reading room: pages built from the private self-record.
+static/reading/
+
+# Local Claude Code project config (absolute paths, permission grants).
+.claude/
+
+# --- Environment / runtime ---
+# Branch-worktree test instances (scripts/branch.sh serve)
+.test-instance.*
+# no trailing slash: branch worktrees carry .venv as a SYMLINK to the live venv
+.venv
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+run-taurid.sh

@@ -1,0 +1,59 @@
+{
+ "merchants": [
+  {
+   "id": "nimbus-cloud",
+   "display_name": "Nimbus Cloud",
+   "aliases": ["nimbus cloud", "nimbus"],
+   "url": "https://example.com/nimbus",
+   "category": "Infrastructure",
+   "cadence_override": null,
+   "status": "active",
+   "note": "demo: a steady monthly subscription",
+   "receipt_senders": ["billing@nimbus.example"]
+  },
+  {
+   "id": "quill-notes",
+   "display_name": "Quill Notes",
+   "aliases": ["quill notes", "quill"],
+   "url": "https://example.com/quill",
+   "category": "Productivity",
+   "cadence_override": "annual",
+   "status": "active",
+   "note": "demo: an annual plan about to renew",
+   "receipt_senders": []
+  },
+  {
+   "id": "hexagon-ai",
+   "display_name": "Hexagon AI",
+   "aliases": ["hexagon ai", "hexagon"],
+   "url": "https://example.com/hexagon",
+   "category": "AI",
+   "cadence_override": null,
+   "status": "active",
+   "note": "demo: two concurrent plans plus off-pattern charges",
+   "receipt_senders": ["receipts@hexagon.example"]
+  },
+  {
+   "id": "photon-vpn",
+   "display_name": "Photon VPN",
+   "aliases": ["photon vpn", "photon"],
+   "url": "https://example.com/photon",
+   "category": "Infrastructure",
+   "cadence_override": null,
+   "status": "active",
+   "note": "demo: charges stopped — lapse detection",
+   "receipt_senders": []
+  },
+  {
+   "id": "datastream",
+   "display_name": "Datastream Analytics",
+   "aliases": ["datastream analytics", "datastream"],
+   "url": "https://example.com/datastream",
+   "category": "Data",
+   "cadence_override": "annual",
+   "status": "active",
+   "note": "demo: observed cadence disagrees with the catalog",
+   "receipt_senders": []
+  }
+ ]
+}

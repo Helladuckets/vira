@@ -1,0 +1,8 @@
+[
+ {"merchant_id": "hexagon-ai", "kind": "receipt", "days_ago": 21,
+  "amount": 45.00, "plan": "usage top-up (demo: explains the off-pattern charge)",
+  "account": "demo@fixture"},
+ {"merchant_id": "quill-notes", "kind": "renewal_notice", "days_ago": 10,
+  "amount": 96.00, "plan": "Quill Notes annual", "next_in_days": 4,
+  "account": "demo@fixture"}
+]

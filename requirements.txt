@@ -1,0 +1,21 @@
+# Vira runtime dependencies.
+#
+# Install into the EXISTING .venv only:
+#     .venv/bin/pip install -r requirements.txt
+#
+# NEVER rebuild the venv (no `python3 -m venv`): the macOS Full Disk Access
+# grant that lets the watcher read chat.db is tied to the current
+# .venv/bin/python binary — a rebuilt venv silently loses it (see README).
+# The media-index extras (torch, transformers, insightface, mlx-whisper,
+# pyobjc) are installed the same way, on demand; they are deliberately not
+# pinned here.
+fastapi
+uvicorn[standard]
+# Live two-way agent sessions (steering + per-tool permission gating).
+# Optional at runtime: if this import fails, Vira falls back to the legacy
+# one-shot subprocess path and still boots.
+claude-agent-sdk==0.2.115
+# The vault engine behind the Brain window (brings numpy). On a dev
+# machine with a local qocha checkout, prefer an editable install
+# (pip install -e ../qocha) and skip re-running this line over it.
+qocha @ git+https://github.com/Helladuckets/qocha

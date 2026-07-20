@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vira — viewer</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+:root {
+  --bg: #141617;
+  --line: #34342f;
+  --text: #cfcbc2;
+  --dim: #8f8d85;
+  --accent: #8a8478;
+  --ios-me: #1982fc;
+  --ios-them: #26262a;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  display: flex; overflow: hidden;
+}
+
+/* ---------- stage (the photo, offset left) ---------- */
+#stage {
+  flex: 1; min-width: 0; height: 100vh;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  padding: 28px 16px 20px 28px; gap: 14px;
+}
+#stage-media {
+  flex: 1; min-height: 0; width: 100%;
+  display: flex; align-items: center; justify-content: center;
+}
+#stage-media img, #stage-media video {
+  max-width: 100%; max-height: 100%;
+  border-radius: 12px;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, .65);
+}
+#stage-cap {
+  flex: none; font-size: 13px; color: var(--dim);
+  display: flex; gap: 10px; align-items: baseline;
+}
+#stage-cap b { color: var(--text); font-weight: 600; }
+.cap-dir {
+  font-size: 9.5px; letter-spacing: .07em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 8px; border: 1px solid var(--line);
+  color: var(--dim);
+}
+.cap-dir.me { color: var(--accent); border-color: rgba(217, 164, 65, .45); }
+
+/* ---------- the virtual phone (right quarter) ---------- */
+#phone-col {
+  flex: none; width: clamp(300px, 25vw, 400px);
+  height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 18px 22px 18px 6px;
+}
+#phone {
+  width: 100%; height: min(94vh, 780px);
+  background: #000; border-radius: 46px;
+  border: 3px solid #3a3a3c;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .7), inset 0 0 0 7px #1b1b1d;
+  display: flex; flex-direction: column; overflow: hidden;
+  position: relative;
+}
+.p-island {
+  position: absolute; top: 13px; left: 50%; transform: translateX(-50%);
+  width: 92px; height: 24px; border-radius: 14px; background: #000;
+  border: 1px solid #151517; z-index: 5;
+}
+.p-status {
+  flex: none; display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 26px 4px; font-size: 12.5px; font-weight: 650;
+  color: #fff;
+}
+.p-status svg { height: 11px; fill: #fff; }
+.p-header {
+  flex: none; display: flex; flex-direction: column; align-items: center;
+  gap: 3px; padding: 6px 12px 10px;
+  border-bottom: 1px solid #1f1f22;
+  background: rgba(18, 18, 20, .9);
+}
+.p-avatar {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: #3a3a3e; overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 650; color: #cfcfd4;
+}
+.p-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.p-name { font-size: 12px; font-weight: 600; color: #fff; }
+.p-name span { color: #8e8e93; font-weight: 400; }
+
+#p-scroll {
+  flex: 1; min-height: 0; overflow-y: auto;
+  padding: 10px 12px 14px;
+  display: flex; flex-direction: column; gap: 3px;
+  scrollbar-width: thin; scrollbar-color: #333 transparent;
+  overscroll-behavior: contain;
+}
+#p-scroll > * { flex: none; }  /* overflowing column must not squash bubbles */
+.p-day {
+  align-self: center; margin: 12px 0 6px;
+  font-size: 10.5px; font-weight: 600; color: #8e8e93;
+}
+.p-day span { font-weight: 400; }
+.pb {
+  max-width: 78%; padding: 7px 11px; border-radius: 17px;
+  font-size: 13.5px; line-height: 1.35; word-break: break-word;
+  color: #fff; position: relative;
+}
+.pb.them { align-self: flex-start; background: var(--ios-them); border-bottom-left-radius: 5px; }
+.pb.me { align-self: flex-end; background: var(--ios-me); border-bottom-right-radius: 5px; }
+.pb + .pb.them, .pb + .pb.me { margin-top: 1px; }
+.pb.media { padding: 0; background: none; overflow: hidden; border-radius: 14px; }
+.pb.media img {
+  display: block; max-width: 100%; max-height: 240px;
+  min-width: 150px; min-height: 110px;      /* stable before lazy-load */
+  background: #151517; object-fit: cover;
+  border-radius: 14px; cursor: pointer;
+  border: 1px solid #222;
+}
+.pb.media .pb-file {
+  display: block; background: var(--ios-them); color: #fff;
+  padding: 9px 12px; border-radius: 14px; font-size: 12.5px;
+}
+.pb.media.me .pb-file { background: var(--ios-me); }
+.pb-vid { position: relative; cursor: pointer; }
+.pb-vid::after {
+  content: ""; position: absolute; inset: 0; margin: auto;
+  width: 34px; height: 34px; border-radius: 50%;
+  background: rgba(0,0,0,.55) url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9 6.5v11l9-5.5z" fill="white"/></svg>') center/16px no-repeat;
+}
+.pb.anchor-hit { outline: 2.5px solid var(--accent); outline-offset: 2px; }
+@keyframes anchorPulse {
+  0% { outline-color: rgba(217,164,65,0); }
+  35% { outline-color: rgba(217,164,65,1); }
+  100% { outline-color: rgba(217,164,65,.85); }
+}
+.pb.anchor-hit { animation: anchorPulse 1.1s ease 1; }
+.p-loading { align-self: center; color: #666; font-size: 11px; padding: 8px; }
+.pb-sender {
+  align-self: flex-start; font-size: 10px; color: #8e8e93;
+  margin: 6px 0 0 12px;
+}
+
+.p-inputbar {
+  flex: none; display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px calc(10px + 6px);
+  border-top: 1px solid #1f1f22; background: rgba(18, 18, 20, .9);
+}
+.p-field {
+  flex: 1; border: 1px solid #333; border-radius: 999px;
+  padding: 6px 12px; font-size: 12.5px; color: #8e8e93;
+}
+.p-homebar {
+  position: absolute; bottom: 6px; left: 50%; transform: translateX(-50%);
+  width: 110px; height: 4px; border-radius: 2px; background: #444;
+}
+
+/* stacked layout when the window is narrow */
+@media (max-width: 900px) {
+  body { flex-direction: column; overflow-y: auto; }
+  #stage { height: 52vh; padding: 16px; }
+  #phone-col { width: 100%; height: auto; padding: 0 16px 18px; }
+  #phone { height: 70vh; max-width: 420px; margin: 0 auto; }
+}
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="stage-media"></div>
+  <div id="stage-cap"></div>
+</div>
+<aside id="phone-col">
+  <div id="phone">
+    <div class="p-island"></div>
+    <div class="p-status">
+      <span id="p-time"></span>
+      <span style="display:flex;gap:5px;align-items:center">
+        <svg viewBox="0 0 18 11" width="17"><rect x="0" y="7" width="3" height="4" rx="1"/><rect x="5" y="5" width="3" height="6" rx="1"/><rect x="10" y="2.5" width="3" height="8.5" rx="1"/><rect x="15" y="0" width="3" height="11" rx="1"/></svg>
+        <svg viewBox="0 0 25 11" width="23"><rect x="0.5" y="0.5" width="20" height="10" rx="3" fill="none" stroke="white" opacity=".5"/><rect x="2" y="2" width="14" height="7" rx="1.6"/><rect x="22" y="3.5" width="2" height="4" rx="1" opacity=".5"/></svg>
+      </span>
+    </div>
+    <div class="p-header">
+      <div class="p-avatar" id="p-avatar"></div>
+      <div class="p-name"><b id="p-name"></b> <span>&gt;</span></div>
+    </div>
+    <div id="p-scroll"></div>
+    <div class="p-inputbar"><div class="p-field">iMessage</div></div>
+    <div class="p-homebar"></div>
+  </div>
+</aside>
+
+<script>
+"use strict";
+const qs = new URLSearchParams(location.search);
+const PID = qs.get("pid");
+const KIND = qs.get("kind") || "image";
+const IDS = qs.get("ids");   // present = group-thread scope
+const IDSQ = IDS ? "&ids=" + encodeURIComponent(IDS) : "";
+let attId = parseInt(qs.get("att"), 10);
+
+const $ = (s) => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+const api = async (path) => {
+  const r = await fetch(path);
+  if (!r.ok) throw new Error((await r.text()).slice(0, 200));
+  return r.json();
+};
+
+const fmtTime = (iso) => iso
+  ? new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+  : "";
+const fmtDay = (iso) => {
+  const d = new Date(iso);
+  const now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(d.toDateString())) / 86400000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return d.toLocaleDateString([], { weekday: "long" });
+  return d.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric",
+    year: d.getFullYear() === now.getFullYear() ? undefined : "numeric" });
+};
+
+let messages = [];       // oldest -> newest, as rendered
+let hasOlder = false, hasNewer = false;
+let loadingEdge = false;
+let userScrolled = false;
+const scroller = () => $("#p-scroll");
+
+function setStage(id, kind, msg) {
+  const host = $("#stage-media");
+  host.innerHTML = "";
+  if (kind === "video") {
+    const v = document.createElement("video");
+    v.controls = true;
+    v.src = "/api/media/file/" + id;
+    host.appendChild(v);
+  } else {
+    const img = document.createElement("img");
+    img.src = "/api/media/file/" + id;
+    img.alt = "";
+    host.appendChild(img);
+  }
+  const cap = $("#stage-cap");
+  cap.innerHTML = "";
+  const att = msg?.attachments?.find((a) => a.id === id);
+  if (att) cap.appendChild(el("b", null, att.name));
+  if (msg) {
+    cap.appendChild(el("span", null,
+      new Date(msg.when).toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" })
+      + " · " + fmtTime(msg.when)));
+    cap.appendChild(el("span", "cap-dir" + (msg.from_me ? " me" : ""),
+      msg.from_me ? "sent" : "received"));
+    $("#p-time").textContent = fmtTime(msg.when);
+  }
+}
+
+function focusAttachment(id) {
+  attId = id;
+  document.querySelectorAll(".pb.anchor-hit").forEach((b) => b.classList.remove("anchor-hit"));
+  const target = document.querySelector(`[data-att="${id}"]`);
+  const msg = messages.find((m) => m.attachments.some((a) => a.id === id));
+  setStage(id, msg?.attachments.find((a) => a.id === id)?.kind || "image", msg);
+  if (target) {
+    target.classList.add("anchor-hit");
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+
+function bubbleNodes(msg, prevMsg) {
+  const nodes = [];
+  // group threads label each new speaker, like iMessage does
+  if (IDS && !msg.from_me && msg.sender
+      && (!prevMsg || prevMsg.from_me || prevMsg.sender !== msg.sender))
+    nodes.push(el("div", "pb-sender", msg.sender.split(" ")[0]));
+  msg.attachments.forEach((a) => {
+    const b = el("div", "pb media " + (msg.from_me ? "me" : "them"));
+    b.dataset.att = a.id;
+    b.dataset.rowid = msg.rowid;
+    if (a.kind === "image" || a.kind === "video") {
+      const wrap = a.kind === "video" ? el("div", "pb-vid") : b;
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = "/api/media/thumb/" + a.id;
+      img.alt = a.name;
+      img.onerror = () => {
+        wrap.innerHTML = "";
+        wrap.appendChild(el("span", "pb-file", a.name));
+      };
+      wrap.appendChild(img);
+      if (a.kind === "video") b.appendChild(wrap);
+      b.addEventListener("click", () => focusAttachment(a.id));
+    } else {
+      const f = el("a", "pb-file", a.name);
+      f.href = "/api/media/file/" + a.id;
+      f.target = "_blank";
+      f.style.textDecoration = "none";
+      b.appendChild(f);
+    }
+    nodes.push(b);
+  });
+  if (msg.text) {
+    const b = el("div", "pb " + (msg.from_me ? "me" : "them"), msg.text);
+    b.dataset.rowid = msg.rowid;
+    nodes.push(b);
+  }
+  return nodes;
+}
+
+function renderAll(anchorAtt) {
+  const box = scroller();
+  box.innerHTML = "";
+  let lastDay = null;
+  let prev = null;
+  messages.forEach((m) => {
+    const day = m.when ? m.when.slice(0, 10) : null;
+    if (day && day !== lastDay) {
+      lastDay = day;
+      const d = el("div", "p-day", fmtDay(m.when) + " ");
+      d.appendChild(el("span", null, fmtTime(m.when)));
+      box.appendChild(d);
+    }
+    bubbleNodes(m, prev).forEach((n) => box.appendChild(n));
+    prev = m;
+  });
+  if (anchorAtt != null) {
+    const target = document.querySelector(`[data-att="${anchorAtt}"]`);
+    if (target) {
+      target.classList.add("anchor-hit");
+      const center = () => target.scrollIntoView({ block: "center" });
+      requestAnimationFrame(center);
+      // thumbnails above the anchor lazy-load and grow the column;
+      // re-center until the user takes over the scroll
+      [350, 900, 1600].forEach((ms) =>
+        setTimeout(() => { if (!userScrolled) center(); }, ms));
+    }
+  }
+}
+
+async function loadEdge(older) {
+  if (loadingEdge) return;
+  if (older && !hasOlder) return;
+  if (!older && !hasNewer) return;
+  loadingEdge = true;
+  const box = scroller();
+  const spin = el("div", "p-loading", "…");
+  older ? box.prepend(spin) : box.appendChild(spin);
+  try {
+    const cursor = older ? messages[0]?.rowid : messages[messages.length - 1]?.rowid;
+    if (cursor == null) return;
+    const res = await api(`/api/media/context/${attId}?pid=${PID}` + IDSQ +
+      (older ? `&before_rowid=${cursor}` : `&after_rowid=${cursor}`));
+    const incoming = res.messages || [];
+    if (older) {
+      hasOlder = !!res.has_more_older && incoming.length > 0;
+      messages = incoming.concat(messages);
+      const prevH = box.scrollHeight, prevTop = box.scrollTop;
+      renderAll(null);
+      box.scrollTop = prevTop + (box.scrollHeight - prevH);
+    } else {
+      hasNewer = !!res.has_more_newer && incoming.length > 0;
+      messages = messages.concat(incoming);
+      const keep = box.scrollTop;
+      renderAll(null);
+      box.scrollTop = keep;
+    }
+  } catch { /* transient; edge stays available */ }
+  finally {
+    spin.remove();
+    loadingEdge = false;
+  }
+}
+
+async function boot() {
+  if (!PID || !attId) {
+    $("#stage-media").appendChild(el("div", null, "Missing att/pid."));
+    return;
+  }
+  const res = await api(`/api/media/context/${attId}?pid=${PID}` + IDSQ);
+  const p = res.person || {};
+  $("#p-name").textContent = IDS
+    ? (qs.get("label") || "Group") : (p.name || "");
+  document.title = "Vira — " + (p.name || "viewer");
+  if (p.has_photo) {
+    const img = document.createElement("img");
+    img.src = "/api/photo/" + p.id;
+    img.alt = "";
+    $("#p-avatar").appendChild(img);
+  } else {
+    $("#p-avatar").textContent = (p.name || "?")
+      .split(/\s+/).slice(0, 2).map((w) => w[0] || "").join("").toUpperCase();
+  }
+  messages = res.messages || [];
+  hasOlder = !!res.has_more_older;
+  hasNewer = !!res.has_more_newer;
+  const anchorMsg = messages.find((m) =>
+    m.attachments.some((a) => a.id === attId));
+  setStage(attId, KIND, anchorMsg);
+  renderAll(attId);
+  ["wheel", "touchstart", "pointerdown"].forEach((ev) =>
+    scroller().addEventListener(ev, () => { userScrolled = true; },
+      { passive: true }));
+  scroller().addEventListener("scroll", () => {
+    if (!userScrolled) return;   // ignore our own centering scrolls
+    const box = scroller();
+    if (box.scrollTop < 120) loadEdge(true);
+    else if (box.scrollHeight - box.scrollTop - box.clientHeight < 120) loadEdge(false);
+  }, { passive: true });
+}
+boot().catch((e) => {
+  $("#stage-media").appendChild(el("div", null, "Viewer failed: " + e.message));
+});
+</script>
+</body>
+</html>
