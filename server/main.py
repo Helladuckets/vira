@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from . import (actions, aihealth, applications, atlas, backup, brief,
                briefstate, changelog,
                circuits,
+               companion,
                data as crm,
                designstudio,
                feedstate,
@@ -827,6 +828,93 @@ async def api_stream():
             session.sessions.unsubscribe(q)
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---------- Android companion (pairing, message ingest, pings) ----------
+# The phone-facing endpoints authenticate every request with the paired
+# device's token (X-Vira-Device + Authorization: Bearer). Writes refuse on
+# passive instances — companion.assert_active, the send.py precedent.
+
+def _companion_auth(x_vira_device: str | None, authorization: str | None):
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    dev = companion.auth(x_vira_device or "", token)
+    if not dev:
+        raise HTTPException(401, "unknown device or bad token")
+    return dev
+
+
+@app.post("/api/companion/pair/start")
+def api_companion_pair_start(request: Request):
+    """Owner-side: mint a pairing and return the QR. The URL advertises
+    the port this hub actually answers on."""
+    try:
+        port = request.url.port or 8377
+        return companion.pair_start(url=companion.hub_url(port))
+    except RuntimeError as e:
+        raise HTTPException(403, str(e))
+
+
+class CompanionPairReq(BaseModel):
+    device_id: str
+    token: str
+    name: str | None = ""
+    platform: str | None = ""
+
+
+@app.post("/api/companion/pair")
+def api_companion_pair(req: CompanionPairReq):
+    """Phone-side: claim the pairing the QR carried."""
+    try:
+        return companion.pair_complete(req.device_id, req.token,
+                                       req.name or "", req.platform or "")
+    except PermissionError as e:
+        raise HTTPException(401, str(e))
+    except RuntimeError as e:
+        raise HTTPException(403, str(e))
+
+
+class CompanionBatchReq(BaseModel):
+    messages: list[dict]
+
+
+@app.post("/api/companion/messages")
+def api_companion_messages(req: CompanionBatchReq,
+                           x_vira_device: str | None = Header(None),
+                           authorization: str | None = Header(None)):
+    dev = _companion_auth(x_vira_device, authorization)
+    if len(req.messages) > 500:
+        raise HTTPException(413, "batch too large (max 500)")
+    try:
+        return companion.ingest(dev["id"], req.messages, watcher=watcher)
+    except RuntimeError as e:
+        raise HTTPException(403, str(e))
+
+
+@app.get("/api/companion/pings")
+def api_companion_pings(after: int = 0, wait: int = 25,
+                        x_vira_device: str | None = Header(None),
+                        authorization: str | None = Header(None)):
+    """Phone-side long-poll (sync def — blocks a worker thread, never the
+    event loop). Returns immediately when anything is newer than `after`."""
+    _companion_auth(x_vira_device, authorization)
+    return {"pings": companion.wait_for_pings(after, wait)}
+
+
+@app.get("/api/companion/status")
+def api_companion_status():
+    """Owner UI: paired devices (no tokens) + ingest counters."""
+    return {"devices": companion.devices(), **companion.stats(),
+            "hub_url": companion.hub_url()}
+
+
+@app.delete("/api/companion/device/{device_id}")
+def api_companion_unpair(device_id: str):
+    try:
+        return companion.unpair(device_id)
+    except RuntimeError as e:
+        raise HTTPException(403, str(e))
 
 
 # ---------- suggestions ----------

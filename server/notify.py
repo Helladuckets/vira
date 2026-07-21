@@ -108,12 +108,23 @@ def _throttled(person_id):
     return None
 
 
+def _companion_paired():
+    """A paired Android companion device is a delivery channel of its own
+    — pings work even where iMessage cannot (a Windows hub, no
+    notify_handle configured)."""
+    try:
+        from . import companion
+        return companion.has_devices()
+    except Exception:  # noqa: BLE001 — never let ping plumbing break notify
+        return False
+
+
 def maybe_notify(item):
     """Called by the mail watcher for every new inbound email feed item.
     Fires the iMessage in a thread so the poll loop never blocks on
     osascript."""
     cfg = config()
-    if not cfg["enabled"] or not cfg["handle"]:
+    if not cfg["enabled"] or not (cfg["handle"] or _companion_paired()):
         return
     if item.get("channel") != "email" or not item.get("person_id"):
         return
@@ -139,7 +150,7 @@ def agent_ping(text, key=None):
     cooldown dedupes retries of the SAME event while distinct events still
     ping; the daily cap always applies."""
     cfg = config()
-    if not cfg["enabled"] or not cfg["handle"]:
+    if not cfg["enabled"] or not (cfg["handle"] or _companion_paired()):
         return False
     key = key or "agent"
     if _throttled(f"agent:{key}"):
@@ -153,6 +164,9 @@ def agent_ping(text, key=None):
 
 
 def _send(handle, text, item):
+    """Deliver on every channel that exists: iMessage when a handle is
+    configured, a companion ping when an Android phone is paired. ok =
+    at least one landed."""
     from . import send
     entry = {
         "at": datetime.now().isoformat(timespec="seconds"),
@@ -162,11 +176,21 @@ def _send(handle, text, item):
         "text": text,
         "ok": False,
     }
+    via = []
+    if handle:
+        try:
+            send.send_imessage(text, handle=handle)
+            via.append("imessage")
+        except Exception as e:  # noqa: BLE001 — log the failure, never crash
+            entry["error"] = str(e)[:200]
     try:
-        send.send_imessage(text, handle=handle)
-        entry["ok"] = True
-    except Exception as e:  # noqa: BLE001 — log the failure, never crash
-        entry["error"] = str(e)[:200]
+        from . import companion
+        if companion.queue_ping(text, kind=item.get("channel") or "notify"):
+            via.append("companion")
+    except Exception as e:  # noqa: BLE001
+        entry.setdefault("error", str(e)[:200])
+    entry["ok"] = bool(via)
+    entry["via"] = via
     _record(entry)
 
 
