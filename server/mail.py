@@ -27,15 +27,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import data as crm
+from . import settings
 
 ACCOUNTS = Path(__file__).resolve().parent.parent / "data" / "mail-accounts.json"
 STATE = Path(__file__).resolve().parent.parent / "data" / "mail-state.json"
 
 
+def keychain_service():
+    return settings.keychain_service("vira-mail")
+
+
 def keychain_password(account_email):
     res = subprocess.run(
         ["security", "find-generic-password", "-a", account_email,
-         "-s", "vira-mail", "-w"],
+         "-s", keychain_service(), "-w"],
         capture_output=True, text=True, timeout=10)
     return res.stdout.strip() if res.returncode == 0 else None
 
@@ -112,7 +117,8 @@ def create_draft(account, to, subject, body, in_reply_to=None, references=None):
 
     password = keychain_password(addr)
     if not password:
-        raise RuntimeError(f"no password in keychain for {addr} (service vira-mail)")
+        raise RuntimeError(f"no password in keychain for {addr} "
+                           f"(service {keychain_service()})")
     msg = email.message.EmailMessage()
     msg["From"] = addr
     msg["To"] = to
@@ -188,7 +194,7 @@ class MailWatcher:
         addr, host = acct["email"], acct["host"]
         password = keychain_password(addr)
         if not password:
-            self.status[addr] = "no password in keychain (service vira-mail)"
+            self.status[addr] = f"no password in keychain (service {keychain_service()})"
             return
         con = imaplib.IMAP4_SSL(host)
         try:

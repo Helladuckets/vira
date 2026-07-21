@@ -10,6 +10,7 @@ themself, whose thread and dossier double as the usage tour. Set
 "fixture_mode": true/false in data/config.json to force it either way.
 """
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -53,6 +54,23 @@ def raw():
 def get(key):
     v = raw().get(key)
     return v if v not in (None, "") else DEFAULTS[key]
+
+
+def keychain_service(name: str) -> str:
+    """The Keychain service name this instance reads and writes.
+
+    The login Keychain is machine-wide: it is the one store a second Vira
+    on the same Mac cannot isolate by pointing HOME or crm_root somewhere
+    else. Without namespacing, a sandbox install would find the live
+    instance's Mercury token (and pull a real bank history), and a device
+    login there would overwrite the live Graph refresh token in place.
+
+    VIRA_KEYCHAIN_PREFIX (env, set at launch) or "keychain_prefix" in
+    config.json prefixes every service name. Empty — the default — keeps
+    the historical names, so an existing install keeps its secrets.
+    """
+    prefix = os.environ.get("VIRA_KEYCHAIN_PREFIX") or raw().get("keychain_prefix") or ""
+    return f"{prefix}{name}" if prefix else name
 
 
 def fixture_mode():
