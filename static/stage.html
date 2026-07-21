@@ -86,7 +86,8 @@
 
   fetch("/api/config").then(function (r) { return r.json(); }).then(function (c) {
     var b = $("#badge");
-    if (c && c.passive) { b.textContent = "TEST :" + location.port; b.className = "test"; }
+    if (c && c.sandbox) { b.textContent = "SANDBOX :" + location.port; b.className = "test"; }
+    else if (c && c.passive) { b.textContent = "TEST :" + location.port; b.className = "test"; }
     else { b.textContent = "LIVE :" + (location.port || "8377"); }
     document.title = "Vira — stage " + b.textContent;
   }).catch(function () {});

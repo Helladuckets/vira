@@ -7021,11 +7021,13 @@ async function boot() {
     if (candidates.length)
       $("#triage-toggle").textContent = "Triage (" + candidates.length + ")";
   }).catch(() => {});
-  // Passive test instances (branch.sh serve, VIRA_PASSIVE=1) wear a TEST
-  // badge with their port so they're never mistaken for live :8377.
+  // Non-live instances wear a badge with their port so they are never
+  // mistaken for live :8377: TEST for a passive branch instance
+  // (branch.sh serve), SANDBOX for a virgin install (sandbox.sh serve).
   instanceConfig().then((cfg) => {
-    if (!cfg.passive) return;
-    const label = "TEST" + (location.port ? " :" + location.port : "");
+    if (!cfg.passive && !cfg.sandbox) return;
+    const label = (cfg.sandbox ? "SANDBOX" : "TEST")
+      + (location.port ? " :" + location.port : "");
     const badge = $("#inst-badge");
     badge.textContent = label;
     badge.hidden = false;

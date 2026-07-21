@@ -10,6 +10,8 @@
 #   sandbox.sh serve              run it on :8400 (a real first boot)
 #   sandbox.sh stop
 #   sandbox.sh status
+#   sandbox.sh login              log the claude CLI in for the sandbox home
+#                                 (interactive, once — see MODEL BACKEND below)
 #   sandbox.sh expose <what>      lend the sandbox a real store, read-only-ish:
 #                                   contacts | messages | calendar | photos | all
 #   sandbox.sh unexpose           take them all back
@@ -23,11 +25,24 @@
 # VIRA_KEYCHAIN_PREFIX, so it can never read the live instance's Mercury
 # token or overwrite its Graph refresh token (see settings.keychain_service).
 #
+# MODEL BACKEND: the claude CLI tracks which account it is signed in as per
+# config directory, so under the fake HOME it reports logged out — which is
+# exactly the state a new user is in before they sign in, and Vira's health
+# watcher says so in the header. Anything model-backed (reply drafts, the
+# brief narrative, dossier building, agent sessions) stays dark until you
+# run `sandbox.sh login` once. That login refreshes the same Keychain
+# credential the live instance already uses — same account, so live is
+# unaffected.
+#
 # Not to be confused with scripts/branch.sh — that serves YOUR data from a
 # feature branch to test a change. This serves NOTHING of yours, to test
 # the install.
 
 set -eu
+
+# $0 inside a zsh function is the FUNCTION name, so the header has to be
+# read from a path captured at file scope.
+SELF=${0:A}
 
 REPO_URL=${VIRA_SANDBOX_REPO:-https://github.com/Helladuckets/vira.git}
 ROOT=${VIRA_SANDBOX_ROOT:-$HOME/vira-sandbox}
@@ -38,7 +53,7 @@ PIDFILE=$ROOT/.instance.json
 LOG=$ROOT/serve.log
 REAL_HOME=$HOME
 
-usage() { sed -n '2,19p' "$0"; exit 1; }
+usage() { sed -n '2,21p' "$SELF"; exit 1; }
 die() { print -u2 -- "error: $*"; exit 1; }
 
 instance_pid() {
@@ -47,10 +62,10 @@ instance_pid() {
   kill -0 "$pid" 2>/dev/null && echo "$pid" || true
 }
 
-# A logged-in claude CLI with no history: the OAuth credential lives in the
-# Keychain (machine-wide, so it follows), but ~/.claude.json carries the
-# onboarding state the CLI needs to run non-interactively. Copy only the
-# flags — never projects, mcpServers, or repo paths.
+# Carry the claude CLI's onboarding flags so it runs non-interactively —
+# only the flags, never projects, mcpServers, or repo paths. This does NOT
+# sign the sandbox in: the CLI tracks its account per config dir, so the
+# sandbox starts logged out (see MODEL BACKEND above) until sandbox.sh login.
 seed_claude_state() {
   [[ -f $REAL_HOME/.claude.json ]] || return 0
   REAL_HOME=$REAL_HOME FAKE_HOME=$FAKE_HOME python3 - <<'PY'
@@ -104,7 +119,7 @@ cmd_serve() {
   # they are what a new user's install actually does. The fake HOME is what
   # keeps them harmless, and VIRA_KEYCHAIN_PREFIX keeps live secrets unreachable.
   cd "$APP"
-  HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" \
+  HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" VIRA_SANDBOX=1 \
     nohup "$APP/.venv/bin/uvicorn" server.main:app \
     --host 127.0.0.1 --port "$PORT" >> "$LOG" 2>&1 &
   pid=$!
@@ -122,6 +137,20 @@ cmd_serve() {
   echo "log: $LOG    stop: scripts/sandbox.sh stop"
 }
 
+# Sign the sandbox's claude CLI in. Interactive on purpose: the browser
+# flow is yours to complete, and nothing about it passes through the
+# script. Same account as live, so the shared Keychain credential is
+# refreshed rather than replaced.
+cmd_login() {
+  [[ -d $FAKE_HOME ]] || die "no sandbox (run: sandbox.sh new)"
+  command -v claude >/dev/null || die "claude CLI not on PATH"
+  echo "signing the sandbox home in — complete the flow in your browser:"
+  HOME="$FAKE_HOME" claude auth login
+  echo ""
+  HOME="$FAKE_HOME" claude auth status || true
+  echo "restart the instance to clear Vira's AI-paused banner: sandbox.sh stop && sandbox.sh serve"
+}
+
 cmd_stop() {
   local pid; pid=$(instance_pid)
   if [[ -n $pid ]]; then kill "$pid" && echo "stopped (pid $pid)"; else echo "not running"; fi
@@ -134,7 +163,8 @@ cmd_status() {
   echo "root      $ROOT"
   echo "app       $APP  ($(git -C "$APP" rev-parse --short HEAD 2>/dev/null || echo '?'))"
   echo "home      $FAKE_HOME"
-  echo "state     ${pid:+RUNNING pid $pid on :$PORT}${pid:-stopped}"
+  if [[ -n $pid ]]; then echo "state     RUNNING pid $pid on :$PORT"
+  else echo "state     stopped"; fi
   echo "crm       $([[ -f $FAKE_HOME/.vira/crm/people.json ]] && echo 'imported (real mode)' || echo 'none (fixture mode)')"
   echo -n "exposed   "
   local any=""
@@ -165,10 +195,10 @@ _exposed() {
 cmd_expose() {
   [[ $# -ge 1 ]] || usage
   [[ -d $FAKE_HOME ]] || die "no sandbox (run: sandbox.sh new)"
-  local names=("$@")
+  local names=("$@") rel
   [[ $1 == "all" ]] && names=(contacts messages calendar photos)
   for name in $names; do
-    local rel; rel=$(_target_for "$name") || die "unknown store: $name"
+    rel=$(_target_for "$name") || die "unknown store: $name"
     [[ -e "$REAL_HOME/$rel" ]] || { echo "skip $name (not present on this Mac)"; continue; }
     mkdir -p "$FAKE_HOME/${rel:h}"
     rm -f "$FAKE_HOME/$rel"
@@ -183,8 +213,9 @@ cmd_expose() {
 }
 
 cmd_unexpose() {
+  local rel
   for name in contacts messages calendar photos; do
-    local rel; rel=$(_target_for "$name")
+    rel=$(_target_for "$name")
     [[ -L "$FAKE_HOME/$rel" ]] && { rm -f "$FAKE_HOME/$rel"; echo "took back $name"; }
   done
   echo "sandbox is an empty machine again"
@@ -199,6 +230,7 @@ cmd_reset() {
 cmd=$1; shift
 case "$cmd" in
   new)      cmd_new "${1:-}";;
+  login)    cmd_login;;
   serve)    cmd_serve;;
   stop)     cmd_stop;;
   status)   cmd_status;;
