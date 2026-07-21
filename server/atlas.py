@@ -1103,9 +1103,12 @@ def face_crop(pid):
 
 
 def _sips_dims(src):
-    res = subprocess.run(
-        ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(src)],
-        capture_output=True, text=True, timeout=20)
+    try:
+        res = subprocess.run(
+            ["sips", "-g", "pixelWidth", "-g", "pixelHeight", str(src)],
+            capture_output=True, text=True, timeout=20)
+    except OSError:  # no sips off-Mac — the caller falls back to no crop
+        return None
     w = h = None
     for line in res.stdout.splitlines():
         if "pixelWidth" in line:
@@ -1116,7 +1119,10 @@ def _sips_dims(src):
 
 
 def _sips_crop(src, bbox, dest, margin=0.45, out_px=256):
-    """Crop a face bbox (with margin) out of src and cache a small JPEG."""
+    """Crop a face bbox (with margin) out of src and cache a small JPEG.
+    Mac-only (sips); elsewhere the face falls back to the letter tile."""
+    if not settings.IS_MAC:
+        return None
     dims = _sips_dims(src)
     if not dims:
         return None

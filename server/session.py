@@ -40,7 +40,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from . import ideas, jobfiles, joblog, viratools
+from . import ideas, jobfiles, joblog, settings, viratools
 from .suggest import _strip_env, config
 
 try:
@@ -415,11 +415,19 @@ class Sessions:
         (jdir / "control.jsonl").touch()
         joblog.record_launch(data)
         log = open(jdir / "runner.log", "ab")
+        # The runner must outlive this server (restart survival). POSIX:
+        # its own session via setsid. Windows silently IGNORES
+        # start_new_session, so detach explicitly with creationflags.
+        if settings.IS_WIN:
+            detach = {"creationflags": (subprocess.DETACHED_PROCESS
+                                        | subprocess.CREATE_NEW_PROCESS_GROUP)}
+        else:
+            detach = {"start_new_session": True}
         try:
             proc = subprocess.Popen(
                 [sys.executable, "-m", "server.runner", str(jdir)],
                 cwd=str(jobfiles.ROOT), stdout=log, stderr=subprocess.STDOUT,
-                start_new_session=True)
+                **detach)
         finally:
             log.close()
         handle = DetachedJob(jid, jdir, spec, proc)

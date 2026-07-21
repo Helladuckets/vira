@@ -28,15 +28,16 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 from . import settings
 from .filelock import locked
 
-IS_MAC = sys.platform == "darwin"
-IS_WIN = os.name == "nt"
+# Module-level copies (not aliases into settings) so tests can patch
+# secrets.IS_WIN without touching the rest of the app.
+IS_MAC = settings.IS_MAC
+IS_WIN = settings.IS_WIN
 
 
 # ---------- macOS Keychain ----------

@@ -12,9 +12,16 @@ themself, whose thread and dossier double as the usage tour. Set
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The platform seam, named once. Modules that shell out to Mac-only tools
+# (osascript, sips, launchctl, Apple Vision) branch on these instead of
+# discovering the answer as a FileNotFoundError at runtime.
+IS_MAC = sys.platform == "darwin"
+IS_WIN = os.name == "nt"
 CONFIG_PATH = ROOT / "data" / "config.json"
 FIXTURES = ROOT / "fixtures"
 FIXTURE_CRM = ROOT / "data" / "fixture-crm"
