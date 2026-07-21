@@ -22,6 +22,13 @@ ROOT = Path(__file__).resolve().parent.parent
 # discovering the answer as a FileNotFoundError at runtime.
 IS_MAC = sys.platform == "darwin"
 IS_WIN = os.name == "nt"
+
+
+def strf(d, fmt):
+    """strftime with the no-padding flag made portable: %-I / %-d are
+    glibc/BSD extensions that raise ValueError on Windows, whose CRT
+    spells the same thing %#I / %#d."""
+    return d.strftime(fmt.replace("%-", "%#") if IS_WIN else fmt)
 CONFIG_PATH = ROOT / "data" / "config.json"
 FIXTURES = ROOT / "fixtures"
 FIXTURE_CRM = ROOT / "data" / "fixture-crm"

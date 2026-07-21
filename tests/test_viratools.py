@@ -9,7 +9,7 @@ import datetime as dt
 import unittest
 from unittest import mock
 
-from server import session, viratools
+from server import session, viratools, settings
 
 
 def _ev(title, offset_days=0, hour=9, cal="Home", **over):
@@ -19,8 +19,8 @@ def _ev(title, offset_days=0, hour=9, cal="Home", **over):
     e = {"title": title, "calendar": cal, "family": False, "birthday": False,
          "all_day": False, "start": start.isoformat(),
          "end": (start + dt.timedelta(hours=1)).isoformat(),
-         "start_hm": start.strftime("%-I:%M %p"),
-         "end_hm": (start + dt.timedelta(hours=1)).strftime("%-I:%M %p"),
+         "start_hm": settings.strf(start, "%-I:%M %p"),
+         "end_hm": settings.strf(start + dt.timedelta(hours=1), "%-I:%M %p"),
          "conflict": False}
     e.update(over)
     return e

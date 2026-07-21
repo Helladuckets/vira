@@ -136,8 +136,8 @@ def _occurrences(day_from, day_to):
             "all_day": bool(all_day),
             "start": s.isoformat(),
             "end": e.isoformat(),
-            "start_hm": s.strftime("%-I:%M %p"),
-            "end_hm": e.strftime("%-I:%M %p"),
+            "start_hm": settings.strf(s, "%-I:%M %p"),
+            "end_hm": settings.strf(e, "%-I:%M %p"),
             "conflict": False,
             "remote": _is_remote(summary, rts),
         })
@@ -192,10 +192,12 @@ def _m365_events():
                         "all_day": ev["all_day"],
                         "start": s,
                         "end": e,
-                        "start_hm": dt.datetime.fromisoformat(s)
-                        .strftime("%-I:%M %p") if s else "",
-                        "end_hm": dt.datetime.fromisoformat(e)
-                        .strftime("%-I:%M %p") if e else "",
+                        "start_hm": settings.strf(
+                            dt.datetime.fromisoformat(s),
+                            "%-I:%M %p") if s else "",
+                        "end_hm": settings.strf(
+                            dt.datetime.fromisoformat(e),
+                            "%-I:%M %p") if e else "",
                         "conflict": False,
                         "remote": (bool(ev.get("online"))
                                    or _is_remote(ev["title"], rts)),
@@ -519,7 +521,7 @@ def compose(feed_items=None):
     now = dt.datetime.now()
     return {
         "generated_at": now.isoformat(),
-        "date_label": now.strftime("%A, %B %-d, %Y"),
+        "date_label": settings.strf(now, "%A, %B %-d, %Y"),
         "calendar": _calendar(),
         "waiting": {
             "imessage": _not_dismissed(_unreplied_imessages()),
