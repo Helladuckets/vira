@@ -442,6 +442,70 @@ class NotifyChannelTests(CompanionBase):
             self.assertFalse(notify.agent_ping("nobody to tell"))
 
 
+class RouteTests(CompanionBase):
+    """The thin HTTP layer: header auth, Bearer extraction, passive 403.
+    TestClient without the context manager runs no lifespan — no watchers
+    start."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        from server import main
+        cls.client = TestClient(main.app)
+
+    def test_happy_path_pair_push_pings(self):
+        r = self.client.post("/api/companion/pair/start")
+        self.assertEqual(r.status_code, 200)
+        p = r.json()
+        r = self.client.post("/api/companion/pair", json={
+            "device_id": p["device_id"], "token": p["token"],
+            "name": "Route Phone", "platform": "android 14"})
+        self.assertEqual(r.status_code, 200)
+        headers = {"X-Vira-Device": p["device_id"],
+                   "Authorization": "Bearer " + p["token"]}
+        r = self.client.post("/api/companion/messages", headers=headers,
+                             json={"messages": [
+                                 {"sender": "+12125550123", "text": "hi",
+                                  "when": 1770000000000, "channel": "sms",
+                                  "direction": "in", "source": "history"}]})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["new"], 1)
+        r = self.client.get("/api/companion/pings?after=0&wait=0",
+                            headers=headers)
+        self.assertEqual(r.status_code, 200)
+        st = self.client.get("/api/companion/status").json()
+        self.assertEqual(st["messages"], 1)
+        self.assertTrue(any(d["name"] == "Route Phone"
+                            for d in st["devices"]))
+
+    def test_bad_auth_is_401(self):
+        p = self.pair()
+        for headers in (
+                {},
+                {"X-Vira-Device": p["device_id"],
+                 "Authorization": "Bearer wrong"},
+                {"X-Vira-Device": p["device_id"],
+                 "Authorization": p["token"]}):     # missing Bearer scheme
+            r = self.client.post("/api/companion/messages",
+                                 headers=headers, json={"messages": []})
+            self.assertEqual(r.status_code, 401)
+
+    def test_passive_routes_403(self):
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            r = self.client.post("/api/companion/pair/start")
+            self.assertEqual(r.status_code, 403)
+
+    def test_oversize_batch_413(self):
+        p = self.pair()
+        headers = {"X-Vira-Device": p["device_id"],
+                   "Authorization": "Bearer " + p["token"]}
+        msgs = [{"sender": "s", "text": "x", "when": 1770000000000,
+                 "channel": "sms", "direction": "in"}] * 501
+        r = self.client.post("/api/companion/messages", headers=headers,
+                             json={"messages": msgs})
+        self.assertEqual(r.status_code, 413)
+
+
 class HubUrlTests(CompanionBase):
     def test_config_override_wins(self):
         with mock.patch.object(companion.settings, "raw", return_value={
