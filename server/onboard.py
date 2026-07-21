@@ -443,6 +443,14 @@ def _md_count(root, cap=3000):
     return n
 
 
+def _qocha_bin() -> Path:
+    """The venv's qocha console script, next to the running python:
+    bin/qocha on POSIX, Scripts\\qocha.exe on Windows (pip writes console
+    scripts as .exe there — the bare name never exists)."""
+    return Path(sys.executable).with_name(
+        "qocha.exe" if settings.IS_WIN else "qocha")
+
+
 def vault_setup(path, init=False):
     """Point the Brain at a vault — or seed a new one with qocha init."""
     p = Path(str(path or "").strip()).expanduser()
@@ -450,10 +458,10 @@ def vault_setup(path, init=False):
         raise ValueError("a vault path is required")
     if init:
         p.mkdir(parents=True, exist_ok=True)
-        qocha = Path(sys.executable).with_name("qocha")
+        qocha = _qocha_bin()
         if not qocha.exists():
             raise RuntimeError("the qocha CLI is missing from the venv — "
-                               "run .venv/bin/pip install -r requirements.txt")
+                               "install requirements.txt into it and retry")
         r = subprocess.run([str(qocha), "init", str(p)],
                            capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
@@ -504,6 +512,11 @@ def status():
         build = dict(_build)
     return {
         "fixture_mode": settings.fixture_mode(),
+        # The platform, so Setup cards can speak honestly about where keys
+        # are stored and which importers exist here. P1's source registry
+        # will consume this too.
+        "platform": ("windows" if settings.IS_WIN
+                     else "mac" if settings.IS_MAC else "linux"),
         "crm": {"root": str(root), "people": people, "profiles": profiles},
         "feed": {"chat_db": _chatdb_state()},
         "contacts": {"apple_sources": len(_addressbook_dbs())},
@@ -597,13 +610,25 @@ def steps():
     people = st["crm"]["people"]
     build = st["dossiers"]
 
+    # The wizard is platform-derived like the rest of its state. Full Disk
+    # Access is a macOS grant (chat.db / AddressBook / Calendar live behind
+    # it), so off-Mac the step does not exist — a step that can never
+    # complete is not guidance, it is a wall. Contacts then arrive by CSV
+    # only, and dossiers stay honestly blocked: they are built from a Mac's
+    # Messages history, which this machine does not have.
+    # REBASE NOTE for P1 (claude/p1-sources, the Setup source registry):
+    # this is the minimal platform fork — fold it into the per-source
+    # registry when that branch lands.
+    order = (STEP_ORDER if settings.IS_MAC
+             else tuple(s for s in STEP_ORDER if s[0] != "disk"))
+
     def mk(sid, title, opens, state, detail, blocker="", unlocks="", **extra):
         return {"id": sid, "title": title, "state": state, "detail": detail,
                 "blocker": blocker, "unlocks": unlocks, "opens": opens,
                 **extra}
 
     out = []
-    for sid, title, opens in STEP_ORDER:
+    for sid, title, opens in order:
         if sid == "ai":
             active = provider.active()
             out.append(mk(
@@ -625,17 +650,28 @@ def steps():
                  "your contacts, messages, and calendar."),
                 unlocks="contacts, messages, calendar, search"))
         elif sid == "contacts":
+            # Off-Mac there is no AddressBook and no disk grant to wait on:
+            # the CSV importer is the whole path, never blocked.
+            need_disk = settings.IS_MAC and not disk_ok
             out.append(mk(
                 sid, title, opens,
-                "done" if people else ("blocked" if not disk_ok else "todo"),
+                "done" if people else ("blocked" if need_disk else "todo"),
                 (f"{people} {'person' if people == 1 else 'people'} in your CRM."
                  if people else "No contacts imported yet."),
-                blocker="" if disk_ok or people else "needs Full Disk Access",
+                blocker="needs Full Disk Access" if need_disk and not people
+                        else "",
                 unlocks="People, Radar, the Visual Network",
                 sources=st["contacts"]["apple_sources"]))
         elif sid == "dossiers":
             missing = [n for n, ok in (("AI", ai_ok), ("contacts", bool(people)))
                        if not ok]
+            if not settings.IS_MAC:
+                missing.append("a Mac message history")
+            cost = (_cost_line(people) if settings.IS_MAC else
+                    "First dossiers are built from a Mac's Messages history "
+                    "— message sources for this platform are on the "
+                    "roadmap. Dossiers still grow here from triage and "
+                    "what you tell Vira.")
             state = ("running" if build.get("running")
                      else "done" if st["crm"]["profiles"]
                      else "blocked" if missing else "todo")
@@ -644,10 +680,10 @@ def steps():
                 (f"Building {build.get('done', 0)}/{build.get('total', 0)}"
                  if build.get("running") else
                  f"{st['crm']['profiles']} on file."
-                 if st["crm"]["profiles"] else _cost_line(people)),
+                 if st["crm"]["profiles"] else cost),
                 blocker=("needs " + " and ".join(missing)) if missing else "",
                 unlocks="the Daily Brief, hooks, suggested replies",
-                cost=_cost_line(people)))
+                cost=cost))
         elif sid == "brain":
             out.append(mk(
                 sid, title, opens,

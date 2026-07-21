@@ -228,7 +228,7 @@ class VaultSetupTests(unittest.TestCase):
             onboard.vault_setup("  ")
 
     def test_init_seeds_a_vault(self):
-        qocha = Path(onboard.sys.executable).with_name("qocha")
+        qocha = onboard._qocha_bin()
         if not qocha.exists():
             self.skipTest("qocha CLI not installed in this venv")
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,14 +250,17 @@ class VaultUnsetGuardTests(unittest.TestCase):
         self.assertNotEqual(root, Path("."))
 
 
-class StepMachineTests(unittest.TestCase):
-    """The wizard's state is DERIVED from the world, never stored — which is
-    what makes re-entry free. These pin each state, each blocker, and the
-    fact that recomputing mid-flow lands on the right step."""
+class _StepHarness:
+    """Shared step-machine fixtures. MAC pins the platform the wizard is
+    computed for, so the same tests mean the same thing on the macOS and
+    Windows CI runners alike."""
+
+    MAC = True
 
     def _status(self, **over):
         base = {
             "fixture_mode": True,
+            "platform": "mac" if self.MAC else "windows",
             "crm": {"root": "/tmp/crm", "people": 0, "profiles": 0},
             "feed": {"chat_db": "missing"},
             "contacts": {"apple_sources": 0},
@@ -274,7 +277,8 @@ class StepMachineTests(unittest.TestCase):
 
     def _steps(self, status, providers=(), auth_mode="subscription"):
         from server import models
-        with mock.patch.object(onboard, "status", return_value=status), \
+        with mock.patch.object(onboard.settings, "IS_MAC", self.MAC), \
+             mock.patch.object(onboard, "status", return_value=status), \
              mock.patch.object(models, "discover", return_value=list(providers)), \
              mock.patch.object(models, "active",
                                return_value=(providers[0] if providers else None)), \
@@ -285,6 +289,12 @@ class StepMachineTests(unittest.TestCase):
     def _provider(self, pid="anthropic", connected=True):
         return {"id": pid, "label": pid.title(), "detail": "signed in",
                 "connected": connected, "can": {"draft": True, "sessions": True}}
+
+
+class StepMachineTests(_StepHarness, unittest.TestCase):
+    """The wizard's state is DERIVED from the world, never stored — which is
+    what makes re-entry free. These pin each state, each blocker, and the
+    fact that recomputing mid-flow lands on the right step."""
 
     def test_virgin_machine_starts_at_the_ai_step(self):
         steps, flow = self._steps(self._status())
@@ -357,6 +367,60 @@ class StepMachineTests(unittest.TestCase):
         first_open = next(s for s in ("ai", "disk", "contacts", "dossiers",
                                       "brain", "mail") if a[s]["state"] != "done")
         self.assertEqual(first_open, "dossiers")
+
+
+class WindowsStepMachineTests(_StepHarness, unittest.TestCase):
+    """The wizard on a PC: no Full Disk Access step (that is a macOS
+    grant), contacts arrive by CSV and are never disk-blocked, dossiers
+    stay honestly blocked on the missing Mac message history. REBASE NOTE:
+    P1's source registry replaces the minimal platform fork these pin."""
+
+    MAC = False
+
+    def test_no_disk_step_off_mac(self):
+        steps, flow = self._steps(self._status())
+        self.assertNotIn("disk", steps)
+        self.assertEqual([s["id"] for s in flow["steps"]],
+                         ["ai", "contacts", "dossiers", "brain", "mail"])
+        self.assertEqual(flow["total"], 5)
+
+    def test_contacts_never_disk_blocked(self):
+        # chat_db reads "missing" on every PC; that must not wall the CSV path.
+        steps, _ = self._steps(self._status())
+        self.assertEqual(steps["contacts"]["state"], "todo")
+        self.assertEqual(steps["contacts"]["blocker"], "")
+
+    def test_dossiers_blocked_on_the_missing_mac_history(self):
+        steps, _ = self._steps(self._status(crm={"people": 40}),
+                               providers=[self._provider()])
+        self.assertEqual(steps["dossiers"]["state"], "blocked")
+        self.assertIn("Mac message history", steps["dossiers"]["blocker"])
+        self.assertIn("roadmap", steps["dossiers"]["cost"])
+
+    def test_dossiers_done_state_still_reachable(self):
+        # Profiles can land other ways (triage, Tell Vira); the step must
+        # honor them rather than staying blocked forever.
+        steps, flow = self._steps(
+            self._status(crm={"people": 40, "profiles": 3},
+                         vault={"connected": True, "notes": 10},
+                         mail={"accounts": 1}),
+            providers=[self._provider()])
+        self.assertEqual(steps["dossiers"]["state"], "done")
+        self.assertTrue(flow["complete"])
+
+
+class StatusPlatformTests(unittest.TestCase):
+    def test_platform_field_names_this_platform(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(onboard, "crm_target",
+                               return_value=Path(tmp)), \
+             mock.patch.object(onboard.settings, "get", return_value=""):
+            with mock.patch.object(onboard.settings, "IS_WIN", True), \
+                 mock.patch.object(onboard.settings, "IS_MAC", False):
+                self.assertEqual(onboard.status()["platform"], "windows")
+            with mock.patch.object(onboard.settings, "IS_WIN", False), \
+                 mock.patch.object(onboard.settings, "IS_MAC", True):
+                self.assertEqual(onboard.status()["platform"], "mac")
 
 
 class DossierCostTests(unittest.TestCase):

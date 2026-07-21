@@ -6,7 +6,9 @@ pull followed by a deliberate restart. Personal state (data/, docs/, real
 config) is git-ignored, so a pull can never touch it.
 
 The restart is the one deliberate self-restart in the codebase: under
-launchd (settings key `launchd_label`) it relaunches via kickstart -k;
+launchd (settings key `launchd_label`) it relaunches via kickstart -k; on
+Windows (settings key `windows_task_name`) it exits and the scheduled
+task's relaunch loop — scripts/run.ps1 -Serve — brings the new code up;
 otherwise the process just exits and whatever supervises it (or the human
 with ./run.sh) starts it again.
 """
@@ -70,14 +72,35 @@ def status(fetch=False):
     return out
 
 
+def supervisor():
+    """The configured process supervisor for this platform — whatever
+    relaunches Vira after a deliberate exit. Returns (kind, name); an empty
+    name means unsupervised. macOS: launchd (config `launchd_label`,
+    restarted via kickstart -k). Windows: a Task Scheduler task whose action
+    is the scripts/run.ps1 -Serve relaunch loop (config `windows_task_name`,
+    registered by scripts/run.ps1 -Register)."""
+    cfg = settings.raw()
+    if settings.IS_WIN:
+        return "task", str(cfg.get("windows_task_name") or "").strip()
+    return "launchd", str(cfg.get("launchd_label") or "").strip()
+
+
 def apply():
     """Fast-forward to the upstream and restart. Refuses on modified tracked
     files (untracked personal state is fine — it is ignored anyway), and
-    refuses outright when no supervisor is configured — without a
-    launchd_label the post-pull exit would just kill the server dead
-    (audit P1-9)."""
-    label = str(settings.raw().get("launchd_label") or "").strip()
-    if not label:
+    refuses outright when no supervisor is configured — without one the
+    post-pull exit would just kill the server dead (audit P1-9). The
+    contract holds on every platform; only the supervisor's name differs."""
+    kind, name = supervisor()
+    if not name:
+        if kind == "task":
+            raise ValueError(
+                "no supervisor configured (windows_task_name is empty) — a "
+                "web-triggered restart would kill the server with nothing "
+                "to relaunch it. Register the startup task first "
+                "(powershell -ExecutionPolicy Bypass -File scripts\\run.ps1 "
+                "-Register), or update from a terminal: git pull, then "
+                "restart the process.")
         raise ValueError(
             "no supervisor configured (launchd_label is empty) — a "
             "web-triggered restart would kill the server with nothing to "
@@ -162,11 +185,40 @@ def _install_deps():
 
 
 def _restart():
-    label = str(settings.raw().get("launchd_label") or "").strip()
-    if label:
+    kind, name = supervisor()
+    if kind == "task":
+        _restart_windows(name)
+    else:
+        _restart_mac(name)
+
+
+def _restart_windows(name):
+    """Exit into the scheduled task's relaunch loop (run.ps1 -Serve) —
+    launchd-KeepAlive semantics. The detached `schtasks /Run` is
+    belt-and-braces for a task whose action runs the server directly:
+    once the dying instance completes, /Run boots a fresh one, and it is
+    ignored harmlessly when the loop already relaunched us. The helper
+    only waits and runs — a `schtasks /End` first would terminate this
+    process's whole job, helper included, before /Run could ever fire."""
+    if name:
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        try:
+            subprocess.Popen(
+                ["cmd", "/c",
+                 f'timeout /t 3 /nobreak >nul & schtasks /Run /TN "{name}"'],
+                creationflags=flags, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+        except Exception:  # noqa: BLE001 — exit anyway; the loop relaunches
+            pass
+    os._exit(0)
+
+
+def _restart_mac(name):
+    if name:
         try:
             r = subprocess.run(
-                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{label}"],
+                ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{name}"],
                 capture_output=True, timeout=10)
             if r.returncode == 0:
                 return  # kickstart kills and relaunches this process
