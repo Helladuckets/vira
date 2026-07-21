@@ -42,7 +42,7 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertEqual(
             list(sources.SOURCES),
             ["apple-contacts", "google-csv", "imessage", "apple-calendar",
-             "companion", "imap-mail", "m365-mail"])
+             "companion", "whatsapp", "imap-mail", "m365-mail"])
 
     def test_ids_double_as_import_tags(self):
         # import_contacts stamps refs.import_source with these exact strings;
