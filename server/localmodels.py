@@ -16,6 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
+from . import settings
+
 SIGLIP_MODEL = "google/siglip2-so400m-patch14-384"
 OLLAMA = "http://localhost:11434"
 EMBED_MODEL = "nomic-embed-text"
@@ -106,6 +108,20 @@ def siglip_embed_text(q):
 
 
 # ---------- Apple Vision OCR ----------
+
+def ocr_available():
+    """Whether this machine can OCR at all. Apple Vision is the only
+    backend today, so non-Macs answer False — and the OCR stage must SKIP
+    rather than run, or every photo gets permanently stamped "OCR ran,
+    nothing found" on a platform where it never ran."""
+    if not settings.IS_MAC:
+        return False
+    try:
+        import Vision  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
 
 def vision_ocr(path):
     """On-device text recognition; reads HEIC natively. Returns ''
