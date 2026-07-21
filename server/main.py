@@ -1646,7 +1646,7 @@ def api_config():
     # first boot, just against a fake HOME and a namespaced Keychain. It
     # would otherwise badge itself LIVE, which is exactly the mistake the
     # badge exists to prevent, so it gets its own marker.
-    cfg["sandbox"] = bool(os.environ.get("VIRA_SANDBOX"))
+    cfg["sandbox"] = settings.sandboxed()
     # Deterministic AI-backend health, for the header banner. Compact: the
     # client shows a bar only when state == "red".
     cfg["ai_health"] = aihealth.summary()

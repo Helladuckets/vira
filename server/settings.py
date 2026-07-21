@@ -73,6 +73,14 @@ def keychain_service(name: str) -> str:
     return f"{prefix}{name}" if prefix else name
 
 
+def sandboxed() -> bool:
+    """True when this process is a sandbox instance (scripts/sandbox.sh
+    serve). The flag changes what commands Setup hands the owner: a login
+    typed in a normal terminal would land in the REAL home, not the
+    sandbox's fake one."""
+    return bool(os.environ.get("VIRA_SANDBOX"))
+
+
 def fixture_mode():
     flag = raw().get("fixture_mode")
     if isinstance(flag, bool):

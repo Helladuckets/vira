@@ -83,7 +83,10 @@ class AuthProbeTest(unittest.TestCase):
         r = self._probe("anthropic", stdout=json.dumps({"loggedIn": False}))
         self.assertEqual(r["auth"], models.LOGGED_OUT)
         self.assertFalse(r["connected"])
-        self.assertIn("`claude auth login`", r["action"])
+        # The action carries the RESOLVED binary (/x/bin is not on PATH),
+        # never the bare name — the codex-in-ChatGPT.app lesson.
+        self.assertIn("`/x/bin auth login`", r["action"])
+        self.assertEqual(r["login_cmd"], "/x/bin auth login")
 
     def test_plain_text_logged_in(self):
         # codex login status answers in prose, not JSON.
@@ -130,6 +133,59 @@ class AuthProbeTest(unittest.TestCase):
                                side_effect=subprocess.TimeoutExpired("c", 20)):
             r = models.probe("anthropic")
         self.assertEqual(r["auth"], models.LOGGED_OUT)
+
+
+class LoginCommandTest(unittest.TestCase):
+    """The two sandbox-caught login-card bugs: a bare command that fails
+    off PATH, and a login instruction that signs in the wrong HOME."""
+
+    def setUp(self):
+        models._bin_cache.clear()
+        self.addCleanup(models._bin_cache.clear)
+
+    def test_path_resolved_binary_prints_the_bare_name(self):
+        with mock.patch.object(models.shutil, "which",
+                               return_value="/opt/homebrew/bin/codex"):
+            cmd = models.login_command("openai", "/opt/homebrew/bin/codex")
+        self.assertEqual(cmd, "codex login")
+
+    def test_bundled_binary_prints_its_absolute_path(self):
+        # The regression: codex found inside ChatGPT.app, not on PATH.
+        # A card printing bare `codex login` hands over a command that
+        # fails with "command not found".
+        bundled = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        with mock.patch.object(models.shutil, "which", return_value=None):
+            cmd = models.login_command("openai", bundled)
+        self.assertEqual(cmd, f"{bundled} login")
+
+    def test_absent_binary_means_no_command(self):
+        with mock.patch.object(models, "find_binary", return_value=""):
+            self.assertEqual(models.login_command("openai"), "")
+        self.assertEqual(models.login_command("nosuch"), "")
+
+    def test_sandbox_routes_anthropic_through_sandbox_sh(self):
+        # `claude auth login` typed in a normal terminal signs in the REAL
+        # home; the sandbox's documented flow is sandbox.sh login.
+        with mock.patch.dict(os.environ, {"VIRA_SANDBOX": "1"}):
+            cmd = models.login_command("anthropic", "/opt/homebrew/bin/claude")
+        self.assertTrue(cmd.endswith("scripts/sandbox.sh login"), cmd)
+        self.assertTrue(Path(cmd.split(" login")[0]).is_absolute())
+
+    def test_sandbox_prefixes_home_for_other_providers(self):
+        bundled = "/Applications/ChatGPT.app/Contents/Resources/codex"
+        with mock.patch.dict(os.environ, {"VIRA_SANDBOX": "1"}), \
+             mock.patch.object(models.shutil, "which", return_value=None):
+            cmd = models.login_command("openai", bundled)
+        self.assertTrue(cmd.startswith("HOME="), cmd)
+        self.assertIn(f"{bundled} login", cmd)
+
+    def test_no_sandbox_no_home_prefix(self):
+        env = {k: v for k, v in os.environ.items() if k != "VIRA_SANDBOX"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+             mock.patch.object(models.shutil, "which",
+                               return_value="/opt/homebrew/bin/claude"):
+            cmd = models.login_command("anthropic", "/opt/homebrew/bin/claude")
+        self.assertEqual(cmd, "claude auth login")
 
 
 class CapabilityTest(unittest.TestCase):
