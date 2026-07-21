@@ -90,6 +90,28 @@ class UiStateTests(unittest.TestCase):
         snap.write_text("Wed Jul 16 12:30:44 EDT 2026\n")
         self.assertNotEqual(uistate.instance_id(), first)
 
+    def test_instance_id_per_sandbox_provision(self):
+        # A sandbox is its own data world without being a branch clone.
+        # Without a distinct id it reports "live", and a browser holding the
+        # PREVIOUS sandbox's desktop on the same recycled port pushes that
+        # layout back into the store `reset` just wiped.
+        stamp = uistate.STORE.parent / ".instance-stamp"
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text("1784650000.123456\n")
+        first = uistate.instance_id()
+        self.assertTrue(first.startswith("inst-"))
+        self.assertEqual(uistate.instance_id(), first)
+        stamp.write_text("1784660000.654321\n")   # re-provision
+        self.assertNotEqual(uistate.instance_id(), first)
+
+    def test_test_snapshot_outranks_instance_stamp(self):
+        # A branch worktree that has also been provisioned as a sandbox keeps
+        # its clone identity — the data snapshot is the more specific fact.
+        (uistate.STORE.parent).mkdir(parents=True, exist_ok=True)
+        (uistate.STORE.parent / ".instance-stamp").write_text("1784650000.1\n")
+        (uistate.STORE.parent / ".test-snapshot").write_text("Wed Jul 16 11:58:01 EDT 2026\n")
+        self.assertTrue(uistate.instance_id().startswith("test-"))
+
     def test_instance_id_empty_snapshot_is_live(self):
         snap = uistate.STORE.parent / ".test-snapshot"
         snap.parent.mkdir(parents=True, exist_ok=True)
