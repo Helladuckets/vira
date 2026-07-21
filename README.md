@@ -216,6 +216,8 @@ Everything personal lives outside the repo by construction:
   line matching phone/home-path/personal-email patterns plus the
   instance-specific patterns you keep in git-ignored
   `data/pii-patterns.txt`. Install with `sh scripts/install-hooks.sh`.
+  CI runs the same guard over every tracked line (`--tree`); LICENSE is
+  exempt from the tree scan since its attribution line is deliberate.
 
 ## Architecture
 
