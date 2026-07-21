@@ -28,7 +28,8 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                judge,
                mail,
                media,
-               mediaindex, mercury, modulemap, msgraph, notify, photos, radar,
+               mediaindex, mercury, modulemap, msgraph, notify, onboard,
+               photos, radar,
                receipts,
                routines,
                search as msearch, send, session, settings, subs_visuals,
@@ -940,6 +941,59 @@ def api_crm_add(req: AddPersonReq):
                                             req.class_hint, req.note,
                                             req.person_id)}
     except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+# ---------- onboarding (Setup window: importers, dossiers, the Brain) ----
+
+
+class OnboardCsvReq(BaseModel):
+    csv: str
+
+
+class OnboardDossiersReq(BaseModel):
+    limit: int = 25
+
+
+class OnboardVaultReq(BaseModel):
+    path: str
+    init: bool = False
+
+
+@app.get("/api/onboard")
+def api_onboard():
+    return onboard.status()
+
+
+@app.post("/api/onboard/apple")
+def api_onboard_apple():
+    try:
+        return onboard.import_apple()
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/csv")
+def api_onboard_csv(req: OnboardCsvReq):
+    try:
+        return onboard.import_google_csv(req.csv)
+    except (RuntimeError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/dossiers")
+def api_onboard_dossiers(req: OnboardDossiersReq):
+    try:
+        return onboard.start_dossiers(max(1, min(req.limit, 100)))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/vault")
+def api_onboard_vault(req: OnboardVaultReq):
+    try:
+        return onboard.vault_setup(req.path, req.init)
+    except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
 
 

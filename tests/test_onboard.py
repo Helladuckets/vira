@@ -1,0 +1,254 @@
+"""v9 onboarding: importers, bootstrap seams, dossier builder, vault wiring.
+
+Everything here runs against synthetic fixtures — a hand-built AddressBook
+sqlite, invented CSV rows, tmp CRM roots. PII-safe by construction
+(example.com addresses, 555-01xx fiction-block numbers).
+
+Run: .venv/bin/python -m unittest discover tests
+"""
+import json
+import sqlite3
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from server import data as crm
+from server import onboard, settings, triage
+
+GOOGLE_CSV_NEW = """\
+First Name,Middle Name,Last Name,Organization Name,Organization Title,E-mail 1 - Value,E-mail 2 - Value,Phone 1 - Value
+Casey,,Example,Acme Rockets,Engineer,casey@example.com,c.example@example.org,(555) 555-0155
+Drew,,Sample,,,drew@example.com ::: drew.alt@example.com,,
+Nameless,,,,,,,
+Handleless,,Person,,,,,
+"""
+
+GOOGLE_CSV_OLD = """\
+Name,Given Name,Family Name,E-mail 1 - Value,Phone 1 - Value,Organization 1 - Name,Organization 1 - Title
+Riley Sketch,Riley,Sketch,riley@example.com,555-0142,Widget Co,PM
+"""
+
+
+def _fake_addressbook(path):
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, ZFIRSTNAME TEXT,
+            ZLASTNAME TEXT, ZORGANIZATION TEXT, ZJOBTITLE TEXT);
+        CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, ZADDRESS TEXT);
+        CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, ZFULLNUMBER TEXT);
+    """)
+    con.executemany(
+        "INSERT INTO ZABCDRECORD VALUES (?,?,?,?,?)",
+        [(1, "Casey", "Example", "Acme Rockets", "Engineer"),
+         (2, "Drew", "Sample", None, None),
+         (3, None, None, "Just A Company", None),
+         (4, "No", "Handles", None, None)])
+    con.executemany(
+        "INSERT INTO ZABCDEMAILADDRESS VALUES (?,?)",
+        [(1, "Casey@Example.com"), (2, "drew@example.com"),
+         (3, "info@example.net")])
+    con.executemany(
+        "INSERT INTO ZABCDPHONENUMBER VALUES (?,?)",
+        [(1, "(555) 555-0155"), (2, "+1 555 555 0199")])
+    con.commit()
+    con.close()
+
+
+class GoogleCsvTests(unittest.TestCase):
+    def test_new_header_format(self):
+        rows = onboard.read_google_csv(GOOGLE_CSV_NEW)
+        by_name = {r["name"]: r for r in rows}
+        self.assertIn("Casey Example", by_name)
+        c = by_name["Casey Example"]
+        self.assertEqual(c["company"], "Acme Rockets")
+        self.assertEqual(c["title"], "Engineer")
+        self.assertEqual(sorted(c["emails"]),
+                         ["c.example@example.org", "casey@example.com"])
+        self.assertEqual(c["phones10"], ["5555550155"])
+        # ::: multi-value packing splits
+        self.assertEqual(sorted(by_name["Drew Sample"]["emails"]),
+                         ["drew.alt@example.com", "drew@example.com"])
+        # nameless and handleless rows are skipped
+        self.assertNotIn("Handleless Person", by_name)
+        self.assertEqual(len(rows), 2)
+
+    def test_old_header_format(self):
+        rows = onboard.read_google_csv(GOOGLE_CSV_OLD)
+        self.assertEqual(rows[0]["name"], "Riley Sketch")
+        self.assertEqual(rows[0]["company"], "Widget Co")
+        self.assertEqual(rows[0]["phones10"], ["5550142"])
+
+
+class AppleContactsTests(unittest.TestCase):
+    def test_reads_and_merges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "AddressBook-v22.abcddb"
+            _fake_addressbook(db)
+            rows = onboard.read_apple_contacts([db])
+        by_name = {r["name"]: r for r in rows}
+        self.assertEqual(by_name["Casey Example"]["emails"],
+                         ["casey@example.com"])          # lowercased
+        self.assertEqual(by_name["Casey Example"]["phones10"],
+                         ["5555550155"])                 # normalized
+        self.assertIn("Just A Company", by_name)         # org-only record
+        self.assertNotIn("No Handles", by_name)          # nothing to join on
+
+
+class ImportMergeTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name) / "crm"
+        self.patcher = mock.patch.object(onboard, "crm_target",
+                                         return_value=self.root)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        crm.invalidate()
+        self.tmp.cleanup()
+
+    def test_import_mints_and_dedupes(self):
+        contacts = onboard.read_google_csv(GOOGLE_CSV_NEW)
+        r1 = onboard.import_contacts(contacts, "google-csv")
+        self.assertEqual(r1["added"], 2)
+        doc = json.loads((self.root / "people.json").read_text())
+        self.assertEqual(len(doc["people"]), 2)
+        casey = next(p for p in doc["people"]
+                     if p["name"] == "Casey Example")
+        self.assertIn("casey@example.com", casey["handles"]["emails"])
+        self.assertIn("5555550155", casey["handles"]["phones10"])
+        self.assertIn("+15555550155", casey["handles"]["imessage"])
+        master = json.loads((self.root / "master.json").read_text())
+        self.assertEqual(master[0]["company"], "Acme Rockets")
+        # re-import: nothing duplicated
+        r2 = onboard.import_contacts(contacts, "google-csv")
+        self.assertEqual(r2["added"], 0)
+        self.assertEqual(r2["already_known"], 2)
+        doc = json.loads((self.root / "people.json").read_text())
+        self.assertEqual(len(doc["people"]), 2)
+
+
+class FixtureDetectTests(unittest.TestCase):
+    def test_keyed_on_people_json_not_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(settings, "raw",
+                                   return_value={"crm_root": tmp}):
+                self.assertTrue(settings.fixture_mode())   # dir, no people
+                (Path(tmp) / "people.json").write_text('{"people": []}')
+                self.assertFalse(settings.fixture_mode())  # import flips it
+
+
+class TriageMintTests(unittest.TestCase):
+    def test_add_person_creates_registry_from_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "crm"
+            with mock.patch("server.data.settings.crm_root",
+                            return_value=root):
+                crm.invalidate()
+                p = triage.add_person("Casey Example",
+                                      ["casey@example.com"])
+                doc = json.loads((root / "people.json").read_text())
+            crm.invalidate()
+        self.assertEqual(doc["people"][0]["id"], p["id"])
+        self.assertEqual(doc["people"][0]["name"], "Casey Example")
+
+
+class DossierBuilderTests(unittest.TestCase):
+    MODEL_JSON = json.dumps({
+        "relationship_class": "friend",
+        "relationship_summary": "Old sailing friend.",
+        "comms_style": "Short and warm.",
+        "topics": ["sailing"],
+        "personal_facts": ["Owns a catboat"],
+        "hooks": [{"angle": "Ask about the regatta",
+                   "detail": "They mentioned racing next month"}],
+        "open_loops": [{"what": "Return the borrowed ladder",
+                        "owed_by": "me"}],
+    })
+
+    def test_profile_from_validates_and_caps(self):
+        parsed = json.loads(self.MODEL_JSON)
+        parsed["hooks"] = parsed["hooks"] * 9      # cap to 4
+        parsed["open_loops"] = [{"what": "x", "owed_by": "banana"}]
+        prof = onboard._profile_from("p_x", "Casey", parsed, 12)
+        self.assertEqual(len(prof["hooks"]), 4)
+        self.assertEqual(prof["hooks"][0]["grounded_in"], "conversation")
+        self.assertEqual(prof["open_loops"][0]["owed_by"], "them")
+        self.assertEqual(prof["stats"]["messages"], 12)
+        self.assertEqual(prof["generated_by"], "vira-onboard")
+
+    def test_guards(self):
+        with mock.patch.dict("os.environ", {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(RuntimeError):
+                onboard.start_dossiers()
+        with mock.patch.dict("os.environ", {}, clear=False), \
+             mock.patch.object(onboard.settings, "fixture_mode",
+                               return_value=True):
+            with self.assertRaises(RuntimeError):
+                onboard.start_dossiers()
+
+    def test_build_one_writes_profile(self):
+        thread = [{"when": "2026-07-01T10:00:00", "from_me": bool(i % 2),
+                   "text": f"message {i}", "handle": "+15555550155"}
+                  for i in range(6)]
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(onboard.imessage, "thread_for_person",
+                               return_value=thread), \
+             mock.patch.object(onboard.suggest, "complete",
+                               return_value=self.MODEL_JSON):
+            prof_dir = Path(tmp) / "profiles"
+            prof = onboard._build_one("p_abc", "Casey", prof_dir, "Owner")
+            saved = json.loads((prof_dir / "p_abc.json").read_text())
+        self.assertEqual(prof["relationship_class"], "friend")
+        self.assertEqual(saved["hooks"][0]["angle"], "Ask about the regatta")
+        self.assertEqual(saved["open_loops"][0]["status"], "open")
+
+
+class VaultSetupTests(unittest.TestCase):
+    def test_point_at_existing_dir_writes_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "notes"
+            vault.mkdir()
+            (vault / "a.md").write_text("# hi")
+            cfg = Path(tmp) / "config.json"
+            with mock.patch.object(settings, "CONFIG_PATH", cfg):
+                out = onboard.vault_setup(str(vault), init=False)
+            written = json.loads(cfg.read_text())
+        self.assertEqual(written["vault_root"], str(vault))
+        self.assertEqual(out["notes"], 1)
+
+    def test_missing_dir_refused_without_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(ValueError):
+                onboard.vault_setup(str(Path(tmp) / "nope"), init=False)
+
+    def test_empty_path_refused(self):
+        with self.assertRaises(ValueError):
+            onboard.vault_setup("  ")
+
+    def test_init_seeds_a_vault(self):
+        qocha = Path(onboard.sys.executable).with_name("qocha")
+        if not qocha.exists():
+            self.skipTest("qocha CLI not installed in this venv")
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp) / "fresh"
+            cfg = Path(tmp) / "config.json"
+            with mock.patch.object(settings, "CONFIG_PATH", cfg):
+                out = onboard.vault_setup(str(vault), init=True)
+            self.assertTrue((vault / "raw").is_dir(), "qocha init seeds raw/")
+            self.assertTrue((vault / "wiki").is_dir())
+        self.assertTrue(out["initialized"])
+
+
+class VaultUnsetGuardTests(unittest.TestCase):
+    def test_empty_vault_root_never_resolves_to_cwd(self):
+        from server import vault
+        with mock.patch.object(settings, "raw", return_value={}):
+            root = vault.vault_root()
+        self.assertFalse(root.exists())
+        self.assertNotEqual(root, Path("."))
+
+
+if __name__ == "__main__":
+    unittest.main()

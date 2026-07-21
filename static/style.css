@@ -2134,3 +2134,20 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .app-boards .btn { padding: 2px 10px; font-size: 12px; }
 .app-row.cutlane { opacity: 0.55; }
 .app-row.cutlane:hover { opacity: 0.85; }
+
+/* ---------- Setup window (first-run onboarding) ---------- */
+.setup-card {
+  background: var(--bg-card); border: 1px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; margin: 10px 0;
+}
+.setup-card-title {
+  font-weight: 600; color: var(--text-head); margin-bottom: 4px;
+}
+.setup-row {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  margin-top: 8px;
+}
+.setup-row .search { flex: 1 1 180px; min-width: 140px; }
+.setup-progress { color: var(--accent-bright); margin: 8px 0 2px; }
+.setup-ok { color: var(--green); }
+.setup-warn { color: var(--red); }

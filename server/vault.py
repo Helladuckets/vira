@@ -40,7 +40,12 @@ _vec_state = {"gen": -1, "ids": None, "mat": None}
 
 
 def vault_root() -> Path:
-    return Path(str(settings.get("vault_root"))).expanduser()
+    raw = str(settings.get("vault_root") or "").strip()
+    # Unset must resolve to a path that never exists — Path("") is the cwd,
+    # which would silently index the repo itself. Every consumer treats a
+    # missing root as dormant, so a never-created sentinel keeps them all off.
+    return (Path(raw).expanduser() if raw
+            else Path.home() / ".vira" / "vault-unset")
 
 
 def vault_dirs():

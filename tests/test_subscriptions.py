@@ -408,6 +408,48 @@ class FixtureMode(unittest.TestCase):
             self.assertIn("possibly_canceled", by_id["photon-vpn"]["flags"])
             self.assertIn("cadence_conflict", by_id["datastream"]["flags"])
 
+    def test_fixture_stores_stable_across_dates(self):
+        """Regression for the 2026-07-21 date drift: days_ago offsets
+        crossing month boundaries flipped hexagon-ai's cadence to unclear
+        (monthly read 22.5, not 41.0). The demo seed must satisfy the same
+        assertions on ANY calendar day — sweep a month-and-a-bit of
+        synthetic todays through the whole seed + reconcile path."""
+        real_date = subscriptions.date
+        for offset in range(0, 36):
+            fake_today = real_date.today() + timedelta(days=offset)
+
+            class FakeDate(real_date):
+                @classmethod
+                def today(cls):
+                    return cls(fake_today.year, fake_today.month,
+                               fake_today.day)
+
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch.object(settings, "fixture_mode",
+                                       return_value=True), \
+                     mock.patch.object(subscriptions, "date", FakeDate), \
+                     mock.patch.object(subscriptions, "REGISTRY",
+                                       Path(tmp) / "subscriptions.json"), \
+                     mock.patch.object(subscriptions, "LEDGER",
+                                       Path(tmp) / "subs-ledger.sqlite"):
+                    r = subscriptions.reconcile()
+                by_id = {m["id"]: m for m in r["merchants"]}
+                msg = f"today={fake_today.isoformat()}"
+                hexa = by_id["hexagon-ai"]
+                self.assertEqual(hexa["monthly"], 41.0, msg)
+                kinds = [e["kind"] for e in hexa["evidence_needed"]]
+                self.assertIn("anomaly_explained", kinds, msg)
+                self.assertIn("anomalous_charge", kinds, msg)
+                self.assertIn("possibly_canceled",
+                              by_id["photon-vpn"]["flags"], msg)
+                self.assertIn("cadence_conflict",
+                              by_id["datastream"]["flags"], msg)
+                quill = by_id["quill-notes"]
+                self.assertEqual(quill["renewal_source"], "receipt", msg)
+                self.assertLessEqual(
+                    (date.fromisoformat(quill["next_renewal"])
+                     - fake_today).days, 7, msg)
+
 
 class GroupingAndIngest(unittest.TestCase):
     def test_alias_match_display_name_variant(self):
