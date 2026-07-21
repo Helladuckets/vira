@@ -4151,6 +4151,21 @@ function markOpened(id) {
 
 function launchUnlocked(flow) {
   if (!flow || !flow.steps) return;
+  // Progressive launch celebrates a TRANSITION, not a state. On an install
+  // that is already set up, the first look at Setup would otherwise fire
+  // every finished step at once — four windows for someone who asked for
+  // none. So the first time this runs on a desktop, whatever is already
+  // done is recorded as seen WITHOUT opening. A virgin install has nothing
+  // done, so it loses nothing.
+  if (localStorage.getItem("vira-setup-opened") === null) {
+    const seen = flow.steps.filter((s) => s.state === "done").map((s) => s.id);
+    if (flow.complete) seen.push("__complete__");
+    if (seen.length) {
+      localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
+      uiPush("vira-setup-opened", JSON.stringify(seen));
+      return;
+    }
+  }
   flow.steps.forEach((s) => {
     if (s.state !== "done" || !s.opens) return;
     if (!markOpened(s.id)) return;              // already fired, don't re-open
