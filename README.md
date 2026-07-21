@@ -94,7 +94,7 @@ Local-first by design, with every egress path named and opt-in:
   itself) and a **Design Studio** (edit the app's design tokens against
   the running app, save straight to the stylesheet).
 
-## Quickstart
+## Quickstart (macOS)
 
 ```sh
 git clone <this repo> vira && cd vira
@@ -108,11 +108,67 @@ A fresh clone boots into **fixture mode**: one demo contact - Vira themself
 - whose conversation is the usage tour, whose open loops are your setup
 checklist, and whose shared links are the reading list. No configuration
 needed to look around. When you're ready, the **Setup** window (it opens
-itself on a fresh install) connects your real data.
+itself on a fresh install) connects your real data. On a PC, see
+**Windows** below.
+
+## Windows
+
+The core app runs on Windows (CI runs the full test suite on
+windows-latest). The Mac-store surfaces - the iMessage feed, Apple
+Contacts import, the local calendar, media search over Messages
+attachments, iMessage sends and notification pings - stay dark there and
+say so in-app. Everything else works: the fixture tour, Google-CSV
+contact import, mail (IMAP and Microsoft Graph), the Brain, renewal
+radar, the cockpit's live agent sessions, and in-app updates.
+
+1. Install the prerequisites:
+   - [Python 3.10+](https://www.python.org/downloads/windows/) - tick
+     **"Add python.exe to PATH"** in the installer. (The Microsoft
+     Store's `python` shortcut is a stub; the setup script detects and
+     refuses it.)
+   - [Git for Windows](https://git-scm.com/download/win) - one
+     dependency installs straight from GitHub.
+2. Clone and run, in a regular PowerShell window:
+
+   ```powershell
+   git clone <this repo> vira
+   cd vira
+   powershell -ExecutionPolicy Bypass -File scripts\run.ps1
+   ```
+
+   The first run creates `.venv` (`python -m venv --copies`), installs
+   `requirements.txt` into it, and serves http://localhost:8377.
+   Re-running is idempotent - it reuses whatever already exists.
+3. If Windows Defender Firewall asks about Python, allow it to get
+   phone/LAN access later; localhost works either way.
+4. Say **y** when the script offers to start Vira automatically at
+   sign-in - or register later:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\run.ps1 -Register -StartNow
+   ```
+
+   This creates a Task Scheduler task named `Vira` whose action is the
+   script's `-Serve` relaunch loop - the launchd analog: it starts the
+   server at sign-in, relaunches it after a crash, and is what the
+   in-app updater exits into when you click update (the updater refuses
+   web-triggered restarts until this exists). It also records
+   `windows_task_name` in `data\config.json`. Server output lands in
+   `data\server.log`. Stop: `schtasks /End /TN Vira` - start:
+   `Start-ScheduledTask -TaskName Vira` - remove:
+   `scripts\run.ps1 -Unregister`.
+5. Work down the **Setup** window. Connect your AI (the `claude` CLI
+   installs on Windows with `irm https://claude.ai/install.ps1 | iex`;
+   an Anthropic API key pasted into Setup lands in Windows Credential
+   Manager, never a file). Import contacts as a Google Contacts CSV
+   export. Wire the Brain at any folder of markdown. There is no Full
+   Disk Access step on Windows, and first dossiers stay blocked - they
+   are built from a Mac's Messages history.
 
 ## Making it real
 
-Work down the Setup window's cards, top to bottom:
+Work down the Setup window's cards, top to bottom (the macOS path; on a
+PC the wizard skips what does not exist there - see **Windows** above):
 
 1. **Full Disk Access** - grant it to `.venv/bin/python` (System Settings >
    Privacy & Security). The venv uses `--copies` deliberately so the grant
@@ -155,6 +211,7 @@ Work down the Setup window's cards, top to bottom:
    and the phone URL just works.
 8. **Run at login** - a launchd agent keeps it alive; set `launchd_label`
    in the config so the in-app updater can restart the service cleanly.
+   (Windows: `scripts\run.ps1 -Register` does both - see **Windows**.)
 
 ## Live sessions
 

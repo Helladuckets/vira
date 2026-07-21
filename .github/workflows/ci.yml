@@ -34,3 +34,10 @@ jobs:
         run: python -m pip install -r requirements.txt httpx
       - name: Tests
         run: python -m unittest discover tests
+      # The install script's provisioning path (python discovery, venv
+      # --copies, pip incl. the git-URL dependency), run under Windows
+      # PowerShell 5.1 — the stock shell a stranger's PC actually has —
+      # not pwsh. -DryRun stops short of binding the port.
+      - name: Install script provision (run.ps1 -DryRun, PS 5.1)
+        shell: cmd
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run.ps1 -DryRun

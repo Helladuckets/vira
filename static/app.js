@@ -4260,7 +4260,17 @@ function renderSetup(flow, st) {
 
 // ---- step cards --------------------------------------------------------
 
-function cardAi(card, step) {
+// Where a pasted key actually lands (server/secrets.py ladder), said in the
+// platform's own words so the promise is checkable.
+function keyStoreSentence(st) {
+  const p = st && st.platform;
+  if (p === "windows")
+    return "Stored in Windows Credential Manager, never in a file.";
+  if (p === "mac") return "Stored in your macOS Keychain, never in a file.";
+  return "Stored in Vira's locked, owner-only secrets store.";
+}
+
+function cardAi(card, step, st) {
   card.appendChild(el("p", "hint",
     "Vira runs on your model, under your own login. Connect one and " +
     "everything Vira writes for you — replies in your voice, dossiers, " +
@@ -4315,11 +4325,10 @@ function cardAi(card, step) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider: pr.id, api_key: inp.value }),
-        }), () => "Key saved to your Keychain");
+        }), () => "Key saved");
       krow.appendChild(inp);
       krow.appendChild(save);
-      krow.appendChild(el("span", "hint", "Stored in your macOS Keychain, " +
-        "never in a file."));
+      krow.appendChild(el("span", "hint", keyStoreSentence(st)));
       tile.appendChild(krow);
       inp.focus();
     };
@@ -4360,10 +4369,14 @@ function cardDisk(card, step, st) {
 }
 
 function cardContacts(card, step, st) {
+  const onMac = st.platform === "mac";
   card.appendChild(el("p", "hint",
     `${st.crm.people} ${st.crm.people === 1 ? "person" : "people"} in your ` +
-    `CRM (${st.crm.root}). Importing reads what this Mac already has — it ` +
-    `never sends anything anywhere.`));
+    `CRM (${st.crm.root}). ` + (onMac
+      ? "Importing reads what this Mac already has — it never sends " +
+        "anything anywhere."
+      : "Importing reads a contacts export right here — it never sends " +
+        "anything anywhere.")));
   const row = el("div", "setup-row");
   if (st.contacts.apple_sources > 0) {
     const ab = el("button", "btn primary", "Import Apple Contacts");
@@ -4372,7 +4385,9 @@ function cardContacts(card, step, st) {
       (r) => `${r.added} added, ${r.already_known} already known`);
     row.appendChild(ab);
   } else {
-    row.appendChild(el("span", "hint", "No Apple Contacts stores found."));
+    row.appendChild(el("span", "hint", onMac
+      ? "No Apple Contacts stores found."
+      : "Apple Contacts import is Mac-only — use the CSV upload."));
   }
   const gbtn = el("button", "btn", "Import Google Contacts CSV…");
   const file = el("input");
@@ -4432,11 +4447,12 @@ function cardBrain(card, step, st) {
   card.appendChild(el("p", "hint",
     "Point Vira at a notes vault (Obsidian, or any folder of markdown) and " +
     "the Brain answers questions grounded in your own notes, citing them. " +
-    "Indexed on this Mac; nothing leaves it."));
+    "Indexed on this machine; nothing leaves it."));
   const row = el("div", "setup-row");
   const vin = el("input");
   vin.className = "search";
-  vin.placeholder = "~/Documents/Notes";
+  vin.placeholder = st.platform === "windows"
+    ? "C:\\Users\\you\\Documents\\Notes" : "~/Documents/Notes";
   vin.value = st.vault.root || "";
   const vb = el("button", "btn primary", "Use this vault");
   vb.onclick = () => setupAct(vb,

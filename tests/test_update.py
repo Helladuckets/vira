@@ -81,8 +81,11 @@ def _fake_git(*args, **kw):
 
 
 class ApplyDepsGateTests(unittest.TestCase):
+    # Platform pinned: these run on the Windows CI runner too, where the
+    # supervisor seam would otherwise demand windows_task_name instead.
     def test_deps_failure_blocks_restart(self):
-        with mock.patch.object(update.settings, "raw",
+        with mock.patch.object(update.settings, "IS_WIN", False), \
+             mock.patch.object(update.settings, "raw",
                                return_value={"launchd_label": "test.label"}), \
              mock.patch.object(update, "status",
                                return_value={"git": True, "remote": True,
@@ -97,7 +100,8 @@ class ApplyDepsGateTests(unittest.TestCase):
         self.assertIn("not restarting", str(ctx.exception))
 
     def test_success_installs_then_restarts(self):
-        with mock.patch.object(update.settings, "raw",
+        with mock.patch.object(update.settings, "IS_WIN", False), \
+             mock.patch.object(update.settings, "raw",
                                return_value={"launchd_label": "test.label"}), \
              mock.patch.object(update, "status",
                                return_value={"git": True, "remote": True,
@@ -111,6 +115,91 @@ class ApplyDepsGateTests(unittest.TestCase):
         timer.assert_called_once()
         self.assertTrue(out["updated"])
         self.assertEqual(out["deps"], "dependencies synced")
+
+
+class SupervisorSeamTests(unittest.TestCase):
+    """One restart contract, two supervisors: launchd on a Mac,
+    a Task Scheduler relaunch loop on Windows. The refuse-without-a-
+    supervisor rule (bucket-A #6) must hold identically on both."""
+
+    def test_mac_reads_launchd_label(self):
+        with mock.patch.object(update.settings, "IS_WIN", False), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"launchd_label": "com.x.vira",
+                                             "windows_task_name": "Vira"}):
+            self.assertEqual(update.supervisor(), ("launchd", "com.x.vira"))
+
+    def test_windows_reads_task_name(self):
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"launchd_label": "com.x.vira",
+                                             "windows_task_name": "Vira"}):
+            self.assertEqual(update.supervisor(), ("task", "Vira"))
+
+    def test_windows_apply_refuses_without_task_name(self):
+        # A launchd label is not a supervisor on Windows.
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"launchd_label": "com.x.vira"}):
+            with self.assertRaises(ValueError) as ctx:
+                update.apply()
+        self.assertIn("windows_task_name", str(ctx.exception))
+        self.assertIn("run.ps1", str(ctx.exception))
+
+    def test_windows_apply_proceeds_with_task_name(self):
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"windows_task_name": "Vira"}), \
+             mock.patch.object(update, "status",
+                               return_value={"git": True, "remote": True,
+                                             "behind": 1}), \
+             mock.patch.object(update, "_git", side_effect=_fake_git), \
+             mock.patch.object(update, "_install_deps",
+                               return_value="dependencies synced"), \
+             mock.patch.object(update.threading, "Timer") as timer:
+            out = update.apply()
+        timer.assert_called_once()
+        self.assertTrue(out["updated"])
+
+
+class WindowsRestartTests(unittest.TestCase):
+    """_restart on Windows: exit into the scheduled task's relaunch loop
+    (run.ps1 -Serve), plus a detached best-effort `schtasks /Run` so a
+    task whose action runs the server directly also comes back. Never
+    `schtasks /End` from inside — ending the task terminates this
+    process's whole job, helper included, before /Run could ever fire."""
+
+    def test_restart_spawns_run_helper_then_exits(self):
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"windows_task_name": "Vira"}), \
+             mock.patch.object(update.subprocess, "Popen") as popen, \
+             mock.patch.object(update.os, "_exit") as ex:
+            update._restart()
+        cmd = popen.call_args.args[0]
+        self.assertEqual(cmd[:2], ["cmd", "/c"])
+        self.assertIn('schtasks /Run /TN "Vira"', cmd[2])
+        self.assertNotIn("/End", cmd[2])
+        ex.assert_called_once_with(0)
+
+    def test_restart_without_name_just_exits(self):
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw", return_value={}), \
+             mock.patch.object(update.subprocess, "Popen") as popen, \
+             mock.patch.object(update.os, "_exit") as ex:
+            update._restart()
+        popen.assert_not_called()
+        ex.assert_called_once_with(0)
+
+    def test_helper_failure_still_exits(self):
+        with mock.patch.object(update.settings, "IS_WIN", True), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"windows_task_name": "Vira"}), \
+             mock.patch.object(update.subprocess, "Popen",
+                               side_effect=OSError("no cmd")), \
+             mock.patch.object(update.os, "_exit") as ex:
+            update._restart()
+        ex.assert_called_once_with(0)
 
 
 if __name__ == "__main__":
