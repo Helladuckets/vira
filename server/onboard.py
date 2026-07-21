@@ -34,10 +34,7 @@ from datetime import date
 from pathlib import Path
 
 from . import data as crm
-from . import imessage, secrets, settings, suggest
-
-AB_SOURCES = Path.home() / "Library" / "Application Support" / "AddressBook"
-CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
+from . import imessage, secrets, settings, sources, suggest
 
 _lock = threading.Lock()          # people.json / master.json writes
 _build_lock = threading.Lock()    # dossier-builder state
@@ -64,20 +61,14 @@ def config_set(**updates):
 
 
 # ---------- contact sources ----------
-
-def _addressbook_dbs():
-    dbs = sorted(AB_SOURCES.glob("Sources/*/AddressBook-v22.abcddb"))
-    root = AB_SOURCES / "AddressBook-v22.abcddb"
-    if root.exists():
-        dbs.append(root)
-    return dbs
-
+# Store discovery lives in server/sources.py (the source registry), so the
+# importers and the registry can never disagree about where a store is.
 
 def read_apple_contacts(dbs=None):
     """[{name, company, title, emails, phones10}] from the local AddressBook
     sqlite stores. Read-only; merges duplicates across sources by name."""
     merged = {}
-    for db in (dbs if dbs is not None else _addressbook_dbs()):
+    for db in (dbs if dbs is not None else sources.addressbook_dbs()):
         try:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             rows = con.execute(
@@ -227,7 +218,7 @@ def import_contacts(contacts, source):
 
 
 def import_apple():
-    dbs = _addressbook_dbs()
+    dbs = sources.addressbook_dbs()
     if not dbs:
         raise RuntimeError(
             "no AddressBook stores found — is this Mac signed into Contacts?")
@@ -467,18 +458,6 @@ def vault_setup(path, init=False):
 
 # ---------- the one status payload the Setup window reads ----------
 
-def _chatdb_state():
-    if not CHAT_DB.exists():
-        return "missing"
-    try:
-        con = sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True)
-        con.execute("SELECT 1 FROM message LIMIT 1").fetchone()
-        con.close()
-        return "ok"
-    except sqlite3.Error:
-        return "no-access"
-
-
 def status():
     root = crm_target()
     people = profiles = 0
@@ -505,12 +484,13 @@ def status():
     return {
         "fixture_mode": settings.fixture_mode(),
         "crm": {"root": str(root), "people": people, "profiles": profiles},
-        "feed": {"chat_db": _chatdb_state()},
-        "contacts": {"apple_sources": len(_addressbook_dbs())},
+        "feed": {"chat_db": sources.chatdb_state()},
+        "contacts": {"apple_sources": len(sources.addressbook_dbs())},
         "vault": {"root": vraw, "connected": vault_ok,
                   "notes": _md_count(vroot) if vault_ok else 0},
         "mail": {"accounts": mail_accounts},
         "dossiers": build,
+        "sources": sources.discover(),
     }
 
 
@@ -588,7 +568,13 @@ def steps():
     That is what makes re-entry free: a half-finished setup recomputes
     exactly where it stopped, with no progress file to keep in sync or to
     go stale against reality. Each step reports its state, the blocker by
-    name when it has one, and what completing it unlocks."""
+    name when it has one, and what completing it unlocks.
+
+    The data steps carry their cards as rows from the source registry
+    (server/sources.py), filtered to THIS platform — so on a Mac the
+    contacts step offers Apple Contacts beside the Google CSV import, and
+    off-Mac the Apple-only steps are skipped with the reason named rather
+    than silently absent. Steps stay guided, never locked."""
     from . import models as provider
     st = status()
     providers = provider.discover()
@@ -596,6 +582,11 @@ def steps():
     disk_ok = st["feed"]["chat_db"] == "ok"
     people = st["crm"]["people"]
     build = st["dossiers"]
+    src = sources.available(st.get("sources") or [])
+    contact_rows = sources.of_kind(sources.CONTACTS, src)
+    mail_rows = sources.of_kind(sources.MAIL, src)
+    msg_rows = sources.of_kind(sources.MESSAGES, src)
+    store_rows = [s for s in src if s["needs_disk"]]   # what the grant covers
 
     def mk(sid, title, opens, state, detail, blocker="", unlocks="", **extra):
         return {"id": sid, "title": title, "state": state, "detail": detail,
@@ -615,25 +606,53 @@ def steps():
                 providers=providers,
                 sessions=bool(active and active["can"]["sessions"])))
         elif sid == "disk":
-            state = {"ok": "done", "no-access": "todo",
-                     "missing": "todo"}[st["feed"]["chat_db"]]
-            out.append(mk(
-                sid, title, opens, state,
-                ("Vira can read this Mac's Messages database."
-                 if disk_ok else
-                 "Grant Full Disk Access to Vira's Python so it can read "
-                 "your contacts, messages, and calendar."),
-                unlocks="contacts, messages, calendar, search"))
+            if not store_rows:
+                # No Full-Disk-Access-gated store can exist on this
+                # platform: the step is skipped, honestly, by name.
+                out.append(mk(
+                    sid, title, opens, "skipped",
+                    "Nothing to grant on " + sources.platform_label() +
+                    " — Full Disk Access gates Apple's local stores "
+                    "(Contacts, Messages, Calendar), and none exist on "
+                    "this machine. Contacts and mail connect through the "
+                    "cross-platform sources instead.",
+                    sources=store_rows))
+            else:
+                state = {"ok": "done", "no-access": "todo",
+                         "missing": "todo"}[st["feed"]["chat_db"]]
+                out.append(mk(
+                    sid, title, opens, state,
+                    ("Vira can read this Mac's Messages database."
+                     if disk_ok else
+                     "Grant Full Disk Access to Vira's Python so it can read "
+                     "your contacts, messages, and calendar."),
+                    unlocks="contacts, messages, calendar, search",
+                    sources=store_rows))
         elif sid == "contacts":
+            needs_fda = any(s["needs_disk"] for s in contact_rows) \
+                and not disk_ok
             out.append(mk(
                 sid, title, opens,
-                "done" if people else ("blocked" if not disk_ok else "todo"),
+                "done" if people else ("blocked" if needs_fda else "todo"),
                 (f"{people} {'person' if people == 1 else 'people'} in your CRM."
                  if people else "No contacts imported yet."),
-                blocker="" if disk_ok or people else "needs Full Disk Access",
+                blocker="" if people or not needs_fda
+                        else "needs Full Disk Access",
                 unlocks="People, Radar, the Visual Network",
-                sources=st["contacts"]["apple_sources"]))
+                sources=contact_rows))
         elif sid == "dossiers":
+            if not msg_rows:
+                # Dossiers are built from real message threads. With no
+                # messages source possible on this platform the step is
+                # skipped by name — a blocker would read as the owner's
+                # fault when nothing they do here can clear it.
+                out.append(mk(
+                    sid, title, opens, "skipped",
+                    "Dossiers are built from your message threads, and no "
+                    "messages source exists on " + sources.platform_label() +
+                    " yet — iMessage is macOS-only for now.",
+                    cost=""))
+                continue
             missing = [n for n, ok in (("AI", ai_ok), ("contacts", bool(people)))
                        if not ok]
             state = ("running" if build.get("running")
@@ -661,8 +680,14 @@ def steps():
                 "done" if st["mail"]["accounts"] else "todo",
                 (f"{st['mail']['accounts']} account(s) connected."
                  if st["mail"]["accounts"] else "No mail account connected."),
-                unlocks="email in Incoming, drafts, receipts"))
+                unlocks="email in Incoming, drafts, receipts",
+                sources=mail_rows))
 
-    done = sum(1 for s in out if s["state"] == "done")
-    return {"steps": out, "done": done, "total": len(out),
-            "complete": done == len(out), "fixture_mode": st["fixture_mode"]}
+    # A skipped step counts toward neither done nor total: off-Mac the
+    # wizard can still complete, and "N of M" never counts a step that
+    # cannot exist on this machine.
+    countable = [s for s in out if s["state"] != "skipped"]
+    done = sum(1 for s in countable if s["state"] == "done")
+    return {"steps": out, "done": done, "total": len(countable),
+            "complete": bool(countable) and done == len(countable),
+            "fixture_mode": st["fixture_mode"]}

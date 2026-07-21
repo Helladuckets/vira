@@ -2187,6 +2187,9 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .setup-step.s-done .setup-dot { background: var(--green); border-color: var(--green); }
 .setup-step.s-running .setup-dot { background: var(--accent); border-color: var(--accent); }
 .setup-step.s-blocked .setup-dot { border-color: var(--red); }
+/* skipped = the source can't exist on this platform; visible, dimmed, honest */
+.setup-step.s-skipped { opacity: 0.55; }
+.setup-step.s-skipped .setup-dot { border-style: dashed; }
 
 .setup-unlocks {
   margin-top: 10px; font-size: 12px; color: var(--text-dim);

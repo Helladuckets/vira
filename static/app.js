@@ -4193,6 +4193,22 @@ function setupCard(title) {
   return card;
 }
 
+// One source-registry row as a tile (server/sources.py shapes the rows;
+// the platform fork happened server-side, so this just renders what came).
+// chips override the state wording per card — the disk card says
+// "readable", the data cards say "connected".
+function srcTile(row, chips) {
+  const c = { on: "connected", ready: "ready", off: "not found", ...chips };
+  const tile = el("div", "setup-prov" + (row.configured ? " on" : ""));
+  const head = el("div", "setup-prov-head");
+  head.appendChild(el("span", "setup-prov-name", row.label));
+  head.appendChild(el("span", "setup-prov-state",
+    row.configured ? c.on : row.present ? c.ready : c.off));
+  tile.appendChild(head);
+  if (row.detail) tile.appendChild(el("div", "hint", row.detail));
+  return tile;
+}
+
 async function setupAct(btn, fn, okMsg) {
   const prev = btn.textContent;
   btn.disabled = true;
@@ -4220,9 +4236,12 @@ function renderSetup(flow, st) {
   const steps = flow.steps;
   // Pinned step if the owner clicked one and it still exists; otherwise the
   // first unfinished step — which is what makes re-entry land in the right
-  // place with nothing persisted.
+  // place with nothing persisted. Skipped steps (sources that cannot exist
+  // on this platform) stay visible in the rail but never claim the pane.
   let active = steps.find((s) => s.id === setupActive);
-  if (!active) active = steps.find((s) => s.state !== "done") || steps[0];
+  if (!active)
+    active = steps.find((s) => s.state !== "done" && s.state !== "skipped")
+      || steps[0];
 
   body.replaceChildren();
   const wrap = el("div", "setup-wrap");
@@ -4235,7 +4254,8 @@ function renderSetup(flow, st) {
     row.appendChild(el("span", "setup-dot"));
     const txt = el("div", "setup-step-txt");
     txt.appendChild(el("div", "setup-step-title", `${i + 1}. ${s.title}`));
-    const sub = s.blocker || (s.state === "done" ? "done" : s.unlocks);
+    const sub = s.state === "skipped" ? "not on this machine"
+      : s.blocker || (s.state === "done" ? "done" : s.unlocks);
     if (sub) txt.appendChild(el("div", "setup-step-sub", sub));
     row.appendChild(txt);
     row.onclick = () => { setupActive = s.id; renderSetup(flow, st); };
@@ -4330,10 +4350,18 @@ function cardAi(card, step) {
 }
 
 function cardDisk(card, step, st) {
+  if (step.state === "skipped") {
+    // Off-Mac there is nothing to grant; the card says why, by name.
+    card.appendChild(el("p", "hint", step.detail));
+    return;
+  }
+  const stores = () => (step.sources || []).forEach((row) =>
+    card.appendChild(srcTile(row, { on: "readable", ready: "needs access" })));
   const state = st.feed.chat_db;
   if (state === "ok") {
     card.appendChild(el("p", "hint setup-ok",
       "Granted — Vira can read this Mac's Messages, contacts and calendar."));
+    stores();
     return;
   }
   card.appendChild(el("p", "hint",
@@ -4341,6 +4369,7 @@ function cardDisk(card, step, st) {
     "Mac — nothing is uploaded to do it. macOS gates those files behind " +
     "Full Disk Access, granted to Vira's own Python so the permission " +
     "covers Vira alone."));
+  stores();
   const steps = el("ol", "setup-steps");
   ["Open System Settings > Privacy & Security > Full Disk Access",
    "Add the Python below (drag it in, or use the + button)",
@@ -4359,46 +4388,65 @@ function cardDisk(card, step, st) {
   card.appendChild(row);
 }
 
-function cardContacts(card, step, st) {
-  card.appendChild(el("p", "hint",
-    `${st.crm.people} ${st.crm.people === 1 ? "person" : "people"} in your ` +
-    `CRM (${st.crm.root}). Importing reads what this Mac already has — it ` +
-    `never sends anything anywhere.`));
-  const row = el("div", "setup-row");
-  if (st.contacts.apple_sources > 0) {
+// Per-card actions for contact-source tiles, keyed by the row's card name.
+// A new importer (a P2 Google Calendar sync, a Windows bridge) is a new
+// registry row server-side plus one entry here.
+const SRC_ACTIONS = {
+  "apple-contacts": (tile, row) => {
+    if (!row.present) return;
+    const r = el("div", "setup-row");
     const ab = el("button", "btn primary", "Import Apple Contacts");
     ab.onclick = () => setupAct(ab,
       () => api("/api/onboard/apple", { method: "POST" }),
-      (r) => `${r.added} added, ${r.already_known} already known`);
-    row.appendChild(ab);
-  } else {
-    row.appendChild(el("span", "hint", "No Apple Contacts stores found."));
-  }
-  const gbtn = el("button", "btn", "Import Google Contacts CSV…");
-  const file = el("input");
-  file.type = "file";
-  file.accept = ".csv,text/csv";
-  file.style.display = "none";
-  file.onchange = () => {
-    const f = file.files && file.files[0];
-    if (!f) return;
-    const rd = new FileReader();
-    rd.onload = () => setupAct(gbtn,
-      () => api("/api/onboard/csv", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ csv: String(rd.result) }),
-      }),
-      (r) => `${r.added} added, ${r.already_known} already known`);
-    rd.readAsText(f);
-  };
-  gbtn.onclick = () => file.click();
-  row.appendChild(gbtn);
-  row.appendChild(file);
-  card.appendChild(row);
+      (res) => `${res.added} added, ${res.already_known} already known`);
+    r.appendChild(ab);
+    tile.appendChild(r);
+  },
+  "google-csv": (tile, row) => {
+    const r = el("div", "setup-row");
+    const gbtn = el("button", "btn" + (row.configured ? "" : " primary"),
+      "Import Google Contacts CSV…");
+    const file = el("input");
+    file.type = "file";
+    file.accept = ".csv,text/csv";
+    file.style.display = "none";
+    file.onchange = () => {
+      const f = file.files && file.files[0];
+      if (!f) return;
+      const rd = new FileReader();
+      rd.onload = () => setupAct(gbtn,
+        () => api("/api/onboard/csv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ csv: String(rd.result) }),
+        }),
+        (res) => `${res.added} added, ${res.already_known} already known`);
+      rd.readAsText(f);
+    };
+    gbtn.onclick = () => file.click();
+    r.appendChild(gbtn);
+    r.appendChild(file);
+    tile.appendChild(r);
+  },
+};
+
+function cardContacts(card, step, st) {
+  card.appendChild(el("p", "hint",
+    `${st.crm.people} ${st.crm.people === 1 ? "person" : "people"} in your ` +
+    `CRM (${st.crm.root}). Importing reads what this machine already has — ` +
+    `it never sends anything anywhere.`));
+  (step.sources || []).forEach((row) => {
+    const tile = srcTile(row, { on: "imported" });
+    (SRC_ACTIONS[row.card] || (() => {}))(tile, row);
+    card.appendChild(tile);
+  });
 }
 
 function cardDossiers(card, step, st) {
+  if (step.state === "skipped") {
+    card.appendChild(el("p", "hint", step.detail));
+    return;
+  }
   card.appendChild(el("p", "hint",
     "Vira reads your most active iMessage threads and writes a first " +
     "dossier per person — relationship, conversation hooks you can tap to " +
@@ -4463,6 +4511,7 @@ function cardMail(card, step, st) {
     `${st.mail.accounts} mail ${st.mail.accounts === 1 ? "account" : "accounts"} ` +
     `connected. Add Gmail/IMAP or Microsoft 365 from Settings (the gear, top ` +
     `right) to fold email into the feed, the brief and receipts.`));
+  (step.sources || []).forEach((row) => card.appendChild(srcTile(row)));
 }
 
 
