@@ -5576,49 +5576,49 @@ $("#app-run-copy").addEventListener("click", async () => {
 })();
 
 const WINDOWS = [
-  { id: "launchpad", title: "Launchpad", w: 720, defaultOpen: false,
+  { id: "launchpad", title: "Launchpad", w: 720,
     icon: "M4.5 4.5h5.8v5.8H4.5zM13.7 4.5h5.8v5.8h-5.8zM4.5 13.7h5.8v5.8H4.5zM13.7 13.7h5.8v5.8h-5.8z" },
   { id: "setup", title: "Setup", w: 560, defaultOpen: true, focusFirst: true,
     icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" },
-  { id: "feed", title: "Incoming", w: 440,
+  { id: "feed", title: "Incoming", w: 440, defaultOpen: true,
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
-  { id: "people", title: "People", w: 440,
+  { id: "people", title: "People", w: 440, defaultOpen: true,
     icon: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19c.5-3.4 2.7-5 5.5-5s5 1.6 5.5 5M15.5 11.4a2.7 2.7 0 1 0-1.2-5.2M15.8 14.2c2.4.3 4.2 1.8 4.7 4.8" },
   { id: "actions", title: "Actions", w: 560,
     icon: "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M12.5 14.5H16" },
   { id: "brief", title: "Daily Brief", w: 520,
     icon: "M12 3v3M5.3 6.3l2.1 2.1M2.5 13.5h3M18.5 13.5h3M16.6 8.4l2.1-2.1M7.5 15.5a4.5 4.5 0 0 1 9 0M3.5 19h17" },
-  { id: "journal", title: "Journal", w: 520, defaultOpen: false,
+  { id: "journal", title: "Journal", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 11h6M9 14.5h4" },
-  { id: "triage", title: "Triage", w: 440, defaultOpen: false,
+  { id: "triage", title: "Triage", w: 440,
     icon: "M4 5h16M7.5 12h9M10.5 19h3" },
-  { id: "jobs", title: "Jobs", w: 500, defaultOpen: false,
+  { id: "jobs", title: "Jobs", w: 500,
     icon: "M7 8h13v11H7zM7 12h13M4 5h13v2M10 15.5h4" },
-  { id: "applications", title: "Applications", w: 780, defaultOpen: false,
+  { id: "applications", title: "Applications", w: 780,
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
   { id: "search", title: "Search", w: 640,
     icon: "M4 5h16v14H4zM7.5 15.5l3.5-4 2.5 3 2-2.5 3 3.5M9 9.5a1 1 0 1 0 0-.01" },
-  { id: "ideas", title: "Ideas & On-Hold", w: 480, defaultOpen: false,
+  { id: "ideas", title: "Ideas & On-Hold", w: 480,
     icon: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.7.6 1.3 1.4 1.3 2.4h5c0-1 .6-1.8 1.3-2.4A6 6 0 0 0 12 3z" },
   { id: "brain", title: "Brain", w: 560,
     icon: "M12 4a5 5 0 0 0-5 5c0 1.2.4 2.2 1 3a4 4 0 0 0 1 6.5V21h6v-2.5A4 4 0 0 0 16 12c.6-.8 1-1.8 1-3a5 5 0 0 0-5-5zM9.5 9.5h5M12 9.5V15" },
-  { id: "radar", title: "Radar", w: 560, defaultOpen: false,
+  { id: "radar", title: "Radar", w: 560,
     icon: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0-10 0M12 12l6-6M12 12h.01" },
-  { id: "atlas", title: "Visual Network", w: 900, defaultOpen: false,
+  { id: "atlas", title: "Visual Network", w: 900,
     icon: "M12 12m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0-4.8 0M5 5.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M19 6.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M5.5 18.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M18.5 18m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M10.3 10.3L6.3 6.9M13.7 10.6L17.5 7.6M10.5 13.7L6.8 17.2M13.6 13.5L17 16.7" },
-  { id: "map", title: "System Map", w: 1000, defaultOpen: false,
+  { id: "map", title: "System Map", w: 1000,
     icon: "M9 4L4 6v14l5-2 6 2 5-2V4l-5 2-6-2zM9 4v14M15 6v14" },
-  { id: "circuits", title: "Circuits", w: 720, defaultOpen: false,
+  { id: "circuits", title: "Circuits", w: 720,
     icon: "M4 7h5v5H4zM15 12h5v5h-5zM9 9.5h4v5h2M6.5 12v5h8.5M9.5 4.5v2.5M17.5 17v2.5" },
-  { id: "routines", title: "Agent Loops", w: 560, defaultOpen: false,
+  { id: "routines", title: "Agent Loops", w: 560,
     icon: "M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 4v3h-3M6 20v-3h3" },
-  { id: "subs", title: "Subscriptions", w: 660, defaultOpen: false,
+  { id: "subs", title: "Subscriptions", w: 660,
     icon: "M3 6.5h18v11H3zM3 10h18M6 14.5h5M15.5 14.5h2.5" },
-  { id: "subsviz", title: "Morning Picker", w: 1040, defaultOpen: false,
+  { id: "subsviz", title: "Morning Picker", w: 1040,
     icon: "M3 5h18v14H3zM6.5 5v14M17.5 5v14M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21M10 9.5h4v5h-4z" },
-  { id: "design", title: "Design Studio", w: 1360, defaultOpen: false,
+  { id: "design", title: "Design Studio", w: 1360,
     icon: "M4 7h16M4 12h16M4 17h16M9 5v4M15 10v4M7 15v4" },
-  { id: "reader", title: "Reader", w: 780, defaultOpen: false,
+  { id: "reader", title: "Reader", w: 780,
     icon: "M12 6C10.5 4.7 8.5 4 6 4H4v14h2c2.5 0 4.5.7 6 2 1.5-1.3 3.5-2 6-2h2V4h-2c-2.5 0-4.5.7-6 2zM12 6v14" },
 ];
 let zTop = 10;
@@ -6896,7 +6896,16 @@ function initDesktop() {
   WINDOWS.forEach((spec, i) => {
     const st = stored[spec.id] || {};
     winState[spec.id] = { el: buildWindow(spec, st, i), open: false };
-    const shouldOpen = st.open ?? (spec.defaultOpen !== false);
+    // Opening a window on a fresh desktop is opt-IN. It used to be opt-out
+    // (open unless the spec said defaultOpen: false), so the first-run set
+    // was not a decision anyone made — it was whichever entries had never
+    // been given the flag. A stranger landed on seven windows, three of
+    // which can only report nothing on an install with no data yet (Search
+    // with every counter at zero, Brain with no vault, Actions with an
+    // empty library), stacked over the one window that would help them.
+    // Opt-in also means a window shipped in an update no longer pops open
+    // uninvited on desks that predate it.
+    const shouldOpen = st.open ?? spec.defaultOpen === true;
     if (shouldOpen) openWindow(spec.id);
   });
   // The WINDOWS array doubles as the z order (first built ends up at the
