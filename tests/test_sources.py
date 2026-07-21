@@ -42,7 +42,7 @@ class RegistryShapeTests(unittest.TestCase):
         self.assertEqual(
             list(sources.SOURCES),
             ["apple-contacts", "google-csv", "imessage", "apple-calendar",
-             "imap-mail", "m365-mail"])
+             "companion", "imap-mail", "m365-mail"])
 
     def test_ids_double_as_import_tags(self):
         # import_contacts stamps refs.import_source with these exact strings;
@@ -241,6 +241,46 @@ class DiscoverTests(unittest.TestCase):
 
     def test_platform_label_is_a_name_not_a_token(self):
         self.assertIn(sources.platform_label(), ("macOS", "Windows", "Linux"))
+
+
+class CompanionProbeTests(unittest.TestCase):
+    """The P2 row: a pairing-based source — present everywhere, configured
+    the moment a phone is paired, count = messages received."""
+
+    def test_unpaired_offers_the_pairing_action(self):
+        from server import companion
+        with mock.patch.object(companion, "devices", return_value=[]), \
+             mock.patch.object(companion, "stats",
+                               return_value={"messages": 0}):
+            rec = sources.probe("companion", {"people": []})
+        self.assertTrue(rec["present"])
+        self.assertFalse(rec["configured"])
+        self.assertEqual(rec["action"], "Pair in Phone Link")
+        self.assertIn("Pair an Android phone", rec["detail"])
+
+    def test_paired_counts_messages_and_names_the_phone(self):
+        from server import companion
+        devs = [{"id": "cd_0123456789ab", "name": "Test Phone",
+                 "pending": False}]
+        with mock.patch.object(companion, "devices", return_value=devs), \
+             mock.patch.object(companion, "stats",
+                               return_value={"messages": 1234}):
+            rec = sources.probe("companion", {"people": []})
+        self.assertTrue(rec["configured"])
+        self.assertEqual(rec["count"], 1234)
+        self.assertIn("Test Phone", rec["detail"])
+        self.assertEqual(rec["action"], "")
+
+    def test_supported_on_every_platform(self):
+        for plat in (sources.MAC, sources.WIN, sources.LINUX):
+            with mock.patch.object(sources, "_platform", return_value=plat):
+                rec = sources.probe("companion", {"people": []})
+            self.assertTrue(rec["supported"], plat)
+
+    def test_never_on_the_disk_card(self):
+        # needs_disk False: pairing is not gated by Full Disk Access and
+        # must not appear under the grant step.
+        self.assertFalse(sources.SOURCES["companion"]["needs_disk"])
 
 
 if __name__ == "__main__":

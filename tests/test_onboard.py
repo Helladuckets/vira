@@ -261,14 +261,16 @@ def _src(sid, kind, supported=True, needs_disk=False, **over):
 
 
 def _sources_for(platform="mac"):
-    """The six registry rows as they probe on a virgin machine — Apple rows
-    supported only on a Mac, the cross-platform siblings everywhere."""
+    """The seven registry rows as they probe on a virgin machine — Apple
+    rows supported only on a Mac, the cross-platform siblings (including
+    the Android companion) everywhere."""
     mac = platform == "mac"
     return [
         _src("apple-contacts", "contacts", supported=mac, needs_disk=True),
         _src("google-csv", "contacts", present=True),
         _src("imessage", "messages", supported=mac, needs_disk=True),
         _src("apple-calendar", "calendar", supported=mac, needs_disk=True),
+        _src("companion", "messages", present=True),
         _src("imap-mail", "mail", present=True),
         _src("m365-mail", "mail", present=True),
     ]
@@ -417,14 +419,17 @@ class StepSourceForkTests(StepMachineTests):
                          ["google-csv"])
 
     def test_off_mac_dossiers_skip_and_name_the_missing_source(self):
-        # Even with AI and contacts in place, no messages source can exist
-        # here — an eternal "blocked" would read as the owner's fault, so
-        # the step skips with the reason named.
+        # Even with AI, contacts, and a paired Android phone in place, the
+        # dossier BUILDER reads only the disk-gated iMessage store — an
+        # eternal "blocked" would read as the owner's fault, so the step
+        # skips with the reason named (and points at Phone Link for the
+        # live feed instead). The companion row must NOT un-skip this.
         steps, _ = self._steps(
             self._status(platform="win", crm={"people": 40}),
             providers=[self._provider()])
         self.assertEqual(steps["dossiers"]["state"], "skipped")
-        self.assertIn("macOS-only", steps["dossiers"]["detail"])
+        self.assertIn("iMessage store", steps["dossiers"]["detail"])
+        self.assertIn("Phone Link", steps["dossiers"]["detail"])
 
     def test_off_mac_skipped_steps_leave_the_totals(self):
         _, flow = self._steps(self._status(platform="win"))
