@@ -587,6 +587,12 @@ def steps():
     mail_rows = sources.of_kind(sources.MAIL, src)
     msg_rows = sources.of_kind(sources.MESSAGES, src)
     store_rows = [s for s in src if s["needs_disk"]]   # what the grant covers
+    # The disk card SHOWS only the stores whose configured state means
+    # "readable" (messages, calendar) — the contacts row's configured means
+    # "imported", a different fact, and would read as a false "needs
+    # access" on a fully granted Mac.
+    disk_view = [s for s in store_rows
+                 if s["kind"] in (sources.MESSAGES, sources.CALENDAR)]
 
     def mk(sid, title, opens, state, detail, blocker="", unlocks="", **extra):
         return {"id": sid, "title": title, "state": state, "detail": detail,
@@ -616,7 +622,7 @@ def steps():
                     "(Contacts, Messages, Calendar), and none exist on "
                     "this machine. Contacts and mail connect through the "
                     "cross-platform sources instead.",
-                    sources=store_rows))
+                    sources=disk_view))
             else:
                 state = {"ok": "done", "no-access": "todo",
                          "missing": "todo"}[st["feed"]["chat_db"]]
@@ -627,7 +633,7 @@ def steps():
                      "Grant Full Disk Access to Vira's Python so it can read "
                      "your contacts, messages, and calendar."),
                     unlocks="contacts, messages, calendar, search",
-                    sources=store_rows))
+                    sources=disk_view))
         elif sid == "contacts":
             needs_fda = any(s["needs_disk"] for s in contact_rows) \
                 and not disk_ok

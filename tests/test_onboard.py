@@ -393,8 +393,11 @@ class StepSourceForkTests(StepMachineTests):
         steps, _ = self._steps(self._status())
         self.assertEqual([s["id"] for s in steps["contacts"]["sources"]],
                          ["apple-contacts", "google-csv"])
+        # The disk card shows the stores whose configured state means
+        # "readable" — the contacts row's configured means "imported", so
+        # it would render a false "needs access" on a granted Mac.
         self.assertEqual([s["id"] for s in steps["disk"]["sources"]],
-                         ["apple-contacts", "imessage", "apple-calendar"])
+                         ["imessage", "apple-calendar"])
         self.assertEqual([s["id"] for s in steps["mail"]["sources"]],
                          ["imap-mail", "m365-mail"])
 
