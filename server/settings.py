@@ -19,7 +19,9 @@ FIXTURES = ROOT / "fixtures"
 FIXTURE_CRM = ROOT / "data" / "fixture-crm"
 
 DEFAULTS = {
-    "crm_root": "~/workspace/crm/data",  # people.json / master.json / profiles/
+    "crm_root": "~/.vira/crm",           # people.json / master.json / profiles/
+                                         # (the Setup importers create it; a
+                                         # configured path in config.json wins)
     "graph_email": "",                   # default account for Connect M365 + cockpit banner
     "owner_name": "",                    # greeting name in the cockpit banner
     "notify_handle": "",                 # iMessage handle for pings; empty = notifications dormant
@@ -30,7 +32,8 @@ DEFAULTS = {
     "mercury_poll_hours": 6,             # subscriptions charge-poll cadence
     "receipts_sweep_days": 7,            # receipts-pass sweep cadence
     "subs_notify_threshold_usd": 100,    # renewal ping floor ($/cycle; annuals always ping)
-    "vault_root": "~/TC-IL",             # Obsidian vault for the Brain index; missing = dormant
+    "vault_root": "",                    # notes vault for the Brain index; empty = dormant
+                                         # (set via Setup > Brain or config.json)
     "vault_dirs": [],                    # vault subdirs to index; empty = vault.DEFAULT_DIRS
     "judge_model": "opus",               # fresh-eyes judge sessions (circuits + Jobs history)
     "atlas_anchor_org": "",              # pinned anchor-org cluster in the Contact Atlas
@@ -56,7 +59,11 @@ def fixture_mode():
     flag = raw().get("fixture_mode")
     if isinstance(flag, bool):
         return flag
-    return not Path(str(get("crm_root"))).expanduser().exists()
+    # Keyed on people.json, not the bare directory: an empty or half-made
+    # crm_root must not strand a new user in a real-mode ghost town. The
+    # moment an import (or triage) mints people.json there, real mode wins.
+    root = Path(str(get("crm_root"))).expanduser()
+    return not (root / "people.json").exists()
 
 
 def crm_root() -> Path:

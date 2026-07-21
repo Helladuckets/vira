@@ -1,5 +1,5 @@
 [
- {"merchant_id": "hexagon-ai", "kind": "receipt", "days_ago": 21,
+ {"merchant_id": "hexagon-ai", "kind": "receipt", "months_ago": 1, "day": 21,
   "amount": 45.00, "plan": "usage top-up (demo: explains the off-pattern charge)",
   "account": "demo@fixture"},
  {"merchant_id": "quill-notes", "kind": "renewal_notice", "days_ago": 10,

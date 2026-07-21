@@ -107,36 +107,53 @@ sh scripts/install-hooks.sh   # pre-commit guard (if you'll be committing)
 A fresh clone boots into **fixture mode**: one demo contact - Vira themself
 - whose conversation is the usage tour, whose open loops are your setup
 checklist, and whose shared links are the reading list. No configuration
-needed to look around.
+needed to look around. When you're ready, the **Setup** window (it opens
+itself on a fresh install) connects your real data.
 
 ## Making it real
 
-1. **Config** - copy `config.example.json` to `data/config.json` and fill
-   in what you use. Every key is optional; an absent value leaves that
-   feature dormant.
-2. **Full Disk Access** - grant it to `.venv/bin/python` (System Settings >
+Work down the Setup window's cards, top to bottom:
+
+1. **Full Disk Access** - grant it to `.venv/bin/python` (System Settings >
    Privacy & Security). The venv uses `--copies` deliberately so the grant
-   scopes to Vira alone. The live feed self-heals within seconds of the
-   grant landing; no restart. Note: rebuilding the venv invalidates the
-   grant (macOS ties it to the binary), so re-add it after a rebuild.
-3. **Contact data** - point `crm_root` at a directory shaped like:
-   - `people.json` - `{"people": [{id, name, handles: {imessage, phones10,
-     emails}, tier, activity}]}`
-   - `master.json` - richer per-person records (company, title,
-     relationship, evidence)
-   - `profiles/p_*.json` - one dossier per active person (relationship
-     summary, hooks, open loops); Vira edits hooks and loops in place
-   - `imessage-archive/index.json` - optional exported-thread index
-4. **Mail** - Gmail/IMAP: app password in the Keychain (service
+   scopes to Vira alone. The Setup window's Live-feed card goes green
+   within seconds of the grant landing; no restart. Note: rebuilding the
+   venv invalidates the grant (macOS ties it to the binary), so re-add it
+   after a rebuild.
+2. **Connect your contacts** - one click imports Apple Contacts (read in
+   place from this Mac's AddressBook stores), or upload a Google Contacts
+   CSV export. Vira writes them into its own CRM store (`crm_root`,
+   default `~/.vira/crm`) and flips out of demo mode on its own. Already
+   keep CRM data in Vira's shape (`people.json` / `master.json` /
+   `profiles/`)? Point `crm_root` at it in `data/config.json` instead -
+   both paths work, and unknown senders keep flowing in through Triage
+   either way.
+3. **Build first dossiers** - Vira reads your most active iMessage threads
+   and writes a first dossier per person: relationship summary,
+   conversation hooks you can tap to draft an opener, open loops. One call
+   per person to your own model backend - the same privacy boundary as
+   reply drafting. Re-run any time; people who already have a dossier are
+   skipped.
+4. **Wire the Brain** - point Vira at a notes vault you already have
+   (Obsidian or any folder of markdown), or click "Start a new vault
+   here" to seed a fresh one with the bundled
+   [qocha](https://github.com/Helladuckets/qocha) engine. Semantic
+   indexing wants [Ollama](https://ollama.com) with `nomic-embed-text`
+   pulled; without it the Brain still answers from full-text search.
+5. **Mail** - Gmail/IMAP: app password in the Keychain (service
    `vira-mail`, account = the address), then add the account to
    `data/mail-accounts.json`. Microsoft 365: IMAP basic auth is dead, so
    use a Graph app registration in your own tenant (public client flows
    enabled, delegated Mail + Calendars.Read with admin consent), set
    `msgraph_client_id` / `msgraph_tenant`, and run the device login from
    Settings > Connect M365.
-5. **Phone access** - Vira binds `0.0.0.0:8377`; put the Mac on a tailnet
+6. **Config extras** - copy `config.example.json` to `data/config.json`
+   for identity details: your name, the iMessage handle Vira texts
+   notifications to, family calendar names. Every key is optional; an
+   absent value leaves that feature dormant.
+7. **Phone access** - Vira binds `0.0.0.0:8377`; put the Mac on a tailnet
    and the phone URL just works.
-6. **Run at login** - a launchd agent keeps it alive; set `launchd_label`
+8. **Run at login** - a launchd agent keeps it alive; set `launchd_label`
    in the config so the in-app updater can restart the service cleanly.
 
 ## Live sessions

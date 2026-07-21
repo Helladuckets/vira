@@ -244,11 +244,17 @@ def add_person(name, handles, class_hint=None, note=None, person_id=None):
     with _lock:
         crm.invalidate()
         people_path = _people()
-        doc = json.loads(people_path.read_text())
-        backups = _backups()
-        backups.mkdir(exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        shutil.copy2(people_path, backups / f"people-{stamp}.json")
+        try:
+            doc = json.loads(people_path.read_text())
+            backups = _backups()
+            backups.mkdir(exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            shutil.copy2(people_path, backups / f"people-{stamp}.json")
+        except FileNotFoundError:
+            # first person ever: mint the registry, so a CRM can grow from
+            # zero through triage alone (v9 onboarding)
+            people_path.parent.mkdir(parents=True, exist_ok=True)
+            doc = {"people": []}
 
         if person_id:
             person = next((p for p in doc["people"] if p["id"] == person_id), None)

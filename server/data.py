@@ -42,9 +42,16 @@ def _load():
         return _cache
 
     root = _crm()
-    people = json.loads((root / "people.json").read_text())["people"]
-    master = {r["id"]: r for r in json.loads((root / "master.json").read_text())
-              if isinstance(r, dict) and r.get("id")}
+    try:
+        people = json.loads((root / "people.json").read_text())["people"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        people = []          # no registry yet — an empty CRM, not a crash
+    try:
+        master = {r["id"]: r
+                  for r in json.loads((root / "master.json").read_text())
+                  if isinstance(r, dict) and r.get("id")}
+    except (OSError, json.JSONDecodeError):
+        master = {}
 
     by_id, by_handle = {}, {}
     for p in people:

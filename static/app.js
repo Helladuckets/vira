@@ -4083,6 +4083,210 @@ document.getElementById("subs-refresh")?.addEventListener("click", async (e) => 
 // Per-view lazy loaders — one list shared by desktop window opens, mobile
 // view activation (Launchpad), and deep links, so every entry path loads a
 // surface the same way.
+// ---------- Setup (first-run onboarding: contacts, dossiers, Brain) ------
+
+let setupPollTimer = null;
+
+async function loadSetup() {
+  const body = $("#setup-body");
+  if (!body) return;
+  const st = await api("/api/onboard");
+  renderSetup(st);
+  if (st.dossiers && st.dossiers.running) pollSetup();
+}
+
+function pollSetup() {
+  if (setupPollTimer) return;
+  setupPollTimer = setInterval(async () => {
+    if (!$("#setup-body")) {
+      clearInterval(setupPollTimer); setupPollTimer = null; return;
+    }
+    const st = await api("/api/onboard").catch(() => null);
+    if (!st) return;
+    renderSetup(st);
+    if (!st.dossiers || !st.dossiers.running) {
+      clearInterval(setupPollTimer); setupPollTimer = null;
+      toast("Dossier build finished");
+    }
+  }, 2500);
+}
+
+function setupCard(title) {
+  const card = el("div", "setup-card");
+  card.appendChild(el("div", "setup-card-title", title));
+  return card;
+}
+
+async function setupAct(btn, fn, okMsg) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "working…";
+  try {
+    const res = await fn();
+    if (okMsg) toast(okMsg(res));
+    await loadSetup();
+  } catch (e) {
+    toast(e.message || "failed");
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+function renderSetup(st) {
+  const body = $("#setup-body");
+  if (!body) return;
+  const mode = $("#setup-mode");
+  if (mode) mode.textContent = st.fixture_mode
+    ? "demo data — connect yours below" : "running on your data";
+  body.replaceChildren();
+
+  // -- contacts in
+  const c = setupCard("1 · Connect your contacts");
+  c.appendChild(el("p", "hint",
+    `${st.crm.people} ${st.crm.people === 1 ? "person" : "people"} in your ` +
+    `CRM (${st.crm.root}). Importing never sends anything anywhere — it ` +
+    `reads what this Mac already has.`));
+  const crow = el("div", "setup-row");
+  if (st.contacts.apple_sources > 0) {
+    const ab = el("button", "btn primary", "Import Apple Contacts");
+    ab.onclick = () => setupAct(ab,
+      () => api("/api/onboard/apple", { method: "POST" }),
+      (r) => `${r.added} added, ${r.already_known} already known`);
+    crow.appendChild(ab);
+  } else {
+    crow.appendChild(el("span", "hint", "No Apple Contacts stores found."));
+  }
+  const gbtn = el("button", "btn", "Import Google Contacts CSV…");
+  const file = el("input");
+  file.type = "file";
+  file.accept = ".csv,text/csv";
+  file.style.display = "none";
+  file.onchange = () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => setupAct(gbtn,
+      () => api("/api/onboard/csv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: String(rd.result) }),
+      }),
+      (r) => `${r.added} added, ${r.already_known} already known`);
+    rd.readAsText(f);
+  };
+  gbtn.onclick = () => file.click();
+  crow.appendChild(gbtn);
+  crow.appendChild(file);
+  c.appendChild(crow);
+  body.appendChild(c);
+
+  // -- first dossiers
+  const d = setupCard("2 · Build first dossiers");
+  d.appendChild(el("p", "hint",
+    `${st.crm.profiles} ${st.crm.profiles === 1 ? "dossier" : "dossiers"} ` +
+    `on file. Vira reads your most active iMessage threads and writes a ` +
+    `first dossier per person — relationship, conversation hooks, open ` +
+    `loops — using your configured model backend.`));
+  const ds = st.dossiers || {};
+  if (ds.running) {
+    d.appendChild(el("p", "setup-progress",
+      `Building ${ds.done}/${ds.total}` +
+      (ds.current ? ` — ${ds.current}` : "")));
+  } else {
+    const drow = el("div", "setup-row");
+    const db = el("button", "btn primary", "Build first dossiers");
+    if (st.fixture_mode) {
+      db.disabled = true;
+      drow.appendChild(db);
+      drow.appendChild(el("span", "hint", "connect contacts first"));
+    } else {
+      db.onclick = () => setupAct(db,
+        () => api("/api/onboard/dossiers", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ limit: 25 }),
+        }), () => "Dossier build started");
+      drow.appendChild(db);
+    }
+    d.appendChild(drow);
+    if (ds.finished && ds.built && ds.built.length)
+      d.appendChild(el("p", "hint",
+        `Last build: ${ds.built.length} dossiers (${ds.built.slice(0, 5)
+          .join(", ")}${ds.built.length > 5 ? "…" : ""}).`));
+    if (ds.errors && ds.errors.length)
+      d.appendChild(el("p", "hint",
+        `${ds.errors.length} skipped (model errors) — rerun picks them up.`));
+  }
+  body.appendChild(d);
+
+  // -- the Brain
+  const b = setupCard("3 · Wire the Brain");
+  if (st.vault.connected) {
+    b.appendChild(el("p", "hint",
+      `Connected: ${st.vault.root} — ${st.vault.notes} ` +
+      `${st.vault.notes === 1 ? "note" : "notes"} indexed locally. ` +
+      `Ask it anything in the Brain window.`));
+  } else {
+    b.appendChild(el("p", "hint",
+      "Point Vira at a notes vault (Obsidian or any folder of markdown) " +
+      "and the Brain answers questions grounded in your own notes — " +
+      "indexed on this Mac, nothing leaves it."));
+  }
+  const vrow = el("div", "setup-row");
+  const vin = el("input", "search");
+  vin.type = "text";
+  vin.placeholder = st.vault.connected ? st.vault.root : "~/Documents/Notes";
+  const vb = el("button", "btn primary", "Use this vault");
+  vb.onclick = () => setupAct(vb,
+    () => api("/api/onboard/vault", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: vin.value.trim(), init: false }),
+    }), (r) => `Brain connected — ${r.notes} ${r.notes === 1 ? "note" : "notes"}`);
+  const vnb = el("button", "btn", "Start a new vault here");
+  vnb.onclick = () => setupAct(vnb,
+    () => api("/api/onboard/vault", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: vin.value.trim(), init: true }),
+    }), () => "Vault created and connected");
+  vrow.appendChild(vin);
+  vrow.appendChild(vb);
+  vrow.appendChild(vnb);
+  b.appendChild(vrow);
+  body.appendChild(b);
+
+  // -- live feed access
+  const f2 = setupCard("4 · Live feed");
+  if (st.feed.chat_db === "ok") {
+    f2.appendChild(el("p", "hint setup-ok",
+      "Messages database readable — the live feed and dossier builder " +
+      "can see your history."));
+  } else if (st.feed.chat_db === "no-access") {
+    f2.appendChild(el("p", "hint setup-warn",
+      "Messages database found but not readable. Grant Full Disk Access " +
+      "to .venv/bin/python (System Settings > Privacy & Security > Full " +
+      "Disk Access), then recheck — no restart needed."));
+    const rrow = el("div", "setup-row");
+    const rb = el("button", "btn", "Recheck");
+    rb.onclick = () => loadSetup();
+    rrow.appendChild(rb);
+    f2.appendChild(rrow);
+  } else {
+    f2.appendChild(el("p", "hint",
+      "No Messages database on this Mac — the iMessage feed stays off."));
+  }
+  body.appendChild(f2);
+
+  // -- mail
+  const m = setupCard("5 · Mail (optional)");
+  m.appendChild(el("p", "hint",
+    `${st.mail.accounts} mail ${st.mail.accounts === 1 ? "account" :
+      "accounts"} connected. Add Gmail/IMAP or Microsoft 365 in Settings ` +
+    `(gear, top right) to fold email into the feed and brief.`));
+  body.appendChild(m);
+}
+
 function viewLoad(id) {
   if (id === "brief" && Date.now() - briefLoadedAt > 300000)
     loadBrief().catch(() => {});
@@ -4120,6 +4324,7 @@ function viewLoad(id) {
   if (id === "routines") loadRoutines().catch(() => {});
   if (id === "subsviz") loadSubsViz().catch(() => {});
   if (id === "launchpad") renderLaunchpad();
+  if (id === "setup") loadSetup().catch(() => {});
 }
 
 // Open an app on either width: floating window on desktop; on mobile the
@@ -5373,6 +5578,8 @@ $("#app-run-copy").addEventListener("click", async () => {
 const WINDOWS = [
   { id: "launchpad", title: "Launchpad", w: 720, defaultOpen: false,
     icon: "M4.5 4.5h5.8v5.8H4.5zM13.7 4.5h5.8v5.8h-5.8zM4.5 13.7h5.8v5.8H4.5zM13.7 13.7h5.8v5.8h-5.8z" },
+  { id: "setup", title: "Setup", w: 560, defaultOpen: true,
+    icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" },
   { id: "feed", title: "Incoming", w: 440,
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
   { id: "people", title: "People", w: 440,
