@@ -54,6 +54,13 @@ def _cal_connect():
         return sqlite3.connect(uri + "&immutable=1", uri=True, timeout=5)
 
 
+# Why the store can't be read right now, or None. A missing store is every
+# non-Mac install; an unreadable one is a Mac before Full Disk Access. Both
+# used to 502 the whole brief — the calendar section must degrade to empty
+# with the reason named, because the brief's other sections don't need it.
+_cal_error = None
+
+
 def _day_bounds(offset):
     start = (dt.datetime.now()
              .replace(hour=0, minute=0, second=0, microsecond=0)
@@ -78,12 +85,22 @@ def _is_remote(title, remote_titles):
 
 
 def _occurrences(day_from, day_to):
-    """Expanded calendar occurrences between two local datetimes."""
+    """Expanded calendar occurrences between two local datetimes. An
+    unreachable store answers [] and records why in _cal_error — never an
+    exception (the pre-FDA 502, and every non-Mac install)."""
+    global _cal_error
     fams = _family_calendars()
     rts = _remote_titles()
     lo = day_from.timestamp() - APPLE_EPOCH
     hi = day_to.timestamp() - APPLE_EPOCH
-    con = _cal_connect()
+    try:
+        con = _cal_connect()
+    except sqlite3.DatabaseError:
+        _cal_error = ("no local calendar store on this machine"
+                      if not CAL_DB.exists() else
+                      "calendar store unreadable — grant Full Disk Access "
+                      "in System Settings > Privacy & Security")
+        return []
     try:
         rows = con.execute(
             """SELECT c.title, ci.summary, ci.all_day,
@@ -95,8 +112,12 @@ def _occurrences(day_from, day_to):
                WHERE COALESCE(oc.occurrence_start_date, oc.occurrence_date) >= ?
                  AND COALESCE(oc.occurrence_start_date, oc.occurrence_date) < ?
                ORDER BY 4""", (lo, hi)).fetchall()
+    except sqlite3.DatabaseError as e:
+        _cal_error = f"calendar store unreadable: {str(e)[:120]}"
+        return []
     finally:
         con.close()
+    _cal_error = None
     out, seen = [], set()
     for cal, summary, all_day, start, end in rows:
         if not summary or cal in SKIP_CALENDARS:
@@ -115,8 +136,8 @@ def _occurrences(day_from, day_to):
             "all_day": bool(all_day),
             "start": s.isoformat(),
             "end": e.isoformat(),
-            "start_hm": s.strftime("%-I:%M %p"),
-            "end_hm": e.strftime("%-I:%M %p"),
+            "start_hm": settings.strf(s, "%-I:%M %p"),
+            "end_hm": settings.strf(e, "%-I:%M %p"),
             "conflict": False,
             "remote": _is_remote(summary, rts),
         })
@@ -171,10 +192,12 @@ def _m365_events():
                         "all_day": ev["all_day"],
                         "start": s,
                         "end": e,
-                        "start_hm": dt.datetime.fromisoformat(s)
-                        .strftime("%-I:%M %p") if s else "",
-                        "end_hm": dt.datetime.fromisoformat(e)
-                        .strftime("%-I:%M %p") if e else "",
+                        "start_hm": settings.strf(
+                            dt.datetime.fromisoformat(s),
+                            "%-I:%M %p") if s else "",
+                        "end_hm": settings.strf(
+                            dt.datetime.fromisoformat(e),
+                            "%-I:%M %p") if e else "",
                         "conflict": False,
                         "remote": (bool(ev.get("online"))
                                    or _is_remote(ev["title"], rts)),
@@ -208,7 +231,8 @@ def _calendar():
     strip = lambda evs: [e for e in evs if not e["birthday"]]
     return {"today": strip(today), "tomorrow": strip(tomorrow),
             "birthdays": birthdays,
-            "available": CAL_DB.exists(),
+            "available": CAL_DB.exists() and _cal_error is None,
+            "error": _cal_error,
             "m365": m365["status"]}
 
 
@@ -497,7 +521,7 @@ def compose(feed_items=None):
     now = dt.datetime.now()
     return {
         "generated_at": now.isoformat(),
-        "date_label": now.strftime("%A, %B %-d, %Y"),
+        "date_label": settings.strf(now, "%A, %B %-d, %Y"),
         "calendar": _calendar(),
         "waiting": {
             "imessage": _not_dismissed(_unreplied_imessages()),

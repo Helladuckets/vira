@@ -23,12 +23,13 @@ probe that crashes the caller is worse than one that says "unknown".
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import threading
 from pathlib import Path
 
-from . import settings
+from . import secrets, settings
 
 # Auth states, worst to best: the provider isn't here at all; it's here but
 # nobody is signed in; it's authenticated by a pasted key; it's
@@ -44,7 +45,7 @@ PROVIDERS = {
         "paths": ["/opt/homebrew/bin/claude", "~/.local/bin/claude",
                   "~/.claude/local/claude"],
         "status_cmd": ["auth", "status"],
-        "login_cmd": "claude auth login",
+        "login_args": ["auth", "login"],
         "api_env": "VIRA_ANTHROPIC_KEY",
         "models": ["sonnet", "opus", "haiku"],
         # Live agent sessions are Claude Agent SDK — only this provider
@@ -58,7 +59,7 @@ PROVIDERS = {
         "paths": ["/Applications/ChatGPT.app/Contents/Resources/codex",
                   "/opt/homebrew/bin/codex", "~/.local/bin/codex"],
         "status_cmd": ["login", "status"],
-        "login_cmd": "codex login",
+        "login_args": ["login"],
         "api_env": "VIRA_OPENAI_KEY",
         "models": ["gpt-5.1-codex", "gpt-5.1"],
         # codex exec serves every suggest.complete path (drafts, dossiers,
@@ -104,22 +105,51 @@ def find_binary(pid):
     return found
 
 
+def login_command(pid, binary=None):
+    """The exact command a terminal needs to sign this provider in.
+
+    Composed from the RESOLVED binary, never assumed: a CLI living inside
+    an app bundle is not on PATH, so printing the bare name hands the owner
+    a command that fails with "command not found" (the sandbox caught codex
+    doing exactly this). And under the sandbox the server's HOME is the
+    fake home — a login run in the owner's real terminal would sign in the
+    wrong home, so the card must route through sandbox.sh (Anthropic's
+    documented flow) or carry the HOME prefix explicitly."""
+    spec = PROVIDERS.get(pid)
+    if not spec:
+        return ""
+    if binary is None:
+        binary = find_binary(pid)
+    if not binary:
+        return ""
+    if settings.sandboxed() and pid == "anthropic":
+        script = Path(__file__).resolve().parent.parent / "scripts" / "sandbox.sh"
+        return f"{shlex.quote(str(script))} login"
+    # find_binary consults PATH first, so a PATH-resolved binary equals
+    # which()'s answer exactly; anything else came from the hiding places.
+    head = spec["bin"] if shutil.which(spec["bin"]) == binary else shlex.quote(binary)
+    cmd = f"{head} {' '.join(spec['login_args'])}"
+    if settings.sandboxed():
+        cmd = f"HOME={shlex.quote(str(Path.home()))} {cmd}"
+    return cmd
+
+
 def api_key(pid):
     """The provider's API key: env var first (existing installs and the
-    documented VIRA_ANTHROPIC_KEY path), then the Keychain, where the Setup
-    window puts a key pasted by someone with no shell profile to edit."""
+    documented VIRA_ANTHROPIC_KEY path), then the secrets ladder — the
+    Keychain on a Mac, Credential Manager on Windows, the locked file
+    elsewhere — where Setup puts a key pasted by someone with no shell
+    profile to edit."""
     spec = PROVIDERS.get(pid) or {}
     val = os.environ.get(spec.get("api_env", ""), "")
     if val:
         return val
+    if pid not in PROVIDERS:
+        return ""
     try:
-        res = subprocess.run(
-            ["security", "find-generic-password", "-a", pid,
-             "-s", settings.keychain_service("vira-model-key"), "-w"],
-            capture_output=True, text=True, timeout=10)
+        return secrets.get(settings.keychain_service("vira-model-key"), pid)
     except Exception:  # noqa: BLE001 — never raise out of a lookup
         return ""
-    return res.stdout.strip() if res.returncode == 0 else ""
 
 
 def _probe_auth(pid, binary):
@@ -175,6 +205,7 @@ def probe(pid):
     else:
         auth, detail = ABSENT, f"{spec['bin']} not found on this Mac"
 
+    login_cmd = login_command(pid, binary)
     return {
         "id": pid,
         "label": spec["label"],
@@ -186,19 +217,19 @@ def probe(pid):
         "has_key": bool(key),
         "models": list(spec["models"]),
         "can": dict(spec["can"]),
-        "login_cmd": spec["login_cmd"],
+        "login_cmd": login_cmd,
         "connected": auth in (SIGNED_IN, KEY),
-        "action": _action_for(spec, binary, auth),
+        "action": _action_for(spec, binary, auth, login_cmd),
     }
 
 
-def _action_for(spec, binary, auth):
+def _action_for(spec, binary, auth, login_cmd):
     if auth in (SIGNED_IN, KEY):
         return ""
     if not binary:
         return (f"{spec['label']}: install the {spec['bin']} CLI to sign in "
                 f"with a {spec['sub_name']} subscription, or paste an API key.")
-    return (f"{spec['label']}: run `{spec['login_cmd']}` in a terminal to sign "
+    return (f"{spec['label']}: run `{login_cmd}` in a terminal to sign "
             f"in with your {spec['sub_name']} subscription, or paste an API key.")
 
 

@@ -593,9 +593,13 @@ def preview_file(att_id):
         if not out.exists():
             THUMBS.mkdir(parents=True, exist_ok=True)
             tmp = out.with_suffix(".tmp.jpg")
-            subprocess.run(
-                ["sips", "-s", "format", "jpeg", str(path), "--out", str(tmp)],
-                capture_output=True, timeout=60)
+            try:
+                subprocess.run(
+                    ["sips", "-s", "format", "jpeg", str(path), "--out",
+                     str(tmp)],
+                    capture_output=True, timeout=60)
+            except OSError:  # no sips off-Mac; serve the original as-is
+                pass
             if tmp.exists() and tmp.stat().st_size > 0:
                 tmp.replace(out)
             else:

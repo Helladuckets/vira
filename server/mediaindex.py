@@ -403,7 +403,12 @@ def backfill_docs(log=print):
 # ---------- stage: OCR (Apple Vision, on-device) ----------
 
 def backfill_ocr(log=print, batch_commit=25):
-    from .localmodels import vision_ocr
+    from .localmodels import ocr_available, vision_ocr
+    if not ocr_available():
+        # Skip resumably (the Ollama-down precedent): items stay ocr=''
+        # so a future backend picks them up, never stamped "ran, empty".
+        log("ocr: no backend on this platform (Apple Vision) — skipped")
+        return 0
     con = _db()
     rows = con.execute(
         """SELECT i.seq, i.path FROM items i JOIN content c ON c.seq=i.seq

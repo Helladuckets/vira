@@ -12,9 +12,23 @@ themself, whose thread and dossier double as the usage tour. Set
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# The platform seam, named once. Modules that shell out to Mac-only tools
+# (osascript, sips, launchctl, Apple Vision) branch on these instead of
+# discovering the answer as a FileNotFoundError at runtime.
+IS_MAC = sys.platform == "darwin"
+IS_WIN = os.name == "nt"
+
+
+def strf(d, fmt):
+    """strftime with the no-padding flag made portable: %-I / %-d are
+    glibc/BSD extensions that raise ValueError on Windows, whose CRT
+    spells the same thing %#I / %#d."""
+    return d.strftime(fmt.replace("%-", "%#") if IS_WIN else fmt)
 CONFIG_PATH = ROOT / "data" / "config.json"
 FIXTURES = ROOT / "fixtures"
 FIXTURE_CRM = ROOT / "data" / "fixture-crm"
@@ -71,6 +85,14 @@ def keychain_service(name: str) -> str:
     """
     prefix = os.environ.get("VIRA_KEYCHAIN_PREFIX") or raw().get("keychain_prefix") or ""
     return f"{prefix}{name}" if prefix else name
+
+
+def sandboxed() -> bool:
+    """True when this process is a sandbox instance (scripts/sandbox.sh
+    serve). The flag changes what commands Setup hands the owner: a login
+    typed in a normal terminal would land in the REAL home, not the
+    sandbox's fake one."""
+    return bool(os.environ.get("VIRA_SANDBOX"))
 
 
 def fixture_mode():

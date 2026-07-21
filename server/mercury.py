@@ -20,7 +20,6 @@ Poll cadence: config "mercury_poll_hours" (default 6) — subscriptions move
 slowly; a poller that catches up when the Mac wakes is fine.
 """
 import json
-import subprocess
 import threading
 import time
 import urllib.error
@@ -28,7 +27,7 @@ import urllib.parse
 import urllib.request
 from datetime import date, datetime, timezone
 
-from . import settings, subscriptions
+from . import secrets, settings, subscriptions
 
 API = "https://api.mercury.com/api/v1"
 PAGE = 500
@@ -46,10 +45,7 @@ def keychain_service():
 
 
 def keychain_token():
-    res = subprocess.run(
-        ["security", "find-generic-password", "-s", keychain_service(), "-w"],
-        capture_output=True, text=True, timeout=10)
-    return res.stdout.strip() if res.returncode == 0 else None
+    return secrets.get(keychain_service()) or None
 
 
 def _get(path, token, params=None):
