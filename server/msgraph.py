@@ -25,7 +25,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-SCOPE = "https://graph.microsoft.com/Mail.ReadWrite offline_access"
+from . import settings
+
+SCOPE ="https://graph.microsoft.com/Mail.ReadWrite offline_access"
 # device login asks for calendar too (brief v2); token refreshes keep
 # requesting only the scope they need, so a pre-calendar refresh token
 # keeps working for mail and simply can't mint a calendar token until
@@ -34,7 +36,7 @@ SCOPE_CAL = "https://graph.microsoft.com/Calendars.Read offline_access"
 SCOPE_LOGIN = ("https://graph.microsoft.com/Mail.ReadWrite "
                "https://graph.microsoft.com/Calendars.Read offline_access")
 GRAPH = "https://graph.microsoft.com/v1.0"
-KEYCHAIN_SERVICE = "vira-mail-graph"
+KEYCHAIN_SERVICE = "vira-mail-graph"   # namespaced per instance by settings.keychain_service
 _DATA = Path(__file__).resolve().parent.parent / "data"
 ACCOUNTS = _DATA / "mail-accounts.json"
 CONFIG = _DATA / "config.json"
@@ -99,7 +101,7 @@ def get_bytes(email, path, scope=SCOPE):
 def _stored_refresh_token(email):
     res = subprocess.run(
         ["security", "find-generic-password", "-a", email,
-         "-s", KEYCHAIN_SERVICE, "-w"],
+         "-s", settings.keychain_service(KEYCHAIN_SERVICE), "-w"],
         capture_output=True, text=True, timeout=10)
     return res.stdout.strip() if res.returncode == 0 else None
 
@@ -113,7 +115,7 @@ def _store_refresh_token(email, token):
         return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
     token = str(token).replace("\n", "").replace("\r", "")
     cmd = (f"add-generic-password -U -a {q(email)} "
-           f"-s {q(KEYCHAIN_SERVICE)} -w {q(token)}\n")
+           f"-s {q(settings.keychain_service(KEYCHAIN_SERVICE))} -w {q(token)}\n")
     subprocess.run(["security", "-i"], input=cmd,
                    capture_output=True, text=True, timeout=10)
 
