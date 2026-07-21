@@ -3704,6 +3704,131 @@ $("#journal-export")?.addEventListener("click", async () => {
           + (ex.count === 1 ? "" : "s") + " as a prompt");
   } catch (e) { alert("Export failed: " + e.message); }
 });
+// ---------- phone link (Android companion pairing + ingest status) ----------
+let companionPollT = null;
+
+async function loadCompanion() {
+  const body = $("#companion-body");
+  if (!body) return;
+  try {
+    const st = await api("/api/companion/status");
+    renderCompanion(st);
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty", "Phone link unavailable: " + e.message));
+  }
+}
+
+function renderCompanion(st) {
+  const body = $("#companion-body");
+  body.innerHTML = "";
+  const paired = (st.devices || []).filter((d) => !d.pending);
+  if (!paired.length) {
+    const empty = el("div", "companion-empty");
+    empty.appendChild(el("div", "companion-empty-head", "No phone paired yet"));
+    empty.appendChild(el("div", "hint",
+      "Install the Vira Companion app on the Android phone, then press " +
+      "“Pair a phone” and scan the code. The phone needs to reach " +
+      "this machine — same Tailscale network (or same Wi‑Fi)."));
+    body.appendChild(empty);
+  }
+  for (const d of paired) {
+    const row = el("div", "companion-dev");
+    const main = el("div", "companion-dev-main");
+    main.appendChild(el("div", "companion-dev-name",
+                        d.name || d.platform || d.id));
+    main.appendChild(el("div", "companion-dev-sub",
+      (d.platform ? d.platform + " · " : "") +
+      "paired " + (d.paired_at || "").slice(0, 10) +
+      (d.last_seen ? " · last seen " + fmtTime(d.last_seen) : "")));
+    row.appendChild(main);
+    const rm = el("button", "fchip sm", "unpair");
+    rm.addEventListener("click", async () => {
+      if (!confirm("Unpair " + (d.name || d.id) +
+                   "? The phone will need a new QR to reconnect.")) return;
+      try { await del("/api/companion/device/" + d.id); } catch (e) {
+        toast("Unpair failed: " + e.message); return;
+      }
+      loadCompanion().catch(() => {});
+    });
+    row.appendChild(rm);
+    body.appendChild(row);
+  }
+  if (st.messages) {
+    const s = el("div", "companion-stats");
+    const bit = (n, label) => {
+      const b = el("div", "companion-stat");
+      b.appendChild(el("div", "companion-stat-n", String(n)));
+      b.appendChild(el("div", "companion-stat-l", label));
+      return b;
+    };
+    s.appendChild(bit(st.messages, "messages"));
+    s.appendChild(bit(st.senders, "senders"));
+    s.appendChild(bit(st.unknown_senders, "in triage"));
+    body.appendChild(s);
+    if (st.last_received)
+      body.appendChild(el("div", "hint",
+        "last upload " + fmtTime(st.last_received)));
+  }
+}
+
+async function companionPairStart() {
+  const qrBox = $("#companion-qr");
+  try {
+    const p = await post("/api/companion/pair/start", {});
+    qrBox.hidden = false;
+    qrBox.innerHTML = "";
+    qrBox.appendChild(el("div", "companion-qr-head",
+      "Scan from the Vira Companion app"));
+    if (p.qr_svg) {
+      const holder = el("div", "companion-qr-svg");
+      holder.innerHTML = p.qr_svg;
+      qrBox.appendChild(holder);
+    }
+    const meta = el("div", "companion-qr-meta");
+    meta.appendChild(el("div", null, "Hub: " + p.url));
+    meta.appendChild(el("div", "hint",
+      "Code expires in " + Math.round((p.expires_s || 900) / 60) +
+      " minutes. Can’t scan? Copy the pairing text instead."));
+    qrBox.appendChild(meta);
+    const cp = el("button", "fchip sm", "Copy pairing text");
+    cp.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(p.payload);
+      toast("Pairing text copied — paste it in the app");
+    });
+    qrBox.appendChild(cp);
+    // watch for the claim: the moment the phone pairs, celebrate + refresh
+    clearInterval(companionPollT);
+    const started = Date.now();
+    companionPollT = setInterval(async () => {
+      try {
+        const st = await api("/api/companion/status");
+        const claimed = (st.devices || []).some(
+          (d) => d.id === p.device_id && !d.pending);
+        if (claimed) {
+          clearInterval(companionPollT);
+          qrBox.hidden = true;
+          toast("Phone paired");
+          confettiAt($("#companion-pair"));
+          renderCompanion(st);
+        } else if (Date.now() - started > (p.expires_s || 900) * 1000) {
+          clearInterval(companionPollT);
+          qrBox.hidden = true;
+        }
+      } catch { /* server away; keep watching */ }
+    }, 3000);
+  } catch (e) {
+    qrBox.hidden = false;
+    qrBox.innerHTML = "";
+    qrBox.appendChild(el("div", "empty", e.message.includes("passive")
+      ? "This is a passive test instance — pairing is disabled here."
+      : "Pairing failed: " + e.message));
+  }
+}
+
+$("#companion-pair")?.addEventListener("click", () => companionPairStart());
+$("#companion-refresh")?.addEventListener("click", () => loadCompanion().catch(() => {}));
+
 // ---------- subscriptions (ledger + renewal radar + launchpad) ----------
 let subsData = null;
 const SUB_GROUPS = [
@@ -4532,6 +4657,7 @@ function viewLoad(id) {
   }
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
+  if (id === "companion") loadCompanion().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "brain") loadBrain().catch(() => {});
   if (id === "radar") loadRadar().catch(() => {});
@@ -5842,6 +5968,8 @@ const WINDOWS = [
     icon: "M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 4v3h-3M6 20v-3h3" },
   { id: "subs", title: "Subscriptions", w: 660,
     icon: "M3 6.5h18v11H3zM3 10h18M6 14.5h5M15.5 14.5h2.5" },
+  { id: "companion", title: "Phone Link", w: 460,
+    icon: "M8 2.5h8a1.5 1.5 0 0 1 1.5 1.5v16A1.5 1.5 0 0 1 16 21.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5zM6.5 6h11M6.5 18h11M11 20h2" },
   { id: "subsviz", title: "Morning Picker", w: 1040,
     icon: "M3 5h18v14H3zM6.5 5v14M17.5 5v14M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21M10 9.5h4v5h-4z" },
   { id: "design", title: "Design Studio", w: 1360,
