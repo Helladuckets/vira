@@ -66,10 +66,10 @@ class KeychainNamespaceTest(unittest.TestCase):
 
     def test_lookup_uses_the_namespaced_service(self):
         os.environ["VIRA_KEYCHAIN_PREFIX"] = "sandbox-"
-        with mock.patch.object(mercury.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=1, stdout="")
+        with mock.patch.object(mercury.secrets, "get",
+                               return_value="") as get:
             mercury.keychain_token()
-        self.assertIn("sandbox-vira-mercury", run.call_args[0][0])
+        self.assertEqual(get.call_args.args[0], "sandbox-vira-mercury")
 
 
 if __name__ == "__main__":

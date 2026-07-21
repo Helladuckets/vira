@@ -34,7 +34,7 @@ from datetime import date
 from pathlib import Path
 
 from . import data as crm
-from . import imessage, settings, suggest
+from . import imessage, secrets, settings, suggest
 
 AB_SOURCES = Path.home() / "Library" / "Application Support" / "AddressBook"
 CHAT_DB = Path.home() / "Library" / "Messages" / "chat.db"
@@ -515,7 +515,9 @@ def status():
 
 
 def set_provider(pid, api_key=None, model=None):
-    """Point Vira at a model provider, and file a pasted key in the Keychain.
+    """Point Vira at a model provider, and file a pasted key in the secrets
+    store (Keychain on a Mac, Credential Manager on Windows, locked file
+    elsewhere — server/secrets.py).
 
     Backend follows from what is actually usable: a subscription login uses
     the CLI path, a key-only provider uses the API path. Nothing here spends
@@ -528,17 +530,7 @@ def set_provider(pid, api_key=None, model=None):
         key = str(api_key).strip()
         if not key:
             raise ValueError("empty API key")
-        # `security -i` reads the command from stdin so the key never rides
-        # argv, where ps can see it (the msgraph precedent).
-        def q(v):
-            return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
-        cmd = (f"add-generic-password -U -a {q(pid)} "
-               f"-s {q(settings.keychain_service('vira-model-key'))} "
-               f"-w {q(key)}\n")
-        res = subprocess.run(["security", "-i"], input=cmd,
-                             capture_output=True, text=True, timeout=15)
-        if res.returncode != 0:
-            raise RuntimeError(f"keychain write failed: {res.stderr.strip()[:200]}")
+        secrets.set(settings.keychain_service("vira-model-key"), pid, key)
         provider._bin_cache.pop(pid, None)
 
     rec = provider.probe(pid)
