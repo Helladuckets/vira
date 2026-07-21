@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The hub speaks plain HTTP because the transport IS the tailnet:
+     Tailscale wraps every packet in WireGuard encryption, and the pairing
+     QR only ever points at tailnet (100.64/10, *.ts.net) or LAN hosts.
+     Android blocks cleartext by default, so name the allowance. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

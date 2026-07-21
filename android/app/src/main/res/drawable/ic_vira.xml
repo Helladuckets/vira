@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The gold V on the dark round tile — the same mark as the hub favicon. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp" android:height="48dp"
+    android:viewportWidth="48" android:viewportHeight="48">
+    <path android:fillColor="#101216"
+        android:pathData="M24,0a24,24 0 1,0 0,48a24,24 0 1,0 0,-48z" />
+    <path android:strokeColor="#d4a843" android:strokeWidth="4.4"
+        android:strokeLineCap="round" android:fillColor="#00000000"
+        android:pathData="M14,15L24,34L34,15" />
+</vector>

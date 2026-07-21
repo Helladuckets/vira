@@ -160,10 +160,12 @@ def business_signals(handle, verdict=None, texts=None):
 
 
 def candidates():
-    """Two sources, merged: (a) enrichment verdicts whose handle is still
-    absent from the CRM, and (b) placeholder "(unidentified)" entries the
+    """Three sources, merged: (a) enrichment verdicts whose handle is still
+    absent from the CRM, (b) placeholder "(unidentified)" entries the
     enrichment merge already appended to people.json — naming those is the
-    bulk of the triage work. Sorted contact-worthy first, then by volume."""
+    bulk of the triage work — and (c) unresolved senders uploaded by the
+    Android companion app (server/companion.py). Sorted contact-worthy
+    first, then by volume."""
     dis = _dismissed()
     by_key = {}
     for v in _verdicts():
@@ -216,10 +218,30 @@ def candidates():
             "tier": v.get("tier_target"),
             "msgs": 0,
         })
+    from . import companion
+    for u in companion.unknown_senders():
+        h = u["handle"]
+        if not h or h in dis or _key(h) in seen or crm.resolve_handle(h):
+            continue
+        seen.add(_key(h))
+        out.append({
+            "handle": h,
+            "person_id": None,
+            "name": "",
+            "relationship": f"texts via the companion app ({u['channel']})",
+            "evidence": (u["texts"][0][:140] if u.get("texts") else ""),
+            "contact_worthy": None,
+            "confidence": None,
+            "action": "needs_name",
+            "tier": None,
+            "msgs": u["msgs"],
+            "_texts": u.get("texts") or [],
+        })
+
     for c in out:
         sig, guess = business_signals(
             c["handle"], by_key.get(_key(c["handle"])),
-            _recent_inbound(c["handle"]))
+            c.pop("_texts", None) or _recent_inbound(c["handle"]))
         c["business"] = bool(sig)
         c["business_signals"] = sig
         c["company_guess"] = guess

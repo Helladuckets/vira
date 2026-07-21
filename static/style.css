@@ -2230,3 +2230,42 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   .setup-step { width: auto; flex: 0 0 auto; }
   .setup-step-sub { display: none; }
 }
+
+/* ---------- Phone Link (Android companion) ---------- */
+.companion-qr {
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--bg-raised); padding: 14px;
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  margin-bottom: 10px; text-align: center;
+}
+.companion-qr[hidden] { display: none; }
+.companion-qr-head { font-weight: 600; color: var(--text-head); }
+.companion-qr-svg {
+  background: #fff; border-radius: 10px; padding: 10px; line-height: 0;
+}
+.companion-qr-svg svg { width: 190px; height: 190px; display: block; }
+.companion-qr-meta { font-size: 12.5px; color: var(--text-dim); }
+.companion-qr-meta .hint { margin-top: 3px; }
+.companion-empty { padding: 14px 6px; }
+.companion-empty-head { font-weight: 600; color: var(--text-head); margin-bottom: 5px; }
+.companion-dev {
+  display: flex; align-items: center; gap: 10px;
+  border: 1px solid var(--line); border-radius: 9px;
+  padding: 9px 11px; margin-bottom: 7px; background: var(--bg-raised);
+}
+.companion-dev-main { flex: 1; min-width: 0; }
+.companion-dev-name { font-weight: 600; color: var(--text-head); }
+.companion-dev-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+.companion-stats { display: flex; gap: 8px; margin-top: 10px; }
+.companion-stat {
+  flex: 1; border: 1px solid var(--line); border-radius: 9px;
+  padding: 9px 6px; text-align: center; background: var(--bg-raised);
+}
+.companion-stat-n {
+  font-size: 19px; font-weight: 700; color: var(--accent-bright);
+  font-variant-numeric: tabular-nums;
+}
+.companion-stat-l {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-dim); margin-top: 2px;
+}

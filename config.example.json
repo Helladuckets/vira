@@ -62,6 +62,8 @@
   "_atlas_max_nodes": "Contact Atlas node cap - the N most-active tiered contacts rendered in the graph. Keeps the mesh legible and the O(n^2) edge passes cheap.",
   "atlas_min_edge_weight": 0.15,
   "_atlas_min_edge_weight": "Edges whose fused multi-signal weight falls below this are dropped from the atlas.",
+  "companion_hub_url": "",
+  "_companion_hub_url": "URL the Android companion pairing QR points the phone at, e.g. http://your-machine.your-tailnet.ts.net:8377. Empty = auto-detect: the Tailscale MagicDNS name, then the tailnet IP, then the LAN IP.",
   "launchd_label": "",
   "_launchd_label": "If Vira runs as a launchd service, its label (e.g. com.example.vira). The in-app updater then restarts via launchctl kickstart; empty = plain process exit after update.",
   "fixture_mode": null,
