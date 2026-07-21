@@ -23,7 +23,8 @@ PORT_MIN=8378
 PORT_MAX=8399
 PIDFILE=.test-instance.json
 
-usage() { sed -n '2,14p' "$0"; exit 1; }
+# $0 inside a zsh function is the FUNCTION name, not the script.
+usage() { sed -n '2,14p' "${(%):-%x}"; exit 1; }
 
 slug_check() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
