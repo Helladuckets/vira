@@ -19,6 +19,12 @@ static/reading/
 # Local Claude Code project config (absolute paths, permission grants).
 .claude/
 
+# --- Android companion app (android/) ---
+android/.gradle/
+android/local.properties
+android/**/build/
+android/.kotlin/
+
 # --- Environment / runtime ---
 # Branch-worktree test instances (scripts/branch.sh serve)
 .test-instance.*
