@@ -29,7 +29,10 @@ from .filelock import locked
 STORE = Path(__file__).resolve().parent.parent / "data" / "ui-state.json"
 # Only the keys that define the desktop arrangement sync. Everything else
 # in localStorage (sort choices, seen-flags) stays per-origin on purpose.
-KEYS = ("vira-desktop", "vira-dock-order", "vira-dock-hidden")
+KEYS = ("vira-desktop", "vira-dock-order", "vira-dock-hidden",
+        # which setup steps have already opened their module,
+        # so a reload never re-opens what the owner closed
+        "vira-setup-opened")
 MAX_VALUE_BYTES = 262144  # a runaway client never bloats the store
 
 _lock = threading.Lock()
