@@ -14,11 +14,15 @@ PATTERNS_FILE="$ROOT/data/pii-patterns.txt"
 
 # Two modes: default scans STAGED additions (the pre-commit hook);
 # `--tree` scans every line of every tracked text file (publication
-# audits and CI, where only the generic built-ins apply since the
-# instance patterns file is git-ignored).
+# audits, local sweeps, and CI — in CI only the generic built-ins apply
+# since the instance patterns file is git-ignored). LICENSE is excluded
+# from the tree scan: its attribution line is deliberate (public-release
+# decision D8, 2026-07-20).
+TREE=0
 if [ "${1:-}" = "--tree" ]; then
+    TREE=1
     DIFF="$(git grep -I -n -E '.' -- . ':(exclude)scripts/check-pii.sh' \
-            || true)"
+            ':(exclude)LICENSE' || true)"
 else
     DIFF="$(git diff --cached -U0 --diff-filter=ACM -- . \
             ':(exclude)scripts/check-pii.sh' \
@@ -32,14 +36,27 @@ fi
 DIFF="$(printf '%s\n' "$DIFF" | grep -v -E 'you@|example\.com|yourdomain|yourtenant|\+12125551234|[0-9]{3}[-.]?555[-.]?01[0-9]{2}' || true)"
 [ -z "$DIFF" ] && exit 0
 
+# Tree-mode lines carry a file:LINE: prefix from git grep -n, which a
+# digit-bearing pattern would match (hitting the line number of a clean
+# line, never its content). So patterns run against a prefix-stripped
+# copy, and the located original line is used only for reporting.
+# Staged lines carry no such prefix.
+if [ "$TREE" -eq 1 ]; then
+    CONTENT="$(printf '%s\n' "$DIFF" | sed 's/^[^:]*:[0-9][0-9]*://')"
+    LABEL="tracked"
+else
+    CONTENT="$DIFF"
+    LABEL="staged"
+fi
+
 fail=0
 check() {
-    hits="$(printf '%s\n' "$DIFF" | grep -E -- "$1" || true)"
-    if [ -n "$hits" ]; then
-        echo "PII guard: staged lines match /$1/:" >&2
-        printf '%s\n' "$hits" | head -5 >&2
-        fail=1
-    fi
+    nums="$(printf '%s\n' "$CONTENT" | grep -n -E -- "$1" | cut -d: -f1 || true)"
+    [ -z "$nums" ] && return 0
+    echo "PII guard: $LABEL lines match /$1/:" >&2
+    printf '%s\n' "$DIFF" \
+        | sed -n "$(printf '%sp;' $(printf '%s\n' "$nums" | head -5))" >&2
+    fail=1
 }
 
 # Generic built-ins.
@@ -58,8 +75,12 @@ fi
 
 if [ "$fail" -ne 0 ]; then
     echo "" >&2
-    echo "Commit blocked. Scrub the lines above, or bypass a false positive" >&2
-    echo "with: git commit --no-verify" >&2
+    if [ "$TREE" -eq 1 ]; then
+        echo "Tree scan flagged the lines above. Scrub them before publishing." >&2
+    else
+        echo "Commit blocked. Scrub the lines above, or bypass a false positive" >&2
+        echo "with: git commit --no-verify" >&2
+    fi
     exit 1
 fi
 exit 0
