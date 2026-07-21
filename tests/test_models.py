@@ -168,8 +168,12 @@ class LoginCommandTest(unittest.TestCase):
         # home; the sandbox's documented flow is sandbox.sh login.
         with mock.patch.dict(os.environ, {"VIRA_SANDBOX": "1"}):
             cmd = models.login_command("anthropic", "/opt/homebrew/bin/claude")
-        self.assertTrue(cmd.endswith("scripts/sandbox.sh login"), cmd)
-        self.assertTrue(Path(cmd.split(" login")[0]).is_absolute())
+        # Separator-agnostic: the script path is host-native (and may be
+        # quoted), but it must be absolute and end in sandbox.sh login.
+        self.assertTrue(cmd.endswith(" login"), cmd)
+        script = cmd[:-len(" login")].strip("'\"")
+        self.assertEqual(Path(script).name, "sandbox.sh")
+        self.assertTrue(Path(script).is_absolute(), cmd)
 
     def test_sandbox_prefixes_home_for_other_providers(self):
         bundled = "/Applications/ChatGPT.app/Contents/Resources/codex"

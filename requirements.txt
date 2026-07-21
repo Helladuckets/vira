@@ -21,4 +21,4 @@ claude-agent-sdk==0.2.115
 # installs dependency changes on update). On a dev machine with a local
 # qocha checkout, use an editable install (pip install -e ../qocha) — the
 # updater detects editable installs and never overwrites them.
-qocha @ git+https://github.com/Helladuckets/qocha@v0.2.0
+qocha @ git+https://github.com/Helladuckets/qocha@v0.2.1
