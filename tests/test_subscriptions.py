@@ -13,12 +13,58 @@ bug the predecessor shipped with.
 Run: .venv/bin/python -m unittest discover tests
 """
 import tempfile
+import types
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
 from server import brief, mercury, notify, receipts, settings, subscriptions
+
+# The suite's frozen "today". Fixture seeding and renewal math are
+# date-relative (fixtures/*.json seed days_ago offsets; _fake_reconcile
+# builds renewals days out), so every wall-clock read the suite touches is
+# pinned here: a live date.today() made expected values drift with the run
+# date — a days_ago offset crossing a calendar-month boundary shifts the
+# engine's month bucketing (hexagon-ai read "unclear" instead of "monthly"
+# late in any month).
+TODAY = date(2026, 7, 20)
+
+
+class _FrozenDate(date):
+    @classmethod
+    def today(cls):
+        return cls(TODAY.year, TODAY.month, TODAY.day)
+
+
+class _FrozenDateTime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return cls(TODAY.year, TODAY.month, TODAY.day, 12, 0, 0, tzinfo=tz)
+
+
+def _frozen_date_cls(day):
+    class _D(date):
+        @classmethod
+        def today(cls):
+            return cls(day.year, day.month, day.day)
+    return _D
+
+
+class FrozenClockCase(unittest.TestCase):
+    """Base for every case: pins the clock seams the suite reaches —
+    subscriptions' `date`, notify's `datetime`, brief's `dt` — so results
+    are identical on every run date."""
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        frozen_dt = types.SimpleNamespace(
+            date=_FrozenDate, datetime=_FrozenDateTime, timedelta=timedelta)
+        for p in (mock.patch.object(subscriptions, "date", _FrozenDate),
+                  mock.patch.object(notify, "datetime", _FrozenDateTime),
+                  mock.patch.object(brief, "dt", frozen_dt)):
+            p.start()
+            cls.addClassCleanup(p.stop)
 
 # Minimal registry mirroring catalog-seeded entries for the six merchants.
 REG = {"merchants": [
@@ -78,9 +124,10 @@ FIXTURE = [
 ]
 
 
-class EngineGroundTruth(unittest.TestCase):
+class EngineGroundTruth(FrozenClockCase):
     @classmethod
     def setUpClass(cls):
+        super().setUpClass()
         cls.conn = subscriptions.ledger_connect(":memory:")
         reg = {"merchants": [dict(m) for m in REG["merchants"]]}
         mercury.ingest(cls.conn, FIXTURE, reg)
@@ -205,7 +252,7 @@ class EngineGroundTruth(unittest.TestCase):
             275.25 + 38.45 + 161.28 + 400.00 + 198.20 + 115.00, 2))
 
 
-class EvidenceRefinement(unittest.TestCase):
+class EvidenceRefinement(FrozenClockCase):
     """Receipts evidence refining the reconcile (rules 5 + 8)."""
 
     def _reconcile_with_evidence(self, ev_rows):
@@ -263,7 +310,7 @@ class EvidenceRefinement(unittest.TestCase):
         self.assertIn("evidence_only", by_id["skiff"]["flags"])
 
 
-class ReceiptExtraction(unittest.TestCase):
+class ReceiptExtraction(FrozenClockCase):
     """The deterministic shell around the one AI step."""
 
     CANDS = [
@@ -312,7 +359,7 @@ class ReceiptExtraction(unittest.TestCase):
 
 def _fake_reconcile(days_out, cadence="monthly", yearly=2388.00,
                     monthly=199.00, status="active", flags=(), evidence=()):
-    renewal = (date.today() + timedelta(days=days_out)).isoformat() \
+    renewal = (TODAY + timedelta(days=days_out)).isoformat() \
         if days_out is not None else None
     return {"merchants": [{
         "id": "demo", "display_name": "Demo Co", "status": status,
@@ -321,10 +368,10 @@ def _fake_reconcile(days_out, cadence="monthly", yearly=2388.00,
         "flags": list(flags), "evidence_needed": list(evidence)}],
         "kpis": {"monthly_run_rate": monthly, "annualized": yearly,
                  "by_cadence": {}, "flagged": 0, "evidence_needed": 0},
-        "data_through": date.today().isoformat(), "staleness_days": 0}
+        "data_through": TODAY.isoformat(), "staleness_days": 0}
 
 
-class BriefSection(unittest.TestCase):
+class BriefSection(FrozenClockCase):
     def test_renewals_and_attention(self):
         fake = _fake_reconcile(3, flags=["possibly_canceled"],
                                evidence=[{"kind": "amount_variance",
@@ -342,7 +389,7 @@ class BriefSection(unittest.TestCase):
             self.assertIsNone(brief._subs_section())
 
 
-class RenewalPings(unittest.TestCase):
+class RenewalPings(FrozenClockCase):
     def _run(self, fake, tmp):
         sent = []
         with mock.patch.object(notify, "config", return_value={
@@ -384,74 +431,54 @@ class RenewalPings(unittest.TestCase):
         self.assertEqual(first, 0)
 
 
-class FixtureMode(unittest.TestCase):
-    def test_fresh_clone_seeds_demo_stores(self):
+class FixtureMode(FrozenClockCase):
+    def _seed_and_reconcile(self, date_cls):
+        """Seed the demo stores into a temp dir with the clock pinned to
+        date_cls.today() and return the reconcile keyed by merchant id."""
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(settings, "fixture_mode",
                                    return_value=True), \
                  mock.patch.object(subscriptions, "REGISTRY",
                                    Path(tmp) / "subscriptions.json"), \
                  mock.patch.object(subscriptions, "LEDGER",
-                                   Path(tmp) / "subs-ledger.sqlite"):
+                                   Path(tmp) / "subs-ledger.sqlite"), \
+                 mock.patch.object(subscriptions, "date", date_cls):
                 r = subscriptions.reconcile()
-            by_id = {m["id"]: m for m in r["merchants"]}
-            self.assertEqual(len(by_id), 5)
-            quill = by_id["quill-notes"]                # receipt-driven renewal
-            self.assertEqual(quill["renewal_source"], "receipt")
-            self.assertLessEqual(
-                (date.fromisoformat(quill["next_renewal"]) - date.today()).days, 7)
-            hexa = by_id["hexagon-ai"]                  # streams + both chip states
-            self.assertEqual(hexa["monthly"], 41.0)
-            kinds = [e["kind"] for e in hexa["evidence_needed"]]
-            self.assertIn("anomaly_explained", kinds)
-            self.assertIn("anomalous_charge", kinds)
-            self.assertIn("possibly_canceled", by_id["photon-vpn"]["flags"])
-            self.assertIn("cadence_conflict", by_id["datastream"]["flags"])
+        return {m["id"]: m for m in r["merchants"]}
 
-    def test_fixture_stores_stable_across_dates(self):
-        """Regression for the 2026-07-21 date drift: days_ago offsets
-        crossing month boundaries flipped hexagon-ai's cadence to unclear
-        (monthly read 22.5, not 41.0). The demo seed must satisfy the same
-        assertions on ANY calendar day — sweep a month-and-a-bit of
-        synthetic todays through the whole seed + reconcile path."""
-        real_date = subscriptions.date
-        for offset in range(0, 36):
-            fake_today = real_date.today() + timedelta(days=offset)
+    def _assert_demo_shapes(self, by_id, today):
+        self.assertEqual(len(by_id), 5)
+        quill = by_id["quill-notes"]                # receipt-driven renewal
+        self.assertEqual(quill["renewal_source"], "receipt")
+        self.assertLessEqual(
+            (date.fromisoformat(quill["next_renewal"]) - today).days, 7)
+        hexa = by_id["hexagon-ai"]                  # streams + both chip states
+        self.assertEqual(hexa["monthly"], 41.0)
+        kinds = [e["kind"] for e in hexa["evidence_needed"]]
+        self.assertIn("anomaly_explained", kinds)
+        self.assertIn("anomalous_charge", kinds)
+        self.assertIn("possibly_canceled", by_id["photon-vpn"]["flags"])
+        self.assertIn("cadence_conflict", by_id["datastream"]["flags"])
 
-            class FakeDate(real_date):
-                @classmethod
-                def today(cls):
-                    return cls(fake_today.year, fake_today.month,
-                               fake_today.day)
+    def test_fresh_clone_seeds_demo_stores(self):
+        self._assert_demo_shapes(self._seed_and_reconcile(_FrozenDate), TODAY)
 
-            with tempfile.TemporaryDirectory() as tmp:
-                with mock.patch.object(settings, "fixture_mode",
-                                       return_value=True), \
-                     mock.patch.object(subscriptions, "date", FakeDate), \
-                     mock.patch.object(subscriptions, "REGISTRY",
-                                       Path(tmp) / "subscriptions.json"), \
-                     mock.patch.object(subscriptions, "LEDGER",
-                                       Path(tmp) / "subs-ledger.sqlite"):
-                    r = subscriptions.reconcile()
-                by_id = {m["id"]: m for m in r["merchants"]}
-                msg = f"today={fake_today.isoformat()}"
-                hexa = by_id["hexagon-ai"]
-                self.assertEqual(hexa["monthly"], 41.0, msg)
-                kinds = [e["kind"] for e in hexa["evidence_needed"]]
-                self.assertIn("anomaly_explained", kinds, msg)
-                self.assertIn("anomalous_charge", kinds, msg)
-                self.assertIn("possibly_canceled",
-                              by_id["photon-vpn"]["flags"], msg)
-                self.assertIn("cadence_conflict",
-                              by_id["datastream"]["flags"], msg)
-                quill = by_id["quill-notes"]
-                self.assertEqual(quill["renewal_source"], "receipt", msg)
-                self.assertLessEqual(
-                    (date.fromisoformat(quill["next_renewal"])
-                     - fake_today).days, 7, msg)
+    def test_seed_shapes_hold_on_any_calendar_day(self):
+        """The fixture's days_ago offsets slide against the calendar-month
+        grid the engine buckets by, so the demo shapes must survive EVERY
+        seed date, not just mid-month ones (the original offsets read
+        hexagon-ai as "unclear" on days 1-5 and 21-31 of any month). Sweep
+        fourteen consecutive months — every day-of-month across all four
+        month lengths, including a leap February."""
+        day, end = date(2027, 1, 1), date(2028, 3, 1)
+        while day <= end:
+            with self.subTest(seed_date=day.isoformat()):
+                self._assert_demo_shapes(
+                    self._seed_and_reconcile(_frozen_date_cls(day)), day)
+            day += timedelta(days=1)
 
 
-class GroupingAndIngest(unittest.TestCase):
+class GroupingAndIngest(FrozenClockCase):
     def test_alias_match_display_name_variant(self):
         """Mercury sends a case variant of the display name; the seeded
         display-name alias must catch it."""
@@ -524,7 +551,7 @@ def _chg(amount, iso, note=""):
             "mercury_note": note}
 
 
-class PendingChangeVerification(unittest.TestCase):
+class PendingChangeVerification(FrozenClockCase):
     """Verify-on-date: a recorded cancel/downgrade checked against the ledger
     once data passes the effective date. The record lives on the registry
     (curated, backed up), never the regenerable evidence ledger — a page
