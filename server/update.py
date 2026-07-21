@@ -10,10 +10,14 @@ launchd (settings key `launchd_label`) it relaunches via kickstart -k;
 otherwise the process just exits and whatever supervises it (or the human
 with ./run.sh) starts it again.
 """
+import json
 import os
 import subprocess
+import sys
+import tempfile
 import threading
 import time
+from importlib.metadata import distribution
 from pathlib import Path
 
 from . import settings
@@ -94,8 +98,67 @@ def apply():
         raise ValueError("git pull failed: "
                          + (pull.stderr or pull.stdout).strip()[:300])
     new_sha = _git("rev-parse", "--short", "HEAD").stdout.strip()
+    try:
+        deps = _install_deps()
+    except Exception as e:  # noqa: BLE001 — surface, don't restart onto broken deps
+        raise ValueError(
+            f"code updated to {new_sha}, but installing dependencies failed: "
+            f"{str(e)[:300]} — not restarting. Run .venv/bin/pip install -r "
+            "requirements.txt, then restart.") from e
     threading.Timer(0.8, _restart).start()  # let the HTTP response flush first
-    return {"updated": True, "restarting": True, "sha": new_sha}
+    return {"updated": True, "restarting": True, "sha": new_sha, "deps": deps}
+
+
+def _req_name(line):
+    """Package name from a requirements.txt line ('qocha @ git+...' ->
+    'qocha', 'uvicorn[standard]' -> 'uvicorn'); None for blanks/comments."""
+    line = line.split("#", 1)[0].strip()
+    if not line or line.startswith("-"):
+        return None
+    for sep in ("@", "==", ">=", "<=", "~=", "!=", ">", "<", "[", ";", " "):
+        if sep in line:
+            line = line.split(sep, 1)[0]
+    return line.strip() or None
+
+
+def _editable(name):
+    """True when the installed package is an editable (pip install -e) dev
+    checkout. The updater must never overwrite one with a pinned copy —
+    on a dev machine the local checkout outranks requirements.txt."""
+    try:
+        raw = distribution(name).read_text("direct_url.json")
+        return bool(raw and json.loads(raw).get("dir_info", {}).get("editable"))
+    except Exception:  # noqa: BLE001 — not installed / no metadata: let pip decide
+        return False
+
+
+def _install_deps():
+    """Install requirements.txt into the running venv, minus any package
+    already installed editable. Returns a short summary; raises on failure."""
+    req = ROOT / "requirements.txt"
+    if not req.exists():
+        return "no requirements.txt"
+    keep, skipped = [], []
+    for line in req.read_text().splitlines():
+        name = _req_name(line)
+        if name and _editable(name):
+            skipped.append(name)
+        else:
+            keep.append(line)
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as tf:
+        tf.write("\n".join(keep) + "\n")
+        tmp = tf.name
+    try:
+        r = subprocess.run([sys.executable, "-m", "pip", "install", "-r", tmp],
+                           capture_output=True, text=True, timeout=300)
+    finally:
+        os.unlink(tmp)
+    if r.returncode != 0:
+        raise RuntimeError((r.stderr or r.stdout).strip()[-300:])
+    note = "dependencies synced"
+    if skipped:
+        note += " (editable, untouched: " + ", ".join(sorted(skipped)) + ")"
+    return note
 
 
 def _restart():

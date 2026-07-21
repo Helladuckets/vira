@@ -176,9 +176,12 @@ Access grant is tied to its python binary (see "Making it real").
 ## Updates
 
 Settings > Updates shows the running commit and whether the remote is
-ahead; one click pulls (fast-forward only) and restarts. The app also
-checks quietly at launch and toasts when updates exist. Your personal
-layer is git-ignored, so an update can never touch your data.
+ahead; one click pulls (fast-forward only), installs any dependency
+changes into the existing venv (pinned versions from
+`requirements.txt`; editable dev installs are never overwritten), and
+restarts. The app also checks quietly at launch and toasts when updates
+exist. Your personal layer is git-ignored, so an update can never touch
+your data.
 
 ## The code/data seam
 
