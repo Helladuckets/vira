@@ -67,8 +67,9 @@ function itemMatchesFilter(it) {
   if (it.hidden) return false;
   if (feedFilter === "all") return true;
   if (feedFilter === "unread") return !it.read;
-  if (feedFilter === "imessage") return (it.channel || "imessage") !== "email";
+  if (feedFilter === "imessage") return (it.channel || "imessage") === "imessage";
   if (feedFilter === "email") return it.channel === "email";
+  if (feedFilter === "whatsapp") return it.channel === "whatsapp";
   if (feedFilter.startsWith("email:"))
     return it.channel === "email" && it.account === feedFilter.slice(6);
   return true;
@@ -85,6 +86,8 @@ function renderFilters() {
   const chips = [["all", "All"],
                  ["unread", n ? `Unread (${n})` : "Unread"],
                  ["imessage", "iMessage"], ["email", "Email"]];
+  if (feedItems.some((it) => it.channel === "whatsapp"))
+    chips.push(["whatsapp", "WhatsApp"]);
   if (mailAccounts.length > 1)
     mailAccounts.forEach((a) =>
       chips.push(["email:" + a, (a.split("@")[1] || a).split(".")[0]]));
@@ -270,6 +273,8 @@ function feedCard(it) {
   main.appendChild(el("div", "feed-text", it.text));
   if (it.channel === "email") main.appendChild(el("div", "feed-group",
     "email · " + (it.account || "")));
+  else if (it.channel === "whatsapp") main.appendChild(el("div", "feed-group",
+    "WhatsApp" + (it.group ? " · " + (it.group_name || "group") : "")));
   else if (it.group) main.appendChild(el("div", "feed-group",
     "group" + (it.group_name ? ": " + it.group_name : "")));
   if (!it.known && it.handle) {
@@ -3058,6 +3063,7 @@ $("#settings-btn").addEventListener("click", async () => {
     const h = $("#notify-handle");
     if (h) h.value = nc.handle || "";
   }).catch(() => {});
+  startWaPoll();
   $("#settings-sheet").classList.add("open");
 });
 
@@ -3208,12 +3214,89 @@ $("#graph-connect").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+// WhatsApp card: status + pairing QR + ingest. The card polls only while
+// the settings sheet is open; on live the server-side watcher does the
+// real work and this is just the connect/QR surface.
+let waPoll;
+async function waTick() {
+  const stat = $("#wa-status"), hint = $("#wa-hint");
+  const qrBox = $("#wa-qr-box"), btn = $("#wa-connect");
+  let st;
+  try {
+    st = await api("/api/whatsapp/status");
+  } catch { return; }
+  const sc = st.sidecar;
+  if (sc && sc.connected) {
+    qrBox.style.display = "none";
+    btn.style.display = "none";
+    const num = String(sc.jid || "").split(":")[0].split("@")[0];
+    stat.textContent = "Connected" + (num ? " as +" + num : "");
+    hint.textContent = "Inbound WhatsApp lands in the feed. Receive-only: Vira never sends.";
+    post("/api/whatsapp/poll", {}).catch(() => {});
+  } else if (sc && sc.logged_out) {
+    qrBox.style.display = "none";
+    btn.style.display = "";
+    stat.textContent = "Unlinked by the phone";
+    hint.textContent = "The phone removed this device link — connect again to re-pair.";
+  } else if (sc) {
+    btn.style.display = "";
+    stat.textContent = "Waiting for scan…";
+    try {
+      const q = await api("/api/whatsapp/qr");
+      if (q.png) {
+        $("#wa-qr").src = q.png;
+        qrBox.style.display = "block";
+        hint.textContent = "Phone: WhatsApp > Settings > Linked Devices > Link a Device — scan this code.";
+      }
+    } catch { /* sidecar mid-restart; next tick retries */ }
+  } else {
+    qrBox.style.display = "none";
+    btn.style.display = "";
+    stat.textContent = st.linked ? "Linked — sidecar not running" : "Not connected";
+    if (!st.installed)
+      hint.textContent = "Sidecar not installed — run: cd bridge/whatsapp && npm install";
+    else if (st.passive)
+      hint.textContent = "Test instance: start the sidecar by hand (scripts/whatsapp-sidecar.sh), then reopen this sheet.";
+    else if (st.linked)
+      hint.textContent = "The sidecar starts on its own within a few seconds.";
+  }
+}
+function startWaPoll() {
+  clearInterval(waPoll);
+  waTick().catch(() => {});
+  waPoll = setInterval(() => waTick().catch(() => {}), 4000);
+}
+function stopWaPoll() { clearInterval(waPoll); waPoll = null; }
+$("#wa-connect").addEventListener("click", async () => {
+  const hint = $("#wa-hint");
+  hint.textContent = "Starting the sidecar…";
+  try {
+    await post("/api/whatsapp/pair", {});
+  } catch (e) {
+    hint.textContent = e.message || String(e);
+  }
+  startWaPoll();
+});
+
+// Passive test instance: the server never runs the watcher, so the browser
+// drives ingest — armed only once a hand-started sidecar is actually seen.
+async function waPassiveInit() {
+  try {
+    const st = await api("/api/whatsapp/status");
+    if (st.passive && st.sidecar)
+      setInterval(() => post("/api/whatsapp/poll", {}).catch(() => {}), 6000);
+  } catch { /* older server without the route */ }
+}
+
 document.querySelectorAll("#backend-seg .seg-btn").forEach((b) =>
   b.addEventListener("click", () => {
     document.querySelectorAll("#backend-seg .seg-btn").forEach((x) =>
       x.classList.toggle("on", x === b));
   }));
-$("#settings-close").addEventListener("click", () => $("#settings-sheet").classList.remove("open"));
+$("#settings-close").addEventListener("click", () => {
+  stopWaPoll();
+  $("#settings-sheet").classList.remove("open");
+});
 $("#settings-save").addEventListener("click", async () => {
   const backend = document.querySelector("#backend-seg .seg-btn.on")?.dataset.v || "cli";
   await post("/api/config", {
@@ -3228,6 +3311,7 @@ $("#settings-save").addEventListener("click", async () => {
       handle: $("#notify-handle").value.trim() || null,
     }).catch(() => {});
   }
+  stopWaPoll();
   $("#settings-sheet").classList.remove("open");
 });
 
@@ -7388,6 +7472,7 @@ async function boot() {
   renderPeopleSort();
   loadBrief().catch(() => {});
   loadFeed().catch(() => {});
+  waPassiveInit();   // test instances: browser-driven WhatsApp ingest
   loadPeople().catch(() => {});
   loadActions().catch(() => {});
   refreshJobs().catch(() => {});

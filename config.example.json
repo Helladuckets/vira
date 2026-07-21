@@ -51,7 +51,7 @@
   "subs_notify_threshold_usd": 100,
   "_subs_notify_threshold_usd": "Renewal-ping floor: iMessage when a renewal is within 7 days and the per-cycle amount clears this (annual renewals always ping). Uses notify_handle; deduped per merchant + renewal date.",
   "vault_root": "",
-  "_vault_root": "Notes vault the Brain window indexes (Obsidian or any folder of markdown; FTS + local nomic embeddings via Ollama; nothing leaves the machine at index time). Set it from Setup > Brain — point at an existing vault or start a fresh one there. Empty = the Brain stays dormant.",
+  "_vault_root": "Notes vault the Brain window indexes (Obsidian or any folder of markdown; FTS + local nomic embeddings via Ollama; nothing leaves the machine at index time). Set it from Setup > Brain \u2014 point at an existing vault or start a fresh one there. Empty = the Brain stays dormant.",
   "vault_dirs": [],
   "_vault_dirs": "Vault subdirectories to index (recursive), plus root-level .md files always. Empty = the default set (wiki, Briefs, Sessions, retros, brain-retros).",
   "judge_model": "opus",
@@ -69,5 +69,7 @@
   "fixture_mode": null,
   "_fixture_mode": "true/false forces demo/real mode; null (default) auto-detects: fixture when crm_root is missing.",
   "lab_root": "",
-  "_lab_root": "Local checkout dir holding the careers-teardown explorer directories (anthropic-jobs/, openai-jobs/, frontier-jobs/, each with data.js). Empty = Applications module dormant. applications_sources (list of {slug, company, path}) overrides it; applications_connections_csv / self_record override the LinkedIn-export and self-record paths derived from crm_root."
+  "_lab_root": "Local checkout dir holding the careers-teardown explorer directories (anthropic-jobs/, openai-jobs/, frontier-jobs/, each with data.js). Empty = Applications module dormant. applications_sources (list of {slug, company, path}) overrides it; applications_connections_csv / self_record override the LinkedIn-export and self-record paths derived from crm_root.",
+  "whatsapp_bridge_port": 18377,
+  "_whatsapp_bridge_port": "Linked-device WhatsApp sidecar port (127.0.0.1 only). Dormant until paired via settings > WhatsApp. whatsapp_poll_seconds (default 5) and whatsapp_node_bin (default \"node\") tune the watcher and node binary."
 }
