@@ -4157,14 +4157,17 @@ function launchUnlocked(flow) {
   // none. So the first time this runs on a desktop, whatever is already
   // done is recorded as seen WITHOUT opening. A virgin install has nothing
   // done, so it loses nothing.
+  //
+  // The baseline is written even when it is EMPTY. Leaving it null through a
+  // virgin install's whole first sitting means the first step the owner
+  // completes is read as the baseline and swallowed — the one moment the
+  // progressive launch exists for.
   if (localStorage.getItem("vira-setup-opened") === null) {
     const seen = flow.steps.filter((s) => s.state === "done").map((s) => s.id);
     if (flow.complete) seen.push("__complete__");
-    if (seen.length) {
-      localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
-      uiPush("vira-setup-opened", JSON.stringify(seen));
-      return;
-    }
+    localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
+    uiPush("vira-setup-opened", JSON.stringify(seen));
+    if (seen.length) return;
   }
   flow.steps.forEach((s) => {
     if (s.state !== "done" || !s.opens) return;
