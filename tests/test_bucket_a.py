@@ -177,9 +177,24 @@ class LimitClampTests(unittest.TestCase):
 
 
 class MsgraphArgvTests(unittest.TestCase):
-    def test_refresh_token_rides_stdin_not_argv(self):
-        with mock.patch("server.msgraph.subprocess.run") as run:
+    def test_refresh_token_routes_through_the_secrets_ladder(self):
+        # The argv-safety contract itself lives in secrets._mac_set (and is
+        # tested there); msgraph's job is to hand the token to the ladder
+        # under its namespaced service.
+        from server import secrets
+        with mock.patch.object(secrets, "set") as st:
             msgraph._store_refresh_token("owner@example.com", "tok.SECRET123")
+        service, account, value = st.call_args.args
+        self.assertTrue(service.endswith("vira-mail-graph"))
+        self.assertEqual(account, "owner@example.com")
+        self.assertEqual(value, "tok.SECRET123")
+
+    def test_mac_keychain_write_rides_stdin_not_argv(self):
+        from server import secrets
+        with mock.patch.object(secrets.subprocess, "run",
+                               return_value=mock.Mock(returncode=0)) as run:
+            secrets._mac_set("vira-mail-graph", "owner@example.com",
+                             "tok.SECRET123")
         argv = run.call_args.args[0]
         self.assertEqual(argv, ["security", "-i"])
         self.assertNotIn("tok.SECRET123", " ".join(argv))

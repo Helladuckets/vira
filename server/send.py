@@ -5,7 +5,7 @@ import os
 import subprocess
 
 from . import data as crm
-from . import imessage
+from . import imessage, settings
 
 SCRIPT = '''
 on run {targetHandle, msgText}
@@ -42,6 +42,10 @@ def send_imessage(text, person_id=None, handle=None, timeout=20):
     if os.environ.get("VIRA_PASSIVE"):
         raise RuntimeError(
             "passive test instance: outbound iMessage is blocked")
+    if not settings.IS_MAC:
+        raise RuntimeError(
+            "iMessage sending needs macOS (Messages.app) — not available "
+            "on this platform")
     target = handle or (best_handle(person_id) if person_id else None)
     if not target:
         raise ValueError("no iMessage handle for this person")

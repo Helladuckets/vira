@@ -17,7 +17,6 @@ tenant-owned registration is exempt from those rules permanently. Set
 "msgraph_client_id" and "msgraph_tenant" in data/config.json.
 """
 import json
-import subprocess
 import threading
 import time
 import urllib.error
@@ -25,7 +24,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import settings
+from . import secrets, settings
 
 SCOPE ="https://graph.microsoft.com/Mail.ReadWrite offline_access"
 # device login asks for calendar too (brief v2); token refreshes keep
@@ -99,25 +98,17 @@ def get_bytes(email, path, scope=SCOPE):
 # ---------- keychain ----------
 
 def _stored_refresh_token(email):
-    res = subprocess.run(
-        ["security", "find-generic-password", "-a", email,
-         "-s", settings.keychain_service(KEYCHAIN_SERVICE), "-w"],
-        capture_output=True, text=True, timeout=10)
-    return res.stdout.strip() if res.returncode == 0 else None
+    return secrets.get(settings.keychain_service(KEYCHAIN_SERVICE), email) or None
 
 
 def _store_refresh_token(email, token):
-    # `security -i` reads the command from stdin, so the rotating refresh
-    # token never rides argv — argv is visible in ps for the subprocess
-    # duration (audit P1-1). Quoting per security(1): double quotes with
-    # backslash escapes.
-    def q(s):
-        return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
-    token = str(token).replace("\n", "").replace("\r", "")
-    cmd = (f"add-generic-password -U -a {q(email)} "
-           f"-s {q(settings.keychain_service(KEYCHAIN_SERVICE))} -w {q(token)}\n")
-    subprocess.run(["security", "-i"], input=cmd,
-                   capture_output=True, text=True, timeout=10)
+    # The rotating refresh token: losing a write logs the account out, so
+    # let the ladder land it in whatever store this machine has. The mac
+    # backend keeps the argv-safety pattern (`security -i`, audit P1-1).
+    try:
+        secrets.set(settings.keychain_service(KEYCHAIN_SERVICE), email, token)
+    except RuntimeError:
+        pass  # same contract as the old best-effort write
 
 
 def connected(email):
