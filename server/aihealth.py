@@ -200,9 +200,12 @@ def _action_for(state, backend, fallback):
     if backend == "cli":
         from . import models as provider
         pid = str(_raw_cfg().get("ai_provider") or "anthropic")
-        spec = provider.PROVIDERS.get(pid) or provider.PROVIDERS["anthropic"]
+        if pid not in provider.PROVIDERS:
+            pid = "anthropic"
+        spec = provider.PROVIDERS[pid]
+        login = provider.login_command(pid) or f"{spec['bin']} {' '.join(spec['login_args'])}"
         base = (f"AI is paused — the {spec['sub_name']} login is not active. "
-                f"Open a terminal and run `{spec['login_cmd']}` to reconnect.")
+                f"Open a terminal and run `{login}` to reconnect.")
         if fallback:
             base += " Reply drafting is falling back to the API key meanwhile."
         return base
