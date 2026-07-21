@@ -206,6 +206,24 @@ def _probe_m365(ctx):
             "action": "" if n else "Connect M365 in Settings"}
 
 
+def _probe_companion(ctx):
+    """The Android companion (P2): a pairing-based source, so like the
+    CSV row it is "present" everywhere; configured = a phone is paired."""
+    from . import companion
+    devs = [d for d in companion.devices() if not d.get("pending")]
+    n = companion.stats()["messages"]
+    if devs:
+        names = ", ".join(d.get("name") or d["id"] for d in devs)
+        detail = (f"{names} paired — {n:,} message"
+                  f"{'s' if n != 1 else ''} received.")
+    else:
+        detail = ("Pair an Android phone to feed its texts and message "
+                  "notifications into Vira (Phone Link window).")
+    return {"present": True, "configured": bool(devs), "count": n,
+            "detail": detail,
+            "action": "" if devs else "Pair in Phone Link"}
+
+
 # ---------- the table ----------
 # id doubles as the refs.import_source tag the importers stamp, so a row's
 # "configured" is readable straight off the imported data. needs_disk marks
@@ -244,6 +262,14 @@ SOURCES = {
         "needs_disk": True,
         "card": "apple-calendar",
         "probe": _probe_apple_calendar,
+    },
+    "companion": {
+        "label": "Android phone",
+        "kind": MESSAGES,
+        "platforms": ALL_PLATFORMS,
+        "needs_disk": False,
+        "card": "companion",
+        "probe": _probe_companion,
     },
     "imap-mail": {
         "label": "Email (IMAP)",

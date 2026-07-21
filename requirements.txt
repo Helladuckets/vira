@@ -11,6 +11,10 @@
 # pinned here.
 fastapi
 uvicorn[standard]
+# Pairing QR for the Android companion app (server/companion.py). Pure
+# python, zero transitive deps; absent at runtime the pairing card just
+# falls back to the copyable payload.
+segno
 # Live two-way agent sessions (steering + per-tool permission gating).
 # Optional at runtime: if this import fails, Vira falls back to the legacy
 # one-shot subprocess path and still boots.

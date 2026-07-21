@@ -647,16 +647,21 @@ def steps():
                 unlocks="People, Radar, the Visual Network",
                 sources=contact_rows))
         elif sid == "dossiers":
-            if not msg_rows:
-                # Dossiers are built from real message threads. With no
-                # messages source possible on this platform the step is
+            # The builder reads only the disk-gated iMessage store today —
+            # a paired Android phone (the companion row, needs_disk False)
+            # feeds the live feed and triage, not dossier building, so it
+            # must not un-skip this step off-Mac.
+            dossier_rows = [s for s in msg_rows if s["needs_disk"]]
+            if not dossier_rows:
+                # No buildable message store on this platform: the step is
                 # skipped by name — a blocker would read as the owner's
                 # fault when nothing they do here can clear it.
                 out.append(mk(
                     sid, title, opens, "skipped",
-                    "Dossiers are built from your message threads, and no "
-                    "messages source exists on " + sources.platform_label() +
-                    " yet — iMessage is macOS-only for now.",
+                    "Dossiers are built from your message threads, and the "
+                    "builder reads only a Mac's iMessage store for now. A "
+                    "paired Android phone (Phone Link) feeds new texts "
+                    "into the live feed and triage instead.",
                     cost=""))
                 continue
             missing = [n for n, ok in (("AI", ai_ok), ("contacts", bool(people)))
