@@ -15,7 +15,10 @@ uvicorn[standard]
 # Optional at runtime: if this import fails, Vira falls back to the legacy
 # one-shot subprocess path and still boots.
 claude-agent-sdk==0.2.115
-# The vault engine behind the Brain window (brings numpy). On a dev
-# machine with a local qocha checkout, prefer an editable install
-# (pip install -e ../qocha) and skip re-running this line over it.
-qocha @ git+https://github.com/Helladuckets/qocha
+# The vault engine behind the Brain window (brings numpy). Pinned by tag:
+# a Vira commit that needs a newer engine bumps this pin in the SAME
+# commit, so code and engine always travel together (the in-app updater
+# installs dependency changes on update). On a dev machine with a local
+# qocha checkout, use an editable install (pip install -e ../qocha) — the
+# updater detects editable installs and never overwrites them.
+qocha @ git+https://github.com/Helladuckets/qocha@v0.2.0
