@@ -198,17 +198,19 @@ class CapabilityTest(unittest.TestCase):
 
     def test_env_key_wins_over_keychain_lookup(self):
         with mock.patch.dict(os.environ, {"VIRA_ANTHROPIC_KEY": "env-key"}), \
-             mock.patch.object(models.subprocess, "run") as run:
+             mock.patch.object(models.secrets, "get") as get:
             self.assertEqual(models.api_key("anthropic"), "env-key")
-        run.assert_not_called()
+        get.assert_not_called()
 
     def test_keychain_lookup_is_namespaced(self):
         with mock.patch.dict(os.environ, {"VIRA_ANTHROPIC_KEY": ""}), \
              mock.patch.dict(os.environ, {"VIRA_KEYCHAIN_PREFIX": "sandbox-"}), \
-             mock.patch.object(models.subprocess, "run") as run:
-            run.return_value = mock.Mock(returncode=0, stdout="k\n")
+             mock.patch.object(models.secrets, "get",
+                               return_value="k") as get:
             self.assertEqual(models.api_key("anthropic"), "k")
-        self.assertIn("sandbox-vira-model-key", run.call_args[0][0])
+        service, account = get.call_args.args
+        self.assertEqual(service, "sandbox-vira-model-key")
+        self.assertEqual(account, "anthropic")
 
 
 class ActiveProviderTest(unittest.TestCase):

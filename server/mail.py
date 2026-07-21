@@ -3,7 +3,8 @@ messages, joins senders to CRM people, and merges items into the same live
 feed as iMessage.
 
 Dormant until an account is configured. Setup (one time, per account):
-  1. Store the password in the macOS Keychain (never in a file):
+  1. Store the password in the secrets store (server/secrets.py — the
+     macOS Keychain here; Credential Manager on Windows). On a Mac:
        security add-generic-password -a you@yourdomain.com -s vira-mail -w
      (Gmail: use an app password from myaccount.google.com/apppasswords;
       Outlook/M365: an app password if the tenant allows IMAP, else IMAP is
@@ -20,14 +21,13 @@ import email.utils
 import imaplib
 import json
 import re
-import subprocess
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import data as crm
-from . import settings
+from . import secrets, settings
 
 ACCOUNTS = Path(__file__).resolve().parent.parent / "data" / "mail-accounts.json"
 STATE = Path(__file__).resolve().parent.parent / "data" / "mail-state.json"
@@ -38,11 +38,7 @@ def keychain_service():
 
 
 def keychain_password(account_email):
-    res = subprocess.run(
-        ["security", "find-generic-password", "-a", account_email,
-         "-s", keychain_service(), "-w"],
-        capture_output=True, text=True, timeout=10)
-    return res.stdout.strip() if res.returncode == 0 else None
+    return secrets.get(keychain_service(), account_email) or None
 
 
 def _decode_header(raw):

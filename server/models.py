@@ -29,7 +29,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-from . import settings
+from . import secrets, settings
 
 # Auth states, worst to best: the provider isn't here at all; it's here but
 # nobody is signed in; it's authenticated by a pasted key; it's
@@ -136,20 +136,20 @@ def login_command(pid, binary=None):
 
 def api_key(pid):
     """The provider's API key: env var first (existing installs and the
-    documented VIRA_ANTHROPIC_KEY path), then the Keychain, where the Setup
-    window puts a key pasted by someone with no shell profile to edit."""
+    documented VIRA_ANTHROPIC_KEY path), then the secrets ladder — the
+    Keychain on a Mac, Credential Manager on Windows, the locked file
+    elsewhere — where Setup puts a key pasted by someone with no shell
+    profile to edit."""
     spec = PROVIDERS.get(pid) or {}
     val = os.environ.get(spec.get("api_env", ""), "")
     if val:
         return val
+    if pid not in PROVIDERS:
+        return ""
     try:
-        res = subprocess.run(
-            ["security", "find-generic-password", "-a", pid,
-             "-s", settings.keychain_service("vira-model-key"), "-w"],
-            capture_output=True, text=True, timeout=10)
+        return secrets.get(settings.keychain_service("vira-model-key"), pid)
     except Exception:  # noqa: BLE001 — never raise out of a lookup
         return ""
-    return res.stdout.strip() if res.returncode == 0 else ""
 
 
 def _probe_auth(pid, binary):
