@@ -250,12 +250,36 @@ class VaultUnsetGuardTests(unittest.TestCase):
         self.assertNotEqual(root, Path("."))
 
 
+def _src(sid, kind, supported=True, needs_disk=False, **over):
+    """A registry row the way sources.probe shapes one, test-sized."""
+    row = {"id": sid, "label": sid, "kind": kind, "platforms": ["mac"],
+           "supported": supported, "needs_disk": needs_disk, "card": sid,
+           "present": False, "configured": False, "count": 0,
+           "detail": "", "action": ""}
+    row.update(over)
+    return row
+
+
+def _sources_for(platform="mac"):
+    """The six registry rows as they probe on a virgin machine — Apple rows
+    supported only on a Mac, the cross-platform siblings everywhere."""
+    mac = platform == "mac"
+    return [
+        _src("apple-contacts", "contacts", supported=mac, needs_disk=True),
+        _src("google-csv", "contacts", present=True),
+        _src("imessage", "messages", supported=mac, needs_disk=True),
+        _src("apple-calendar", "calendar", supported=mac, needs_disk=True),
+        _src("imap-mail", "mail", present=True),
+        _src("m365-mail", "mail", present=True),
+    ]
+
+
 class StepMachineTests(unittest.TestCase):
     """The wizard's state is DERIVED from the world, never stored — which is
     what makes re-entry free. These pin each state, each blocker, and the
     fact that recomputing mid-flow lands on the right step."""
 
-    def _status(self, **over):
+    def _status(self, platform="mac", **over):
         base = {
             "fixture_mode": True,
             "crm": {"root": "/tmp/crm", "people": 0, "profiles": 0},
@@ -264,6 +288,7 @@ class StepMachineTests(unittest.TestCase):
             "vault": {"root": "", "connected": False, "notes": 0},
             "mail": {"accounts": 0},
             "dossiers": {"running": False, "done": 0, "total": 0, "current": ""},
+            "sources": _sources_for(platform),
         }
         for k, v in over.items():
             if isinstance(v, dict):
@@ -357,6 +382,68 @@ class StepMachineTests(unittest.TestCase):
         first_open = next(s for s in ("ai", "disk", "contacts", "dossiers",
                                       "brain", "mail") if a[s]["state"] != "done")
         self.assertEqual(first_open, "dossiers")
+
+
+class StepSourceForkTests(StepMachineTests):
+    """The platform fork: the data steps carry their cards as registry rows
+    filtered to this platform, and Apple-only steps skip honestly off-Mac.
+    Inherits the fake-status plumbing (and re-runs the Mac suite above)."""
+
+    def test_steps_carry_their_registry_rows_on_a_mac(self):
+        steps, _ = self._steps(self._status())
+        self.assertEqual([s["id"] for s in steps["contacts"]["sources"]],
+                         ["apple-contacts", "google-csv"])
+        # The disk card shows the stores whose configured state means
+        # "readable" — the contacts row's configured means "imported", so
+        # it would render a false "needs access" on a granted Mac.
+        self.assertEqual([s["id"] for s in steps["disk"]["sources"]],
+                         ["imessage", "apple-calendar"])
+        self.assertEqual([s["id"] for s in steps["mail"]["sources"]],
+                         ["imap-mail", "m365-mail"])
+
+    def test_off_mac_disk_step_skips_and_names_why(self):
+        steps, _ = self._steps(self._status(platform="win"))
+        self.assertEqual(steps["disk"]["state"], "skipped")
+        self.assertIn("none exist on this machine", steps["disk"]["detail"])
+        self.assertEqual(steps["disk"]["blocker"], "")
+
+    def test_off_mac_contacts_fork_to_the_google_card_unblocked(self):
+        # No Full Disk Access exists off-Mac, so nothing may claim it as a
+        # blocker; the one contacts card left is the CSV import.
+        steps, _ = self._steps(self._status(platform="win"))
+        self.assertEqual(steps["contacts"]["state"], "todo")
+        self.assertEqual(steps["contacts"]["blocker"], "")
+        self.assertEqual([s["id"] for s in steps["contacts"]["sources"]],
+                         ["google-csv"])
+
+    def test_off_mac_dossiers_skip_and_name_the_missing_source(self):
+        # Even with AI and contacts in place, no messages source can exist
+        # here — an eternal "blocked" would read as the owner's fault, so
+        # the step skips with the reason named.
+        steps, _ = self._steps(
+            self._status(platform="win", crm={"people": 40}),
+            providers=[self._provider()])
+        self.assertEqual(steps["dossiers"]["state"], "skipped")
+        self.assertIn("macOS-only", steps["dossiers"]["detail"])
+
+    def test_off_mac_skipped_steps_leave_the_totals(self):
+        _, flow = self._steps(self._status(platform="win"))
+        self.assertEqual(flow["total"], 4)     # disk + dossiers skipped…
+        self.assertEqual(len(flow["steps"]), 6)     # …but still in the rail
+
+    def test_off_mac_setup_can_still_complete(self):
+        _, flow = self._steps(
+            self._status(platform="win", crm={"people": 40},
+                         vault={"connected": True, "notes": 9},
+                         mail={"accounts": 1}),
+            providers=[self._provider()])
+        self.assertTrue(flow["complete"])
+        self.assertEqual(flow["done"], flow["total"])
+
+    def test_off_mac_mail_sources_stay_cross_platform(self):
+        steps, _ = self._steps(self._status(platform="win"))
+        self.assertEqual([s["id"] for s in steps["mail"]["sources"]],
+                         ["imap-mail", "m365-mail"])
 
 
 class DossierCostTests(unittest.TestCase):
