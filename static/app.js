@@ -5578,7 +5578,7 @@ $("#app-run-copy").addEventListener("click", async () => {
 const WINDOWS = [
   { id: "launchpad", title: "Launchpad", w: 720, defaultOpen: false,
     icon: "M4.5 4.5h5.8v5.8H4.5zM13.7 4.5h5.8v5.8h-5.8zM4.5 13.7h5.8v5.8H4.5zM13.7 13.7h5.8v5.8h-5.8z" },
-  { id: "setup", title: "Setup", w: 560, defaultOpen: true,
+  { id: "setup", title: "Setup", w: 560, defaultOpen: true, focusFirst: true,
     icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" },
   { id: "feed", title: "Incoming", w: 440,
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
@@ -6899,6 +6899,14 @@ function initDesktop() {
     const shouldOpen = st.open ?? (spec.defaultOpen !== false);
     if (shouldOpen) openWindow(spec.id);
   });
+  // The WINDOWS array doubles as the z order (first built ends up at the
+  // bottom), so Setup — deliberately first, to lead the Launchpad grid —
+  // opened UNDERNEATH every other default window on a fresh install: the
+  // one window a new owner needs was the one they couldn't see. A spec
+  // that asks for it wins the stack, but only on a virgin desktop; once
+  // there is a saved layout, the owner's own arrangement is untouched.
+  const lead = WINDOWS.find((s) => s.focusFirst && !stored[s.id] && winState[s.id].open);
+  if (lead) focusWin(winState[lead.id].el);
   buildDock();
   dockRefresh();
   buildPalette();
@@ -7013,11 +7021,13 @@ async function boot() {
     if (candidates.length)
       $("#triage-toggle").textContent = "Triage (" + candidates.length + ")";
   }).catch(() => {});
-  // Passive test instances (branch.sh serve, VIRA_PASSIVE=1) wear a TEST
-  // badge with their port so they're never mistaken for live :8377.
+  // Non-live instances wear a badge with their port so they are never
+  // mistaken for live :8377: TEST for a passive branch instance
+  // (branch.sh serve), SANDBOX for a virgin install (sandbox.sh serve).
   instanceConfig().then((cfg) => {
-    if (!cfg.passive) return;
-    const label = "TEST" + (location.port ? " :" + location.port : "");
+    if (!cfg.passive && !cfg.sandbox) return;
+    const label = (cfg.sandbox ? "SANDBOX" : "TEST")
+      + (location.port ? " :" + location.port : "");
     const badge = $("#inst-badge");
     badge.textContent = label;
     badge.hidden = false;

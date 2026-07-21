@@ -41,9 +41,13 @@ SKIP_KINDS = {"internalTransfer"}   # own-account moves are never subscriptions
 SKIP_COUNTERPARTIES = {"mercury credit"}
 
 
+def keychain_service():
+    return settings.keychain_service("vira-mercury")
+
+
 def keychain_token():
     res = subprocess.run(
-        ["security", "find-generic-password", "-s", "vira-mercury", "-w"],
+        ["security", "find-generic-password", "-s", keychain_service(), "-w"],
         capture_output=True, text=True, timeout=10)
     return res.stdout.strip() if res.returncode == 0 else None
 
@@ -121,7 +125,7 @@ def poll_once(conn=None):
     Raises on auth/network errors (caller renders them into status)."""
     token = keychain_token()
     if not token:
-        raise RuntimeError("no token in keychain (service vira-mercury)")
+        raise RuntimeError(f"no token in keychain (service {keychain_service()})")
     own = conn is None
     conn = conn or subscriptions.ledger_connect()
     try:
@@ -169,7 +173,7 @@ class Poller(threading.Thread):
         while True:
             try:
                 if not keychain_token():
-                    self.status = "no token in keychain (service vira-mercury)"
+                    self.status = f"no token in keychain (service {keychain_service()})"
                 elif time.time() >= self.next_poll:
                     n = poll_once()
                     hours = float(settings.get("mercury_poll_hours") or 6)

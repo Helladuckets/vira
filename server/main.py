@@ -1617,6 +1617,11 @@ def api_config():
     # Passive test instances (scripts/branch.sh serve) look identical to
     # live in the header — the client renders a TEST badge off this flag.
     cfg["passive"] = bool(os.environ.get("VIRA_PASSIVE"))
+    # A sandbox install (scripts/sandbox.sh) is NOT passive — it is a real
+    # first boot, just against a fake HOME and a namespaced Keychain. It
+    # would otherwise badge itself LIVE, which is exactly the mistake the
+    # badge exists to prevent, so it gets its own marker.
+    cfg["sandbox"] = bool(os.environ.get("VIRA_SANDBOX"))
     # Deterministic AI-backend health, for the header banner. Compact: the
     # client shows a bar only when state == "red".
     cfg["ai_health"] = aihealth.summary()
