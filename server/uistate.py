@@ -61,12 +61,14 @@ def instance_id():
     remembering a dead instance's layout must adopt the new instance's
     inherited arrangement instead of shadowing it and pushing the stale
     layout into the fresh store (the 2026-07-16 recycled-port clobber)."""
-    try:
-        stamp = (STORE.parent / ".test-snapshot").read_text().strip()
+    for marker, prefix in ((".test-snapshot", "test-"),
+                           (".instance-stamp", "inst-")):
+        try:
+            stamp = (STORE.parent / marker).read_text().strip()
+        except OSError:
+            continue
         if stamp:
-            return "test-" + hashlib.sha1(stamp.encode()).hexdigest()[:12]
-    except OSError:
-        pass
+            return prefix + hashlib.sha1(stamp.encode()).hexdigest()[:12]
     return "live"
 
 

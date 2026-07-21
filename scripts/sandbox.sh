@@ -99,6 +99,14 @@ cmd_new() {
   "$APP/.venv/bin/pip" install --quiet --upgrade pip
   "$APP/.venv/bin/pip" install -r "$APP/requirements.txt"
 
+  # Each provision is its own data world. Without this the sandbox reports
+  # instance "live", and a browser that drove the PREVIOUS sandbox on this
+  # same port keeps its saved desktop and pushes it back into the freshly
+  # wiped store — so `reset` would hand back the last sandbox's layout
+  # instead of a virgin one (see uistate.instance_id).
+  mkdir -p "$APP/data"
+  date +%s.%N > "$APP/data/.instance-stamp"
+
   seed_claude_state
   # No data/config.json on purpose: a virgin install boots into fixture mode
   # and opens the Setup window, which is the thing under test.
