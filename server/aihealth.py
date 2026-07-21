@@ -97,6 +97,14 @@ def _backend_config():
 
 
 def _api_key():
+    """Env var first (existing installs), then the Keychain (a key pasted
+    into Setup). models.api_key holds both halves of that lookup."""
+    from . import models as provider
+    pid = str(_raw_cfg().get("ai_provider") or "anthropic")
+    if pid in provider.PROVIDERS:
+        key = provider.api_key(pid)
+        if key:
+            return key
     return os.environ.get(_backend_config()[1], "")
 
 
@@ -138,35 +146,31 @@ def classify(text):
 # ---------- rung 1: the deterministic probe ----------
 
 def _probe_cli():
-    """`claude auth status` reports loggedIn with no model call or token spend.
-    Returns (state, detail, extra)."""
+    """The CONFIGURED provider's subscription login, checked through its own
+    CLI. No model call, no token spend. Returns (state, detail, extra).
+
+    Delegates to models.probe so the check follows the provider actually in
+    use — and so it finds a CLI that is installed but not on PATH, like the
+    codex binary inside ChatGPT.app. The signature stays fixed: this is the
+    seam the health tests stub."""
+    from . import models as provider
+    pid = str(_raw_cfg().get("ai_provider") or "anthropic")
+    if pid not in provider.PROVIDERS:
+        pid = "anthropic"
     try:
-        res = subprocess.run(["claude", "auth", "status"],
-                             capture_output=True, text=True, timeout=20,
-                             env=_strip_env())
-    except FileNotFoundError:
-        return "red", "claude CLI not found on PATH", {}
-    except subprocess.TimeoutExpired:
-        return "unknown", "claude auth status timed out", {}
+        rec = provider.probe(pid)
     except Exception as e:  # noqa: BLE001 — a probe must never crash the caller
         return "unknown", f"probe error: {str(e)[:120]}", {}
-    out = (res.stdout or "").strip()
-    try:
-        data = json.loads(out)
-    except json.JSONDecodeError:
-        low = (out + " " + (res.stderr or "")).lower()
-        if is_auth_failure(low) or "loggedin\": false" in low:
-            return "red", "not logged in", {}
-        if "logged in" in low or res.returncode == 0:
-            return "green", "logged in", {}
-        return "unknown", (out[:160] or "unrecognized auth status output"), {}
-    if data.get("loggedIn"):
-        extra = {"authMethod": data.get("authMethod"),
-                 "subscriptionType": data.get("subscriptionType")}
-        return "green", (f"logged in ({data.get('authMethod', '?')}, "
-                         f"{data.get('subscriptionType', '?')})"), extra
-    return ("red", "not logged in (claude auth status: loggedIn=false)",
-            {"authMethod": data.get("authMethod")})
+    if not rec:
+        return "unknown", f"unknown provider {pid}", {}
+    extra = {"provider": rec["id"], "authMethod": rec["auth"]}
+    if rec["auth"] == provider.SIGNED_IN:
+        return "green", rec["detail"], extra
+    if rec["auth"] == provider.KEY:
+        return "green", rec["detail"], extra
+    if rec["auth"] == provider.ABSENT:
+        return "red", rec["detail"], extra
+    return "red", rec["detail"] or "not signed in", extra
 
 
 def _probe_api(key):
@@ -194,12 +198,15 @@ def _action_for(state, backend, fallback):
     if state == "unknown":
         return "AI status unknown — could not reach the backend to check."
     if backend == "cli":
-        base = ("AI is paused — the Claude login expired. Open a terminal and "
-                "run `claude auth login` to reconnect.")
+        from . import models as provider
+        pid = str(_raw_cfg().get("ai_provider") or "anthropic")
+        spec = provider.PROVIDERS.get(pid) or provider.PROVIDERS["anthropic"]
+        base = (f"AI is paused — the {spec['sub_name']} login is not active. "
+                f"Open a terminal and run `{spec['login_cmd']}` to reconnect.")
         if fallback:
             base += " Reply drafting is falling back to the API key meanwhile."
         return base
-    return "AI is paused — the API key was rejected. Check the VIRA_ANTHROPIC_KEY value."
+    return "AI is paused — the API key was rejected. Check it in Setup > Connect your AI."
 
 
 def probe(write=True):
