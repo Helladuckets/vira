@@ -91,14 +91,14 @@ def _txt(text):
 
 def _hm(iso):
     try:
-        return dt.datetime.fromisoformat(iso).strftime("%-I:%M %p")
+        return settings.strf(dt.datetime.fromisoformat(iso), "%-I:%M %p")
     except (TypeError, ValueError):
         return ""
 
 
 def _day_label(iso):
     try:
-        return dt.datetime.fromisoformat(iso).strftime("%a %b %-d")
+        return settings.strf(dt.datetime.fromisoformat(iso), "%a %b %-d")
     except (TypeError, ValueError):
         return "undated"
 
@@ -156,8 +156,8 @@ def _calendar_text(days):
         except Exception as e:  # noqa: BLE001 — degrade, never fail the tool
             notes.append(f"M365 calendar ({addr}) unavailable: {str(e)[:120]}")
     head = (f"Calendar, next {days} day(s) "
-            f"({start.strftime('%a %b %-d')} to "
-            f"{(end - dt.timedelta(days=1)).strftime('%a %b %-d')}):")
+            f"({settings.strf(start, '%a %b %-d')} to "
+            f"{settings.strf(end - dt.timedelta(days=1), '%a %b %-d')}):")
     body = _render_days(events) or "No events found in this range."
     tail = ("\n\nnote: " + "; ".join(notes)) if notes else ""
     return f"{head}\n\n{body}{tail}"
@@ -348,7 +348,7 @@ def _thread_text(name, limit):
              f"(last {len(msgs)} messages):"]
     for msg in msgs:
         when = msg.get("when")
-        stamp = (dt.datetime.fromisoformat(when).strftime("%b %-d %-I:%M %p")
+        stamp = (settings.strf(dt.datetime.fromisoformat(when), "%b %-d %-I:%M %p")
                  if when else "?")
         who = "Me" if msg.get("from_me") else top["name"]
         lines.append(f"  [{stamp}] {who}: {msg.get('text', '')[:300]}")

@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, "claude/**"]
   pull_request:
 
 jobs:
@@ -19,3 +19,18 @@ jobs:
         run: python -m unittest discover tests
       - name: PII scan (generic patterns, full tree)
         run: sh scripts/check-pii.sh --tree
+
+  # The Windows test machine for the portable core (P0): no Mac stores, no
+  # fcntl, no glibc strftime — if the suite passes here, the platform seams
+  # are honest. The PII scan stays on the mac job (it is a shell script).
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -r requirements.txt httpx
+      - name: Tests
+        run: python -m unittest discover tests
