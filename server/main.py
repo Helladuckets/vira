@@ -960,9 +960,34 @@ class OnboardVaultReq(BaseModel):
     init: bool = False
 
 
+class OnboardAiReq(BaseModel):
+    provider: str                      # anthropic | openai
+    api_key: str | None = None         # pasted key -> Keychain, never config
+    model: str | None = None
+
+
 @app.get("/api/onboard")
 def api_onboard():
     return onboard.status()
+
+
+@app.get("/api/onboard/steps")
+def api_onboard_steps():
+    """The guided-setup state machine, derived fresh from the world."""
+    return onboard.steps()
+
+
+@app.post("/api/onboard/ai")
+def api_onboard_ai(req: OnboardAiReq):
+    """Select the model provider, and optionally store an API key for it.
+
+    The key goes to the Keychain, never to data/config.json — config is
+    plaintext, and a stranger setting Vira up from the browser has no shell
+    profile to put an env var in."""
+    try:
+        return onboard.set_provider(req.provider, req.api_key, req.model)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
 
 
 @app.post("/api/onboard/apple")

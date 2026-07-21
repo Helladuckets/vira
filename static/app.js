@@ -4087,11 +4087,25 @@ document.getElementById("subs-refresh")?.addEventListener("click", async (e) => 
 
 let setupPollTimer = null;
 
+
+// The guided wizard. The rail shows every step and its state; the pane
+// shows ONE card — the step being walked. State is derived server-side
+// (onboard.steps) from the world, never stored, so re-entry resumes
+// wherever the machine actually is instead of replaying a saved cursor.
+
+let setupActive = null;          // step id pinned by a rail click
+let setupSt = null;              // raw /api/onboard, for card bodies
+
 async function loadSetup() {
   const body = $("#setup-body");
   if (!body) return;
-  const st = await api("/api/onboard");
-  renderSetup(st);
+  const [flow, st] = await Promise.all([
+    api("/api/onboard/steps"),
+    api("/api/onboard"),
+  ]);
+  setupSt = st;
+  renderSetup(flow, st);
+  launchUnlocked(flow);
   if (st.dossiers && st.dossiers.running) pollSetup();
 }
 
@@ -4101,9 +4115,14 @@ function pollSetup() {
     if (!$("#setup-body")) {
       clearInterval(setupPollTimer); setupPollTimer = null; return;
     }
-    const st = await api("/api/onboard").catch(() => null);
-    if (!st) return;
-    renderSetup(st);
+    const [flow, st] = await Promise.all([
+      api("/api/onboard/steps").catch(() => null),
+      api("/api/onboard").catch(() => null),
+    ]);
+    if (!flow || !st) return;
+    setupSt = st;
+    renderSetup(flow, st);
+    launchUnlocked(flow);
     if (!st.dossiers || !st.dossiers.running) {
       clearInterval(setupPollTimer); setupPollTimer = null;
       toast("Dossier build finished");
@@ -4111,50 +4130,208 @@ function pollSetup() {
   }, 2500);
 }
 
-function setupCard(title) {
-  const card = el("div", "setup-card");
-  card.appendChild(el("div", "setup-card-title", title));
-  return card;
+// ---- progressive launch ----------------------------------------------
+// Finishing a step opens the ONE module it unlocks. Deliberately one, not
+// every window the new data enables: contacts alone light up five, and
+// opening five buries the wizard the owner is still working through.
+
+function setupOpened() {
+  try { return JSON.parse(localStorage.getItem("vira-setup-opened") || "[]"); }
+  catch { return []; }
 }
 
-async function setupAct(btn, fn, okMsg) {
-  const prev = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = "working…";
-  try {
-    const res = await fn();
-    if (okMsg) toast(okMsg(res));
-    await loadSetup();
-  } catch (e) {
-    toast(e.message || "failed");
-    btn.disabled = false;
-    btn.textContent = prev;
+function markOpened(id) {
+  const seen = setupOpened();
+  if (seen.includes(id)) return false;
+  seen.push(id);
+  localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
+  uiPush("vira-setup-opened", JSON.stringify(seen));
+  return true;
+}
+
+function launchUnlocked(flow) {
+  if (!flow || !flow.steps) return;
+  flow.steps.forEach((s) => {
+    if (s.state !== "done" || !s.opens) return;
+    if (!markOpened(s.id)) return;              // already fired, don't re-open
+    openApp(s.opens);
+    toast(`${s.title} done — opening ${WINDOWS.find((w) => w.id === s.opens)
+      ?.title || s.opens}`);
+  });
+  // The finish line is the Launchpad, not every window at once.
+  if (flow.complete && markOpened("__complete__")) {
+    openApp("launchpad");
+    toast("Setup complete — here's everything Vira can do");
   }
+  if (winState && winState.setup && winState.setup.open)
+    focusWin(winState.setup.el);
 }
 
-function renderSetup(st) {
+// ---- render ------------------------------------------------------------
+
+function renderSetup(flow, st) {
   const body = $("#setup-body");
   if (!body) return;
   const mode = $("#setup-mode");
-  if (mode) mode.textContent = st.fixture_mode
-    ? "demo data — connect yours below" : "running on your data";
-  body.replaceChildren();
+  if (mode) mode.textContent = flow.complete
+    ? "all set" : `${flow.done} of ${flow.total} done`;
 
-  // -- contacts in
-  const c = setupCard("1 · Connect your contacts");
-  c.appendChild(el("p", "hint",
+  const steps = flow.steps;
+  // Pinned step if the owner clicked one and it still exists; otherwise the
+  // first unfinished step — which is what makes re-entry land in the right
+  // place with nothing persisted.
+  let active = steps.find((s) => s.id === setupActive);
+  if (!active) active = steps.find((s) => s.state !== "done") || steps[0];
+
+  body.replaceChildren();
+  const wrap = el("div", "setup-wrap");
+
+  // rail: every step, always visible
+  const rail = el("div", "setup-rail");
+  steps.forEach((s, i) => {
+    const row = el("button", "setup-step" + (s.id === active.id ? " on" : "")
+      + " s-" + s.state);
+    row.appendChild(el("span", "setup-dot"));
+    const txt = el("div", "setup-step-txt");
+    txt.appendChild(el("div", "setup-step-title", `${i + 1}. ${s.title}`));
+    const sub = s.blocker || (s.state === "done" ? "done" : s.unlocks);
+    if (sub) txt.appendChild(el("div", "setup-step-sub", sub));
+    row.appendChild(txt);
+    row.onclick = () => { setupActive = s.id; renderSetup(flow, st); };
+    rail.appendChild(row);
+  });
+  wrap.appendChild(rail);
+
+  // pane: the active card only
+  const pane = el("div", "setup-pane");
+  const card = setupCard(active.title);
+  if (active.blocker)
+    card.appendChild(el("p", "hint setup-warn", "Blocked — " + active.blocker));
+  ({ ai: cardAi, disk: cardDisk, contacts: cardContacts,
+     dossiers: cardDossiers, brain: cardBrain, mail: cardMail
+   }[active.id] || cardMail)(card, active, st);
+  if (active.unlocks)
+    card.appendChild(el("p", "setup-unlocks", "Unlocks " + active.unlocks));
+  pane.appendChild(card);
+  wrap.appendChild(pane);
+  body.appendChild(wrap);
+}
+
+// ---- step cards --------------------------------------------------------
+
+function cardAi(card, step) {
+  card.appendChild(el("p", "hint",
+    "Vira runs on your model, under your own login. Connect one and " +
+    "everything Vira writes for you — replies in your voice, dossiers, " +
+    "the daily brief — comes from it."));
+  (step.providers || []).forEach((pr) => {
+    const tile = el("div", "setup-prov" + (pr.connected ? " on" : ""));
+    const head = el("div", "setup-prov-head");
+    head.appendChild(el("span", "setup-prov-name", pr.label));
+    head.appendChild(el("span", "setup-prov-state",
+      pr.connected ? (pr.auth === "signed_in" ? "signed in" : "API key")
+        : pr.present ? "not signed in" : "not found"));
+    tile.appendChild(head);
+    tile.appendChild(el("div", "hint", pr.detail));
+    if (!pr.can.sessions)
+      tile.appendChild(el("div", "hint setup-warn",
+        "Drafts, dossiers and the brief only — live agent sessions need " +
+        "Anthropic."));
+
+    const row = el("div", "setup-row");
+    if (pr.connected) {
+      const use = el("button", "btn primary", "Use " + pr.label);
+      use.onclick = () => setupAct(use,
+        () => api("/api/onboard/ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: pr.id }),
+        }), (r) => `Using ${r.provider.label}`);
+      row.appendChild(use);
+    } else if (pr.present) {
+      // The login flow is interactive and belongs to the owner — Vira shows
+      // the command rather than running an auth flow on their behalf.
+      const cmd = el("code", "setup-cmd", pr.login_cmd);
+      cmd.title = "click to copy";
+      cmd.onclick = () => { copyText(pr.login_cmd); toast("Command copied"); };
+      row.appendChild(cmd);
+      const rb = el("button", "btn", "Recheck");
+      rb.onclick = () => loadSetup();
+      row.appendChild(rb);
+    }
+    const kb = el("button", "btn", pr.has_key ? "Replace API key" : "Use an API key");
+    kb.onclick = () => {
+      if (tile.querySelector(".setup-key")) return;
+      const krow = el("div", "setup-row setup-key");
+      const inp = el("input");
+      inp.type = "password";
+      inp.className = "search";
+      inp.placeholder = pr.label + " API key";
+      inp.autocomplete = "off";
+      const save = el("button", "btn primary", "Save");
+      save.onclick = () => setupAct(save,
+        () => api("/api/onboard/ai", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: pr.id, api_key: inp.value }),
+        }), () => "Key saved to your Keychain");
+      krow.appendChild(inp);
+      krow.appendChild(save);
+      krow.appendChild(el("span", "hint", "Stored in your macOS Keychain, " +
+        "never in a file."));
+      tile.appendChild(krow);
+      inp.focus();
+    };
+    row.appendChild(kb);
+    tile.appendChild(row);
+    card.appendChild(tile);
+  });
+}
+
+function cardDisk(card, step, st) {
+  const state = st.feed.chat_db;
+  if (state === "ok") {
+    card.appendChild(el("p", "hint setup-ok",
+      "Granted — Vira can read this Mac's Messages, contacts and calendar."));
+    return;
+  }
+  card.appendChild(el("p", "hint",
+    "Vira reads your messages, contacts and calendar directly from this " +
+    "Mac — nothing is uploaded to do it. macOS gates those files behind " +
+    "Full Disk Access, granted to Vira's own Python so the permission " +
+    "covers Vira alone."));
+  const steps = el("ol", "setup-steps");
+  ["Open System Settings > Privacy & Security > Full Disk Access",
+   "Add the Python below (drag it in, or use the + button)",
+   "Come back and hit Recheck — no restart needed"].forEach((t) =>
+    steps.appendChild(el("li", "", t)));
+  card.appendChild(steps);
+  const path = (st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python";
+  const code = el("code", "setup-cmd", path);
+  code.title = "click to copy";
+  code.onclick = () => { copyText(path); toast("Path copied"); };
+  card.appendChild(code);
+  const row = el("div", "setup-row");
+  const rb = el("button", "btn primary", "Recheck");
+  rb.onclick = () => loadSetup();
+  row.appendChild(rb);
+  card.appendChild(row);
+}
+
+function cardContacts(card, step, st) {
+  card.appendChild(el("p", "hint",
     `${st.crm.people} ${st.crm.people === 1 ? "person" : "people"} in your ` +
-    `CRM (${st.crm.root}). Importing never sends anything anywhere — it ` +
-    `reads what this Mac already has.`));
-  const crow = el("div", "setup-row");
+    `CRM (${st.crm.root}). Importing reads what this Mac already has — it ` +
+    `never sends anything anywhere.`));
+  const row = el("div", "setup-row");
   if (st.contacts.apple_sources > 0) {
     const ab = el("button", "btn primary", "Import Apple Contacts");
     ab.onclick = () => setupAct(ab,
       () => api("/api/onboard/apple", { method: "POST" }),
       (r) => `${r.added} added, ${r.already_known} already known`);
-    crow.appendChild(ab);
+    row.appendChild(ab);
   } else {
-    crow.appendChild(el("span", "hint", "No Apple Contacts stores found."));
+    row.appendChild(el("span", "hint", "No Apple Contacts stores found."));
   }
   const gbtn = el("button", "btn", "Import Google Contacts CSV…");
   const file = el("input");
@@ -4175,67 +4352,51 @@ function renderSetup(st) {
     rd.readAsText(f);
   };
   gbtn.onclick = () => file.click();
-  crow.appendChild(gbtn);
-  crow.appendChild(file);
-  c.appendChild(crow);
-  body.appendChild(c);
+  row.appendChild(gbtn);
+  row.appendChild(file);
+  card.appendChild(row);
+}
 
-  // -- first dossiers
-  const d = setupCard("2 · Build first dossiers");
-  d.appendChild(el("p", "hint",
-    `${st.crm.profiles} ${st.crm.profiles === 1 ? "dossier" : "dossiers"} ` +
-    `on file. Vira reads your most active iMessage threads and writes a ` +
-    `first dossier per person — relationship, conversation hooks, open ` +
-    `loops — using your configured model backend.`));
+function cardDossiers(card, step, st) {
+  card.appendChild(el("p", "hint",
+    "Vira reads your most active iMessage threads and writes a first " +
+    "dossier per person — relationship, conversation hooks you can tap to " +
+    "draft an opener, open loops."));
+  card.appendChild(el("p", "hint",
+    "This is the step where message content goes to the model you " +
+    "connected — your account, your backend, nowhere else."));
   const ds = st.dossiers || {};
   if (ds.running) {
-    d.appendChild(el("p", "setup-progress",
-      `Building ${ds.done}/${ds.total}` +
-      (ds.current ? ` — ${ds.current}` : "")));
-  } else {
-    const drow = el("div", "setup-row");
-    const db = el("button", "btn primary", "Build first dossiers");
-    if (st.fixture_mode) {
-      db.disabled = true;
-      drow.appendChild(db);
-      drow.appendChild(el("span", "hint", "connect contacts first"));
-    } else {
-      db.onclick = () => setupAct(db,
-        () => api("/api/onboard/dossiers", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ limit: 25 }),
-        }), () => "Dossier build started");
-      drow.appendChild(db);
-    }
-    d.appendChild(drow);
-    if (ds.finished && ds.built && ds.built.length)
-      d.appendChild(el("p", "hint",
-        `Last build: ${ds.built.length} dossiers (${ds.built.slice(0, 5)
-          .join(", ")}${ds.built.length > 5 ? "…" : ""}).`));
-    if (ds.errors && ds.errors.length)
-      d.appendChild(el("p", "hint",
-        `${ds.errors.length} skipped (model errors) — rerun picks them up.`));
+    card.appendChild(el("p", "setup-progress",
+      `Building ${ds.done}/${ds.total}` + (ds.current ? ` — ${ds.current}` : "")));
+    return;
   }
-  body.appendChild(d);
+  card.appendChild(el("p", "setup-cost", step.cost || ""));
+  const row = el("div", "setup-row");
+  const db = el("button", "btn primary", "Build first dossiers");
+  db.disabled = step.state === "blocked";
+  db.onclick = () => setupAct(db,
+    () => api("/api/onboard/dossiers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ limit: 25 }),
+    }), (r) => `Building ${r.total} dossiers`);
+  row.appendChild(db);
+  if (step.state === "blocked")
+    row.appendChild(el("span", "hint", step.blocker));
+  card.appendChild(row);
+}
 
-  // -- the Brain
-  const b = setupCard("3 · Wire the Brain");
-  if (st.vault.connected) {
-    b.appendChild(el("p", "hint",
-      `Connected: ${st.vault.root} — ${st.vault.notes} ` +
-      `${st.vault.notes === 1 ? "note" : "notes"} indexed locally. ` +
-      `Ask it anything in the Brain window.`));
-  } else {
-    b.appendChild(el("p", "hint",
-      "Point Vira at a notes vault (Obsidian or any folder of markdown) " +
-      "and the Brain answers questions grounded in your own notes — " +
-      "indexed on this Mac, nothing leaves it."));
-  }
-  const vrow = el("div", "setup-row");
-  const vin = el("input", "search");
-  vin.type = "text";
-  vin.placeholder = st.vault.connected ? st.vault.root : "~/Documents/Notes";
+function cardBrain(card, step, st) {
+  card.appendChild(el("p", "hint",
+    "Point Vira at a notes vault (Obsidian, or any folder of markdown) and " +
+    "the Brain answers questions grounded in your own notes, citing them. " +
+    "Indexed on this Mac; nothing leaves it."));
+  const row = el("div", "setup-row");
+  const vin = el("input");
+  vin.className = "search";
+  vin.placeholder = "~/Documents/Notes";
+  vin.value = st.vault.root || "";
   const vb = el("button", "btn primary", "Use this vault");
   vb.onclick = () => setupAct(vb,
     () => api("/api/onboard/vault", {
@@ -4250,42 +4411,19 @@ function renderSetup(st) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ path: vin.value.trim(), init: true }),
     }), () => "Vault created and connected");
-  vrow.appendChild(vin);
-  vrow.appendChild(vb);
-  vrow.appendChild(vnb);
-  b.appendChild(vrow);
-  body.appendChild(b);
-
-  // -- live feed access
-  const f2 = setupCard("4 · Live feed");
-  if (st.feed.chat_db === "ok") {
-    f2.appendChild(el("p", "hint setup-ok",
-      "Messages database readable — the live feed and dossier builder " +
-      "can see your history."));
-  } else if (st.feed.chat_db === "no-access") {
-    f2.appendChild(el("p", "hint setup-warn",
-      "Messages database found but not readable. Grant Full Disk Access " +
-      "to .venv/bin/python (System Settings > Privacy & Security > Full " +
-      "Disk Access), then recheck — no restart needed."));
-    const rrow = el("div", "setup-row");
-    const rb = el("button", "btn", "Recheck");
-    rb.onclick = () => loadSetup();
-    rrow.appendChild(rb);
-    f2.appendChild(rrow);
-  } else {
-    f2.appendChild(el("p", "hint",
-      "No Messages database on this Mac — the iMessage feed stays off."));
-  }
-  body.appendChild(f2);
-
-  // -- mail
-  const m = setupCard("5 · Mail (optional)");
-  m.appendChild(el("p", "hint",
-    `${st.mail.accounts} mail ${st.mail.accounts === 1 ? "account" :
-      "accounts"} connected. Add Gmail/IMAP or Microsoft 365 in Settings ` +
-    `(gear, top right) to fold email into the feed and brief.`));
-  body.appendChild(m);
+  row.appendChild(vin);
+  row.appendChild(vb);
+  row.appendChild(vnb);
+  card.appendChild(row);
 }
+
+function cardMail(card, step, st) {
+  card.appendChild(el("p", "hint",
+    `${st.mail.accounts} mail ${st.mail.accounts === 1 ? "account" : "accounts"} ` +
+    `connected. Add Gmail/IMAP or Microsoft 365 from Settings (the gear, top ` +
+    `right) to fold email into the feed, the brief and receipts.`));
+}
+
 
 function viewLoad(id) {
   if (id === "brief" && Date.now() - briefLoadedAt > 300000)
@@ -6956,7 +7094,8 @@ function initDesktop() {
 // Local wins: a browser with its own saved layout keeps it and mirrors
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
-const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden"];
+const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
+                      "vira-setup-opened"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 

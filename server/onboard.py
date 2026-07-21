@@ -512,3 +512,165 @@ def status():
         "mail": {"accounts": mail_accounts},
         "dossiers": build,
     }
+
+
+def set_provider(pid, api_key=None, model=None):
+    """Point Vira at a model provider, and file a pasted key in the Keychain.
+
+    Backend follows from what is actually usable: a subscription login uses
+    the CLI path, a key-only provider uses the API path. Nothing here spends
+    a token — the returned record is a fresh probe so the UI can show the
+    real result of the change rather than an optimistic one."""
+    from . import models as provider
+    if pid not in provider.PROVIDERS:
+        raise ValueError(f"unknown provider: {pid}")
+    if api_key:
+        key = str(api_key).strip()
+        if not key:
+            raise ValueError("empty API key")
+        # `security -i` reads the command from stdin so the key never rides
+        # argv, where ps can see it (the msgraph precedent).
+        def q(v):
+            return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        cmd = (f"add-generic-password -U -a {q(pid)} "
+               f"-s {q(settings.keychain_service('vira-model-key'))} "
+               f"-w {q(key)}\n")
+        res = subprocess.run(["security", "-i"], input=cmd,
+                             capture_output=True, text=True, timeout=15)
+        if res.returncode != 0:
+            raise RuntimeError(f"keychain write failed: {res.stderr.strip()[:200]}")
+        provider._bin_cache.pop(pid, None)
+
+    rec = provider.probe(pid)
+    updates = {"ai_provider": pid,
+               "ai_backend": "cli" if rec and rec["auth"] == provider.SIGNED_IN
+                             else "api"}
+    if model:
+        updates["openai_cli_model" if pid == "openai" else "cli_model"] = model
+    config_set(**updates)
+    return {"provider": rec, "backend": updates["ai_backend"]}
+
+
+# ---------- the guided-setup step machine ----------
+
+DOSSIER_LIMIT = 25          # matches start_dossiers' default cap
+
+# Ordered because setup is a sequence, and each entry names the ONE module
+# it opens when it lands. The order encodes the owner's ruling (2026-07-21):
+# the AI comes first because Vira is a harness — every other step hands
+# Vira access to your data, this one is what makes it work at all.
+STEP_ORDER = (
+    ("ai",        "Connect your AI",     None),
+    ("disk",      "Full Disk Access",    None),
+    ("contacts",  "Import contacts",     "people"),
+    ("dossiers",  "Build first dossiers", "brief"),
+    ("brain",     "Wire the Brain",      "brain"),
+    ("mail",      "Connect mail",        "feed"),
+)
+
+
+def _cost_line(people):
+    """What a dossier run will cost, in the terms the connected backend
+    actually bills in. A subscription login covers it; a pasted API key
+    does not, and silently spending someone's money in their first five
+    minutes is how a tool loses trust — so the number is shown BEFORE the
+    click, and the build never starts on its own."""
+    from . import models as provider
+    mode = provider.auth_mode()
+    n = min(people, DOSSIER_LIMIT)
+    if mode == "subscription":
+        return f"Included in your plan — up to {n} dossiers this run."
+    if mode == "key":
+        try:
+            per = float(settings.raw().get("dossier_cost_estimate_usd") or 0.25)
+        except (TypeError, ValueError):
+            per = 0.25
+        return (f"About ${per * n:.2f} on your API key "
+                f"— roughly ${per:.2f} per person, up to {n} this run.")
+    return "Connect your AI first to build dossiers."
+
+
+def steps():
+    """The wizard's state, DERIVED from the world — never stored.
+
+    That is what makes re-entry free: a half-finished setup recomputes
+    exactly where it stopped, with no progress file to keep in sync or to
+    go stale against reality. Each step reports its state, the blocker by
+    name when it has one, and what completing it unlocks."""
+    from . import models as provider
+    st = status()
+    providers = provider.discover()
+    ai_ok = any(p["connected"] for p in providers)
+    disk_ok = st["feed"]["chat_db"] == "ok"
+    people = st["crm"]["people"]
+    build = st["dossiers"]
+
+    def mk(sid, title, opens, state, detail, blocker="", unlocks="", **extra):
+        return {"id": sid, "title": title, "state": state, "detail": detail,
+                "blocker": blocker, "unlocks": unlocks, "opens": opens,
+                **extra}
+
+    out = []
+    for sid, title, opens in STEP_ORDER:
+        if sid == "ai":
+            active = provider.active()
+            out.append(mk(
+                sid, title, opens,
+                "done" if ai_ok else "todo",
+                (f"{active['label']} — {active['detail']}" if active
+                 else "No model backend connected yet."),
+                unlocks="everything Vira writes for you",
+                providers=providers,
+                sessions=bool(active and active["can"]["sessions"])))
+        elif sid == "disk":
+            state = {"ok": "done", "no-access": "todo",
+                     "missing": "todo"}[st["feed"]["chat_db"]]
+            out.append(mk(
+                sid, title, opens, state,
+                ("Vira can read this Mac's Messages database."
+                 if disk_ok else
+                 "Grant Full Disk Access to Vira's Python so it can read "
+                 "your contacts, messages, and calendar."),
+                unlocks="contacts, messages, calendar, search"))
+        elif sid == "contacts":
+            out.append(mk(
+                sid, title, opens,
+                "done" if people else ("blocked" if not disk_ok else "todo"),
+                (f"{people} {'person' if people == 1 else 'people'} in your CRM."
+                 if people else "No contacts imported yet."),
+                blocker="" if disk_ok or people else "needs Full Disk Access",
+                unlocks="People, Radar, the Visual Network",
+                sources=st["contacts"]["apple_sources"]))
+        elif sid == "dossiers":
+            missing = [n for n, ok in (("AI", ai_ok), ("contacts", bool(people)))
+                       if not ok]
+            state = ("running" if build.get("running")
+                     else "done" if st["crm"]["profiles"]
+                     else "blocked" if missing else "todo")
+            out.append(mk(
+                sid, title, opens, state,
+                (f"Building {build.get('done', 0)}/{build.get('total', 0)}"
+                 if build.get("running") else
+                 f"{st['crm']['profiles']} on file."
+                 if st["crm"]["profiles"] else _cost_line(people)),
+                blocker=("needs " + " and ".join(missing)) if missing else "",
+                unlocks="the Daily Brief, hooks, suggested replies",
+                cost=_cost_line(people)))
+        elif sid == "brain":
+            out.append(mk(
+                sid, title, opens,
+                "done" if st["vault"]["connected"] else "todo",
+                (f"{st['vault']['notes']} notes indexed."
+                 if st["vault"]["connected"] else "No vault connected."),
+                unlocks="Brain — grounded answers from your own notes"))
+        else:  # mail
+            out.append(mk(
+                sid, title, opens,
+                "done" if st["mail"]["accounts"] else "todo",
+                (f"{st['mail']['accounts']} account(s) connected."
+                 if st["mail"]["accounts"] else "No mail account connected."),
+                unlocks="email in Incoming, drafts, receipts"))
+
+    done = sum(1 for s in out if s["state"] == "done")
+    return {"steps": out, "done": done, "total": len(out),
+            "complete": done == len(out), "fixture_mode": st["fixture_mode"]}

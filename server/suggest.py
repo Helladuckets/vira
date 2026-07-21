@@ -18,10 +18,13 @@ from . import imessage
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 
 DEFAULTS = {
-    "ai_backend": "cli",          # "cli" (Max plan) | "api"
+    "ai_provider": "anthropic",   # "anthropic" | "openai" (see server/models.py)
+    "ai_backend": "cli",          # "cli" (subscription login) | "api" (key)
     "cli_model": "sonnet",
     "api_model": "claude-sonnet-5",
     "api_key_env": "VIRA_ANTHROPIC_KEY",
+    "openai_cli_model": "gpt-5.1-codex",
+    "openai_api_model": "gpt-5.1",
     "timeout": 120,
 }
 
@@ -121,6 +124,51 @@ def _call_api(prompt, model, timeout, key):
     return "".join(b.get("text", "") for b in payload.get("content", []))
 
 
+def _call_codex_cli(prompt, model, timeout):
+    """OpenAI's subscription path, the mirror of _call_cli: `codex exec`
+    runs non-interactively against the ChatGPT login. The binary is often
+    NOT on PATH (it ships inside ChatGPT.app), so it is resolved through
+    models.find_binary rather than named directly."""
+    from . import models as provider
+    binary = provider.find_binary("openai")
+    if not binary:
+        raise RuntimeError("codex CLI not found on this Mac")
+    cmd = [binary, "exec", "--model", model, "--skip-git-repo-check", prompt]
+    res = subprocess.run(cmd, capture_output=True, text=True,
+                         timeout=timeout, env=_strip_env())
+    if res.returncode != 0:
+        raise RuntimeError(f"codex exit {res.returncode}: "
+                           f"{res.stderr.strip()[-400:]}")
+    return res.stdout
+
+
+def _call_openai_api(prompt, model, timeout, key):
+    body = json.dumps({
+        "model": model,
+        "input": prompt,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses", data=body, method="POST",
+        headers={"content-type": "application/json",
+                 "authorization": "Bearer " + key})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.loads(r.read())
+    # Responses API: walk output[].content[].text, tolerating shape drift.
+    out = []
+    for item in payload.get("output") or []:
+        for block in item.get("content") or []:
+            if block.get("text"):
+                out.append(block["text"])
+    return "".join(out) or payload.get("output_text", "")
+
+
+def _provider_models(cfg, pid):
+    """(cli_model, api_model) for the provider in play."""
+    if pid == "openai":
+        return cfg["openai_cli_model"], cfg["openai_api_model"]
+    return cfg["cli_model"], cfg["api_model"]
+
+
 def _run(prompt, cfg):
     """Pick the EFFECTIVE backend, call it, and on failure record the auth
     state so the app degrades gracefully. Returns (text, backend_used).
@@ -131,16 +179,27 @@ def _run(prompt, cfg):
     A dead cli login with no key stands as cli: the call then fails honestly
     and note_failure flips the health state red + alerts the owner."""
     from . import aihealth
+    from . import models as provider
     backend = cfg["ai_backend"]
-    key = os.environ.get(cfg["api_key_env"], "")
+    pid = str(cfg.get("ai_provider") or "anthropic")
+    if pid not in provider.PROVIDERS:
+        pid = "anthropic"
+    # The key may come from the env (existing installs) or the Keychain
+    # (pasted in Setup by someone with no shell profile to edit).
+    key = provider.api_key(pid)
     if backend == "api" and not key:
         backend = "cli"
     if backend == "cli":
         backend = aihealth.preferred_backend("cli", key)
+    cli_model, api_model = _provider_models(cfg, pid)
     try:
         if backend == "api":
-            return _call_api(prompt, cfg["api_model"], cfg["timeout"], key), backend
-        return _call_cli(prompt, cfg["cli_model"], cfg["timeout"]), backend
+            if pid == "openai":
+                return _call_openai_api(prompt, api_model, cfg["timeout"], key), backend
+            return _call_api(prompt, api_model, cfg["timeout"], key), backend
+        if pid == "openai":
+            return _call_codex_cli(prompt, cli_model, cfg["timeout"]), backend
+        return _call_cli(prompt, cli_model, cfg["timeout"]), backend
     except Exception as e:  # noqa: BLE001 — classify + record, then re-raise
         aihealth.note_failure(str(e), source="reply-draft")
         raise
