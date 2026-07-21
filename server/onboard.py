@@ -434,6 +434,14 @@ def _md_count(root, cap=3000):
     return n
 
 
+def _qocha_bin() -> Path:
+    """The venv's qocha console script, next to the running python:
+    bin/qocha on POSIX, Scripts\\qocha.exe on Windows (pip writes console
+    scripts as .exe there — the bare name never exists)."""
+    return Path(sys.executable).with_name(
+        "qocha.exe" if settings.IS_WIN else "qocha")
+
+
 def vault_setup(path, init=False):
     """Point the Brain at a vault — or seed a new one with qocha init."""
     p = Path(str(path or "").strip()).expanduser()
@@ -441,10 +449,10 @@ def vault_setup(path, init=False):
         raise ValueError("a vault path is required")
     if init:
         p.mkdir(parents=True, exist_ok=True)
-        qocha = Path(sys.executable).with_name("qocha")
+        qocha = _qocha_bin()
         if not qocha.exists():
             raise RuntimeError("the qocha CLI is missing from the venv — "
-                               "run .venv/bin/pip install -r requirements.txt")
+                               "install requirements.txt into it and retry")
         r = subprocess.run([str(qocha), "init", str(p)],
                            capture_output=True, text=True, timeout=120)
         if r.returncode != 0:
@@ -491,6 +499,9 @@ def status():
         "mail": {"accounts": mail_accounts},
         "dossiers": build,
         "sources": sources.discover(),
+        # The platform in the registry's own vocabulary (mac/win/linux),
+        # so Setup cards can speak honestly about where keys are stored.
+        "platform": sources._platform(),
     }
 
 
