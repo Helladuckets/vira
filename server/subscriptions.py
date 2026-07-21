@@ -59,7 +59,6 @@ Engine rules, in order:
    queue; until then it renders as a review prompt — which is also the
    record-keeping nudge: everything here should have an invoice somewhere.
 """
-import calendar
 import json
 import re
 import sqlite3
@@ -120,10 +119,8 @@ def _fixture_seed():
     today = date.today().toordinal()
     charges = json.loads((fx / "subs-charges.json").read_text())
     for i, c in enumerate(charges):
-        d = _fx_date(c)
-        if d is None:                          # month-anchored date not yet reached
-            continue
-        posted = d.isoformat() + "T12:00:00Z"
+        posted = date.fromordinal(today - int(c["days_ago"])).isoformat() \
+            + "T12:00:00Z"
         conn.execute(
             "INSERT OR IGNORE INTO charges (merchant_id, amount, posted_at, "
             "source, counterparty, bank_description, mercury_note, "
@@ -138,39 +135,16 @@ def _fixture_seed():
     for e in evidence:
         nbd = (date.fromordinal(today + int(e["next_in_days"])).isoformat()
                if e.get("next_in_days") is not None else None)
-        d = _fx_date(e)
-        if d is None:
-            continue
         conn.execute(
             "INSERT INTO evidence (merchant_id, kind, date, amount, "
             "next_billing_date, plan, message_ref, account) "
             "VALUES (?,?,?,?,?,?,?,?)",
-            (e["merchant_id"], e["kind"], d.isoformat(),
+            (e["merchant_id"], e["kind"],
+             date.fromordinal(today - int(e["days_ago"])).isoformat(),
              e.get("amount"), nbd, e.get("plan", ""),
              e.get("message_ref", "fixture"), e.get("account", "fixture")))
     conn.commit()
     conn.close()
-
-
-def _fx_date(spec):
-    """Resolve a fixture date spec relative to today. Two forms:
-    {"days_ago": N} — N days before today (recency semantics: lapses, "just
-    charged", evidence freshness). {"months_ago": M, "day": D} — day D of the
-    calendar month M months back, clamped to month length; returns None when
-    that date is still in the future (a current-month charge not yet
-    reached). Month anchoring exists because cadence classification reads
-    first-charge-of-month gaps — days_ago offsets drift across month
-    boundaries as today advances and flip the demo's cadences (the 22.5-vs-41
-    date bug, 2026-07-21)."""
-    today = date.today()
-    if "months_ago" in spec:
-        y, m = today.year, today.month - int(spec["months_ago"])
-        while m <= 0:
-            m += 12
-            y -= 1
-        d = date(y, m, min(int(spec["day"]), calendar.monthrange(y, m)[1]))
-        return None if d > today else d
-    return date.fromordinal(today.toordinal() - int(spec["days_ago"]))
 
 
 # ---------- registry ----------
