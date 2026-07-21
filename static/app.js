@@ -4489,7 +4489,18 @@ function renderSetup(flow, st) {
 
 // ---- step cards --------------------------------------------------------
 
-function cardAi(card, step) {
+// Where a pasted key actually lands (server/secrets.py ladder), said in the
+// platform's own words so the promise is checkable. st.platform uses the
+// source registry's vocabulary: mac / win / linux.
+function keyStoreSentence(st) {
+  const p = st && st.platform;
+  if (p === "win")
+    return "Stored in Windows Credential Manager, never in a file.";
+  if (p === "mac") return "Stored in your macOS Keychain, never in a file.";
+  return "Stored in Vira's locked, owner-only secrets store.";
+}
+
+function cardAi(card, step, st) {
   card.appendChild(el("p", "hint",
     "Vira runs on your model, under your own login. Connect one and " +
     "everything Vira writes for you — replies in your voice, dossiers, " +
@@ -4544,11 +4555,10 @@ function cardAi(card, step) {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ provider: pr.id, api_key: inp.value }),
-        }), () => "Key saved to your Keychain");
+        }), () => "Key saved");
       krow.appendChild(inp);
       krow.appendChild(save);
-      krow.appendChild(el("span", "hint", "Stored in your macOS Keychain, " +
-        "never in a file."));
+      krow.appendChild(el("span", "hint", keyStoreSentence(st)));
       tile.appendChild(krow);
       inp.focus();
     };
@@ -4689,11 +4699,12 @@ function cardBrain(card, step, st) {
   card.appendChild(el("p", "hint",
     "Point Vira at a notes vault (Obsidian, or any folder of markdown) and " +
     "the Brain answers questions grounded in your own notes, citing them. " +
-    "Indexed on this Mac; nothing leaves it."));
+    "Indexed on this machine; nothing leaves it."));
   const row = el("div", "setup-row");
   const vin = el("input");
   vin.className = "search";
-  vin.placeholder = "~/Documents/Notes";
+  vin.placeholder = st.platform === "win"
+    ? "C:\\Users\\you\\Documents\\Notes" : "~/Documents/Notes";
   vin.value = st.vault.root || "";
   const vb = el("button", "btn primary", "Use this vault");
   vb.onclick = () => setupAct(vb,

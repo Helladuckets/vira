@@ -228,7 +228,7 @@ class VaultSetupTests(unittest.TestCase):
             onboard.vault_setup("  ")
 
     def test_init_seeds_a_vault(self):
-        qocha = Path(onboard.sys.executable).with_name("qocha")
+        qocha = onboard._qocha_bin()
         if not qocha.exists():
             self.skipTest("qocha CLI not installed in this venv")
         with tempfile.TemporaryDirectory() as tmp:
@@ -449,6 +449,23 @@ class StepSourceForkTests(StepMachineTests):
         steps, _ = self._steps(self._status(platform="win"))
         self.assertEqual([s["id"] for s in steps["mail"]["sources"]],
                          ["imap-mail", "m365-mail"])
+
+
+class StatusPlatformTests(unittest.TestCase):
+    """status() names the platform in the registry's vocabulary (mac/win/
+    linux) so Setup cards can say where a pasted key actually lands."""
+
+    def test_platform_field_names_this_platform(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(onboard, "crm_target",
+                               return_value=Path(tmp)), \
+             mock.patch.object(onboard.settings, "get", return_value=""):
+            with mock.patch.object(onboard.settings, "IS_WIN", True), \
+                 mock.patch.object(onboard.settings, "IS_MAC", False):
+                self.assertEqual(onboard.status()["platform"], "win")
+            with mock.patch.object(onboard.settings, "IS_WIN", False), \
+                 mock.patch.object(onboard.settings, "IS_MAC", True):
+                self.assertEqual(onboard.status()["platform"], "mac")
 
 
 class DossierCostTests(unittest.TestCase):
