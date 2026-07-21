@@ -4167,6 +4167,29 @@ function launchUnlocked(flow) {
     focusWin(winState.setup.el);
 }
 
+// ---- shared card helpers ----------------------------------------------
+
+function setupCard(title) {
+  const card = el("div", "setup-card");
+  card.appendChild(el("div", "setup-card-title", title));
+  return card;
+}
+
+async function setupAct(btn, fn, okMsg) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "working…";
+  try {
+    const res = await fn();
+    if (okMsg) toast(okMsg(res));
+    await loadSetup();
+  } catch (e) {
+    toast(e.message || "failed");
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
 // ---- render ------------------------------------------------------------
 
 function renderSetup(flow, st) {
@@ -7137,6 +7160,18 @@ async function syncUiState() {
   } catch { /* store unreachable -> plain localStorage behavior */ }
 }
 
+// On MOBILE the landing view is whichever section carries .active in the
+// markup (the feed). That is right for a set-up Vira and wrong for a fresh
+// one, where the first screen should be the thing to do next — desktop
+// already leads with the Setup window. Deep links always win; a finished
+// setup is left alone.
+function firstRunLanding() {
+  if (isDesktop || location.hash) return;
+  api("/api/onboard/steps")
+    .then((flow) => { if (flow && !flow.complete) openApp("setup"); })
+    .catch(() => {});
+}
+
 // ---------- boot ----------
 async function boot() {
   // adopt the server-side arrangement BEFORE the desktop builds its
@@ -7154,6 +7189,7 @@ async function boot() {
   designHash();    // #design deep link
   readerHash();    // #reader deep link
   readerProbe();   // hide the Reader when no personal pages exist
+  firstRunLanding();
   renderPeopleSort();
   loadBrief().catch(() => {});
   loadFeed().catch(() => {});
