@@ -2269,3 +2269,10 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
   color: var(--text-dim); margin-top: 2px;
 }
+
+/* WhatsApp pairing card (settings sheet) */
+#wa-qr-box { margin: 10px 0 4px; }
+#wa-qr {
+  width: 220px; height: 220px; display: block;
+  background: #fff; padding: 8px; border-radius: 12px;
+}

@@ -87,6 +87,14 @@ DEFAULT_MODULES = [
      "links": [], "keywords": ["mail", "gmail", "imap", "graph", "m365",
                                "outlook"],
      "updated": TODAY},
+    {"id": "whatsapp-src", "name": "WhatsApp (linked device)", "layer": "source",
+     "group": "communicate", "kind": "multi-device sidecar",
+     "what": "Inbound WhatsApp via a local linked-device sidecar "
+             "(bridge/whatsapp, receive-only). Messages join the live feed "
+             "by phone number; content never leaves the machine.",
+     "links": [], "keywords": ["whatsapp", "sidecar", "linked device",
+                               "baileys"],
+     "updated": TODAY},
     {"id": "calendars-src", "name": "Calendars", "layer": "source",
      "group": "rhythm", "kind": "macOS EventKit + M365",
      "what": "Personal, family, and birthday calendars merged with the "
