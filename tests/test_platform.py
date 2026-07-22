@@ -100,5 +100,18 @@ class PlatformConstantsTests(unittest.TestCase):
         self.assertFalse(settings.IS_MAC and settings.IS_WIN)
 
 
+class QochaBinTests(unittest.TestCase):
+    """pip writes console scripts as Scripts\\name.exe on Windows — the
+    bare POSIX name never exists there, so Setup's "Start a new vault
+    here" would report the CLI missing on every PC (P4 install fix)."""
+
+    def test_windows_console_script_is_exe(self):
+        from server import onboard
+        with mock.patch.object(onboard.settings, "IS_WIN", True):
+            self.assertEqual(onboard._qocha_bin().name, "qocha.exe")
+        with mock.patch.object(onboard.settings, "IS_WIN", False):
+            self.assertEqual(onboard._qocha_bin().name, "qocha")
+
+
 if __name__ == "__main__":
     unittest.main()

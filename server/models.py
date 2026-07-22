@@ -203,7 +203,9 @@ def probe(pid):
     elif key:
         auth, detail = KEY, "using the API key on file"
     else:
-        auth, detail = ABSENT, f"{spec['bin']} not found on this Mac"
+        where = ("PC" if settings.IS_WIN else
+                 "Mac" if settings.IS_MAC else "machine")
+        auth, detail = ABSENT, f"{spec['bin']} not found on this {where}"
 
     login_cmd = login_command(pid, binary)
     return {
