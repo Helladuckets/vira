@@ -98,7 +98,7 @@ def load_scores(udir):
     scores = {}
     for sf in sorted(Path(udir).glob("*-raw-scores.json")):
         try:
-            for s in json.loads(sf.read_text()):
+            for s in json.loads(sf.read_text(encoding="utf-8")):
                 for k in (s.get("uid"), s.get("_fulluid")):
                     if k:
                         scores[k] = s
