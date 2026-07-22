@@ -181,13 +181,10 @@ def record_and_close(target_jid, verdict, judge_jid=None, idea_id=None):
     joblog.record_judge(target_jid, v)
     if idea_id:
         try:
-            it = next((i for i in ideas.list_items()
-                       if i["id"] == idea_id), None)
-            note = (it.get("note", "") + " · " if it and it.get("note")
-                    else "")
-            ideas.update(idea_id,
-                         note=f"{note}judged {v['grade']} "
-                              f"(job {(judge_jid or '')[:8]})")
+            ideas.stamp_note(idea_id,
+                             f"judged {v['grade']} "
+                             f"(job {(judge_jid or '')[:8]})",
+                             append=True)
         except Exception:  # noqa: BLE001 — write-back is best-effort
             pass
     return v
