@@ -105,7 +105,8 @@ class BackupCoverageTests(unittest.TestCase):
         for name in ("ideas.json", "config.json", "subscriptions.json",
                      "routines.json", "circuit-runs.json",
                      "brief-journal.json", "atlas-groups.json",
-                     "jobs-log.json"):
+                     "jobs-log.json", "applications.json",
+                     "mail-accounts.json", "circuits.json"):
             self.assertIn(name, backup.FILES)
 
 
