@@ -140,6 +140,12 @@ def refresh(force=False, log=lambda *a: None):
         # is the only expensive part of this whole module
         old = {r["pid"]: (r["seq"], r["text"]) for r in
                con.execute("SELECT seq, pid, text FROM people")}
+        # `pending` means "still needs a vector", so it is answered by the
+        # vecs table, NOT by whether the text changed. Deriving it from
+        # sameness alone marked every unchanged-but-never-embedded row as
+        # done, and a rebuild that landed mid-fill stranded the rest
+        # lexical-only forever.
+        embedded = {r[0] for r in con.execute("SELECT seq FROM vecs")}
         con.execute("DELETE FROM people")
         con.execute("DELETE FROM fts")
         keep = []
@@ -150,7 +156,8 @@ def refresh(force=False, log=lambda *a: None):
             cur = con.execute(
                 "INSERT INTO people(seq, pid, name, text, pending)"
                 " VALUES(?,?,?,?,?)",
-                (seq, pid, name, text, 0 if same else 1))
+                (seq, pid, name, text,
+                 0 if (same and seq in embedded) else 1))
             seq = seq or cur.lastrowid
             con.execute("INSERT INTO fts(rowid, name, text) VALUES(?,?,?)",
                         (seq, name, text))

@@ -137,6 +137,23 @@ class CrmIndexTests(unittest.TestCase):
 
     # ---------- ranking ----------
 
+    def test_unembedded_rows_stay_pending_across_a_rebuild(self):
+        # regression: `pending` was derived from "did the text change",
+        # so a rebuild landing mid-fill marked every unchanged row done
+        # and stranded the un-embedded ones lexical-only forever
+        crmindex.refresh(force=True)
+        con = crmindex._con()
+        seq = con.execute("SELECT seq FROM people WHERE pid='p_broker'"
+                          ).fetchone()[0]
+        con.execute("INSERT INTO vecs(seq, v) VALUES(?,?)",
+                    (seq, retrieval.pack_vec(np.array([1.0, 0.0],
+                                                      dtype=np.float32))))
+        con.execute("UPDATE people SET pending=0 WHERE seq=?", (seq,))
+        con.commit()
+        con.close()
+        crmindex.refresh(force=True)          # nothing changed on disk
+        self.assertEqual(crmindex.status()["pending"], 2)   # 3 people, 1 vec
+
     def test_vectors_join_the_ranking(self):
         crmindex.refresh(force=True)
         vec = np.array([1.0, 0.0], dtype=np.float32)
