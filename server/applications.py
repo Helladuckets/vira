@@ -29,7 +29,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import jsonstore, settings
+from . import jobshared, jsonstore, settings
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "applications.json"
 
@@ -99,7 +99,7 @@ _conn_cache = {"mtime": None, "by_company": None}
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return jobshared.now_iso()
 
 
 # ---------------------------------------------------------------- ingest
@@ -131,18 +131,14 @@ def _parse_datajs(path):
 def role_uid(job):
     """Stable id for owner state. frontier records carry `uid` already
     (a-<greenhouse id> / o-<ashby uuid>); teardown records derive the same
-    scheme from the posting URL so the two sources dedupe against each other."""
+    scheme from the posting URL (jobshared.url_uid) so the two sources
+    dedupe against each other."""
     if job.get("uid"):
         return job["uid"]
     url = job.get("url") or job.get("apply") or ""
-    m = re.search(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)", url)
-    if m:
-        org, jid = m.groups()
-        return ("a-" if org == "anthropic" else f"g-{org}-") + jid
-    m = re.search(r"ashbyhq\.com/([a-z0-9_-]+)/([0-9a-f-]{36})", url)
-    if m:
-        org, jid = m.groups()
-        return ("o-" if org == "openai" else f"as-{org}-") + jid
+    uid = jobshared.url_uid(url)
+    if uid:
+        return uid
     if url:
         return "u-" + re.sub(r"[^a-z0-9]+", "-", url.lower())[-60:].strip("-")
     return "t-" + re.sub(r"[^a-z0-9]+", "-",
@@ -281,13 +277,10 @@ def _apply_adjudication(role, adj):
     if idx is not None:
         role["shortlist"] = idx + 1          # 1-based page order
         return                                # a pick can never be cut
-    if role.get("comp_kind") in adj["cut_comp"]:
-        role["cut"] = adj["reason_comp"]
-    else:
-        for pat in adj["cut_titles"]:
-            if pat.search(role.get("title") or ""):
-                role["cut"] = adj["reason_title"]
-                break
+    reason = jobshared.cut_reason(role.get("comp_kind"),
+                                  role.get("title"), adj)
+    if reason:
+        role["cut"] = reason
 
 
 def _universe_key(udir):
@@ -316,17 +309,7 @@ def load_universe():
         if _universe_cache["key"] == key and _universe_cache["roles"] is not None:
             return _universe_cache["roles"]
     role_dir = udir / "candidate-universe" / "role"
-    scores = {}
-    for sf in sorted(udir.glob("*-raw-scores.json")):
-        try:
-            for s in json.loads(sf.read_text()):
-                # some entries carry a truncated uid with the full board uuid
-                # in _fulluid — index both so every keeper matches its file
-                for k in (s.get("uid"), s.get("_fulluid")):
-                    if k:
-                        scores[k] = s
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
+    scores = jobshared.load_scores(udir)
     adj = _load_adjudication(udir)
     corpus = {r["uid"]: r for r in load_roles()[0]}
     out = []
