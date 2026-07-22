@@ -1893,7 +1893,6 @@ $("#viewer-back").addEventListener("click", closeViewer);
 // /resume, edited here) + change log (every change per session) ----------
 let ideasCache = [];
 let projectsCache = [];
-let ideasTab = "ideas";   // "ideas" | "log"
 let ideaSort = localStorage.getItem("vira-idea-sort") || "grouped";
 let ideaProject = localStorage.getItem("vira-idea-project") || "";  // "" = all
 let ideaAddProject = localStorage.getItem("vira-idea-add-project") || "";
@@ -1973,6 +1972,9 @@ function ideaRow(it) {
   const box = el("div", "idea idea-" + it.status);
   box.dataset.ideaId = it.id;   // the right-click menu resolves the item by id
   const top = el("div", "idea-top");
+  const proj = el("span", "badge idea-proj", it.project || "Vira");
+  proj.title = "Project";
+  top.appendChild(proj);
   const text = el("div", "idea-text", it.text);
   text.title = "Click to edit";
   text.addEventListener("click", () => editIdea(box, it));
@@ -2200,7 +2202,8 @@ function renderIdeas() {
 }
 
 // ----- change log (read-only, derived from session retros + resolved ideas
-// + the durable claude-job ledger) -----
+// + the durable claude-job ledger). Rendered by the Work window's Record
+// tab — see loadRecord/renderRecord below the jobs section. -----
 const CL_TAG = { ship: "shipped", done: "done", dropped: "dropped", job: "job" };
 
 function clGroupLabel(g) {
@@ -2213,51 +2216,31 @@ function clGroupLabel(g) {
   return day + t;
 }
 
-async function loadChangelog() {
-  const box = $("#changelog-list");
-  if (!box) return;
-  box.innerHTML = "";
-  box.appendChild(el("div", "spin", "Loading change log…"));
-  let groups;
-  try { ({ groups } = await api("/api/changelog")); }
-  catch { box.innerHTML = ""; box.appendChild(el("div", "empty left", "Change log unavailable.")); return; }
-  box.innerHTML = "";
-  if (!groups.length) {
-    box.appendChild(el("div", "empty left", "No changes recorded yet."));
-    return;
-  }
-  groups.forEach((g) => {
-    const head = el("div", "cl-head");
-    head.appendChild(el("span", "cl-date", clGroupLabel(g)));
-    const count = g.entries.length;
-    head.appendChild(el("span", "cl-count", count + (count === 1 ? " change" : " changes")));
-    box.appendChild(head);
-    if (g.goal && g.date) box.appendChild(el("div", "cl-goal", g.goal));
-    g.entries.forEach((e) => {
-      const row = el("div", "cl-entry cl-" + (e.kind || "ship"));
-      row.appendChild(el("span", "cl-tag", CL_TAG[e.kind] || e.kind || "shipped"));
-      row.appendChild(el("span", "cl-text", e.text));
-      box.appendChild(row);
-    });
+// One changelog session group as a flat node list (head, goal, entries).
+// skipJobs leaves kind-"job" lines to the ledger rows beside them in the
+// Record's merged "All" timeline; the Shipped filter keeps the fold.
+function clGroupNodes(g, opts = {}) {
+  const nodes = [];
+  const entries = opts.skipJobs
+    ? g.entries.filter((e) => e.kind !== "job") : g.entries;
+  const head = el("div", "cl-head");
+  head.appendChild(el("span", "cl-date", clGroupLabel(g)));
+  const count = entries.length;
+  head.appendChild(el("span", "cl-count", count + (count === 1 ? " change" : " changes")));
+  nodes.push(head);
+  if (g.goal && g.date) nodes.push(el("div", "cl-goal", g.goal));
+  entries.forEach((e) => {
+    const row = el("div", "cl-entry cl-" + (e.kind || "ship"));
+    row.appendChild(el("span", "cl-tag", CL_TAG[e.kind] || e.kind || "shipped"));
+    row.appendChild(el("span", "cl-text", e.text));
+    nodes.push(row);
   });
-}
-
-function setIdeasTab(tab) {
-  ideasTab = tab;
-  $("#ideas-tabs")?.querySelectorAll(".seg-btn")
-    .forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
-  const ip = $("#ideas-pane"), cp = $("#changelog-pane");
-  if (ip) ip.style.display = tab === "ideas" ? "" : "none";
-  if (cp) cp.style.display = tab === "log" ? "" : "none";
-  if (tab === "log") loadChangelog().catch(() => {});
-  else loadIdeas().catch(() => {});
+  return nodes;
 }
 
 function initIdeas() {
   const inp = $("#idea-input");
   const add = $("#idea-add");
-  $("#ideas-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
-    b.addEventListener("click", () => setIdeasTab(b.dataset.tab)));
   const sortSel = $("#idea-sort");
   if (sortSel && !sortSel.options.length) {
     IDEA_SORTS.forEach(([v, l]) => {
@@ -2326,6 +2309,56 @@ function initIdeas() {
   };
   add.addEventListener("click", submit);
   inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+}
+
+// ----- the Queue's journal lane: notes that need a session -----
+// Journal entries whose instructions couldn't be applied as loops or facts
+// (the amber "needs a session" lines) surface beside the idea backlog —
+// same data the Journal window shows, with copy/export actions attached.
+async function loadQueueLane() {
+  const lane = $("#work-journal-lane");
+  if (!lane) return;
+  let entries = [];
+  try { entries = (await api("/api/brief/journal?limit=200")).entries || []; }
+  catch { lane.innerHTML = ""; return; }
+  const rows = [];
+  entries.forEach((e) => (e.result?.unapplied || []).forEach((u) =>
+    rows.push({ e, u })));
+  lane.innerHTML = "";
+  if (!rows.length) return;
+  const head = el("div", "work-subhead");
+  head.appendChild(el("span", "jobs-sub",
+    "Needs a session — told to Vira (" + rows.length + ")"));
+  const ex = el("button", "fchip sm", "Export all as prompt");
+  ex.style.marginLeft = "auto";
+  ex.title = "Copy every instruction Vira couldn't apply as one prompt "
+    + "for a full-access session";
+  ex.addEventListener("click", exportJournalPrompt);
+  head.appendChild(ex);
+  lane.appendChild(head);
+  rows.forEach(({ e, u }) => {
+    const row = el("div", "card q-note");
+    row.appendChild(el("span", "badge", "journal"));
+    const main = el("div", "link-main");
+    const line = el("div", "jn-unap", "needs a session — " + u.instruction);
+    if (u.area) line.appendChild(el("span", "jn-unap-area", u.area));
+    main.appendChild(line);
+    const note = (e.text || "").replace(/\s+/g, " ");
+    main.appendChild(el("div", "link-sub", fmtTime(e.created)
+      + (note ? " · “" + note.slice(0, 90)
+        + (note.length > 90 ? "…" : "") + "”" : "")));
+    row.appendChild(main);
+    const cp = el("button", "fchip sm", "copy as prompt");
+    cp.title = "Copy this one instruction (with its note) for a session";
+    cp.addEventListener("click", () => copyText(
+      "From a journal note (" + (e.created || "").slice(0, 10) + "):\n"
+      + '"""' + (e.text || "") + '"""\n'
+      + (e.context ? "[seen at: " + e.context + "]\n" : "")
+      + "\nInstruction: " + u.instruction,
+    ).then(() => toast("Instruction copied")));
+    row.appendChild(cp);
+    lane.appendChild(row);
+  });
 }
 
 // ----- run an idea as a headless Vira job (Plan / Implement) -----
@@ -2563,9 +2596,72 @@ $("#run-go").addEventListener("click", () => {
 });
 $("#run-args").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#run-go").click(); });
 
+// ----- the Dispatch bar: structure (single job vs circuit) + schedule -----
+// Picking a circuit turns the prompt bar into that circuit's input and Run
+// goes through the existing circuit-run call; "On a schedule…" opens the
+// standing-loop editor prefilled with the typed prompt.
+let dispatchCircuits = [];
+
+async function loadDispatchStructure() {
+  const sel = $("#dispatch-structure");
+  if (!sel) return;
+  let defs = [];
+  try { defs = (await api("/api/circuits")).circuits || []; }
+  catch { /* offline — Single job still works */ }
+  dispatchCircuits = defs;
+  const prev = sel.value;
+  sel.innerHTML = "";
+  const single = el("option", null, "Single job");
+  single.value = "";
+  sel.appendChild(single);
+  defs.forEach((c) => {
+    const o = el("option", null, "Circuit: " + c.name);
+    o.value = c.id;
+    sel.appendChild(o);
+  });
+  if (prev && defs.some((c) => c.id === prev)) sel.value = prev;
+  syncDispatchStructure();
+}
+
+function syncDispatchStructure() {
+  const sel = $("#dispatch-structure"), inp = $("#free-prompt");
+  if (!sel || !inp) return;
+  const c = dispatchCircuits.find((x) => x.id === sel.value);
+  inp.placeholder = c
+    ? "What should the “" + c.name + "” circuit work on?"
+    : "Ask Claude anything, or tap a card below";
+}
+$("#dispatch-structure")?.addEventListener("change", syncDispatchStructure);
+
+$("#dispatch-schedule")?.addEventListener("change", () => {
+  const sel = $("#dispatch-schedule");
+  if (sel.value !== "schedule") return;
+  sel.value = "";      // the control arms an action, not a sticky state
+  setWorkSub("schedules");
+  routineForm(null, { kind: "custom",
+                      prompt: $("#free-prompt").value.trim() });
+});
+
 $("#free-run").addEventListener("click", () => {
   const v = $("#free-prompt").value.trim();
-  if (v) { launchJob(v); $("#free-prompt").value = ""; }
+  if (!v) return;
+  const cid = $("#dispatch-structure")?.value;
+  if (cid) {
+    const btn = $("#free-run");
+    btn.disabled = true;
+    post(`/api/circuits/${cid}/run`, { input: v, cwd: null })
+      .then(() => {
+        $("#free-prompt").value = "";
+        toast("Circuit running — see Recipes › Runs");
+        setWorkSub("recipes");
+        setCircuitsTab("runs");
+      })
+      .catch((e) => alert("Run failed: " + e.message))
+      .finally(() => { btn.disabled = false; });
+    return;
+  }
+  launchJob(v);
+  $("#free-prompt").value = "";
 });
 $("#free-prompt").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#free-run").click();
@@ -2596,7 +2692,7 @@ async function refreshJobs() {
   if (full) {
     full.innerHTML = "";
     if (!jobs.length) full.appendChild(el("div", "empty left",
-      "No jobs yet — run one from Actions."));
+      "No jobs yet — run one from Dispatch."));
     jobs.slice(0, 20).forEach((j) => {
       const row = el("div", "card job-row-full");
       row.appendChild(el("span", "job-dot " + j.status));
@@ -2619,7 +2715,7 @@ async function loadNotify() {
   list.appendChild(el("div", "link-sub",
     cfg.enabled
       ? "On — active-tier email pings " + cfg.handle + " over iMessage."
-      : "Off — enable in settings."));
+      : "Off — turn it on above."));
   if (!recent.length) {
     list.appendChild(el("div", "empty left", "No notifications sent yet."));
     return;
@@ -3073,83 +3169,139 @@ function openSession(jid) {
 }
 function openJob(jid) { openSession(jid); }
 
-// ----- the Jobs window's History tab (the durable ledger) -----
+// ----- the Record tab: the durable job ledger + the change log, merged -----
 
-async function loadJobsHistory() {
-  const host = $("#jobs-history");
-  if (!host) return;
-  const { jobs } = await api("/api/jobs/history?limit=100");
-  host.innerHTML = "";
-  if (!jobs.length) {
-    host.appendChild(el("div", "empty left",
-      "No jobs on the ledger yet — run one from Actions."));
-    return;
+// One ledger row — status dot, judge chip (or judge button), transcript
+// copy, click-to-reopen (read-only from the ledger for finished jobs).
+function jobHistRow(r) {
+  const row = el("div", "card job-row-full job-hist");
+  row.appendChild(el("span", "job-dot "
+    + (r.status === "orphaned" ? "error" : r.status)));
+  const main = el("div", "link-main");
+  main.appendChild(el("div", "link-title",
+    (r.title || r.prompt || "").replace(/\s+/g, " ").slice(0, 90)));
+  const bits = [r.status,
+    (r.started || "").replace("T", " ").slice(0, 16)];
+  if (r.model) bits.push(ccModelLabel(r.model) || r.model);
+  if (r.mode) bits.push(r.publish_plan ? "plan" : r.mode);
+  if (r.session_id) bits.push("session " + r.session_id.slice(0, 8));
+  main.appendChild(el("div", "link-sub", bits.join(" · ")));
+  row.appendChild(main);
+  if (r.judge && r.judge.grade) {
+    const g = el("span", "cir-grade "
+      + (/^[AB]/.test(r.judge.grade) ? "good" : "bad"), r.judge.grade);
+    g.title = (r.judge.summary || "")
+      + (r.judge.recommendation ? " — " + r.judge.recommendation : "");
+    row.appendChild(g);
+  } else if (["done", "error"].includes(r.status)
+             && !(r.meta || {}).judge_of) {
+    const jb = el("button", "fchip sm", "judge");
+    jb.title = "Grade this job with a fresh, independent session";
+    jb.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      jb.disabled = true;
+      jb.textContent = "judging…";
+      try {
+        const res = await post(`/api/judge/${r.id}`, {});
+        toast("Judge session running");
+        openSession(res.judge_job_id);
+      } catch (err) {
+        jb.disabled = false;
+        jb.textContent = "judge";
+        alert("Judge failed: " + err.message);
+      }
+    });
+    row.appendChild(jb);
   }
-  jobs.forEach((r) => {
-    const row = el("div", "card job-row-full job-hist");
-    row.appendChild(el("span", "job-dot "
-      + (r.status === "orphaned" ? "error" : r.status)));
-    const main = el("div", "link-main");
-    main.appendChild(el("div", "link-title",
-      (r.title || r.prompt || "").replace(/\s+/g, " ").slice(0, 90)));
-    const bits = [r.status,
-      (r.started || "").replace("T", " ").slice(0, 16)];
-    if (r.model) bits.push(ccModelLabel(r.model) || r.model);
-    if (r.mode) bits.push(r.publish_plan ? "plan" : r.mode);
-    if (r.session_id) bits.push("session " + r.session_id.slice(0, 8));
-    main.appendChild(el("div", "link-sub", bits.join(" · ")));
-    row.appendChild(main);
-    if (r.judge && r.judge.grade) {
-      const g = el("span", "cir-grade "
-        + (/^[AB]/.test(r.judge.grade) ? "good" : "bad"), r.judge.grade);
-      g.title = (r.judge.summary || "")
-        + (r.judge.recommendation ? " — " + r.judge.recommendation : "");
-      row.appendChild(g);
-    } else if (["done", "error"].includes(r.status)
-               && !(r.meta || {}).judge_of) {
-      const jb = el("button", "fchip sm", "judge");
-      jb.title = "Grade this job with a fresh, independent session";
-      jb.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        jb.disabled = true;
-        jb.textContent = "judging…";
-        try {
-          const res = await post(`/api/judge/${r.id}`, {});
-          toast("Judge session running");
-          openSession(res.judge_job_id);
-        } catch (err) {
-          jb.disabled = false;
-          jb.textContent = "judge";
-          alert("Judge failed: " + err.message);
-        }
-      });
-      row.appendChild(jb);
-    }
-    if (r.transcript) {
-      const cp = el("button", "fchip sm", "transcript");
-      cp.title = r.transcript + " — click to copy the path";
-      cp.addEventListener("click", (e) => {
-        e.stopPropagation();
-        navigator.clipboard.writeText(r.transcript)
-          .then(() => toast("Transcript path copied"))
-          .catch(() => alert(r.transcript));
-      });
-      row.appendChild(cp);
-    }
-    row.addEventListener("click", () => openSession(r.id));
-    host.appendChild(row);
-  });
+  if (r.transcript) {
+    const cp = el("button", "fchip sm", "transcript");
+    cp.title = r.transcript + " — click to copy the path";
+    cp.addEventListener("click", (e) => {
+      e.stopPropagation();
+      navigator.clipboard.writeText(r.transcript)
+        .then(() => toast("Transcript path copied"))
+        .catch(() => alert(r.transcript));
+    });
+    row.appendChild(cp);
+  }
+  row.addEventListener("click", () => openSession(r.id));
+  return row;
 }
 
-$("#jobs-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
-  b.addEventListener("click", () => {
-    $("#jobs-tabs").querySelectorAll(".seg-btn").forEach((x) =>
-      x.classList.toggle("on", x === b));
-    const hist = b.dataset.tab === "history";
-    $("#jobs-live-pane").style.display = hist ? "none" : "";
-    $("#jobs-history-pane").style.display = hist ? "" : "none";
-    if (hist) loadJobsHistory().catch(() => {});
-  }));
+let recordFilter = "all";           // all | jobs | shipped
+let recordCache = { groups: null, jobs: null };
+
+async function loadRecord() {
+  const [cl, hist] = await Promise.all([
+    api("/api/changelog").catch(() => null),
+    api("/api/jobs/history?limit=100").catch(() => null),
+  ]);
+  recordCache = { groups: cl ? cl.groups : null,
+                  jobs: hist ? hist.jobs : null };
+  renderRecord();
+}
+
+function setRecordFilter(f) {
+  recordFilter = f;
+  $("#record-filter")?.querySelectorAll(".seg-btn")
+    .forEach((b) => b.classList.toggle("on", b.dataset.rec === f));
+  renderRecord();
+}
+$("#record-filter")?.querySelectorAll(".seg-btn").forEach((b) =>
+  b.addEventListener("click", () => setRecordFilter(b.dataset.rec)));
+
+function renderRecord() {
+  const host = $("#work-record-list");
+  if (!host) return;
+  host.innerHTML = "";
+  const { groups, jobs } = recordCache;
+  if (groups === null && jobs === null) {
+    host.appendChild(el("div", "empty left", "Record unavailable."));
+    return;
+  }
+  if (recordFilter === "jobs") {
+    if (!jobs || !jobs.length) {
+      host.appendChild(el("div", "empty left",
+        "No jobs on the ledger yet — run one from Dispatch."));
+      return;
+    }
+    jobs.forEach((r) => host.appendChild(jobHistRow(r)));
+    return;
+  }
+  if (recordFilter === "shipped") {
+    if (!groups || !groups.length) {
+      host.appendChild(el("div", "empty left", "No changes recorded yet."));
+      return;
+    }
+    groups.forEach((g) =>
+      clGroupNodes(g).forEach((n) => host.appendChild(n)));
+    return;
+  }
+  // All: one timeline — session groups and ledger rows interleaved by
+  // time, newest first. A job folded into a session group renders as its
+  // actionable ledger row here (skipJobs suppresses the duplicate text
+  // line); the Shipped filter shows the changelog's own fold verbatim.
+  const items = [];
+  (groups || []).forEach((g) => {
+    const t = g.date
+      ? (Date.parse(g.date + "T" + (g.time || "00:00")) || 0)
+      : Infinity;   // the "recent / unfiled" bucket leads, as it does today
+    const nodes = clGroupNodes(g, { skipJobs: true });
+    if (nodes.length > (g.goal && g.date ? 2 : 1))   // head(+goal) alone = all jobs
+      items.push({ t, nodes });
+  });
+  (jobs || []).forEach((r) => {
+    const t = Date.parse(r.started || "") || 0;
+    items.push({ t, nodes: [jobHistRow(r)] });
+  });
+  if (!items.length) {
+    host.appendChild(el("div", "empty left",
+      "Nothing recorded yet — dispatch a job or ship a session."));
+    return;
+  }
+  items.sort((a, b) => b.t - a.t);
+  items.forEach((it) => it.nodes.forEach((n) => host.appendChild(n)));
+}
 
 // ---------- settings, merged into the Setup window (2026-07-21) ----------
 // The gear opens Setup — one surface that is both the first-run walkthrough
@@ -3870,8 +4022,9 @@ $("#brief-refresh")?.addEventListener("click", () => loadBrief());
 $("#journal-refresh")?.addEventListener("click", () => loadJournal().catch(() => {}));
 
 // everything Vira couldn't apply, as one copy-paste prompt for a
-// full-access Claude session (the annotate-style export)
-$("#journal-export")?.addEventListener("click", async () => {
+// full-access Claude session (the annotate-style export) — shared by the
+// Journal header button and the Work Queue's journal lane
+async function exportJournalPrompt() {
   try {
     const ex = await api("/api/brief/journal/export");
     if (!ex.count) { toast("Nothing pending to export"); return; }
@@ -3879,7 +4032,8 @@ $("#journal-export")?.addEventListener("click", async () => {
     toast("Copied " + ex.count + " instruction"
           + (ex.count === 1 ? "" : "s") + " as a prompt");
   } catch (e) { alert("Export failed: " + e.message); }
-});
+}
+$("#journal-export")?.addEventListener("click", exportJournalPrompt);
 // ---------- phone link (Android companion pairing + ingest status) ----------
 let companionPollT = null;
 
@@ -5042,6 +5196,13 @@ function cardNotifications(card) {
   hint.style.alignSelf = "center";
   bar.appendChild(test); bar.appendChild(hint);
   card.appendChild(bar);
+  // the notifications-sent log (moved here from the retired Jobs window);
+  // the boot poller refreshes it while this card is on screen
+  card.appendChild(el("div", "jobs-sub", "Notifications sent"));
+  const sent = el("div", "list");
+  sent.id = "notify-list";
+  card.appendChild(sent);
+  loadNotify().catch(() => {});
 }
 
 function cardUpdates(card) {
@@ -5064,21 +5225,84 @@ function cardUpdates(card) {
 }
 
 
+// ---------- the Work window: Queue | Dispatch | Live | Record ----------
+// Five cockpit windows (Actions, Jobs, Ideas & On-Hold, Circuits, Agent
+// Loops) merged into one surface, 2026-07-21. The folded windows' renderers
+// and element ids are untouched — their DOM chunks live inside the four
+// panes now — so every capability stays where its code already works.
+
+let workTab = "queue";        // queue | dispatch | live | record
+let workSub = "library";      // dispatch sub-panel: library | recipes | schedules
+
+// Anything that still opens a folded window by id (context menus, saved
+// links, cross-module jumps) lands on the right Work tab.
+const WORK_ALIAS = {
+  ideas: { tab: "queue" },
+  actions: { tab: "dispatch", sub: "library" },
+  jobs: { tab: "live" },
+  circuits: { tab: "dispatch", sub: "recipes" },
+  routines: { tab: "dispatch", sub: "schedules" },
+};
+
+function setWorkTab(tab, opts = {}) {
+  workTab = tab;
+  $("#work-tabs")?.querySelectorAll(".seg-btn")
+    .forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  const panes = { queue: "#work-queue-pane", dispatch: "#work-dispatch-pane",
+                  live: "#work-live-pane", record: "#work-record-pane" };
+  Object.entries(panes).forEach(([t, sel]) => {
+    const p = $(sel);
+    if (p) p.style.display = t === tab ? "" : "none";
+  });
+  if (!opts.defer) workTabLoad(tab);
+}
+
+function setWorkSub(sub, opts = {}) {
+  workSub = sub;
+  $("#work-sub-tabs")?.querySelectorAll(".seg-btn")
+    .forEach((b) => b.classList.toggle("on", b.dataset.sub === sub));
+  const panes = { library: "#work-sub-library", recipes: "#work-sub-recipes",
+                  schedules: "#work-sub-schedules" };
+  Object.entries(panes).forEach(([s, sel]) => {
+    const p = $(sel);
+    if (p) p.style.display = s === sub ? "" : "none";
+  });
+  if (opts.defer) return;
+  if (sub === "recipes") {
+    loadCircuits().catch(() => {});
+    if (circuitsTab === "runs") loadCircuitRuns().catch(() => {});
+  }
+  if (sub === "schedules") loadRoutines().catch(() => {});
+}
+
+function workTabLoad(tab) {
+  if (tab === "queue") {
+    loadIdeas().catch(() => {});
+    loadQueueLane().catch(() => {});
+  }
+  if (tab === "dispatch") {
+    loadActions().catch(() => {});
+    loadDispatchStructure().catch(() => {});
+    if (workSub === "recipes") {
+      loadCircuits().catch(() => {});
+      if (circuitsTab === "runs") loadCircuitRuns().catch(() => {});
+    }
+    if (workSub === "schedules") loadRoutines().catch(() => {});
+  }
+  if (tab === "live") refreshJobs().catch(() => {});
+  if (tab === "record") loadRecord().catch(() => {});
+}
+
+$("#work-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
+  b.addEventListener("click", () => setWorkTab(b.dataset.tab)));
+$("#work-sub-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
+  b.addEventListener("click", () => setWorkSub(b.dataset.sub)));
+
 function viewLoad(id) {
   if (id === "brief" && Date.now() - briefLoadedAt > 300000)
     loadBrief().catch(() => {});
   if (id === "triage") loadTriageWindow().catch(() => {});
-  if (id === "jobs") {
-    refreshJobs().catch(() => {});
-    loadNotify().catch(() => {});
-    const hist = $("#jobs-history-pane");
-    if (hist && hist.style.display !== "none")
-      loadJobsHistory().catch(() => {});
-  }
-  if (id === "ideas") {
-    loadIdeas().catch(() => {});
-    if (ideasTab === "log") loadChangelog().catch(() => {});
-  }
+  if (id === "work") workTabLoad(workTab);
   if (id === "plans") loadPlans().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
@@ -5095,11 +5319,6 @@ function viewLoad(id) {
     if (f && !f.getAttribute("src")) f.src = "/design/studio.html";
   }
   if (id === "reader") loadReader().catch(() => {});
-  if (id === "circuits") {
-    loadCircuits().catch(() => {});
-    if (circuitsTab === "runs") loadCircuitRuns().catch(() => {});
-  }
-  if (id === "routines") loadRoutines().catch(() => {});
   if (id === "subsviz") loadSubsViz().catch(() => {});
   if (id === "launchpad") renderLaunchpad();
   if (id === "setup") loadSetup().catch(() => {});
@@ -5108,7 +5327,15 @@ function viewLoad(id) {
 // Open an app on either width: floating window on desktop; on mobile the
 // view takes over the column. Every registered app is reachable this way,
 // dock icon / launcher aside. "launchpad" itself is the overlay on mobile.
+// A folded cockpit id (ideas/actions/jobs/circuits/routines) opens Work on
+// the right tab.
 function openApp(id) {
+  const alias = WORK_ALIAS[id];
+  if (alias) {
+    setWorkTab(alias.tab, { defer: true });
+    if (alias.sub) setWorkSub(alias.sub, { defer: true });
+    id = "work";
+  }
   if (typeof isDesktop !== "undefined" && isDesktop) {
     if (winState[id]) openWindow(id);
     return;
@@ -5706,8 +5933,9 @@ async function loadCircuitRuns() {
   circuitsPoll?.stop();
   if (anyRunning)
     circuitsPoll = startPoll((h) => {
-      const visible = $("#circuits-runs-pane")?.style.display !== "none"
-        && $("#view-circuits")?.offsetParent !== null;
+      // offsetParent is null when the pane or ANY ancestor (recipes
+      // sub-panel, work pane, window, view) is display:none
+      const visible = $("#circuit-runs")?.offsetParent != null;
       if (!visible) { h.stop(); return; }
       loadCircuitRuns().catch(() => {});
     }, 3000);
@@ -5807,11 +6035,14 @@ async function loadRoutines() {
   });
 }
 
-async function routineForm(existing) {
+// prefill seeds a NEW loop's initial fields (the Dispatch bar's
+// "On a schedule…" hands the typed prompt over); save still keys off
+// `existing` alone, so prefill never turns a create into an edit.
+async function routineForm(existing, prefill) {
   const host = $("#routine-form");
   host.style.display = "";
   host.innerHTML = "";
-  const r = existing || {};
+  const r = existing || prefill || {};
   const name = el("input", "search");
   name.placeholder = "Loop name";
   name.value = r.name || "";
@@ -6445,7 +6676,7 @@ const WINDOWS = [
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
   { id: "people", title: "People", w: 440, defaultOpen: true,
     icon: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19c.5-3.4 2.7-5 5.5-5s5 1.6 5.5 5M15.5 11.4a2.7 2.7 0 1 0-1.2-5.2M15.8 14.2c2.4.3 4.2 1.8 4.7 4.8" },
-  { id: "actions", title: "Actions", w: 560,
+  { id: "work", title: "Work", w: 720,
     icon: "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M12.5 14.5H16" },
   { id: "brief", title: "Daily Brief", w: 520,
     icon: "M12 3v3M5.3 6.3l2.1 2.1M2.5 13.5h3M18.5 13.5h3M16.6 8.4l2.1-2.1M7.5 15.5a4.5 4.5 0 0 1 9 0M3.5 19h17" },
@@ -6453,14 +6684,10 @@ const WINDOWS = [
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 11h6M9 14.5h4" },
   { id: "triage", title: "Triage", w: 440,
     icon: "M4 5h16M7.5 12h9M10.5 19h3" },
-  { id: "jobs", title: "Jobs", w: 500,
-    icon: "M7 8h13v11H7zM7 12h13M4 5h13v2M10 15.5h4" },
   { id: "applications", title: "Applications", w: 780,
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
   { id: "search", title: "Search", w: 640,
     icon: "M4 5h16v14H4zM7.5 15.5l3.5-4 2.5 3 2-2.5 3 3.5M9 9.5a1 1 0 1 0 0-.01" },
-  { id: "ideas", title: "Ideas & On-Hold", w: 480,
-    icon: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.7.6 1.3 1.4 1.3 2.4h5c0-1 .6-1.8 1.3-2.4A6 6 0 0 0 12 3z" },
   { id: "plans", title: "Plans", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
   { id: "brain", title: "Brain", w: 560,
@@ -6471,10 +6698,6 @@ const WINDOWS = [
     icon: "M12 12m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0-4.8 0M5 5.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M19 6.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M5.5 18.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M18.5 18m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M10.3 10.3L6.3 6.9M13.7 10.6L17.5 7.6M10.5 13.7L6.8 17.2M13.6 13.5L17 16.7" },
   { id: "map", title: "System Map", w: 1000,
     icon: "M9 4L4 6v14l5-2 6 2 5-2V4l-5 2-6-2zM9 4v14M15 6v14" },
-  { id: "circuits", title: "Circuits", w: 720,
-    icon: "M4 7h5v5H4zM15 12h5v5h-5zM9 9.5h4v5h2M6.5 12v5h8.5M9.5 4.5v2.5M17.5 17v2.5" },
-  { id: "routines", title: "Agent Loops", w: 560,
-    icon: "M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 4v3h-3M6 20v-3h3" },
   { id: "subs", title: "Subscriptions", w: 660,
     icon: "M3 6.5h18v11H3zM3 10h18M6 14.5h5M15.5 14.5h2.5" },
   { id: "subsviz", title: "Morning Picker", w: 1040,
@@ -6700,7 +6923,7 @@ function ctxIdeaComposer(x, y, ctx) {
         { text: text + " [context: " + bits.join(" · ") + "]", source: "right-click" });
       ideasCache.unshift(it);
       renderIdeas();
-      toast("Idea added" + (winState.ideas?.open ? "" : " — see Ideas & On-Hold"));
+      toast("Idea added" + (winState.work?.open ? "" : " — see Work"));
     },
   });
 }
@@ -6909,9 +7132,9 @@ function makeTitleEditable(titleEl, jidRef) {
       const res = await put("/api/jobs/" + jid + "/title", { title: text });
       titleEl.textContent = res.title || text;
       refreshJobs().catch(() => {});
-      const hist = $("#jobs-history-pane");
-      if (hist && hist.style.display !== "none")
-        loadJobsHistory().catch(() => {});
+      // reflect the new name in the Record timeline if it's on screen
+      if ($("#work-record-list")?.offsetParent != null)
+        loadRecord().catch(() => {});
     } catch (e) {
       titleEl.textContent = saved;   // revert on failure
       toast("Rename failed");
@@ -7052,7 +7275,7 @@ function buildWindow(spec, st, ci) {
   const w = Math.min(st.w ?? spec.w ?? 440, innerWidth - 24);
   const h = Math.min(st.h ?? 660, innerHeight - 120);
   const defX = { feed: 24, people: 482,
-                 actions: innerWidth - w - 28,
+                 work: innerWidth - w - 28,
                  brief: Math.max(24, Math.round((innerWidth - w) / 2)) }[spec.id];
   const x = st.x ?? defX ?? (140 + ci * 32);          // cascade for future nodes
   const y = st.y ?? (64 + (defX === undefined ? ci * 32 : 0));
@@ -7428,7 +7651,21 @@ function paletteMatches(q) {
     label: "Open " + w.title, kind: "window",
     run: () => openWindow(w.id),
   }));
+  // the five folded cockpit windows stay findable by their old names
+  const workCmd = (label, tab, sub) => ({
+    label, kind: "work",
+    run: () => {
+      setWorkTab(tab, { defer: true });
+      if (sub) setWorkSub(sub, { defer: true });
+      openWindow("work");
+    },
+  });
   cmds.push(
+    workCmd("Ideas & On-Hold — Work · Queue", "queue"),
+    workCmd("Actions — Work · Dispatch", "dispatch", "library"),
+    workCmd("Jobs — Work · Live", "live"),
+    workCmd("Circuits — Work · Recipes", "dispatch", "recipes"),
+    workCmd("Agent Loops — Work · Schedules", "dispatch", "schedules"),
     { label: "Search shared media", kind: "window",
       run: () => openWindow("search") },
     { label: "Settings", kind: "sheet", run: () => $("#settings-btn").click() },
@@ -7668,6 +7905,12 @@ const HASH_ROUTES = {
   "journal": "journal",
   "atlas": "atlas",
   "network": "atlas",
+  "work": (rest) => {           // #work, #work/queue|dispatch|live|record
+    const t = rest[0];
+    if (["queue", "dispatch", "live", "record"].includes(t))
+      setWorkTab(t, { defer: true });
+    openApp("work");
+  },
 };
 
 function routeHash() {
@@ -7874,7 +8117,9 @@ async function boot() {
   startStream();
   startPoll(() => refreshJobs(), 15000);
   startPoll(() => {
-    if (winState.jobs?.open) loadNotify().catch(() => {});
+    // the sent log lives in Setup's Notifications card now; the node
+    // exists only while that card is on screen
+    if ($("#notify-list")) loadNotify().catch(() => {});
   }, 30000);
   api("/api/triage").then(({ candidates }) => {
     if (candidates.length)
