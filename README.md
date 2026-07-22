@@ -213,6 +213,34 @@ PC the wizard skips what does not exist there - see **Windows** above):
    in the config so the in-app updater can restart the service cleanly.
    (Windows: `scripts\run.ps1 -Register` does both - see **Windows**.)
 
+## Modules that set themselves up
+
+Setup covers the core - the model, disk access, contacts, dossiers, the
+Brain, mail. Two modules are deliberately NOT in it, because neither is
+something everybody wants and neither belongs in a first-run wizard:
+
+- **Reader** - reading rooms. A researched consumption queue on one
+  subject: the talks, papers, posts and episodes worth the time, ranked,
+  deduplicated, filtered by watch / listen / read. What you finish is
+  marked off server-side, so a room reads the same on the phone as at the
+  desk. Have as many as you like.
+- **Applications** - the job-application catalog. Open roles scored
+  against your own record, starred and status-tracked, with an Apply that
+  dispatches an agent to draft the whole package. Nothing is ever
+  submitted for you.
+
+Both live in the Launchpad from the first boot, wearing an unconfigured
+state, and open a **front door** instead of an empty view: one line on
+what the module is, a short clip behind *What is this?*, and an interview.
+Answer it and Vira dispatches a live session that does the work - the
+Reader's researches the subject and writes the room, the Applications one
+reads your resume, builds the record every future application draws its
+claims from, works out which boards to watch, and runs the first poll.
+
+The session proposes; the server validates and applies. Config and
+generated pages are never written by the agent's own hands, and a module
+goes live because its data landed - not because a run said so.
+
 ## Live sessions
 
 Coding jobs (Ideas > Plan / Implement, the Actions run buttons, the free

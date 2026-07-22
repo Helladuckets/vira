@@ -71,7 +71,15 @@
   "fixture_mode": null,
   "_fixture_mode": "true/false forces demo/real mode; null (default) auto-detects: fixture when crm_root is missing.",
   "lab_root": "",
-  "_lab_root": "Local checkout dir holding the careers-teardown explorer directories (anthropic-jobs/, openai-jobs/, frontier-jobs/, each with data.js). Empty = Applications module dormant. applications_sources (list of {slug, company, path}) overrides it; applications_connections_csv / self_record override the LinkedIn-export and self-record paths derived from crm_root.",
+  "_lab_root": "Local checkout dir holding careers-teardown explorer directories (each with a data.js) to ingest as STATIC role corpora. Optional: the Applications module's normal source is the live board poller, which its front door sets up for you. applications_sources (list of {slug, company, path}) overrides it.",
+  "self_record": "",
+  "_self_record": "The folder holding FACTS.md (the claim gate every application is checked against), your resume, and every generated package. Written by the Applications front door; set it by hand only if you already keep a record somewhere. Empty = <crm_root>/self.",
+  "applications_universe": "",
+  "_applications_universe": "Where the scored candidate universe lives (candidate-universe/role/*.json plus *-raw-scores.json). Written by the front door. Empty = <self_record>/analysis.",
+  "applications_locations": [],
+  "_applications_locations": "Place names you will work in, e.g. [\"New York\", \"NYC\"]. EMPTY MEANS UNFILTERED - every role stays eligible. Eligibility gates the phone ping and the default view, never what gets fetched.",
+  "applications_remote_ok": true,
+  "_applications_remote_ok": "Count remote postings as eligible. applications_remote_exclude / applications_region_hints (regex or list of substrings) tune which remote postings are actually reachable from where you are; both ship with US-centric defaults, and setting either to [] disables that test.",
   "whatsapp_bridge_port": 18377,
   "_whatsapp_bridge_port": "Linked-device WhatsApp sidecar port (127.0.0.1 only). Dormant until paired via settings > WhatsApp. whatsapp_poll_seconds (default 5) and whatsapp_node_bin (default \"node\") tune the watcher and node binary."
 }
