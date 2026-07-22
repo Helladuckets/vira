@@ -4,6 +4,7 @@
 # See CLAUDE.md, section "Parallel feature branches".
 #
 #   branch.sh start <slug>     new branch claude/<slug> + worktree ../vira-<slug>
+#   branch.sh adopt [slug]     provision a worktree this script didn't create
 #   branch.sh serve <slug>     test instance: cloned data, passive, port 8378+
 #   branch.sh serve <slug> --fresh   re-clone data before serving
 #   branch.sh stop <slug>      stop the test instance
@@ -24,14 +25,42 @@ PORT_MAX=8399
 PIDFILE=.test-instance.json
 
 # $0 inside a zsh function is the FUNCTION name, not the script.
-usage() { sed -n '2,14p' "${(%):-%x}"; exit 1; }
+usage() { sed -n '2,15p' "${(%):-%x}"; exit 1; }
 
 slug_check() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]*$ ]] || {
     echo "error: slug must be kebab-case ([a-z0-9-])" >&2; exit 1; }
 }
 
-wt_dir() { echo "$WORKSPACE/vira-$1"; }
+# The worktree holding claude/<slug>, WHEREVER it lives — asked of git rather
+# than assumed. `start` puts worktrees at ../vira-<slug>, but a worktree made
+# by something else (the app's worktree toggle creates them under
+# .claude/worktrees/<slug>) is just as real, and serve/stop/discard used to
+# fail on it with "no worktree at ../vira-<slug>". Falls back to the canonical
+# path, which is what `start` creates and what `merge`/`discard` accept for a
+# branch whose worktree is already gone.
+wt_dir() {
+  local d
+  d=$(git -C "$LIVE" worktree list --porcelain |
+      awk -v b="branch refs/heads/claude/$1" \
+          '/^worktree /{wt=substr($0,10)} $0==b{print wt; exit}')
+  if [[ -n "$d" ]]; then echo "$d"; else echo "$WORKSPACE/vira-$1"; fi
+}
+
+# Provision the gitignored pieces a session needs, whoever made the worktree:
+# - the FDA-granted venv (never rebuild; symlink the live one)
+# - CLAUDE.md + .claude/launch.json (COPIES — edits are ported back by hand at
+#   merge time because these files never ride git)
+# CLAUDE.md is the load-bearing one: it carries this workflow, so a session
+# that never receives it does not know the branch discipline exists. Idempotent.
+provision() {
+  local dir=$1
+  [[ -e "$dir/.venv" ]] || ln -s "$LIVE/.venv" "$dir/.venv"
+  [[ -e "$dir/CLAUDE.md" ]] || cp "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" 2>/dev/null || true
+  mkdir -p "$dir/.claude"
+  [[ -e "$dir/.claude/launch.json" ]] ||
+    cp "$LIVE/.claude/launch.json" "$dir/.claude/launch.json" 2>/dev/null || true
+}
 
 instance_pid() {  # prints pid if the worktree's instance is alive, else nothing
   local dir=$1 pid
@@ -51,18 +80,35 @@ cmd_start() {
   local dir; dir=$(wt_dir "$1")
   [[ -e "$dir" ]] && { echo "error: $dir already exists" >&2; exit 1; }
   git -C "$LIVE" worktree add -b "claude/$1" "$dir" main
-  # Provision the gitignored pieces a session needs:
-  # - the FDA-granted venv (never rebuild; symlink the live one)
-  # - CLAUDE.md + .claude/ (the operational spec; a COPY — edits are ported
-  #   back by hand at merge time because these files never ride git)
-  ln -s "$LIVE/.venv" "$dir/.venv"
-  cp "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" 2>/dev/null || true
-  mkdir -p "$dir/.claude"
-  cp "$LIVE/.claude/launch.json" "$dir/.claude/launch.json" 2>/dev/null || true
+  provision "$dir"
   echo ""
   echo "branch  claude/$1"
   echo "worktree $dir"
   echo "next: work in the worktree. Test-drive with: scripts/branch.sh serve $1"
+}
+
+# Bring a worktree this script didn't create under the same discipline: give it
+# the venv symlink and the CLAUDE.md/launch.json copies `start` would have.
+# With no slug, adopts the worktree the caller is standing in.
+cmd_adopt() {
+  local dir slug=""
+  if [[ $# -ge 1 ]]; then
+    slug_check "$1"; slug=$1; dir=$(wt_dir "$1")
+    [[ -d "$dir" ]] || {
+      echo "error: no worktree checked out on claude/$1" >&2; exit 1; }
+  else
+    dir=$(git rev-parse --show-toplevel 2>/dev/null) || {
+      echo "error: not inside a checkout — pass a slug" >&2; exit 1; }
+    slug=$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    slug=${slug#claude/}
+  fi
+  [[ "$dir" == "$LIVE" ]] &&
+    { echo "error: refusing to adopt the live tree" >&2; exit 1; }
+  provision "$dir"
+  echo "provisioned $dir"
+  if [[ -n "$slug" ]]; then
+    echo "next: scripts/branch.sh serve $slug"
+  fi
 }
 
 # clone_data <src-data-dir> <dst-data-dir>
@@ -119,6 +165,7 @@ cmd_serve() {
   dir=$(wt_dir "$1")
   [[ -d "$dir" ]] || { echo "error: no worktree at $dir (run start first)" >&2; exit 1; }
   [[ "$dir" == "$LIVE" ]] && { echo "error: refusing to serve the live tree" >&2; exit 1; }
+  provision "$dir"          # a worktree from elsewhere may still lack the venv
   pid=$(instance_pid "$dir")
   [[ -n "$pid" ]] && { echo "already running (pid $pid, port $(instance_port "$dir"))"; exit 0; }
 
@@ -206,7 +253,15 @@ cmd_merge() {
 
   echo ""
   echo "merged. Post-merge checklist:"
-  if [[ -f "$dir/CLAUDE.md" ]] && ! diff -q "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" >/dev/null 2>&1; then
+  # CLAUDE.md is gitignored (the repo is public), so a spec line NEVER rides a
+  # merge. Two ways that goes wrong, and the silent one used to be invisible:
+  # an unprovisioned worktree has no copy at all, which means the session
+  # worked without the spec and any line it proposed lives only in its report.
+  if [[ -d "$dir" && ! -f "$dir/CLAUDE.md" ]]; then
+    echo "  [ ] this worktree had NO CLAUDE.md — the session never read the"
+    echo "      spec. Check its report for proposed spec lines and apply them"
+    echo "      to $LIVE/CLAUDE.md by hand; run 'branch.sh adopt' next time."
+  elif [[ -f "$dir/CLAUDE.md" ]] && ! diff -q "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" >/dev/null 2>&1; then
     echo "  [ ] CLAUDE.md differs (gitignored — git did NOT carry it). Port by hand:"
     echo "      diff $LIVE/CLAUDE.md $dir/CLAUDE.md"
   fi
@@ -250,6 +305,7 @@ cmd_discard() {
 cmd=$1; shift
 case "$cmd" in
   start)   [[ $# -ge 1 ]] || usage; cmd_start "$@";;
+  adopt)   cmd_adopt "$@";;
   serve)   [[ $# -ge 1 ]] || usage; cmd_serve "$@";;
   stop)    [[ $# -ge 1 ]] || usage; cmd_stop "$@";;
   list)    cmd_list;;
