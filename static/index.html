@@ -5,9 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- Pinned so the home-screen label is always "Vira" — <title> is not, it
+     picks up the " — TEST" suffix on a branch instance. -->
+<meta name="apple-mobile-web-app-title" content="Vira">
+<meta name="theme-color" content="#0d0d0d">
 <title>Vira</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico" sizes="32x32">
+<!-- Home-screen install: iOS reads apple-touch-icon (and nothing else —
+     it will not rasterize the SVG favicon), Android reads the manifest. -->
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -359,7 +367,7 @@
   <!-- SYSTEM MAP (the Modules atlas page: module registry rendered live) -->
   <section id="view-map" class="view">
     <div class="section-head"><h2>System Map</h2>
-      <a class="fchip sm" id="map-fulltab" href="/explainer/modules.html"
+      <a class="fchip sm newtab" id="map-fulltab" href="/explainer/modules.html"
          target="_blank" rel="noopener"
          style="margin-left:auto; text-decoration:none">Open full tab</a>
     </div>
@@ -369,7 +377,7 @@
 
   <section id="view-design" class="view">
     <div class="section-head"><h2>Design Studio</h2>
-      <a class="fchip sm" id="design-fulltab" href="/design/studio.html"
+      <a class="fchip sm newtab" id="design-fulltab" href="/design/studio.html"
          target="_blank" rel="noopener"
          style="margin-left:auto; text-decoration:none">Open full tab</a>
     </div>
@@ -383,7 +391,7 @@
   <section id="view-reader" class="view">
     <div class="section-head"><h2>Reader</h2>
       <div class="reader-pages" id="reader-pages"></div>
-      <a class="fchip sm" id="reader-fulltab" href="#" target="_blank"
+      <a class="fchip sm newtab" id="reader-fulltab" href="#" target="_blank"
          rel="noopener" style="margin-left:auto; text-decoration:none">Open full tab</a>
     </div>
     <iframe class="reader-frame" id="reader-frame"
@@ -460,7 +468,7 @@
   <div class="panel-head">
     <button class="icon-btn" id="viewer-back">back</button>
     <div class="panel-title" id="viewer-title">Photo</div>
-    <a class="icon-btn" id="viewer-newtab" target="_blank" rel="noopener"
+    <a class="icon-btn newtab" id="viewer-newtab" target="_blank" rel="noopener"
        title="Open in a new tab" style="margin-left:auto">open tab</a>
   </div>
   <div class="panel-body viewer-body">
