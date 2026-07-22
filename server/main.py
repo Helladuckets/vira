@@ -1795,8 +1795,8 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
             run = circuits.start_run(
                 "plan-build-judge", item["text"], cwd=req.cwd,
                 notify=True, source=f"idea:{idea_id}", idea_id=idea_id)
-            ideas.update(idea_id,
-                         note=f"approved and building (run {run['id'][:10]})")
+            ideas.stamp_note(idea_id,
+                             f"approved and building (run {run['id'][:10]})")
             out["run"] = run
         except (KeyError, ValueError) as e:
             raise HTTPException(400, f"approved, but build failed: {e}")
@@ -1807,9 +1807,10 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
 def api_idea_decline(idea_id: str):
     try:
         from datetime import date as _date
-        return ideas.update(idea_id, status="dropped",
-                            note=f"declined by the owner "
-                                 f"{_date.today().isoformat()}")
+        return ideas.stamp_note(idea_id,
+                                f"declined by the owner "
+                                f"{_date.today().isoformat()}",
+                                status="dropped")
     except KeyError:
         raise HTTPException(404, "unknown idea")
 
