@@ -198,6 +198,103 @@ class CapabilityTest(unittest.TestCase):
         # Setup must say so rather than let a run fail later.
         self.assertTrue(models.PROVIDERS["anthropic"]["can"]["sessions"])
         self.assertFalse(models.PROVIDERS["openai"]["can"]["sessions"])
+
+
+class CatalogTest(unittest.TestCase):
+    """What a model dropdown is allowed to offer. The bug this guards is a
+    hardcoded menu: it goes stale the week a model ships, and it offers
+    models from a provider the owner never connected."""
+
+    def setUp(self):
+        models._models_cache.clear()
+        models._options_cache.update(at=0.0, payload=None)
+        self.addCleanup(models._models_cache.clear)
+        self.addCleanup(models._options_cache.update, at=0.0, payload=None)
+
+    def test_no_key_falls_back_to_the_curated_list(self):
+        with mock.patch.object(models, "api_key", return_value=""):
+            cat = models.catalog("anthropic")
+        self.assertFalse(cat["api_live"])
+        self.assertIn("no API key", cat["api_detail"])
+        self.assertIn("claude-sonnet-5", [m["id"] for m in cat["api"]])
+        # CLI aliases are what the binary accepts — never the API ids.
+        self.assertEqual([m["id"] for m in cat["cli"]],
+                         ["sonnet", "opus", "haiku", "fable"])
+
+    def test_live_list_wins_and_carries_display_names(self):
+        rows = [{"id": "claude-fable-5", "display_name": "Claude Fable 5"},
+                {"id": "claude-opus-9", "display_name": "Claude Opus 9"}]
+        with mock.patch.object(models, "api_key", return_value="sk-x"), \
+             mock.patch.object(models, "_fetch_models",
+                               return_value=(models._shape_models("anthropic", rows),
+                                             "live from your API key — 2 models")):
+            cat = models.catalog("anthropic")
+        self.assertTrue(cat["api_live"])
+        # A model that shipped after this code was written is offered.
+        self.assertEqual([m["id"] for m in cat["api"]],
+                         ["claude-fable-5", "claude-opus-9"])
+        self.assertEqual(cat["api"][1]["label"], "Claude Opus 9")
+
+    def test_a_failed_live_call_is_a_fallback_not_a_crash(self):
+        with mock.patch.object(models, "api_key", return_value="sk-x"), \
+             mock.patch.object(models.urllib.request, "urlopen",
+                               side_effect=OSError("network down")):
+            cat = models.catalog("anthropic")
+        self.assertFalse(cat["api_live"])
+        self.assertIn("live list unavailable", cat["api_detail"])
+        self.assertTrue(cat["api"])          # the picker still has options
+
+    def test_the_live_answer_is_cached_not_refetched_per_dropdown(self):
+        calls = {"n": 0}
+
+        def fetch(pid, key):
+            calls["n"] += 1
+            return [{"id": "claude-sonnet-5", "label": "Claude Sonnet 5"}], "ok"
+        with mock.patch.object(models, "api_key", return_value="sk-x"), \
+             mock.patch.object(models, "_fetch_models", side_effect=fetch):
+            models.catalog("anthropic")
+            models.catalog("anthropic")
+            self.assertEqual(calls["n"], 1)
+            models.catalog("anthropic", refresh=True)
+        self.assertEqual(calls["n"], 2)
+
+    def test_openai_catalog_drops_what_a_text_pipeline_cannot_drive(self):
+        rows = [{"id": "gpt-5.1", "created": 20},
+                {"id": "text-embedding-3-large", "created": 30},
+                {"id": "gpt-4o-audio-preview", "created": 40},
+                {"id": "dall-e-3", "created": 50},
+                {"id": "gpt-4o", "created": 10}]
+        got = models._shape_models("openai", rows)
+        self.assertEqual([m["id"] for m in got], ["gpt-5.1", "gpt-4o"])
+
+    def test_options_names_the_config_key_each_dropdown_writes(self):
+        with mock.patch.object(models, "probe",
+                               return_value={"connected": True,
+                                             "auth": models.SIGNED_IN,
+                                             "has_key": False}), \
+             mock.patch.object(models, "api_key", return_value=""):
+            opts = models.options(refresh=True)
+        by_id = {p["id"]: p for p in opts["providers"]}
+        self.assertEqual(by_id["anthropic"]["config_keys"],
+                         {"cli": "cli_model", "api": "api_model"})
+        self.assertEqual(by_id["openai"]["config_keys"],
+                         {"cli": "openai_cli_model", "api": "openai_api_model"})
+        # Only the session-capable provider may feed a circuit stage.
+        self.assertTrue(by_id["anthropic"]["sessions"])
+        self.assertFalse(by_id["openai"]["sessions"])
+
+    def test_active_is_the_configured_provider_when_it_is_usable(self):
+        def probe(pid):
+            return {"connected": pid == "openai", "auth": models.SIGNED_IN,
+                    "has_key": False}
+        with mock.patch.object(models, "probe", side_effect=probe), \
+             mock.patch.object(models, "api_key", return_value=""), \
+             mock.patch.object(models.settings, "raw",
+                               return_value={"ai_provider": "anthropic"}):
+            opts = models.options(refresh=True)
+        # Configured anthropic isn't connected here, so the ladder falls
+        # through to the one that is — same answer a real call would give.
+        self.assertEqual(opts["active"], "openai")
         self.assertTrue(models.PROVIDERS["openai"]["can"]["draft"])
 
     def test_env_key_wins_over_keychain_lookup(self):
