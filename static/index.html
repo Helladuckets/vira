@@ -217,9 +217,13 @@
     <div id="triage-list" class="list"></div>
   </section>
 
-  <section id="view-search" class="view">
-    <div class="section-head"><h2>Search</h2></div>
-    <div id="search-root"></div>
+  <!-- FIND (one search over notes, media, people and messages — the
+       merge of the old Search and Brain windows) -->
+  <section id="view-find" class="view">
+    <div class="section-head"><h2>Find</h2>
+      <span class="hint" id="find-status" style="margin-left:auto"></span>
+    </div>
+    <div id="find-root"></div>
   </section>
 
   <!-- PLANS (Plan-mode output, saved to the vault + reopenable in-app) -->
@@ -331,25 +335,6 @@
     <div id="setup-body"></div>
   </section>
 
-  <!-- BRAIN (grounded chat over the knowledge vault; lab/brain, localized) -->
-  <section id="view-brain" class="view">
-    <div class="section-head"><h2>Brain</h2>
-      <span class="hint" id="brain-status" style="margin-left:auto"></span>
-    </div>
-    <div id="brain-log" class="brain-log">
-      <div class="brain-empty" id="brain-empty">
-        <p class="hint">Ask anything your vault knows — companies, people,
-          decisions, past sessions. Answers cite the notes they came from;
-          tap a chip to open the note.</p>
-        <div class="brain-examples" id="brain-examples"></div>
-      </div>
-    </div>
-    <div class="runbar brain-bar">
-      <input id="brain-input" class="search" type="text" autocomplete="off"
-             placeholder="Ask your second brain…">
-      <button class="btn primary" id="brain-ask">Ask</button>
-    </div>
-  </section>
 
   <!-- RADAR (who to talk to + who to put in a room together) -->
   <section id="view-radar" class="view">

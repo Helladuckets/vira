@@ -394,6 +394,50 @@ async def _t_media_search(args):
         args.get("limit")))
 
 
+# ---------- find: one query over all four databases ----------
+
+def _find_text(query, limit):
+    """The agent-facing twin of the Find window. An agent picking between
+    four retrieval tools has the same problem the owner had with two
+    search boxes — this is the one that sorts for itself."""
+    from . import find
+    query = (query or "").strip()
+    if not query:
+        return "error: query is required"
+    limit = max(1, min(int(limit or 8), 25))
+    out = find.find(query, limit=limit)
+    plan = out["plan"]
+    head = [f"Find {query!r} — plan: {plan['why'] or 'no filters'}"
+            f" (terms: {plan['text'] or '-'})"]
+    for db in plan["databases"]:
+        g = out["groups"].get(db) or {}
+        rows = g.get("rows") or []
+        if not rows:
+            continue
+        head.append(f"{db} ({g.get('count', len(rows))}):")
+        for r in rows:
+            when = (r.get("when") or "")[:10]
+            if db == "notes":
+                head.append(f"  {r['path']} · {r.get('heading') or ''}"
+                            f" · {when} — {(r.get('snippet') or '')[:PREVIEW]}")
+            elif db == "people":
+                head.append(f"  {r['name']} ({r['id']})"
+                            f" — {(r.get('snippet') or '')[:PREVIEW]}")
+            elif db == "messages":
+                head.append(f"  [{r.get('source')}] {r.get('sender') or '?'}"
+                            f" · {when} — {(r.get('text') or '')[:PREVIEW]}")
+            else:
+                head.append(f"  [{r.get('kind')}] "
+                            f"{r.get('name') or r.get('title')}"
+                            f" · from {r.get('sender') or '?'} · {when}")
+    return "\n".join(head) if len(head) > 1 else f"No matches for {query!r}."
+
+
+async def _t_find(args):
+    return _txt(await asyncio.to_thread(
+        _find_text, args.get("query"), args.get("limit")))
+
+
 # ---------- the knowledge vault ----------
 
 def _vault_search_text(query, limit):
@@ -562,6 +606,14 @@ TOOL_SPECS = [
      "Recent direct iMessage conversation with a person by name, both "
      "directions, newest last.",
      {"name": str, "limit": int}, _t_imessage_thread),
+    ("find",
+     "ONE search over all four of the owner's databases at once: vault "
+     "notes, shared media (photos/videos/docs/links), CRM people, and the "
+     "text of iMessage and mail. Reads dates, names, 'most recent', "
+     "filenames and quoted phrases out of the query and applies them as "
+     "filters. Prefer this over the single-corpus tools unless you know "
+     "exactly which database holds the answer.",
+     {"query": str, "limit": int}, _t_find),
     ("media_search",
      "Semantic search over everything ever shared with the owner in "
      "iMessage (photos, videos, documents, links, voice memos) — by "
