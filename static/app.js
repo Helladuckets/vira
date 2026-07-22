@@ -25,6 +25,56 @@ const put = (path, body) => api(path, {
 });
 const del = (path) => api(path, { method: "DELETE" });
 
+// ---------- shared scaffolds ----------
+// lsGet/lsSet: the one JSON-parse-with-default localStorage wrapper every
+// JSON-shaped store used to hand-roll (desktop layout, dock order/hidden,
+// setup-opened, apps filters). Raw-string keys (sort choices, plain flags)
+// stay on bare getItem/setItem — wrapping them would change their stored
+// format. lsSet returns the raw string so ui-sync sites can uiPush it.
+function lsGet(key, fallback) {
+  const raw = localStorage.getItem(key);
+  if (raw == null) return fallback;
+  try { return JSON.parse(raw); } catch { return fallback; }
+}
+function lsSet(key, value) {
+  const raw = JSON.stringify(value);
+  localStorage.setItem(key, raw);
+  return raw;
+}
+
+// startPoll(fn, ms[, maxMs]): the setInterval-with-stop() shape the status
+// pollers hand-rolled. fn receives the handle so a poller can stop itself
+// at its done condition; maxMs is the safety lifetime some pollers cap
+// with. A throwing or rejecting tick never kills the loop.
+function startPoll(fn, ms, maxMs) {
+  const h = {
+    _t: null,
+    stop() { clearInterval(h._t); h._t = null; },
+  };
+  h._t = setInterval(() => {
+    try {
+      const r = fn(h);
+      if (r && typeof r.catch === "function") r.catch(() => {});
+    } catch { /* poll survives a bad tick */ }
+  }, ms);
+  if (maxMs) setTimeout(h.stop, maxMs);
+  return h;
+}
+
+// bindSheet: the modal-sheet chrome (open/close + Cancel wiring) every
+// sheet hand-rolled. Each sheet's field wiring stays its own; this is
+// only the scaffolding.
+function bindSheet(sel, cancelSel) {
+  const node = $(sel);
+  const s = {
+    node,
+    open() { node.classList.add("open"); },
+    close() { node.classList.remove("open"); },
+  };
+  if (cancelSel) $(cancelSel)?.addEventListener("click", s.close);
+  return s;
+}
+
 const fmtTime = (iso) => {
   if (!iso) return "";
   const d = new Date(iso);
@@ -344,7 +394,7 @@ function openAddSheet(handle, prefillName, evidence, onDone, personId, presetCla
   note.hidden = true; note.textContent = ""; note.classList.remove("held");
   document.querySelectorAll("#add-class-seg .seg-btn").forEach((b) =>
     b.classList.toggle("on", !!presetClass && b.dataset.v === presetClass));
-  $("#add-sheet").classList.add("open");
+  addSheet.open();
   $("#add-name").focus();
   // Referral cards ("intro'd by Eric") auto-resolve in the background so the
   // name arrives pre-filled; everything else waits for the button.
@@ -392,8 +442,8 @@ async function runResolve(auto) {
     btn.disabled = false; btn.textContent = prev;
   }
 }
+const addSheet = bindSheet("#add-sheet", "#add-cancel");
 $("#add-resolve").addEventListener("click", () => runResolve(false));
-$("#add-cancel").addEventListener("click", () => $("#add-sheet").classList.remove("open"));
 document.querySelectorAll("#add-class-seg .seg-btn").forEach((b) =>
   b.addEventListener("click", () => {
     document.querySelectorAll("#add-class-seg .seg-btn").forEach((x) =>
@@ -414,7 +464,7 @@ $("#add-save").addEventListener("click", async () => {
       person_id: addTarget.personId || null,
       fact: addTarget.fact || null,
     });
-    $("#add-sheet").classList.remove("open");
+    addSheet.close();
     toast("Added " + name + " to the CRM — future messages will match");
     confettiAt($("#add-save"));
     addTarget.onDone?.();
@@ -1818,12 +1868,12 @@ function tellSection(pid, name) {
 }
 
 function watchNote(id, statusEl) {
-  const t = setInterval(async () => {
+  startPoll(async (h) => {
     try {
       const j = await api("/api/brief/journal");
       const e = (j.entries || []).find((x) => x.id === id);
       if (!e || e.status === "pending") return;
-      clearInterval(t);
+      h.stop();
       if (!statusEl.isConnected) return;
       statusEl.textContent = e.result?.summary
         || (e.status === "noted" ? "Saved." : "Done.");
@@ -1832,8 +1882,7 @@ function watchNote(id, statusEl) {
         statusEl.parentElement?.parentElement?.appendChild(line);
       });
     } catch { /* keep polling */ }
-  }, 2500);
-  setTimeout(() => clearInterval(t), 180000);
+  }, 2500, 180000);
 }
 
 function closePerson() { exitFocus($("#person-panel")); }
@@ -2373,15 +2422,13 @@ function openIdeaRun(it, mode) {
   $("#idea-run-autopilot").checked =
     localStorage.getItem("vira-idea-autopilot") === "1";
   $("#idea-run-note").textContent = ideaRunNote(mode);
-  $("#idea-run-sheet").classList.add("open");
+  ideaRunSheet.open();
   $("#idea-run-extra").focus();
 }
+const ideaRunSheet = bindSheet("#idea-run-sheet", "#idea-run-cancel");
 $("#idea-run-autopilot").addEventListener("change", () => {
   if (ideaRunCtx) $("#idea-run-note").textContent = ideaRunNote(ideaRunCtx.mode);
 });
-
-$("#idea-run-cancel").addEventListener("click", () =>
-  $("#idea-run-sheet").classList.remove("open"));
 
 $("#idea-run-go").addEventListener("click", async () => {
   if (!ideaRunCtx) return;
@@ -2403,7 +2450,7 @@ $("#idea-run-go").addEventListener("click", async () => {
   const permission_mode = autopilot ? "bypassPermissions" : null;
   const publish_plan = mode === "plan";
   const runMode = autopilot ? "autopilot" : "interactive";
-  $("#idea-run-sheet").classList.remove("open");
+  ideaRunSheet.close();
   const jid = await launchJob(prompt, cwd,
     { permission_mode, model, publish_plan, idea_id: it.id, mode: runMode });
   // stamp the idea so the dispatch is visible next time it's opened
@@ -2488,11 +2535,11 @@ function openRunSheet(a) {
   if (freeLabel) freeLabel.style.display = hasFields ? "none" : "";
 
   if (!$("#run-cwd").value) $("#run-cwd").value = "~";
-  $("#run-sheet").classList.add("open");
+  runSheet.open();
   const first = runFieldEls.find((x) => !x.f.flag)?.input;
   (first || $("#run-args")).focus();
 }
-$("#run-cancel").addEventListener("click", () => $("#run-sheet").classList.remove("open"));
+const runSheet = bindSheet("#run-sheet", "#run-cancel");
 $("#run-go").addEventListener("click", () => {
   if (!runAction) return;
   const parts = [];
@@ -2510,7 +2557,7 @@ $("#run-go").addEventListener("click", () => {
     if (free) parts.push(free);
   }
   const cwd = $("#run-cwd").value.trim();
-  $("#run-sheet").classList.remove("open");
+  runSheet.close();
   launchJob((runAction.invoke + " " + parts.join(" ")).trim(),
     cwd && cwd !== "~" ? cwd : null);
 });
@@ -2864,10 +2911,10 @@ function createJobTerm(jid, refs) {
     start() {
       activeTerms[this.jid] = this;
       this.schedule();
-      this.poll = setInterval(() => this.schedule(), 800);
+      this.poll = startPoll(() => this.schedule(), 800);
     },
     stop() {
-      clearInterval(this.poll);
+      this.poll?.stop();
       this.poll = null;
       if (activeTerms[this.jid] === this) delete activeTerms[this.jid];
     },
@@ -3174,12 +3221,12 @@ async function applyUpdate(btn) {
     hint.textContent = `Updated to ${r.sha} — restarting…`;
     // poll until the restarted server answers, then reload the app
     const t0 = Date.now();
-    const poll = setInterval(async () => {
+    startPoll(async (h) => {
       try {
         await api("/api/config");
-        clearInterval(poll);
+        h.stop();
         location.reload();
-      } catch { if (Date.now() - t0 > 60000) { clearInterval(poll); hint.textContent = "Server did not come back — restart it manually."; } }
+      } catch { if (Date.now() - t0 > 60000) { h.stop(); hint.textContent = "Server did not come back — restart it manually."; } }
     }, 1500);
   } catch (e) {
     hint.textContent = "Update failed: " + e.message;
@@ -3235,17 +3282,17 @@ async function graphConnect() {
     const code = el("b", null, res.user_code);
     code.style.letterSpacing = ".08em";
     hint.appendChild(code);
-    clearInterval(graphPoll);
-    graphPoll = setInterval(async () => {
+    graphPoll?.stop();
+    graphPoll = startPoll(async (h) => {
       try {
         const st = await api("/api/mail/graph/status?email=" + encodeURIComponent(emailAddr));
         if (st.connected) {
-          clearInterval(graphPoll);
+          h.stop();
           hint.textContent = "Connected — the feed picks up new mail within a minute.";
           btn.disabled = false;
           renderMailAccounts().catch(() => {});
         } else if (st.error) {
-          clearInterval(graphPoll);
+          h.stop();
           hint.textContent = "Failed: " + st.error;
           btn.disabled = false;
         }
@@ -3329,11 +3376,11 @@ async function waTick() {
   }
 }
 function startWaPoll() {
-  clearInterval(waPoll);
+  waPoll?.stop();
   waTick().catch(() => {});
-  waPoll = setInterval(() => waTick().catch(() => {}), 4000);
+  waPoll = startPoll(() => waTick(), 4000);
 }
-function stopWaPoll() { clearInterval(waPoll); waPoll = null; }
+function stopWaPoll() { waPoll?.stop(); waPoll = null; }
 async function waConnect() {
   const hint = $("#wa-hint");
   hint.textContent = "Starting the sidecar…";
@@ -3351,7 +3398,7 @@ async function waPassiveInit() {
   try {
     const st = await api("/api/whatsapp/status");
     if (st.passive && st.sidecar)
-      setInterval(() => post("/api/whatsapp/poll", {}).catch(() => {}), 6000);
+      startPoll(() => post("/api/whatsapp/poll", {}), 6000);
   } catch { /* older server without the route */ }
 }
 
@@ -3514,12 +3561,12 @@ function briefEmpty(sec, text) {
 // any affected surfaces catch up (Journal window + the brief's derived
 // sections, e.g. a loop the note just closed)
 function watchBriefNote(id) {
-  const t = setInterval(async () => {
+  startPoll(async (h) => {
     try {
       const j = await api("/api/brief/journal");
       const e = (j.entries || []).find((x) => x.id === id);
       if (!e || e.status === "pending") return;
-      clearInterval(t);
+      h.stop();
       if (e.status === "failed")
         toast("Note kept, but integration failed.",
               [["Journal", () => openJournal()]]);
@@ -3531,8 +3578,7 @@ function watchBriefNote(id) {
       // but never stomp a draft the owner is mid-typing
       if (document.activeElement?.tagName !== "TEXTAREA") loadBrief();
     } catch { /* server briefly unreachable; keep polling */ }
-  }, 2500);
-  setTimeout(() => clearInterval(t), 180000);
+  }, 2500, 180000);
 }
 
 // ---------- Journal window: the durable record of every note told to Vira
@@ -3596,13 +3642,13 @@ async function loadJournal() {
 
 function pollJournal() {
   if (journalTimer) return;
-  journalTimer = setInterval(async () => {
-    if (!$("#journal-list")) { clearInterval(journalTimer); journalTimer = null; return; }
+  journalTimer = startPoll(async (h) => {
+    if (!$("#journal-list")) { h.stop(); journalTimer = null; return; }
     try {
       const j = await api("/api/brief/journal?limit=200");
       renderJournalList(j.entries);
       if (!j.entries.some((e) => e.status === "pending")) {
-        clearInterval(journalTimer);
+        h.stop();
         journalTimer = null;
         // integration may have closed loops / added facts — refresh the brief
         // too, but never stomp a draft the owner is mid-typing
@@ -3928,21 +3974,21 @@ async function companionPairStart() {
     });
     qrBox.appendChild(cp);
     // watch for the claim: the moment the phone pairs, celebrate + refresh
-    clearInterval(companionPollT);
+    companionPollT?.stop();
     const started = Date.now();
-    companionPollT = setInterval(async () => {
+    companionPollT = startPoll(async (h) => {
       try {
         const st = await api("/api/companion/status");
         const claimed = (st.devices || []).some(
           (d) => d.id === p.device_id && !d.pending);
         if (claimed) {
-          clearInterval(companionPollT);
+          h.stop();
           qrBox.hidden = true;
           toast("Phone paired");
           confettiAt($("#companion-pair"));
           renderCompanion(st);
         } else if (Date.now() - started > (p.expires_s || 900) * 1000) {
-          clearInterval(companionPollT);
+          h.stop();
           qrBox.hidden = true;
         }
       } catch { /* server away; keep watching */ }
@@ -4380,9 +4426,9 @@ async function loadSetupExtra() {
 
 function pollSetup() {
   if (setupPollTimer) return;
-  setupPollTimer = setInterval(async () => {
+  setupPollTimer = startPoll(async (h) => {
     if (!$("#setup-body")) {
-      clearInterval(setupPollTimer); setupPollTimer = null; return;
+      h.stop(); setupPollTimer = null; return;
     }
     const [flow, st] = await Promise.all([
       api("/api/onboard/steps").catch(() => null),
@@ -4393,7 +4439,7 @@ function pollSetup() {
     renderSetup(flow, st);
     launchUnlocked(flow);
     if (!st.dossiers || !st.dossiers.running) {
-      clearInterval(setupPollTimer); setupPollTimer = null;
+      h.stop(); setupPollTimer = null;
       toast("Dossier build finished");
     }
   }, 2500);
@@ -4405,16 +4451,14 @@ function pollSetup() {
 // opening five buries the wizard the owner is still working through.
 
 function setupOpened() {
-  try { return JSON.parse(localStorage.getItem("vira-setup-opened") || "[]"); }
-  catch { return []; }
+  return lsGet("vira-setup-opened", []);
 }
 
 function markOpened(id) {
   const seen = setupOpened();
   if (seen.includes(id)) return false;
   seen.push(id);
-  localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
-  uiPush("vira-setup-opened", JSON.stringify(seen));
+  uiPush("vira-setup-opened", lsSet("vira-setup-opened", seen));
   return true;
 }
 
@@ -4434,8 +4478,7 @@ function launchUnlocked(flow) {
   if (localStorage.getItem("vira-setup-opened") === null) {
     const seen = flow.steps.filter((s) => s.state === "done").map((s) => s.id);
     if (flow.complete) seen.push("__complete__");
-    localStorage.setItem("vira-setup-opened", JSON.stringify(seen));
-    uiPush("vira-setup-opened", JSON.stringify(seen));
+    uiPush("vira-setup-opened", lsSet("vira-setup-opened", seen));
     if (seen.length) return;
   }
   flow.steps.forEach((s) => {
@@ -4918,7 +4961,7 @@ function manageSubline(id) {
 // Stop the channel-card pollers when the owner navigates away from it.
 function leaveManageCard() {
   stopWaPoll();
-  if (companionPollT) { clearInterval(companionPollT); companionPollT = null; }
+  if (companionPollT) { companionPollT.stop(); companionPollT = null; }
 }
 
 function cardChannels(card) {
@@ -5415,12 +5458,12 @@ $("#radar-intros-refresh")?.addEventListener("click", async () => {
   try { await post("/api/radar/intros/refresh", {}); } catch { /* best-effort */ }
   // curation runs one AI pass in the background — poll until it lands
   let tries = 0;
-  const poll = setInterval(async () => {
+  startPoll(async (h) => {
     tries += 1;
     try {
       const r = await api("/api/radar");
       if (r.generated !== was || tries > 24) {
-        clearInterval(poll);
+        h.stop();
         btn.disabled = false;
         btn.textContent = "Rescan";
         loadRadar();
@@ -5660,12 +5703,12 @@ async function loadCircuitRuns() {
     renderRunResult(card, r);
     box.appendChild(card);
   });
-  clearInterval(circuitsPoll);
+  circuitsPoll?.stop();
   if (anyRunning)
-    circuitsPoll = setInterval(() => {
+    circuitsPoll = startPoll((h) => {
       const visible = $("#circuits-runs-pane")?.style.display !== "none"
         && $("#view-circuits")?.offsetParent !== null;
-      if (!visible) { clearInterval(circuitsPoll); return; }
+      if (!visible) { h.stop(); return; }
       loadCircuitRuns().catch(() => {});
     }, 3000);
 }
@@ -5867,11 +5910,11 @@ let appsFilters = { company: "", q: "", fit: "", status: "", starred: false,
                     view: "universe", tier: "", comp: "" };
 try {
   appsFilters = { ...appsFilters,
-                  ...JSON.parse(localStorage.getItem("vira-apps-filter") || "{}") };
+                  ...lsGet("vira-apps-filter", {}) };
 } catch (e) { /* corrupt saved filters -> defaults */ }
 
 function saveAppsFilters() {
-  localStorage.setItem("vira-apps-filter", JSON.stringify(appsFilters));
+  lsSet("vira-apps-filter", appsFilters);
 }
 
 async function loadApplications() {
@@ -6219,9 +6262,10 @@ function appApply(r) {
   cut.style.display = r.cut ? "" : "none";
   $("#app-run-model").value = localStorage.getItem("vira-app-model") || "";
   $("#app-run-extra").value = "";
-  $("#app-run-sheet").classList.add("open");
+  appRunSheet.open();
   $("#app-run-extra").focus();
 }
+const appRunSheet = bindSheet("#app-run-sheet", "#app-run-cancel");
 
 function appRunFields() {
   const model = $("#app-run-model").value;
@@ -6229,14 +6273,11 @@ function appRunFields() {
   return { note: $("#app-run-extra").value.trim(), model };
 }
 
-$("#app-run-cancel").addEventListener("click", () =>
-  $("#app-run-sheet").classList.remove("open"));
-
 $("#app-run-go").addEventListener("click", async () => {
   const r = appRunCtx;
   if (!r) return;
   const { note, model } = appRunFields();
-  $("#app-run-sheet").classList.remove("open");
+  appRunSheet.close();
   try {
     const { job_id } =
       await post(`/api/applications/${r.uid}/apply`, { note, model });
@@ -6262,7 +6303,7 @@ $("#app-run-copy").addEventListener("click", async () => {
       `cd ${cwd}\n\n` +
       "(If this was pasted into an already-running session: cd to the path " +
       "above and read its CLAUDE.md before building.)\n\n" + prompt);
-    $("#app-run-sheet").classList.remove("open");
+    appRunSheet.close();
     toast("Prompt copied — paste into a terminal or Claude Code session");
   } catch (e) {
     toast("Copy failed: " + e.message);
@@ -6447,15 +6488,12 @@ let zTop = 10;
 const winState = {}; // id -> { el, open }
 
 function desktopStore() {
-  try { return JSON.parse(localStorage.getItem("vira-desktop") || "{}"); }
-  catch { return {}; }
+  return lsGet("vira-desktop", {});
 }
 function saveWinState(id, patch) {
   const s = desktopStore();
   s[id] = { ...(s[id] || {}), ...patch };
-  const raw = JSON.stringify(s);
-  localStorage.setItem("vira-desktop", raw);
-  uiPush("vira-desktop", raw);
+  uiPush("vira-desktop", lsSet("vira-desktop", s));
 }
 
 function focusWin(node) { node.style.zIndex = ++zTop; }
@@ -7088,9 +7126,7 @@ function buildDock() {
 // default position so a stale saved order never hides an icon
 function dockOrder() {
   const def = [...WINDOWS.map((w) => w.id), "palette"];
-  let stored = null;
-  try { stored = JSON.parse(localStorage.getItem("vira-dock-order") || "null"); }
-  catch { /* corrupt store -> default */ }
+  const stored = lsGet("vira-dock-order", null);
   if (!Array.isArray(stored)) return def;
   const out = stored.filter((id) => def.includes(id));
   def.forEach((id, i) => {
@@ -7101,9 +7137,7 @@ function dockOrder() {
 
 function saveDockOrder(dock) {
   const ids = [...dock.querySelectorAll(".dock-item")].map((b) => b.dataset.dock);
-  const raw = JSON.stringify(ids);
-  localStorage.setItem("vira-dock-order", raw);
-  uiPush("vira-dock-order", raw);
+  uiPush("vira-dock-order", lsSet("vira-dock-order", ids));
 }
 
 // drag an icon sideways to reorder the dock; a plain click is untouched
@@ -7199,18 +7233,14 @@ function dockRefresh() {
 const DOCK_LOCKED = new Set(["launchpad", "palette"]);  // the way back stays
 
 function dockHidden() {
-  let stored = null;
-  try { stored = JSON.parse(localStorage.getItem("vira-dock-hidden") || "null"); }
-  catch { /* corrupt store -> nothing hidden */ }
+  const stored = lsGet("vira-dock-hidden", null);
   if (!Array.isArray(stored)) return new Set();
   const ids = new Set(WINDOWS.map((w) => w.id));
   return new Set(stored.filter((id) => ids.has(id) && !DOCK_LOCKED.has(id)));
 }
 
 function saveDockHidden(set) {
-  const raw = JSON.stringify([...set]);
-  localStorage.setItem("vira-dock-hidden", raw);
-  uiPush("vira-dock-hidden", raw);
+  uiPush("vira-dock-hidden", lsSet("vira-dock-hidden", [...set]));
 }
 
 function setDockHidden(id, hide) {
@@ -7625,21 +7655,31 @@ addEventListener("message", (e) => {
   loadSubsViz().catch(() => {});
 });
 
-// entry point: desktop = dock window; mobile = the view takes over the column
-// (the 06:00 iMessage deep-links here once a day)
-function openSubsVisuals() { openApp("subsviz"); }
+// ---------- deep links: the one hash-route table ----------
+// Every deep link the app answers, in one place. A string value is the app
+// id openApp routes (dock window on desktop, the view takes over on
+// mobile); a function value handles routes that carry their own behavior
+// (e.g. #work/queue sub-tabs). The 06:00 iMessage deep-links #subs-visuals
+// once a day.
+const HASH_ROUTES = {
+  "subs-visuals": "subsviz",
+  "design": "design",
+  "reader": "reader",
+  "journal": "journal",
+  "atlas": "atlas",
+  "network": "atlas",
+};
 
-function subsVizHash() {
-  if ((location.hash || "").toLowerCase() === "#subs-visuals") openSubsVisuals();
+function routeHash() {
+  const h = (location.hash || "").toLowerCase().replace(/^#/, "");
+  if (!h) return;
+  const [base, ...rest] = h.split("/");
+  const target = HASH_ROUTES[base];
+  if (!target) return;
+  if (typeof target === "function") target(rest);
+  else openApp(target);
 }
-addEventListener("hashchange", subsVizHash);
-
-// #design deep link: dock window on desktop, the view takes over on mobile
-function designHash() {
-  if ((location.hash || "").toLowerCase() !== "#design") return;
-  openApp("design");
-}
-addEventListener("hashchange", designHash);
+addEventListener("hashchange", routeHash);
 
 // ---------- reader: launcher window for personal reading-room pages ----------
 // Pages are personal-layer static HTML under /reading/ (never committed);
@@ -7687,29 +7727,6 @@ async function readerProbe() {
   if (readerPages && readerPages.length) return;
   document.querySelector('.dock-item[data-dock="reader"]')?.remove();
 }
-
-// #reader deep link: dock window on desktop, the view takes over on mobile
-function readerHash() {
-  if ((location.hash || "").toLowerCase() !== "#reader") return;
-  openApp("reader");
-}
-addEventListener("hashchange", readerHash);
-
-// #journal deep link: dock window on desktop, the view takes over on mobile
-function journalHash() {
-  if ((location.hash || "").toLowerCase() !== "#journal") return;
-  openApp("journal");
-}
-addEventListener("hashchange", journalHash);
-
-// #atlas / #network deep link: dock window on desktop, the view takes
-// over on mobile
-function atlasHash() {
-  const h = (location.hash || "").toLowerCase();
-  if (h !== "#atlas" && h !== "#network") return;
-  openApp("atlas");
-}
-addEventListener("hashchange", atlasHash);
 
 function initDesktop() {
   document.body.classList.add("desktop");
@@ -7844,11 +7861,7 @@ async function boot() {
   $("#brand-btn")?.addEventListener("click", () => openApp("launchpad"));
   initSearchView();
   initIdeas();
-  subsVizHash();   // #subs-visuals deep link from the 06:00 iMessage
-  atlasHash();     // #atlas deep link
-  journalHash();   // #journal deep link
-  designHash();    // #design deep link
-  readerHash();    // #reader deep link
+  routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
   readerProbe();   // hide the Reader when no personal pages exist
   firstRunLanding();
   renderPeopleSort();
@@ -7859,8 +7872,8 @@ async function boot() {
   loadActions().catch(() => {});
   refreshJobs().catch(() => {});
   startStream();
-  setInterval(refreshJobs, 15000);
-  setInterval(() => {
+  startPoll(() => refreshJobs(), 15000);
+  startPoll(() => {
     if (winState.jobs?.open) loadNotify().catch(() => {});
   }, 30000);
   api("/api/triage").then(({ candidates }) => {
@@ -7913,4 +7926,4 @@ async function pollAiHealth() {
   catch { /* endpoint unreachable — leave banner untouched */ }
 }
 pollAiHealth();
-setInterval(pollAiHealth, 45000);
+startPoll(pollAiHealth, 45000);
