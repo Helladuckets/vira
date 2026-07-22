@@ -8,6 +8,9 @@ agent loops), circuit-runs.json (circuit state), brief-journal.json (every
 note told to Vira), atlas-groups.json (curated network groups),
 jobs-log.json (the durable job ledger). The last five joined 2026-07-20
 closing the external audit's P1-8 gap list (decision D5 bucket A).
+applications.json (job-application owner state), mail-accounts.json (mail
+account registry), and circuits.json (circuit definitions) joined
+2026-07-21 (module-audit wave 1).
 
 One dated snapshot per file per day into ~/.vira-backups/ (outside the
 repo), keeping the newest 14 of each. Runs at startup and then daily from
@@ -23,7 +26,8 @@ DATA = Path(__file__).resolve().parent.parent / "data"
 DEST = Path.home() / ".vira-backups"
 FILES = ("ideas.json", "config.json", "subscriptions.json",
          "routines.json", "circuit-runs.json", "brief-journal.json",
-         "atlas-groups.json", "jobs-log.json")
+         "atlas-groups.json", "jobs-log.json", "applications.json",
+         "mail-accounts.json", "circuits.json")
 KEEP = 14
 
 
