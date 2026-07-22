@@ -30,7 +30,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                judge,
                mail,
                media,
-               mediaindex, mercury, modulemap, msgraph, notify, onboard,
+               mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
                photos, plans, radar,
                receipts,
                resolver,
@@ -1522,17 +1522,36 @@ def api_circuits_delete(cid: str):
     return {"deleted": cid}
 
 
+class CircuitStagesReq(BaseModel):
+    # stage id -> the tray's editable fields (model / extra / mode /
+    # read_only / min_grade / max_retries); see circuits.apply_overrides.
+    stages: dict[str, dict]
+
+
+@app.post("/api/circuits/{cid}/stages")
+def api_circuit_stages(cid: str, req: CircuitStagesReq):
+    """Bake the Run tray's stage edits into the definition — "save as
+    default", so the next run starts where this one was tuned to."""
+    try:
+        return circuits.update_stages(cid, req.stages)
+    except KeyError:
+        raise HTTPException(404, "unknown circuit")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 class CircuitRunReq(BaseModel):
     input: str
     cwd: str | None = None
     notify: bool = False
+    stages: dict[str, dict] | None = None      # per-run stage tray edits
 
 
 @app.post("/api/circuits/{cid}/run")
 def api_circuits_run(cid: str, req: CircuitRunReq):
     try:
         return circuits.start_run(cid, req.input, cwd=req.cwd,
-                                  notify=req.notify)
+                                  notify=req.notify, overrides=req.stages)
     except KeyError:
         raise HTTPException(404, "unknown circuit")
     except ValueError as e:
@@ -1892,12 +1911,22 @@ class ConfigReq(BaseModel):
     ai_backend: str | None = None
     cli_model: str | None = None
     api_model: str | None = None
+    openai_cli_model: str | None = None
+    openai_api_model: str | None = None
 
 
 @app.post("/api/config")
 def api_config_set(req: ConfigReq):
     return suggest.save_config({k: v for k, v in req.model_dump().items()
                                 if v is not None})
+
+
+@app.get("/api/models")
+def api_models(refresh: bool = False):
+    """The model catalog every picker in the app is built from — per
+    provider, per backend, live from the API key where one exists. Cached
+    server-side (the probe shells out), so polling it is cheap."""
+    return models.options(refresh=refresh)
 
 
 # ---------- TC-IL morning picker (subs-visuals: status / files / apply) ----

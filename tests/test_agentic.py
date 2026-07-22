@@ -323,6 +323,113 @@ class CircuitTests(unittest.TestCase):
                         if r["prompt"].startswith("build ")][1]
         self.assertIn("fix the tests", retry_prompt)
 
+    # ---- per-run stage overrides (the Run tab's stage option tray) ----
+
+    def _tuneable(self):
+        circuits.save_circuit({
+            "id": "tune", "name": "tune", "stages": [
+                {"id": "plan", "name": "Plan", "model": "fable",
+                 "mode": "interactive", "read_only": True, "needs": [],
+                 "prompt": "plan {{input}}"},
+                {"id": "build", "name": "Build", "model": "sonnet",
+                 "mode": "autopilot", "needs": ["plan"],
+                 "prompt": "build {{stage.plan.output}}"}]})
+
+    def test_overrides_retune_a_stage_for_one_run_only(self):
+        stub = self._stub(lambda rec: "OUT")
+        self._tuneable()
+        run = circuits.start_run("tune", "the feature", overrides={
+            "build": {"model": "opus", "mode": "interactive",
+                      "extra": "Stay out of the migrations."}})
+        self.drive(run["id"])
+        build = [r for r in stub.launched if r["meta"]["stage"] == "build"][0]
+        self.assertEqual(build["model"], "opus")
+        self.assertEqual(build["mode"], "interactive")
+        # The instructions reach the model, after the stage's own brief.
+        self.assertIn("Stay out of the migrations.", build["prompt"])
+        self.assertLess(build["prompt"].index("build OUT"),
+                        build["prompt"].index("Stay out of"))
+        # The untouched stage still runs exactly as the circuit says (the
+        # alias resolves inside Sessions.launch, so it arrives verbatim).
+        plan = [r for r in stub.launched if r["meta"]["stage"] == "plan"][0]
+        self.assertEqual(plan["model"], "fable")
+        # And the circuit itself is unchanged — this was one run's tuning.
+        saved = {st["id"]: st for st in circuits.get_circuit("tune")["stages"]}
+        self.assertEqual(saved["build"]["model"], "sonnet")
+        self.assertNotIn("extra", saved["build"])
+
+    def test_override_can_clear_a_model_back_to_the_default(self):
+        stub = self._stub(lambda rec: "OUT")
+        self._tuneable()
+        run = circuits.start_run("tune", "x",
+                                 overrides={"plan": {"model": ""}})
+        self.drive(run["id"])
+        plan = [r for r in stub.launched if r["meta"]["stage"] == "plan"][0]
+        self.assertIsNone(plan["model"])
+
+    def test_judge_gate_is_retuneable_per_run(self):
+        def script(rec):
+            if '"grade"' in rec["prompt"]:
+                return ('```json\n{"grade": "C", "score": 70, "summary": "s",'
+                        ' "findings": [], "recommendation": "fix"}\n```')
+            return "built it"
+        stub = self._stub(script)
+        circuits.save_circuit({
+            "id": "gate2", "name": "gate2", "stages": [
+                {"id": "build", "name": "Build", "mode": "autopilot",
+                 "prompt": "build {{input}}", "needs": []},
+                {"id": "check", "name": "Check", "mode": "judge",
+                 "needs": ["build"],
+                 "judge": {"of": ["build"], "retry_stage": "build",
+                           "min_grade": "B", "max_retries": 1}}]})
+        # Gate turned off for this run: a C is accepted, nothing re-runs.
+        run = circuits.start_run("gate2", "ship it", overrides={
+            "check": {"min_grade": "", "extra": "Weigh the tests hardest."}})
+        final = self.drive(run["id"], ticks=20)
+        self.assertEqual(final["status"], "done")
+        self.assertEqual(final["stages"]["check"]["grade"], "C")
+        self.assertEqual(final["stages"]["build"]["attempts"], 1)
+        judged = [r for r in stub.launched if r["meta"]["stage"] == "check"][0]
+        self.assertIn("Weigh the tests hardest.", judged["prompt"])
+
+    def test_overrides_may_retune_a_stage_never_rewire_the_circuit(self):
+        self._tuneable()
+        for bad in ({"ghost": {"model": "opus"}},
+                    {"build": {"needs": []}},
+                    {"build": {"prompt": "do whatever"}},
+                    {"build": {"id": "other"}},
+                    {"build": {"mode": "judge"}},
+                    {"build": {"min_grade": "B"}},
+                    {"plan": {"mode": "nonsense"}}):
+            with self.assertRaises(ValueError, msg=bad):
+                circuits.start_run("tune", "x", overrides=bad)
+        # A bad override fails the run outright — no half-started pipeline.
+        self.assertEqual(circuits.list_runs(), [])
+
+    def test_a_bad_grade_is_refused_before_the_run_starts(self):
+        self._tuneable()
+        circuits.save_circuit({
+            "id": "g", "name": "g", "stages": [
+                {"id": "b", "name": "B", "mode": "autopilot",
+                 "prompt": "b {{input}}", "needs": []},
+                {"id": "j", "name": "J", "mode": "judge", "needs": ["b"],
+                 "judge": {"of": ["b"], "min_grade": "B"}}]})
+        with self.assertRaises(ValueError):
+            circuits.start_run("g", "x", overrides={"j": {"min_grade": "Z"}})
+
+    def test_update_stages_makes_a_tray_edit_the_new_default(self):
+        self._tuneable()
+        rec = circuits.update_stages("tune", {
+            "build": {"model": "opus", "extra": "Run the tests."}})
+        saved = {st["id"]: st for st in rec["stages"]}
+        self.assertEqual(saved["build"]["model"], "opus")
+        self.assertEqual(saved["build"]["extra"], "Run the tests.")
+        self.assertEqual(saved["plan"]["model"], "fable")   # untouched
+        # It persisted — a later run starts from the saved tuning.
+        again = {st["id"]: st
+                 for st in circuits.get_circuit("tune")["stages"]}
+        self.assertEqual(again["build"]["model"], "opus")
+
     def test_run_result_surfaces_report_and_built_path(self):
         def script(rec):
             if '"grade"' in rec["prompt"] or "JUDGE" in rec["prompt"]:
