@@ -1,17 +1,14 @@
 """Claude Code cockpit: enumerate the central library's skills and commands as
-buttons, and run them as background jobs with captured output.
+buttons. Scanning is deterministic file reads.
 
-Scanning is deterministic file reads. Running a job is delegated to the
-live-session registry in server/session.py — the Claude Agent SDK path with
-steering + permission gating when available, the legacy subprocess --print
-path when not. Jobs here is a thin compatibility wrapper so main.py's
-/api/jobs routes (and anything else holding a Jobs handle) keep working
-against the exact same registry the /api/session endpoints control.
+Running a job is the live-session registry in server/session.py
+(session.sessions) — the Claude Agent SDK path with steering + permission
+gating when available, the legacy subprocess --print path when not.
+main.py's `jobs` handle points at that registry directly; the old
+actions.Jobs wrapper (verbatim delegation) was deleted 2026-07-21.
 """
 import re
 from pathlib import Path
-
-from . import session
 
 LIB = Path.home() / ".claude"
 
@@ -79,23 +76,3 @@ def scan_library():
                           "arg_hint": hint,
                           "arg_fields": _arg_fields(hint)})
     return items
-
-
-class Jobs:
-    """Compatibility wrapper: the job registry is now the live-session
-    registry (server/session.py). Same launch/get/recent surface, same
-    response shape (plus mode/awaiting/live/pending), one shared store —
-    /api/jobs/{id} and /api/session/{id}/* address the same run."""
-
-    def launch(self, prompt, cwd=None, permission_mode=None, model=None,
-               publish_plan=False, idea_id=None, mode=None,
-               read_only=False, meta=None):
-        return session.sessions.launch(prompt, cwd, permission_mode, model,
-                                       publish_plan, idea_id, mode,
-                                       read_only, meta)
-
-    def get(self, jid):
-        return session.sessions.get(jid)
-
-    def recent(self):
-        return session.sessions.recent()

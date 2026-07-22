@@ -25,7 +25,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                feedstate,
                reading,
                fixtures, ideas, imessage, jobboards, jobfiles, joblog,
-               jobtitle, journal,
+               journal,
                judge,
                mail,
                media,
@@ -60,7 +60,10 @@ async def _static_no_cache(request, call_next):
 watcher = imessage.Watcher()
 mail_watcher = mail.MailWatcher(watcher)
 whatsapp_watcher = whatsapp.WhatsAppWatcher(watcher)
-jobs = actions.Jobs()
+# The job registry IS the live-session registry — /api/jobs/{id} and
+# /api/session/{id}/* address the same run (the actions.Jobs wrapper was
+# deleted 2026-07-21; it delegated verbatim).
+jobs = session.sessions
 indexer = mediaindex.Indexer()
 mercury_poller = mercury.Poller()
 receipts_sweeper = receipts.Sweeper()
@@ -1295,8 +1298,8 @@ def _ensure_names(rows, records=None):
             if idea_map is None:
                 idea_map = {x["id"]: x["text"] for x in ideas.list_items()}
             it = idea_map.get(rec["idea_id"])
-        row["title"] = jobtitle.name(rec, it)
-        row["command"] = rec.get("command") or jobtitle.command(rec, it)
+        row["title"] = joblog.name(rec, it)
+        row["command"] = rec.get("command") or joblog.command(rec, it)
     return rows
 
 
@@ -1792,8 +1795,8 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
             run = circuits.start_run(
                 "plan-build-judge", item["text"], cwd=req.cwd,
                 notify=True, source=f"idea:{idea_id}", idea_id=idea_id)
-            ideas.update(idea_id,
-                         note=f"approved and building (run {run['id'][:10]})")
+            ideas.stamp_note(idea_id,
+                             f"approved and building (run {run['id'][:10]})")
             out["run"] = run
         except (KeyError, ValueError) as e:
             raise HTTPException(400, f"approved, but build failed: {e}")
@@ -1804,9 +1807,10 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
 def api_idea_decline(idea_id: str):
     try:
         from datetime import date as _date
-        return ideas.update(idea_id, status="dropped",
-                            note=f"declined by the owner "
-                                 f"{_date.today().isoformat()}")
+        return ideas.stamp_note(idea_id,
+                                f"declined by the owner "
+                                f"{_date.today().isoformat()}",
+                                status="dropped")
     except KeyError:
         raise HTTPException(404, "unknown idea")
 

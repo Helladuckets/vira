@@ -31,6 +31,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import channels
 from . import data as crm
 from . import settings
 
@@ -217,35 +218,19 @@ def _to_item(row):
     }
 
 
-def _push(shared, item):
-    """Append to the shared live feed with the rowid-dedup backstop
-    (mail.py's contract). No notify: the phone already announces WhatsApp
-    natively, the same decision as iMessage."""
-    with shared.lock:
-        if any(x.get("rowid") == item["rowid"] for x in shared.feed):
-            return False
-        shared.feed.append(item)
-        shared.feed.sort(key=lambda i: i.get("when") or "")
-        shared.feed = shared.feed[-shared.feed_size:]
-        for q in list(shared.listeners):
-            try:
-                q.put_nowait(item)
-            except Exception:  # noqa: BLE001 — dead SSE queue
-                shared.listeners.remove(q)
-    return True
-
-
 def ingest(shared):
-    """One poll: fetch inbox lines past the cursor, push new feed items.
-    First run baselines at the current end of the inbox and emits nothing
-    old (the mail-watcher first-run contract)."""
+    """One poll: fetch inbox lines past the cursor, push new feed items
+    (channels.push_feed_item — no notify: the phone already announces
+    WhatsApp natively, the same decision as iMessage). First run
+    baselines at the current end of the inbox and emits nothing old
+    (channels.first_run_baseline)."""
     with _ingest_lock:
         st = sidecar_status()
         if st is None:
             raise RuntimeError("sidecar not reachable")
-        cursor = _load_cursor()
-        if cursor is None:
-            cursor = int(st.get("inbox_bytes") or 0)
+        cursor, baselined = channels.first_run_baseline(
+            _load_cursor(), lambda: int(st.get("inbox_bytes") or 0))
+        if baselined:
             _save_cursor(cursor)
             return {"ingested": 0, "cursor": cursor, "baselined": True}
         res = _bridge_get(f"/messages?after={int(cursor)}", timeout=10)
@@ -254,7 +239,7 @@ def ingest(shared):
         n = 0
         for row in res.get("messages", []):
             item = _to_item(row)
-            if item and _push(shared, item):
+            if item and channels.push_feed_item(shared, item):
                 n += 1
         new_cursor = int(res.get("cursor") or cursor)
         if new_cursor != cursor:

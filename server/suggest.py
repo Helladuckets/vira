@@ -14,6 +14,7 @@ from pathlib import Path
 
 from . import data as crm
 from . import imessage
+from . import settings
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 
@@ -88,15 +89,10 @@ Return ONLY a JSON object:
 """
 
 
-def _strip_env():
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("ANTHROPIC_") or k.startswith("CLAUDE"))}
-
-
 def _call_cli(prompt, model, timeout):
     cmd = ["claude", "--print", "--output-format", "json", "--model", model]
     res = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
-                         timeout=timeout, env=_strip_env())
+                         timeout=timeout, env=settings.strip_env())
     if res.returncode != 0:
         raise RuntimeError(f"claude exit {res.returncode}: {res.stderr.strip()[-400:]}")
     try:
@@ -135,7 +131,7 @@ def _call_codex_cli(prompt, model, timeout):
         raise RuntimeError("codex CLI not found on this Mac")
     cmd = [binary, "exec", "--model", model, "--skip-git-repo-check", prompt]
     res = subprocess.run(cmd, capture_output=True, text=True,
-                         timeout=timeout, env=_strip_env())
+                         timeout=timeout, env=settings.strip_env())
     if res.returncode != 0:
         raise RuntimeError(f"codex exit {res.returncode}: "
                            f"{res.stderr.strip()[-400:]}")

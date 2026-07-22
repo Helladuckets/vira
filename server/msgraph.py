@@ -24,7 +24,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import secrets, settings
+from . import channels, secrets, settings
 
 SCOPE ="https://graph.microsoft.com/Mail.ReadWrite offline_access"
 # device login asks for calendar too (brief v2); token refreshes keep
@@ -204,10 +204,7 @@ def _poll_for_token(email, device_code, interval, expires_at):
 
 def _ensure_account_entry(email):
     """Once connected, register the account so the mail watcher polls it."""
-    try:
-        accounts = json.loads(ACCOUNTS.read_text())
-    except (OSError, json.JSONDecodeError):
-        accounts = []
+    accounts = channels.mail_accounts(ACCOUNTS)
     if not any(a.get("email") == email for a in accounts):
         accounts.append({"email": email, "type": "graph"})
         ACCOUNTS.write_text(json.dumps(accounts, indent=1))
@@ -239,12 +236,8 @@ def fetch_new_messages(email, last_iso, seen_ids=None):
     are never missed either) and let the caller pass the already-emitted
     message ids, which are excluded here."""
     if last_iso is None:
-        top = _graph_request(
-            email, "/me/mailFolders/inbox/messages"
-                   "?$orderby=receivedDateTime%20desc&$top=1"
-                   "&$select=receivedDateTime")
-        vals = top.get("value", [])
-        return [], (vals[0]["receivedDateTime"] if vals else "1970-01-01T00:00:00Z")
+        return [], channels.graph_newest_received(
+            email, "/me/mailFolders/inbox/messages")
     q = ("/me/mailFolders/inbox/messages"
          f"?$filter=receivedDateTime%20ge%20{last_iso}"
          "&$orderby=receivedDateTime%20asc&$top=20"

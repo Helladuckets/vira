@@ -40,7 +40,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import mail, msgraph, settings, subscriptions, suggest
+from . import channels, mail, msgraph, settings, subscriptions, suggest
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 MEDIA_INDEX = DATA / "media-index.sqlite"
@@ -54,10 +54,7 @@ EVIDENCE_KINDS = ("receipt", "renewal_notice", "price_change", "trial_end",
 
 
 def _accounts():
-    try:
-        return json.loads(ACCOUNTS.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
+    return channels.mail_accounts(ACCOUNTS)
 
 
 def _merchant_terms(m):
@@ -158,7 +155,13 @@ def _candidates_graph(merchant, account_email):
 
 
 def _candidates_imap(merchant, acct):
-    """Search Gmail All Mail (X-GM-RAW) / generic IMAP for receipt mail."""
+    """Search Gmail All Mail (X-GM-RAW) / generic IMAP for receipt mail.
+
+    Deliberately NOT folded onto channels.imap_special_folder: this path
+    picks the mailbox by hardcoded name ("[Gmail]/All Mail" / INBOX)
+    with no LIST roundtrip, and swapping in \\All discovery would change
+    behavior (localized Gmail folder names, one extra IMAP call per
+    sweep). Roadmap marks that fold "when convenient"."""
     addr, host = acct.get("email"), acct.get("host", "")
     password = mail.keychain_password(addr)
     if not password:

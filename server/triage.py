@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import data as crm
 from . import imessage
+from . import jsonstore
 
 STATE = Path(__file__).resolve().parent.parent / "data" / "triage-state.json"
 
@@ -32,18 +33,16 @@ _lock = threading.Lock()
 
 
 def _dismissed():
-    try:
-        return set(json.loads(STATE.read_text())["dismissed"])
-    except (OSError, json.JSONDecodeError, KeyError):
-        return set()
+    return set(jsonstore.read(STATE, {}).get("dismissed") or [])
 
 
 def dismiss(handle):
-    with _lock:
-        d = _dismissed()
+    def fn(s):
+        d = set(s.get("dismissed") or [])
         d.add(handle)
-        STATE.parent.mkdir(parents=True, exist_ok=True)
-        STATE.write_text(json.dumps({"dismissed": sorted(d)}, indent=1))
+        return {"dismissed": sorted(d)}
+
+    jsonstore.mutate(STATE, fn, {}, indent=1)
     return {"dismissed": True}
 
 

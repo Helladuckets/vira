@@ -154,6 +154,24 @@ def update(idea_id, text=None, status=None, note=None, project=None):
     raise KeyError(idea_id)
 
 
+def stamp_note(idea_id, text, status=None, append=False):
+    """The one composer for outcome notes the automation seams stamp onto
+    ideas (session._mark_idea, circuits._finalize, judge.record_and_close,
+    the approve/decline routes). Replaces the idea's note with `text` — or,
+    with append=True, joins onto any existing note with the ' · '
+    separator (the judge convention). Optional status flip rides the same
+    write. Raises KeyError for an unknown idea, exactly like update()."""
+    if append:
+        it = next((i for i in list_items() if i["id"] == idea_id), None)
+        prior = (it.get("note") or "") if it else ""
+        if prior:
+            text = f"{prior} · {text}"
+    kw = {"note": text}
+    if status is not None:
+        kw["status"] = status
+    return update(idea_id, **kw)
+
+
 def remove(idea_id):
     with _lock, locked(STORE):
         s = _load()

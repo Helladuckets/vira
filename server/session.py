@@ -41,7 +41,7 @@ from datetime import date
 from pathlib import Path
 
 from . import ideas, jobfiles, joblog, plans, settings, viratools
-from .suggest import _strip_env, config
+from .suggest import config
 
 try:
     import claude_agent_sdk  # noqa: F401 — presence check only; the runner
@@ -122,7 +122,7 @@ def _publish_plan(md):
     try:
         res = subprocess.run(["python3", str(PLAN_HOOK)], input=payload,
                              capture_output=True, text=True, timeout=300,
-                             env=_strip_env())
+                             env=settings.strip_env())
     except Exception:  # noqa: BLE001 — publish is best-effort
         return None
     m = re.search(r"https://\S+?/plans/\S+?\.html", res.stdout)
@@ -174,11 +174,11 @@ def _mark_idea(job, ok, interrupted=False):
     jid = job["id"][:8]
     try:
         if interrupted:
-            ideas.update(job["idea_id"],
-                         note=f"action interrupted {stamp} (job {jid}) — see terminal")
+            ideas.stamp_note(job["idea_id"],
+                             f"action interrupted {stamp} (job {jid}) — see terminal")
         elif not ok:
-            ideas.update(job["idea_id"],
-                         note=f"action failed {stamp} (job {jid}) — see terminal")
+            ideas.stamp_note(job["idea_id"],
+                             f"action failed {stamp} (job {jid}) — see terminal")
         elif job.get("publish_plan"):
             # The finalize step (server/session._finalize_plan) saved the plan
             # and stashed its {plan_id, title, url} on job["plan"]. Stamp the
@@ -193,10 +193,11 @@ def _mark_idea(job, ok, interrupted=False):
                 note = f"plan published {stamp} (job {jid}) — {res['url']}"
             else:
                 note = f"plan produced {stamp} (job {jid}) — see terminal"
-            ideas.update(job["idea_id"], note=note)
+            ideas.stamp_note(job["idea_id"], note)
         else:
-            ideas.update(job["idea_id"], status="done",
-                         note=f"implemented by Vira {stamp} (job {jid})")
+            ideas.stamp_note(job["idea_id"],
+                             f"implemented by Vira {stamp} (job {jid})",
+                             status="done")
     except Exception:  # noqa: BLE001 — closing the loop is best-effort
         pass
 
@@ -751,7 +752,7 @@ class Sessions:
         result_text = ""
         joblog.record_launch(d)
         try:
-            proc = subprocess.Popen(cmd, cwd=d["cwd"], env=_strip_env(),
+            proc = subprocess.Popen(cmd, cwd=d["cwd"], env=settings.strip_env(),
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
             for line in proc.stdout:

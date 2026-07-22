@@ -18,22 +18,23 @@ instead of a bare no.
 import json
 import re
 import sqlite3
-import threading
-import time
 from functools import lru_cache
 from pathlib import Path
 
-try:
-    import numpy as np
-except ImportError:  # minimal install: FTS-only search, no vector spaces
-    np = None
-
 from . import data as crm
 from . import mediaindex
+from . import retrieval
 
-RRF_K = 60
-_state = {"loaded_at": 0, "scene": None, "text": None, "lock":
-          threading.Lock()}
+RRF_K = retrieval.RRF_K
+FTS_LIMIT = 400
+
+# vector spaces: (count_sql, rows_sql) — id first, blob last
+_matrices = retrieval.MatrixCache({
+    "scene": ("SELECT COUNT(*) FROM vec_scene",
+              "SELECT seq, v FROM vec_scene"),
+    "text": ("SELECT COUNT(*) FROM vec_text",
+             "SELECT seq, chunk, v FROM vec_text"),
+})
 
 
 def _con():
@@ -42,45 +43,8 @@ def _con():
     return con
 
 
-def _load_matrices(force=False):
-    """(seq_array, matrix) per vector space, refreshed when stale AND
-    grown — a stable index never pays the rebuild."""
-    if np is None:  # minimal install: no vector spaces, FTS still works
-        return
-    with _state["lock"]:
-        if not force and _state["scene"] is not None \
-                and time.time() - _state["loaded_at"] < 60:
-            return
-        con = _con()
-        if not force and _state["scene"] is not None:
-            n_scene = con.execute(
-                "SELECT COUNT(*) FROM vec_scene").fetchone()[0]
-            n_text = con.execute(
-                "SELECT COUNT(*) FROM vec_text").fetchone()[0]
-            if n_scene == len(_state["scene"][0]) and \
-                    _state["text"] is not None and \
-                    n_text == len(_state["text"][0]):
-                _state["loaded_at"] = time.time()
-                con.close()
-                return
-        rows = con.execute("SELECT seq, v FROM vec_scene").fetchall()
-        if rows:
-            seqs = np.array([r["seq"] for r in rows], dtype=np.int64)
-            M = np.stack([np.frombuffer(r["v"], dtype="float16")
-                          .astype("float32") for r in rows])
-            _state["scene"] = (seqs, M)
-        rows = con.execute("SELECT seq, chunk, v FROM vec_text").fetchall()
-        if rows:
-            seqs = np.array([r["seq"] for r in rows], dtype=np.int64)
-            M = np.stack([np.frombuffer(r["v"], dtype="float16")
-                          .astype("float32") for r in rows])
-            _state["text"] = (seqs, M)
-        con.close()
-        _state["loaded_at"] = time.time()
-
-
 def invalidate():
-    _state["loaded_at"] = 0
+    _matrices.invalidate()
 
 
 @lru_cache(maxsize=256)
@@ -94,17 +58,6 @@ def _text_qvec(q):
     from .localmodels import ollama_embed
     v = ollama_embed([f"search_query: {q}"])
     return v[0] if v else None
-
-
-def _fts_queries(q):
-    """User text -> ranked fts5 queries: all-terms first (precise hits
-    dominate), then any-term (recall for conversational phrasing)."""
-    terms = re.findall(r"[A-Za-z0-9']+", q)
-    if not terms:
-        return []
-    all_q = " ".join(f'"{t}"' for t in terms)
-    any_q = " OR ".join(f'"{t}"' for t in terms)
-    return [all_q, any_q] if len(terms) > 1 else [any_q]
 
 
 def _candidates(con, pid=None, sender_pid=None, kind=None, direction=None,
@@ -143,49 +96,12 @@ def _candidates(con, pid=None, sender_pid=None, kind=None, direction=None,
     return {r["seq"] for r in rows}
 
 
-def _rank_fts(con, q, cand):
-    out, seen = [], set()
-    for fq in _fts_queries(q):
-        rows = con.execute(
-            "SELECT rowid, bm25(fts) AS r FROM fts WHERE fts MATCH ? "
-            "ORDER BY r LIMIT 400", (fq,)).fetchall()
-        for r in rows:
-            rid = r["rowid"]
-            if rid in seen or (cand is not None and rid not in cand):
-                continue
-            seen.add(rid)
-            out.append(rid)
-        if len(out) >= 400:
-            break
-    return out[:400]
-
-
-def _rank_vec(space, qvec, cand, floor):
-    if np is None or _state[space] is None or qvec is None:
-        return []
-    seqs, M = _state[space]
-    sims = M @ qvec
-    order = np.argsort(-sims)
-    out, seen = [], set()
-    for i in order:
-        if sims[i] < floor:
-            break
-        s = int(seqs[i])
-        if s in seen or (cand is not None and s not in cand):
-            continue
-        seen.add(s)
-        out.append(s)
-        if len(out) >= 400:
-            break
-    return out
-
-
 def search(q=None, pid=None, sender_pid=None, kind=None, direction=None,
            face_pid=None, since=None, until=None, limit=60):
     """Hybrid retrieval. Returns hydrated entries newest-first when no
     query text, fused-relevance order otherwise."""
     mediaindex._db().close()      # ensure schema exists on first call
-    _load_matrices()
+    _matrices.load(_con)
     con = _con()
     cand = _candidates(con, pid, sender_pid, kind, direction, face_pid,
                        since, until)
@@ -201,15 +117,14 @@ def search(q=None, pid=None, sender_pid=None, kind=None, direction=None,
         con.close()
         return out
 
-    ranks = {}
     lists = [
-        _rank_fts(con, q, cand),
-        _rank_vec("scene", _scene_qvec(q), cand, floor=0.05),
-        _rank_vec("text", _text_qvec(q), cand, floor=0.35),
+        retrieval.rank_fts(con, q, cand, limit=FTS_LIMIT),
+        retrieval.rank_vec(_matrices.get("scene"), _scene_qvec(q), cand,
+                           floor=0.05),
+        retrieval.rank_vec(_matrices.get("text"), _text_qvec(q), cand,
+                           floor=0.35),
     ]
-    for lst in lists:
-        for r, seq in enumerate(lst):
-            ranks[seq] = ranks.get(seq, 0.0) + 1.0 / (RRF_K + r)
+    ranks = retrieval.rrf(lists)
     top = sorted(ranks, key=ranks.get, reverse=True)[:limit]
     out = _hydrate(con, top, scores=ranks)
     con.close()

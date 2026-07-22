@@ -40,12 +40,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import settings
+from . import jobshared, jsonstore, settings
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 TIMEOUT = 30
-ATS_KINDS = ("greenhouse", "ashby", "lever", "microsoft", "google", "manual")
+ATS_KINDS = tuple(jobshared.ATS_PREFIX) + ("manual",)
 JD_CAP = 24000          # keep snapshot JDs bounded
 NOTIFY_TITLES = 3       # titles named in a ping before "+ k more"
 NOTIFY_RETRY_DAYS = 2   # how long a failed ping keeps retrying
@@ -84,14 +84,11 @@ def _read_json(path, default):
 
 
 def _write_json(path, obj):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, ensure_ascii=False))
-    tmp.replace(path)
+    jsonstore.write_atomic(path, obj, indent=1, ensure_ascii=False)
 
 
 def _now():
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return jobshared.now_iso()
 
 
 # --------------------------------------------------------------- registry
@@ -193,7 +190,7 @@ def fetch_greenhouse(board):
             sal_min = lo if sal_min is None else min(sal_min, lo)
             sal_max = hi if sal_max is None else max(sal_max, hi)
         out.append(_norm(
-            board, uid=f"g-{slug}-{j.get('id')}",
+            board, uid=jobshared.board_uid("greenhouse", j.get("id"), slug),
             title=j.get("title"), dept=(j.get("departments") or [{}])[0].get("name", ""),
             locations=locs, salary_min=sal_min, salary_max=sal_max,
             url=j.get("absolute_url"), published=(j.get("first_published")
@@ -226,7 +223,7 @@ def fetch_ashby(board):
         jd = _strip_html(j.get("descriptionHtml")
                          or j.get("descriptionPlain") or "")[:JD_CAP]
         out.append(_norm(
-            board, uid=f"as-{slug}-{j.get('id')}",
+            board, uid=jobshared.board_uid("ashby", j.get("id"), slug),
             title=j.get("title"), dept=j.get("department") or "",
             team=j.get("team") or "", locations=locs,
             salary_min=sal_min, salary_max=sal_max,
@@ -255,7 +252,7 @@ def fetch_lever(board):
             [" ".join(_strip_html(c.get("content") or "")
                       for c in (j.get("lists") or []))]))[:JD_CAP]
         out.append(_norm(
-            board, uid=f"lv-{slug}-{j.get('id')}",
+            board, uid=jobshared.board_uid("lever", j.get("id"), slug),
             title=j.get("text"), dept=cats.get("department") or "",
             team=cats.get("team") or "", locations=locs,
             salary_min=rng.get("min"), salary_max=rng.get("max"),
@@ -283,7 +280,7 @@ def fetch_microsoft(board):
             if not positions:
                 break
             for p in positions:
-                uid = f"ms-{p.get('id')}"
+                uid = jobshared.board_uid("microsoft", p.get("id"))
                 if uid in seen:
                     continue
                 seen.add(uid)
@@ -332,7 +329,7 @@ def fetch_google(board):
                 jid, title, company = j[0], j[1], j[7]
             except (IndexError, TypeError):
                 continue
-            uid = f"gg-{jid}"
+            uid = jobshared.board_uid("google", jid)
             if uid in seen:
                 continue
             seen.add(uid)
@@ -451,17 +448,10 @@ def evaluate(rec, adj):
     """Stamp `eligible` (location) and `cut` (owner adjudication) onto a
     snapshot record. Cut is by comp structure and TITLE only — never the
     board's function label (three of the owner's eight picks carry a
-    'Sales & GTM' label)."""
+    'Sales & GTM' label); jobshared.cut_reason is the one implementation
+    both this and applications._apply_adjudication use."""
     rec["eligible"] = eligible_location(rec)
-    rec["cut"] = ""
-    if adj:
-        if rec.get("comp") in adj["cut_comp"]:
-            rec["cut"] = adj["reason_comp"]
-        else:
-            for pat in adj["cut_titles"]:
-                if pat.search(rec.get("title") or ""):
-                    rec["cut"] = adj["reason_title"]
-                    break
+    rec["cut"] = jobshared.cut_reason(rec.get("comp"), rec.get("title"), adj)
     return rec
 
 
@@ -630,17 +620,7 @@ def status():
 
 def _scored_uids():
     from . import applications
-    udir = applications.universe_dir()
-    uids = set()
-    for sf in sorted(udir.glob("*-raw-scores.json")):
-        try:
-            for s in json.loads(sf.read_text()):
-                for k in (s.get("uid"), s.get("_fulluid")):
-                    if k:
-                        uids.add(k)
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
-    return uids
+    return set(jobshared.load_scores(applications.universe_dir()))
 
 
 # --------------------------------------------------------- score dispatch
