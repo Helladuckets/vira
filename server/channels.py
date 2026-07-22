@@ -91,7 +91,7 @@ def mail_accounts(path=None):
     {"accounts": [...]} shapes the file has carried. Missing or corrupt
     file reads as no accounts."""
     try:
-        raw = json.loads((path or ACCOUNTS).read_text())
+        raw = json.loads((path or ACCOUNTS).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
     return raw if isinstance(raw, list) else raw.get("accounts", [])
