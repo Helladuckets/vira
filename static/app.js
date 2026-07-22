@@ -7758,7 +7758,9 @@ function initNavDrawer() {
   addEventListener("pointerdown", (e) => {
     if (claimed) return;             // a live drag already owns the gesture
     pid = null;
-    if (e.pointerType === "mouse" || blocked()) return;
+    // mouse included on purpose: a narrow desktop window IS the mobile
+    // build, and it is the only way to drive this from the stage view
+    if (e.button > 0 || blocked()) return;
     opening = !isOpen();
     if (opening && e.clientX > EDGE) return;
     if (!opening && !drawer.contains(e.target) && e.target !== $("#nd-scrim")) return;
