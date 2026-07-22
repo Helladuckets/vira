@@ -32,6 +32,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                mediaindex, mercury, modulemap, msgraph, notify, onboard,
                photos, plans, radar,
                receipts,
+               resolver,
                routines,
                search as msearch, send, session, settings, subs_visuals,
                subscriptions, suggest, triage, uistate, update, vault,
@@ -1079,23 +1080,47 @@ def api_triage_dismiss(req: DismissReq):
     return triage.dismiss(req.handle)
 
 
+class ResolveReq(BaseModel):
+    handle: str
+    person_id: str | None = None
+    memory: str | None = None
+
+
+@app.post("/api/triage/resolve")
+def api_triage_resolve(req: ResolveReq):
+    """AI-assisted name resolution for an unknown handle — read-only: it
+    gathers evidence and proposes a name, but writes nothing. The Add flow
+    still owns the people.json write."""
+    try:
+        return resolver.resolve(req.handle, req.person_id, req.memory or "")
+    except Exception as e:  # noqa: BLE001 — model call/parse is best-effort
+        raise HTTPException(502, f"couldn't resolve: {str(e)[:200]}")
+
+
 class AddPersonReq(BaseModel):
     name: str
     handles: list[str] = []
     class_hint: str | None = None
     note: str | None = None
     person_id: str | None = None  # set = rename an existing placeholder entry
+    fact: str | None = None       # durable provenance (e.g. referral origin)
 
 
 @app.post("/api/crm/add")
 def api_crm_add(req: AddPersonReq):
     try:
-        return {"added": True,
-                "person": triage.add_person(req.name, req.handles,
-                                            req.class_hint, req.note,
-                                            req.person_id)}
+        person = triage.add_person(req.name, req.handles, req.class_hint,
+                                   req.note, req.person_id)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if req.fact:
+        # source:"vira" fact — survives profile re-synthesis. Best-effort:
+        # the person is already added, so a fact-write hiccup never fails it.
+        try:
+            crm.add_fact(person["id"], req.fact)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"added": True, "person": person}
 
 
 # ---------- onboarding (Setup window: importers, dossiers, the Brain) ----

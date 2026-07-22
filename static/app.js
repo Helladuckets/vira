@@ -334,16 +334,65 @@ function startStream() {
 
 // ---------- add to CRM ----------
 let addTarget = null;
-function openAddSheet(handle, prefillName, evidence, onDone, personId, presetClass) {
-  addTarget = { handle, onDone, personId };
+function openAddSheet(handle, prefillName, evidence, onDone, personId, presetClass, referralHint) {
+  addTarget = { handle, onDone, personId, referralHint: referralHint || null, fact: null };
   $("#add-handle-line").textContent = handle;
   $("#add-name").value = prefillName || "";
   $("#add-evidence").textContent = evidence || "";
+  $("#add-memory").value = "";
+  const note = $("#add-resolve-note");
+  note.hidden = true; note.textContent = ""; note.classList.remove("held");
   document.querySelectorAll("#add-class-seg .seg-btn").forEach((b) =>
     b.classList.toggle("on", !!presetClass && b.dataset.v === presetClass));
   $("#add-sheet").classList.add("open");
   $("#add-name").focus();
+  // Referral cards ("intro'd by Eric") auto-resolve in the background so the
+  // name arrives pre-filled; everything else waits for the button.
+  if (referralHint) runResolve(true);
 }
+
+// Ask Vira to figure out the name from the typed memory + the contact's own
+// thread + the referral chain + any shared contact card. Read-only server
+// side: it proposes, the Add button still does the write.
+async function runResolve(auto) {
+  if (!addTarget) return;
+  const btn = $("#add-resolve"), note = $("#add-resolve-note"), nameEl = $("#add-name");
+  const memory = $("#add-memory").value.trim();
+  if (!auto && !memory && !addTarget.referralHint) { $("#add-memory").focus(); return; }
+  const prev = btn.textContent;
+  btn.disabled = true; btn.textContent = "Vira is thinking…";
+  note.hidden = false; note.classList.remove("held");
+  note.textContent = "Vira is reading your messages"
+    + (addTarget.referralHint ? " and " + addTarget.referralHint + "'s thread…" : "…");
+  try {
+    const r = await post("/api/triage/resolve", {
+      handle: addTarget.handle, person_id: addTarget.personId || null, memory });
+    const guess = r.name || r.first_name || "";
+    // never clobber a name already typed (matters most on auto-run)
+    const canFill = guess && !r.held && !(auto && nameEl.value.trim());
+    if (canFill) nameEl.value = guess;
+    if (r.class_hint) document.querySelectorAll("#add-class-seg .seg-btn").forEach((b) =>
+      b.classList.toggle("on", b.dataset.v === r.class_hint));
+    addTarget.fact = r.fact || null;
+    let msg;
+    if (guess) {
+      msg = (r.held ? "Best guess (unverified): " : "Vira suggests: ") + guess;
+      if (r.evidence) msg += " — " + r.evidence;
+    } else {
+      msg = "Vira couldn't pin a name from the messages — add what you remember above.";
+    }
+    if (r.ambiguous && r.candidates && r.candidates.length)
+      msg += "  Which one? " + r.candidates.join(", ");
+    note.textContent = msg;
+    note.classList.toggle("held", !!r.held);
+    if (canFill) confettiAt(btn);
+  } catch (e) {
+    note.textContent = "Vira couldn't resolve this right now: " + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = prev;
+  }
+}
+$("#add-resolve").addEventListener("click", () => runResolve(false));
 $("#add-cancel").addEventListener("click", () => $("#add-sheet").classList.remove("open"));
 document.querySelectorAll("#add-class-seg .seg-btn").forEach((b) =>
   b.addEventListener("click", () => {
@@ -363,6 +412,7 @@ $("#add-save").addEventListener("click", async () => {
       handles: addTarget.handle ? [addTarget.handle] : [],
       class_hint: cls,
       person_id: addTarget.personId || null,
+      fact: addTarget.fact || null,
     });
     $("#add-sheet").classList.remove("open");
     toast("Added " + name + " to the CRM — future messages will match");
@@ -416,7 +466,8 @@ function triageCard(c) {
       : (c.person_id ? "Name this contact" : "Add to CRM"));
   add.addEventListener("click", () =>
     openAddSheet(c.handle, c.name || c.company_guess, c.evidence,
-      () => card.remove(), c.person_id, c.business ? "company" : null));
+      () => card.remove(), c.person_id, c.business ? "company" : null,
+      c.business ? null : (c.referral_hint || null)));
   row.appendChild(dis);
   row.appendChild(add);
   card.appendChild(row);
