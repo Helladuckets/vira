@@ -930,6 +930,16 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 }
 .sheet-card h3 { font-size: 16px; margin-bottom: 14px; }
 .sheet-card h3.sheet-sub { margin-top: 20px; }
+/* the card's header doubles as its title bar (desktop drag) */
+@media (min-width: 1100px) {
+  .sheet-head { cursor: grab; user-select: none; -webkit-user-select: none; }
+  .sheet-head:active { cursor: grabbing; }
+  /* dragged off the bottom dock: a free-floating card, bordered all round */
+  .sheet-card.floating {
+    position: fixed; border-radius: 2px; border-bottom: 1px solid var(--line);
+    padding-bottom: 20px; box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
+  }
+}
 .mail-acct {
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
   font-size: 13px; padding: 7px 2px; border-bottom: 1px solid var(--line);
