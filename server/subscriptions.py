@@ -67,7 +67,7 @@ import threading
 from datetime import date, datetime
 from pathlib import Path
 
-from . import settings
+from . import jsonstore, settings
 
 DATA = Path(__file__).resolve().parent.parent / "data"
 REGISTRY = DATA / "subscriptions.json"
@@ -165,10 +165,7 @@ def load_registry():
 
 
 def save_registry(reg):
-    REGISTRY.parent.mkdir(parents=True, exist_ok=True)
-    tmp = REGISTRY.with_name(REGISTRY.name + ".tmp")
-    tmp.write_text(json.dumps(reg, indent=1, ensure_ascii=False))
-    tmp.replace(REGISTRY)
+    jsonstore.write_atomic(REGISTRY, reg, indent=1, ensure_ascii=False)
 
 
 def slugify(name):

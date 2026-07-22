@@ -44,6 +44,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import channels
 from . import data as crm
 from . import mail as mailmod
 from . import mediaindex
@@ -61,11 +62,7 @@ GRAPH_PAGE = 25
 # ---------- helpers ----------
 
 def _accounts():
-    try:
-        import json
-        return json.loads(mailmod.ACCOUNTS.read_text())
-    except (OSError, ValueError):
-        return []
+    return channels.mail_accounts(mailmod.ACCOUNTS)
 
 
 def _my_addresses():
@@ -193,13 +190,9 @@ def _run_graph(email_addr, mode, since, limit, log):
     since_iso = None
     if mode == "incremental":
         if wm is None:                     # baseline: don't walk all history
-            top = msgraph._graph_request(
-                email_addr, "/me/messages/?$orderby=receivedDateTime%20desc"
-                            "&$top=1&$select=receivedDateTime")
-            vals = top.get("value", [])
             mediaindex.set_state(
                 con, key,
-                vals[0]["receivedDateTime"] if vals else "1970-01-01T00:00:00Z")
+                channels.graph_newest_received(email_addr, "/me/messages/"))
             con.close()
             return 0
         since_iso = wm
@@ -266,16 +259,7 @@ def _run_graph(email_addr, mode, since, limit, log):
 
 def _all_mail_folder(con):
     """The \\All special-use mailbox (Gmail's "All Mail"); else INBOX."""
-    status, boxes = con.list()
-    if status == "OK":
-        for raw in boxes or []:
-            line = raw.decode(errors="replace") if isinstance(raw, bytes) \
-                else str(raw)
-            if "\\All" in line:
-                m = re.findall(r'"([^"]+)"', line)
-                if m:
-                    return m[-1]
-    return "INBOX"
+    return channels.imap_special_folder(con, "\\All", "INBOX")
 
 
 def _imap_search(con, gmail, since_uid, since_date):
@@ -336,9 +320,8 @@ def _run_imap(acct, mode, since, limit, log):
         box = _all_mail_folder(con)
         con.select(f'"{box}"', readonly=True)
         if mode == "incremental" and wm is None:      # baseline, no history
-            _, d = con.status(f'"{box}"', "(UIDNEXT)")
-            m = re.search(rb"UIDNEXT (\d+)", d[0])
-            mediaindex.set_state(idx, key, (int(m.group(1)) - 1) if m else 0)
+            mediaindex.set_state(
+                idx, key, channels.imap_newest_uid(con, f'"{box}"'))
             idx.close()
             return 0
         uids = _imap_search(con, gmail, since_uid, since if mode != "incremental"

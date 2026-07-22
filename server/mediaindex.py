@@ -41,6 +41,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import data as crm
+from . import retrieval
 from .imessage import _connect, apple_dt, msg_text
 from .media import (SKIP_NAMES, URL_RE, IMAGE_MIME, VIDEO_MIME,
                     _link_from_payload, _domain, _nearest_context,
@@ -439,7 +440,6 @@ def backfill_ocr(log=print, batch_commit=25):
 # ---------- stage: scene embeddings (SigLIP) ----------
 
 def backfill_scene(log=print, batch=16):
-    import numpy as np
     from .localmodels import siglip_embed_images
     con = _db()
     rows = con.execute(
@@ -479,7 +479,7 @@ def _flush_scene(con, pend, embed):
         if v is None:
             continue
         con.execute("INSERT OR REPLACE INTO vec_scene(seq,v) VALUES(?,?)",
-                    (seq, v.astype("float16").tobytes()))
+                    (seq, retrieval.pack_vec(v)))
         n += 1
     return n
 
@@ -523,7 +523,7 @@ def backfill_textvec(log=print):
         for ci, v in enumerate(vecs):
             con.execute(
                 "INSERT OR REPLACE INTO vec_text(seq,chunk,v) VALUES(?,?,?)",
-                (seq, ci, v.astype("float16").tobytes()))
+                (seq, ci, retrieval.pack_vec(v)))
         n += 1
         if n % 100 == 0:
             con.commit()
@@ -555,7 +555,7 @@ def enroll_gallery(log=print):
         best = max(faces, key=lambda x: x["det_score"])
         con.execute(
             "INSERT INTO face_gallery(person_id,src,v) VALUES(?,?,?)",
-            (pid, "photo-cache", best["v"].astype("float16").tobytes()))
+            (pid, "photo-cache", retrieval.pack_vec(best["v"])))
         n += 1
     con.commit()
     con.close()
@@ -568,24 +568,19 @@ FACE_MATCH_T = 0.45     # ArcFace cosine; below this a face stays unnamed
 
 def _match_faces(con):
     """(Re)assign person_id on every stored face from the current gallery."""
-    import numpy as np
     gal = con.execute("SELECT person_id, v FROM face_gallery").fetchall()
     if not gal:
         return 0
     pids = [g[0] for g in gal]
-    G = np.stack([np.frombuffer(g[1], dtype="float16").astype("float32")
-                  for g in gal])
-    G /= (np.linalg.norm(G, axis=1, keepdims=True) + 1e-9)
+    G = retrieval.unit_rows(retrieval.stack_vecs([g[1] for g in gal]))
     n = 0
     for fid, blob in con.execute("SELECT face_id, v FROM faces").fetchall():
-        v = np.frombuffer(blob, dtype="float16").astype("float32")
-        v /= (np.linalg.norm(v) + 1e-9)
-        sims = G @ v
-        i = int(sims.argmax())
-        if sims[i] >= FACE_MATCH_T:
+        v = retrieval.unit(retrieval.unpack_vec(blob))
+        i, score = retrieval.best_match(G, v)
+        if score >= FACE_MATCH_T:
             con.execute(
                 "UPDATE faces SET person_id=?, match_score=? WHERE face_id=?",
-                (pids[i], float(sims[i]), fid))
+                (pids[i], score, fid))
             n += 1
     con.commit()
     return n
@@ -617,7 +612,7 @@ def backfill_faces(log=print):
                    VALUES(?,?,?,?)""",
                 (seq, json.dumps([round(x, 1) for x in f["bbox"]]),
                  float(f["det_score"]),
-                 f["v"].astype("float16").tobytes()))
+                 retrieval.pack_vec(f["v"])))
             n_face += 1
         n_img += 1
         if n_img % 25 == 0:

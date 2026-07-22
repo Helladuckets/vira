@@ -22,7 +22,7 @@ import time
 from importlib.metadata import distribution
 from pathlib import Path
 
-from . import settings
+from . import gitutil, settings
 
 ROOT = Path(__file__).resolve().parent.parent
 _last_fetch = {"at": 0.0}
@@ -30,8 +30,7 @@ _FETCH_COOLDOWN = 60  # seconds between actual network fetches
 
 
 def _git(*args, timeout=15):
-    return subprocess.run(["git", "-C", str(ROOT), *args],
-                          capture_output=True, text=True, timeout=timeout)
+    return gitutil.git(ROOT, *args, timeout=timeout)
 
 
 def status(fetch=False):

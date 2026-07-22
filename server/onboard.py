@@ -34,7 +34,7 @@ from datetime import date
 from pathlib import Path
 
 from . import data as crm
-from . import imessage, secrets, settings, sources, suggest
+from . import imessage, jsonstore, secrets, settings, sources, suggest
 
 _lock = threading.Lock()          # people.json / master.json writes
 _build_lock = threading.Lock()    # dossier-builder state
@@ -53,10 +53,7 @@ def config_set(**updates):
     identity/data keys (vault_root, crm_root)."""
     cfg = settings.raw()
     cfg.update(updates)
-    settings.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = settings.CONFIG_PATH.with_name("config.json.tmp")
-    tmp.write_text(json.dumps(cfg, indent=2))
-    tmp.replace(settings.CONFIG_PATH)
+    jsonstore.write_atomic(settings.CONFIG_PATH, cfg, indent=2)
     return cfg
 
 
@@ -209,9 +206,8 @@ def import_contacts(contacts, source):
                                "phones": c.get("phones10", [])})
             added += 1
         for path, payload in ((people_path, doc), (master_path, master)):
-            tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(json.dumps(payload, indent=1, ensure_ascii=False))
-            tmp.replace(path)
+            jsonstore.write_atomic(path, payload, indent=1,
+                                   ensure_ascii=False)
         crm.invalidate()
     return {"added": added, "already_known": existing, "skipped": skipped,
             "total_people": len(doc["people"]), "source": source}
@@ -355,9 +351,7 @@ def _mark_active(pids_counts):
                 act = p.setdefault("activity", {})
                 act["imsg_n"] = pids_counts[p["id"]]
         path = root / "people.json"
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False))
-        tmp.replace(path)
+        jsonstore.write_atomic(path, doc, indent=1, ensure_ascii=False)
         crm.invalidate()
 
 

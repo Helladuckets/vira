@@ -21,7 +21,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from . import settings
+from . import gitutil, settings
 
 router = APIRouter(prefix="/api/design")
 
@@ -111,8 +111,7 @@ def rewrite_theme(text: str, theme: str, changes: dict) -> str:
 # ---------------------------------------------------------------- git
 
 def _git(repo: Path, *args: str, timeout: int = 25) -> subprocess.CompletedProcess:
-    return subprocess.run(["git", "-C", str(repo), *args],
-                          capture_output=True, text=True, timeout=timeout)
+    return gitutil.git(repo, *args, timeout=timeout)
 
 
 def commit_and_push(repo: Path, relpath: str | list[str], message: str) -> dict:

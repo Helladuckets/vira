@@ -39,6 +39,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import channels
 from . import data as crm
 from . import secrets, settings
 
@@ -394,7 +395,7 @@ def ingest(device_id, messages, watcher=None):
             con.close()
     if watcher is not None:
         for item in fresh_items:
-            _push_feed(watcher, item)
+            channels.push_feed_item(watcher, item)
     return {"received": received, "new": new, "duplicates": dupes,
             "invalid": bad}
 
@@ -419,22 +420,6 @@ def _feed_item(key, sender, sender_raw, pid, channel, when_epoch, text):
         "known": pid is not None,
         "has_photo": bool(pid and photos.photo_path(pid)),
     }
-
-
-def _push_feed(watcher, item):
-    """mail.py's _push_item shape: dedupe by rowid, keep the feed sorted
-    and capped, wake the SSE listeners."""
-    with watcher.lock:
-        if any(x.get("rowid") == item["rowid"] for x in watcher.feed):
-            return
-        watcher.feed.append(item)
-        watcher.feed.sort(key=lambda i: i.get("when") or "")
-        watcher.feed = watcher.feed[-watcher.feed_size:]
-        for q in list(watcher.listeners):
-            try:
-                q.put_nowait(item)
-            except Exception:  # noqa: BLE001
-                watcher.listeners.remove(q)
 
 
 def stats():

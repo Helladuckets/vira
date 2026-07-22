@@ -75,14 +75,6 @@ _bin_cache = {}
 _lock = threading.Lock()
 
 
-def _strip_env():
-    """Same gotcha as suggest.py and aihealth: a session-scoped
-    ANTHROPIC_*/CLAUDE* var makes a child CLI ignore its own stored login,
-    so a probe run under one reports the wrong answer."""
-    return {k: v for k, v in os.environ.items()
-            if not (k.startswith("ANTHROPIC_") or k.startswith("CLAUDE"))}
-
-
 def find_binary(pid):
     """Absolute path to the provider's CLI, or "" if it isn't on this Mac.
     PATH first (the normal install), then the known hiding places."""
@@ -163,7 +155,7 @@ def _probe_auth(pid, binary):
     try:
         res = subprocess.run([binary] + spec["status_cmd"],
                              capture_output=True, text=True, timeout=20,
-                             env=_strip_env())
+                             env=settings.strip_env())
     except subprocess.TimeoutExpired:
         return LOGGED_OUT, f"{spec['bin']} {' '.join(spec['status_cmd'])} timed out"
     except Exception as e:  # noqa: BLE001

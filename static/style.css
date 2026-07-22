@@ -439,6 +439,27 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 }
 .idea-edit { margin-bottom: 8px; }
 .ideas-tabs { margin-bottom: 12px; }
+
+/* ---------- Work window (Queue | Dispatch | Live | Record) ----------
+   Layout only — every color reads the existing tokens. */
+.work-subhead { display: flex; align-items: center; gap: 8px; }
+.work-subhead .jobs-sub { margin: 14px 2px 8px; }
+.work-subhead .fchip { align-self: end; }
+.idea-top .badge { flex: none; margin-top: 2px; }
+.q-note { display: flex; align-items: flex-start; gap: 10px; }
+.q-note .badge { flex: none; margin-top: 2px; }
+.q-note .link-main { flex: 1; min-width: 0; }
+.q-note .jn-unap { margin-top: 0; }
+.q-note .fchip { flex: none; }
+.dispatch-ctl {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 8px; margin: 0 0 12px;
+}
+.dispatch-ctl label {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-faint);
+}
+.dispatch-ctl .idea-sort { max-width: 240px; }
 .ideas-sortbar {
   display: flex; align-items: center; justify-content: flex-end;
   gap: 8px; margin-bottom: 10px;

@@ -76,60 +76,23 @@
     <div id="people-list" class="list"></div>
   </section>
 
-  <!-- ACTIONS -->
-  <section id="view-actions" class="view">
-    <div class="section-head"><h2>Actions</h2></div>
-    <div class="runbar">
-      <input id="free-prompt" class="search" type="text"
-             placeholder="Ask Claude anything, or tap a card below">
-      <button class="btn primary" id="free-run">Run</button>
+  <!-- WORK (the cockpit: Actions + Jobs + Ideas + Circuits + Agent Loops,
+       merged 2026-07-21. Queue = what's waiting on a decision; Dispatch =
+       start work (library cards, circuit recipes, standing schedules);
+       Live = running sessions; Record = the durable ledger + change log.) -->
+  <section id="view-work" class="view">
+    <div class="seg ideas-tabs" id="work-tabs">
+      <button data-tab="queue" class="seg-btn on">Queue</button>
+      <button data-tab="dispatch" class="seg-btn">Dispatch</button>
+      <button data-tab="live" class="seg-btn">Live</button>
+      <button data-tab="record" class="seg-btn">Record</button>
     </div>
-    <div id="jobs-strip"></div>
-    <div id="actions-grid" class="grid"></div>
-  </section>
 
-  <!-- TRIAGE (desktop mini-app window; mobile reaches triage via People) -->
-  <section id="view-triage" class="view">
-    <div class="section-head">
-      <h2>Triage</h2>
-      <button class="fchip sm" id="triage-win-refresh" style="margin-left:auto">Refresh</button>
-    </div>
-    <div id="triage-list" class="list"></div>
-  </section>
-
-  <!-- JOBS + NOTIFICATIONS + LEDGER HISTORY (desktop mini-app window) -->
-  <section id="view-jobs" class="view">
-    <div class="seg ideas-tabs" id="jobs-tabs">
-      <button data-tab="live" class="seg-btn on">Live</button>
-      <button data-tab="history" class="seg-btn">History</button>
-    </div>
-    <div id="jobs-live-pane">
-      <div class="jobs-sub">Recent jobs</div>
-      <div id="jobs-list" class="list"></div>
-      <div class="jobs-sub">Notifications sent</div>
-      <div id="notify-list" class="list"></div>
-    </div>
-    <div id="jobs-history-pane" style="display:none">
-      <div class="jobs-sub">Job ledger — every run, durable across restarts</div>
-      <div id="jobs-history" class="list"></div>
-    </div>
-  </section>
-
-  <section id="view-search" class="view">
-    <div class="section-head"><h2>Search</h2></div>
-    <div id="search-root"></div>
-  </section>
-
-  <!-- IDEAS & ON-HOLD + CHANGE LOG (dock window on desktop, tab on mobile) -->
-  <section id="view-ideas" class="view">
-    <div class="section-head"><h2>Ideas &amp; On-Hold</h2></div>
-    <div class="seg ideas-tabs" id="ideas-tabs">
-      <button data-tab="ideas" class="seg-btn on">Ideas</button>
-      <button data-tab="log" class="seg-btn">Change log</button>
-    </div>
-    <div id="ideas-pane">
-      <p class="hint ideas-hint">The backlog Vira carries across sessions.
-        Add items as they occur to you — <code>/resume</code> reads this list.</p>
+    <div id="work-queue-pane">
+      <p class="hint ideas-hint">Everything waiting on your call: the idea
+        backlog Vira carries across sessions, Vira's own proposals, and
+        journal notes that need a full session. <code>/resume</code> reads
+        this list.</p>
       <div class="runbar">
         <input id="idea-input" class="search" type="text"
                placeholder="Add an idea or on-hold item…" autocomplete="off">
@@ -143,13 +106,89 @@
         <label for="idea-sort">Sort</label>
         <select id="idea-sort" class="idea-sort"></select>
       </div>
+      <div id="work-journal-lane"></div>
       <div id="ideas-list" class="list"></div>
     </div>
-    <div id="changelog-pane" style="display:none">
-      <p class="hint ideas-hint">Every change per session, newest first, all
-        the way back to the first Vira session.</p>
-      <div id="changelog-list" class="list"></div>
+
+    <div id="work-dispatch-pane" style="display:none">
+      <div class="runbar">
+        <input id="free-prompt" class="search" type="text"
+               placeholder="Ask Claude anything, or tap a card below">
+        <button class="btn primary" id="free-run">Run</button>
+      </div>
+      <div class="dispatch-ctl">
+        <label for="dispatch-structure">Structure</label>
+        <select id="dispatch-structure" class="idea-sort"
+                title="Run as a single job, or feed a circuit"></select>
+        <label for="dispatch-schedule">Schedule</label>
+        <select id="dispatch-schedule" class="idea-sort"
+                title="Run once now, or put it on a standing schedule">
+          <option value="">Run once now</option>
+          <option value="schedule">On a schedule…</option>
+        </select>
+      </div>
+      <div class="seg mini" id="work-sub-tabs">
+        <button data-sub="library" class="seg-btn on">Library</button>
+        <button data-sub="recipes" class="seg-btn">Recipes</button>
+        <button data-sub="schedules" class="seg-btn">Schedules</button>
+      </div>
+      <div id="work-sub-library">
+        <div id="actions-grid" class="grid"></div>
+      </div>
+      <div id="work-sub-recipes" style="display:none">
+        <div class="seg ideas-tabs" id="circuits-tabs">
+          <button data-tab="run" class="seg-btn on">Run</button>
+          <button data-tab="runs" class="seg-btn">Runs</button>
+        </div>
+        <div id="circuits-run-pane">
+          <div id="circuits-list"></div>
+        </div>
+        <div id="circuits-runs-pane" style="display:none">
+          <div id="circuit-runs" class="list"></div>
+        </div>
+      </div>
+      <div id="work-sub-schedules" style="display:none">
+        <p class="hint ideas-hint">Standing loops Vira runs on their own —
+          the muse proposes ideas each morning; watchers and digests run on
+          any cadence. Every run is a normal job with a terminal.</p>
+        <div class="work-subhead">
+          <span class="jobs-sub">Standing loops</span>
+          <button class="fchip sm" id="routine-add-btn"
+                  style="margin-left:auto">New loop</button>
+        </div>
+        <div id="routine-form" class="routine-form" style="display:none"></div>
+        <div id="routines-list" class="list"></div>
+      </div>
     </div>
+
+    <div id="work-live-pane" style="display:none">
+      <div id="jobs-strip"></div>
+      <div class="jobs-sub">Recent jobs</div>
+      <div id="jobs-list" class="list"></div>
+    </div>
+
+    <div id="work-record-pane" style="display:none">
+      <div class="seg mini" id="record-filter">
+        <button data-rec="all" class="seg-btn on">All</button>
+        <button data-rec="jobs" class="seg-btn">Jobs</button>
+        <button data-rec="shipped" class="seg-btn">Shipped</button>
+      </div>
+      <div id="work-record-list" class="list"></div>
+    </div>
+  </section>
+
+  <!-- TRIAGE (desktop mini-app window; mobile reaches triage via People) -->
+  <section id="view-triage" class="view">
+    <div class="section-head">
+      <h2>Triage</h2>
+      <button class="fchip sm" id="triage-win-refresh" style="margin-left:auto">Refresh</button>
+    </div>
+    <div id="triage-list" class="list"></div>
+  </section>
+
+  <section id="view-search" class="view">
+    <div class="section-head"><h2>Search</h2></div>
+    <div id="search-root"></div>
   </section>
 
   <!-- PLANS (Plan-mode output, saved to the vault + reopenable in-app) -->
@@ -349,35 +388,6 @@
     </div>
     <iframe class="reader-frame" id="reader-frame"
             title="Reader — personal reading pages" loading="lazy"></iframe>
-  </section>
-
-  <!-- CIRCUITS (multi-model agent pipelines; lab/breadboard, executable) -->
-  <section id="view-circuits" class="view">
-    <div class="section-head"><h2>Circuits</h2>
-      <span class="hint" style="margin-left:auto">multi-model pipelines on the session engine</span>
-    </div>
-    <div class="seg ideas-tabs" id="circuits-tabs">
-      <button data-tab="run" class="seg-btn on">Run</button>
-      <button data-tab="runs" class="seg-btn">Runs</button>
-    </div>
-    <div id="circuits-run-pane">
-      <div id="circuits-list"></div>
-    </div>
-    <div id="circuits-runs-pane" style="display:none">
-      <div id="circuit-runs" class="list"></div>
-    </div>
-  </section>
-
-  <!-- ROUTINES (standing agent loops: muse, watchers, digests) -->
-  <section id="view-routines" class="view">
-    <div class="section-head"><h2>Agent Loops</h2>
-      <button class="fchip sm" id="routine-add-btn" style="margin-left:auto">New loop</button>
-    </div>
-    <p class="hint ideas-hint">Standing loops Vira runs on their own — the muse
-      proposes ideas each morning; watchers and digests run on any cadence.
-      Every run is a normal job with a terminal.</p>
-    <div id="routine-form" class="routine-form" style="display:none"></div>
-    <div id="routines-list" class="list"></div>
   </section>
 
   <!-- LAUNCHPAD (every app as an icon grid; on desktop this section lives
