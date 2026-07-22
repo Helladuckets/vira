@@ -63,17 +63,65 @@ function startPoll(fn, ms, maxMs) {
 
 // bindSheet: the modal-sheet chrome (open/close + Cancel wiring) every
 // sheet hand-rolled. Each sheet's field wiring stays its own; this is
-// only the scaffolding.
+// only the scaffolding. A sheet answers Escape as well as Cancel, and on
+// desktop its header is a title bar — grab it and the card floats free of
+// the bottom dock, the way any other window moves.
+const openSheets = [];   // open sheets, most recently opened last
+
 function bindSheet(sel, cancelSel) {
   const node = $(sel);
+  const card = node?.querySelector(".sheet-card");
+  let wired = false;
   const s = {
     node,
-    open() { node.classList.add("open"); },
-    close() { node.classList.remove("open"); },
+    open() {
+      node.classList.add("open");
+      if (!openSheets.includes(s)) openSheets.push(s);
+      // wired on first open: isDesktop is declared further down this file
+      if (!wired) { wired = true; if (card && isDesktop) dragBySheetHead(card); }
+    },
+    close() {
+      node.classList.remove("open");
+      const i = openSheets.indexOf(s);
+      if (i >= 0) openSheets.splice(i, 1);
+      if (card) {                    // next open docks where it always did
+        card.classList.remove("floating");
+        card.style.cssText = "";
+      }
+    },
   };
   if (cancelSel) $(cancelSel)?.addEventListener("click", s.close);
   return s;
 }
+
+// The header is the sheet's title bar. The first grab pins the card where it
+// already sits and lifts it out of the bottom dock, so makeDraggable (which
+// runs right after, on the same pointerdown) moves it without a jump.
+function dragBySheetHead(card) {
+  const head = card.querySelector(".sheet-head");
+  if (!head) return;
+  head.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || card.classList.contains("floating")) return;
+    if (e.target.closest("button")) return;      // as makeDraggable itself skips
+    const r = card.getBoundingClientRect();
+    card.style.left = r.left + "px";
+    card.style.top = r.top + "px";
+    card.style.width = r.width + "px";
+    card.classList.add("floating");
+  });
+  // a window keeps the height the drag froze; a sheet grows with its own
+  // form again (the resolve note, a validation line) once the drag ends
+  makeDraggable(card, head, () => { card.style.height = ""; });
+}
+
+// Escape dismisses the top sheet — claimed in the capture phase so the
+// palette / focus-mode Escape handlers don't also fire behind it
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !openSheets.length) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openSheets[openSheets.length - 1].close();
+}, true);
 
 const fmtTime = (iso) => {
   if (!iso) return "";
