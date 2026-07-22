@@ -5197,12 +5197,15 @@ function cardNotifications(card) {
   bar.appendChild(test); bar.appendChild(hint);
   card.appendChild(bar);
   // the notifications-sent log (moved here from the retired Jobs window);
-  // the boot poller refreshes it while this card is on screen
+  // the boot poller refreshes it while this card is on screen. The card is
+  // built DETACHED (renderSetup attaches the pane last), so the first load
+  // is deferred a tick — loadNotify re-queries #notify-list from the
+  // document and would miss it mid-build.
   card.appendChild(el("div", "jobs-sub", "Notifications sent"));
   const sent = el("div", "list");
   sent.id = "notify-list";
   card.appendChild(sent);
-  loadNotify().catch(() => {});
+  setTimeout(() => loadNotify().catch(() => {}), 0);
 }
 
 function cardUpdates(card) {
