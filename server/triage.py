@@ -238,6 +238,7 @@ def candidates():
             "_texts": u.get("texts") or [],
         })
 
+    from . import resolver
     for c in out:
         sig, guess = business_signals(
             c["handle"], by_key.get(_key(c["handle"])),
@@ -245,6 +246,10 @@ def candidates():
         c["business"] = bool(sig)
         c["business_signals"] = sig
         c["company_guess"] = guess
+        # a referrer named in the evidence -> the card auto-resolves on open
+        # (a person card only; automated senders never carry a referral)
+        c["referral_hint"] = ("" if c["business"] else resolver.referrer_from_text(
+            " ".join([c.get("relationship") or "", c.get("evidence") or ""])))
     # people first (contact-worthy, then volume); likely businesses form
     # their own band at the end — they want "add as company", not naming.
     order = {"yes": 0, "unsure": 1}
