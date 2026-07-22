@@ -1,6 +1,7 @@
 :root {
   /* Taurid Capital brand book v1.0 — stone, charcoal, oxidized metals */
   --bg: #0d0d0d;            /* Graphite */
+  --bg-t: rgba(13, 13, 13, 0);   /* --bg at zero alpha — the end of a fade */
   --bg-raised: #222325;
   --bg-card: #2a2b2d;       /* Stone */
   --bg-topbar: rgba(26, 29, 30, 0.92);    /* app top bar */
@@ -64,6 +65,10 @@
   --term-dot: #4b463f;
   --radius: 2px;            /* engineered, not designed */
   --pad: 16px;
+  /* the phone's access bar: its height is a layout constant, because the
+     column's bottom padding, the scroll fade and every full-height frame
+     all have to clear it */
+  --mdock-h: calc(58px + env(safe-area-inset-bottom));
   --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 16px;
@@ -76,7 +81,7 @@ body {
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   -webkit-font-smoothing: antialiased;
-  padding-bottom: calc(20px + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--mdock-h) + 20px);
 }
 
 /* ---------- top bar ---------- */
@@ -212,7 +217,7 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 /* stacking auto-dismiss toasts */
 #toasts {
   position: fixed; left: 50%; transform: translateX(-50%);
-  bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 1200;
+  bottom: calc(var(--mdock-h) + 14px); z-index: 1200;   /* clears the bar */
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   pointer-events: none;
 }
@@ -952,16 +957,44 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 /* ---------- launchpad (all apps as an icon grid) ----------
    Desktop: the grid lives in the Launchpad floating window and curates the
    dock. Mobile: the same grid as a full-screen overlay opened from the
-   brand button — it replaced the bottom tab bar (2026-07-17). */
+   brand button — it replaced the bottom tab bar (2026-07-17).
+
+   The grid is split by a line: the apps that sit on the dock (desktop) or
+   the five-app access bar (mobile) group above it, everything else below.
+   Adding and removing is then one gesture with one meaning — an app moves
+   across the line — instead of a hidden flag on a tile. */
+.lp-sec + .lp-sec { margin-top: 6px; }
+.lp-sec-head {
+  display: flex; align-items: center; gap: 10px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; color: var(--text-faint);
+  margin: 4px 6px -6px;
+}
+.lp-sec-head::after {
+  content: ""; flex: 1; height: 1px; background: var(--line);
+}
+.lp-sec-empty {
+  grid-column: 1 / -1; margin: 2px 2px 0;
+  border: 1px dashed var(--line); border-radius: 2px;
+  padding: 16px 12px; text-align: center;
+  font-size: 12px; color: var(--text-faint);
+}
 .lp-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
   gap: 20px 8px; padding: 18px 4px;
 }
+/* .lp-tile carries the layout transform (the shuffle when a drag displaces
+   it); .lp-jig inside carries the jiggle. Two animations, two elements —
+   otherwise reorganize mode and the shuffle fight over `transform`. */
 .lp-tile {
-  background: none; border: 0; padding: 6px 2px; cursor: pointer;
-  display: flex; flex-direction: column; align-items: center; gap: 9px;
-  color: var(--text); border-radius: 4px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  display: block; color: var(--text); border-radius: 4px;
   -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none; user-select: none; -webkit-user-select: none;
+}
+.lp-jig {
+  display: flex; flex-direction: column; align-items: center; gap: 9px;
+  padding: 6px 2px;
 }
 .lp-ic {
   position: relative; width: 54px; height: 54px; border-radius: 12px;
@@ -977,11 +1010,6 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
 .lp-tile:hover .lp-ic svg { stroke: var(--accent); }
-.lp-dot {
-  position: absolute; right: -4px; top: -4px; width: 8px; height: 8px;
-  border-radius: 50%; background: var(--accent);
-  border: 1px solid var(--bg);
-}
 .lp-label {
   font-size: 11.5px; letter-spacing: .03em; color: var(--text-faint);
   text-align: center; line-height: 1.25;
@@ -996,19 +1024,163 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
   position: fixed; inset: 0; z-index: 950; display: none;
   overflow-y: auto; background: var(--scrim);
   backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-  padding: calc(28px + env(safe-area-inset-top)) 16px
-           calc(28px + env(safe-area-inset-bottom));
+  padding: calc(20px + env(safe-area-inset-top)) 16px
+           calc(var(--mdock-h) + 28px);
 }
 .launchpad.open { display: block; animation: lp-in .18s ease; }
+.launchpad.instant { animation: none; }
 @keyframes lp-in {
   from { opacity: 0; transform: scale(1.05); }
   to { opacity: 1; transform: none; }
 }
+.lp-top {
+  display: flex; align-items: center; gap: 12px; min-height: 26px;
+  margin: 0 4px 6px;
+}
+.lp-top .lp-hint {
+  flex: 1; margin: 0; text-align: left; font-size: 11.5px;
+}
+.lp-done {
+  flex: none; background: var(--sel-bg); border: 1px solid var(--sel-line);
+  color: var(--sel-text); border-radius: 2px; padding: 5px 14px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+  text-transform: uppercase; cursor: pointer;
+}
+.launchpad .lp-hint-reorg, .launchpad .lp-done { display: none; }
+.launchpad.reorg .lp-hint-idle { display: none; }
+.launchpad.reorg .lp-hint-reorg { display: block; }
+.launchpad.reorg .lp-done { display: block; }
+body.lp-open { overflow: hidden; }
+
+/* ---------- reorganize mode (mobile): long-press to jiggle ----------
+   The phone's answer to right-click dock curation. Everything wobbles to
+   say "this is now a board you rearrange, not a menu you tap", and from
+   there an icon can be dragged inside its group, across the line into the
+   other group, or straight down onto the access bar. */
+@keyframes lp-jig-a {
+  0%, 100% { transform: rotate(-1.15deg) translate(0, 0); }
+  25%      { transform: rotate(1.05deg) translate(.4px, -.4px); }
+  50%      { transform: rotate(-.95deg) translate(0, .4px); }
+  75%      { transform: rotate(1.15deg) translate(-.4px, 0); }
+}
+@keyframes lp-jig-b {
+  0%, 100% { transform: rotate(1.1deg) translate(0, .3px); }
+  25%      { transform: rotate(-1.15deg) translate(-.4px, 0); }
+  50%      { transform: rotate(1deg) translate(.3px, -.4px); }
+  75%      { transform: rotate(-1.05deg) translate(0, .3px); }
+}
+.launchpad.reorg .lp-jig { animation: lp-jig-a .27s linear infinite; }
+.launchpad.reorg .lp-tile:nth-child(even) .lp-jig {
+  animation-name: lp-jig-b; animation-duration: .3s;
+}
+.launchpad.reorg .lp-tile:nth-child(3n) .lp-jig { animation-delay: -.11s; }
+/* jiggle mode is drag-first: a finger on an icon moves the icon, it never
+   scrolls the sheet (the drag auto-scrolls at the edges instead) */
+.launchpad.reorg .lp-tile, .mdock.reorg .mdock-item { touch-action: none; }
+.launchpad.dragging { overflow: hidden; }
+.lp-tile.lifted { opacity: .22; }
+.lp-tile.lifted .lp-jig { animation: none; }
+
+/* the +/- corner button: reorganizing without dragging, and the only way
+   in when the owner has asked the system for reduced motion */
+.lp-badge {
+  position: absolute; left: -7px; top: -7px;
+  width: 20px; height: 20px; border-radius: 50%;
+  display: none; align-items: center; justify-content: center;
+  background: var(--bg-raised); border: 1px solid var(--accent-line);
+  color: var(--accent-bright); font-size: 13px; line-height: 1;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
+}
+.launchpad.reorg .lp-badge { display: flex; }
+
+/* the icon under the finger: lifted off the sheet, riding above everything */
+.lp-ghost {
+  position: fixed; left: 0; top: 0; z-index: 1100; pointer-events: none;
+  will-change: transform; filter: drop-shadow(0 14px 22px rgba(0, 0, 0, .6));
+}
+.lp-ghost .lp-jig { animation: none; }   /* the carried icon holds still */
+.lp-ghost .lp-badge { display: none; }
+.lp-ghost .lp-ic { border-color: var(--accent); }
+/* out of the grid a <button> shrink-wraps its label, which would slide the
+   carried icon off to one side of the finger — hold it to the cell width */
+.lp-ghost .lp-tile { width: 100%; }
+
 @media (prefers-reduced-motion: reduce) {
   .launchpad.open { animation: none; }
   .lp-ic, .lp-tile:hover .lp-ic { transition: none; transform: none; }
+  /* no wobble: reorganize mode announces itself by lighting every icon */
+  .launchpad.reorg .lp-jig { animation: none; }
+  .launchpad.reorg .lp-ic { border-color: var(--accent-line); }
 }
-body.lp-open { overflow: hidden; }
+
+/* ---------- mobile: the five-app access bar ----------
+   Glass pinned to the bottom of the phone, holding the apps the owner
+   picked in the Launchpad. It sits ABOVE the Launchpad overlay while that
+   is open, because it is a drop target: an icon dragged out of the grid
+   lands here. Panels and sheets still cover it — they are drill-downs. */
+.mdock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 35;
+  display: flex; align-items: stretch; gap: 2px;
+  height: var(--mdock-h);
+  padding: 5px 6px calc(3px + env(safe-area-inset-bottom));
+  background: var(--bg-hud);
+  backdrop-filter: blur(22px) saturate(1.5);
+  -webkit-backdrop-filter: blur(22px) saturate(1.5);
+  border-top: 1px solid var(--line);
+}
+body.lp-open .mdock { z-index: 960; }
+.mdock-item, .mdock-slot { flex: 1 1 0; min-width: 0; border-radius: 4px; }
+.mdock-item {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 4px; color: var(--text-faint);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none; user-select: none; -webkit-user-select: none;
+}
+.mdock-item svg {
+  width: 22px; height: 22px; stroke: currentColor; fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.mdock-label {
+  font-family: var(--mono); font-size: 8.5px; letter-spacing: .1em;
+  text-transform: uppercase; line-height: 1;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mdock-item.on { color: var(--sel-text); }
+.mdock-item:active { color: var(--text); }
+/* the gap an icon leaves behind — and the landing pad it is aimed at */
+.mdock-slot {
+  border: 1px dashed var(--accent-line); border-radius: 4px;
+  background: var(--accent-soft);
+}
+.mdock.reorg .mdock-item { animation: lp-jig-a .27s linear infinite; }
+.mdock.reorg .mdock-item:nth-child(even) {
+  animation-name: lp-jig-b; animation-duration: .3s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mdock.reorg .mdock-item { animation: none; }
+}
+
+/* The bottom fade: content dissolves into the bar instead of stopping at a
+   hard edge. It ends where the glass begins, so whatever is still under the
+   bar reads as blur rather than as a cut. Invisible over bare background. */
+.scroll-fade {
+  position: fixed; left: 0; right: 0; bottom: var(--mdock-h);
+  height: 74px; z-index: 25; pointer-events: none;
+  background: linear-gradient(to top, var(--bg) 6%, var(--bg-t));
+}
+
+/* The embedded surfaces are sized against the viewport, so each one owes
+   the access bar its height — otherwise the last rows of a frame live
+   permanently behind the glass. */
+@media (max-width: 1099px) {
+  .reader-frame, .map-frame, .design-frame {
+    height: calc(100dvh - 190px - var(--mdock-h));
+  }
+  .subsviz-frame { height: calc(100dvh - 230px - var(--mdock-h)); }
+  .atlas-stage { height: calc(100dvh - 320px - var(--mdock-h)); }
+}
 
 .empty { color: var(--text-faint); font-size: 13.5px; padding: 18px 4px; text-align: center; }
 
@@ -1150,7 +1322,9 @@ body.lp-open { overflow: hidden; }
 /* ---------- desktop: dock + floating windows over a constellation ---------- */
 @media (min-width: 1100px) {
   body { padding-bottom: 0; overflow: hidden; }
-  .launchpad { display: none !important; }  /* mobile overlay never on desktop */
+  /* the phone's chrome never shows on a desk: the overlay, the access bar,
+     and the fade that dissolves the column into it */
+  .launchpad, .mdock, .scroll-fade { display: none !important; }
   main { display: none; } /* the sections live inside floating windows */
 
   #constellation { position: fixed; inset: 0; z-index: 0; pointer-events: none; }

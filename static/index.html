@@ -402,11 +402,16 @@
        in a floating window and curates the dock — on mobile the launcher
        is the #launchpad overlay instead, opened from the brand button) -->
   <section id="view-launchpad" class="view">
-    <div class="lp-grid" id="lp-grid-view"></div>
-    <p class="hint lp-hint" id="lp-hint">Right-click an app to add it to or
-      remove it from the dock.</p>
+    <div class="lp-body" id="lp-body-view"></div>
+    <p class="hint lp-hint" id="lp-hint">Right-click an app to move it across
+      the line — the top group is the dock.</p>
   </section>
 </main>
+
+<!-- The column dissolves into the bottom of the phone instead of being
+     guillotined by the bezel: a fixed veil sitting just above the access
+     bar, invisible over empty background and only ever seen over content. -->
+<div class="scroll-fade" aria-hidden="true"></div>
 
 <!-- PERSON PANEL -->
 <div id="person-panel" class="panel">
