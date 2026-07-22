@@ -1,7 +1,7 @@
-<!-- Tab-bar cut of the app icon (static/icon.svg): the orbit ring is dropped
-     and the wedge V is set larger, because at 16px a hairline ring turns to
-     mush. Same letterform, same graphite-and-bone palette. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-  <rect width="32" height="32" rx="2" fill="#131516"/>
-  <path d="M5.4 7 L12 7 L16 19 L20.9 7 L25.4 7 L16 24 Z" fill="#cfc8b8"/>
+  <rect width="32" height="32" rx="2" fill="#1a1d1e"/>
+  <rect x="0.5" y="0.5" width="31" height="31" rx="1.5" fill="none" stroke="#34342f"/>
+  <path d="M8.5 9 L16 24.5 L23.5 9" fill="none" stroke="#8a8478"
+        stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="16" cy="6" r="1.4" fill="#8a8478"/>
 </svg>
