@@ -45,7 +45,7 @@ STATE_FILE = TCIL_ROOT / "scripts" / "youtube-subs-visuals-state.json"
 
 router = APIRouter(prefix="/api/subs-visuals")
 
-_jobs = None                 # actions.Jobs, injected by main.py at import time
+_jobs = None                 # the session registry, injected by main.py
 _apply_jobs = {}             # batch_dir(str) -> job id (this process's dispatches)
 _apply_lock = threading.Lock()
 
