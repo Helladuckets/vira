@@ -26,10 +26,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import channels
 from . import data as crm
 from . import secrets, settings
 
-ACCOUNTS = Path(__file__).resolve().parent.parent / "data" / "mail-accounts.json"
+ACCOUNTS = channels.ACCOUNTS
 STATE = Path(__file__).resolve().parent.parent / "data" / "mail-state.json"
 
 
@@ -42,13 +43,9 @@ def keychain_password(account_email):
 
 
 def load_accounts():
-    """The configured accounts, tolerating both the bare-list and
-    {"accounts": [...]} shapes the file has carried."""
-    try:
-        raw = json.loads(ACCOUNTS.read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    return raw if isinstance(raw, list) else raw.get("accounts", [])
+    """The configured accounts (channels.mail_accounts over this
+    module's ACCOUNTS path, which tests patch)."""
+    return channels.mail_accounts(ACCOUNTS)
 
 
 def _save_accounts(accts):
@@ -127,25 +124,14 @@ def _body_preview(msg, limit=400):
 
 def _drafts_folder(con):
     """Find the mailbox flagged \\Drafts (RFC 6154); Gmail's is [Gmail]/Drafts."""
-    status, boxes = con.list()
-    if status == "OK":
-        for raw in boxes or []:
-            line = raw.decode(errors="replace") if isinstance(raw, bytes) else str(raw)
-            if "\\Drafts" in line:
-                m = re.findall(r'"([^"]+)"', line)
-                if m:
-                    return m[-1]
-    return "Drafts"
+    return channels.imap_special_folder(con, "\\Drafts", "Drafts")
 
 
 def create_draft(account, to, subject, body, in_reply_to=None, references=None):
     """Ready-to-send draft in the account's Drafts folder. Gmail/IMAP path is
     an APPEND with the \\Draft flag (shows up everywhere Gmail does); Graph
     accounts go through the Graph API."""
-    try:
-        accounts = json.loads(ACCOUNTS.read_text())
-    except (OSError, json.JSONDecodeError):
-        accounts = []
+    accounts = channels.mail_accounts(ACCOUNTS)
     acct = next((a for a in accounts if a["email"] == account), None) \
         or (accounts[0] if accounts else None)
     if not acct:
@@ -198,10 +184,7 @@ class MailWatcher:
         self._stop = threading.Event()
 
     def accounts(self):
-        try:
-            return json.loads(ACCOUNTS.read_text())
-        except (OSError, json.JSONDecodeError):
-            return []
+        return channels.mail_accounts(ACCOUNTS)
 
     def _load_state(self):
         try:
@@ -240,14 +223,12 @@ class MailWatcher:
         try:
             con.login(addr, password)
             con.select("INBOX", readonly=True)
-            last_uid = self.state.get(addr)
-            if last_uid is None:
-                # first run: baseline at the newest message, emit nothing old.
-                # STATUS UIDNEXT avoids listing a huge mailbox (imaplib caps
-                # response lines at 1 MB, which "SEARCH ALL" can exceed).
-                _, data = con.status("INBOX", "(UIDNEXT)")
-                m = re.search(rb"UIDNEXT (\d+)", data[0])
-                self.state[addr] = int(m.group(1)) - 1 if m else 0
+            last_uid, baselined = channels.first_run_baseline(
+                self.state.get(addr),
+                lambda: channels.imap_newest_uid(con, "INBOX"))
+            if baselined:
+                # first run: baseline at the newest message, emit nothing old
+                self.state[addr] = last_uid
                 self._save_state()
                 return
             _, data = con.uid("search", None, f"UID {last_uid + 1}:*")
@@ -341,18 +322,7 @@ class MailWatcher:
             "known": pid is not None,
             "has_photo": bool(pid and photos.photo_path(pid)),
         }
-        w = self.watcher
-        with w.lock:
-            # backstop against any refetch echo: one rowid, one feed item
-            if any(x.get("rowid") == item["rowid"] for x in w.feed):
-                return
-            w.feed.append(item)
-            w.feed.sort(key=lambda i: i.get("when") or "")
-            w.feed = w.feed[-w.feed_size:]
-            for q in list(w.listeners):
-                try:
-                    q.put_nowait(item)
-                except Exception:  # noqa: BLE001
-                    w.listeners.remove(q)
+        if not channels.push_feed_item(self.watcher, item):
+            return                    # refetch echo — already in the feed
         from . import notify
         notify.maybe_notify(item)  # high-value senders ping the owner's phone
