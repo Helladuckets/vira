@@ -267,7 +267,7 @@ def _muse_prompt():
 def dispatch(r):
     """Dispatch one routine now. Returns {job_id} or {run_id}."""
     from . import circuits
-    from .actions import Jobs
+    from . import session
     if r["kind"] == "circuit":
         cid = r.get("circuit_id") or ""
         run = circuits.start_run(cid, r.get("prompt") or r["name"],
@@ -296,10 +296,11 @@ def dispatch(r):
         prompt = modulemap.refresh_prompt()
     if not prompt.strip():
         raise ValueError("routine has no prompt")
-    jid = Jobs().launch(prompt, cwd=r.get("cwd") or None,
-                        model=r.get("model") or None,
-                        mode=r.get("mode") or "interactive",
-                        meta={"routine_id": r["id"], "kind": r["kind"]})
+    jid = session.sessions.launch(prompt, cwd=r.get("cwd") or None,
+                                  model=r.get("model") or None,
+                                  mode=r.get("mode") or "interactive",
+                                  meta={"routine_id": r["id"],
+                                        "kind": r["kind"]})
     _stamp(r["id"], last_run=_now_iso(), last_job=jid,
            last_run_id=None, last_status="running")
     return {"job_id": jid}

@@ -60,7 +60,10 @@ async def _static_no_cache(request, call_next):
 watcher = imessage.Watcher()
 mail_watcher = mail.MailWatcher(watcher)
 whatsapp_watcher = whatsapp.WhatsAppWatcher(watcher)
-jobs = actions.Jobs()
+# The job registry IS the live-session registry — /api/jobs/{id} and
+# /api/session/{id}/* address the same run (the actions.Jobs wrapper was
+# deleted 2026-07-21; it delegated verbatim).
+jobs = session.sessions
 indexer = mediaindex.Indexer()
 mercury_poller = mercury.Poller()
 receipts_sweeper = receipts.Sweeper()
