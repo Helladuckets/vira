@@ -5358,6 +5358,7 @@ function openApp(id) {
     v.classList.toggle("active", v.id === "view-" + id));
   viewLoad(id);
   window.scrollTo(0, 0);
+  mdockRefresh();   // the access bar lights whichever of its five is up
 }
 
 // ----- vault note focus panel (Brain citation chips + person-page rows) -----
@@ -7460,11 +7461,13 @@ function dockRefresh() {
 }
 
 // ---------- launchpad: every app in one grid; the dock is a curated subset --
-// Desktop: the Launchpad window lists all apps with an on-dock dot;
-// right-click adds/removes dock icons, persisted in vira-dock-hidden (synced
-// through /api/ui-state like the dock order). Mobile: the same grid as a
-// full-screen overlay opened from the brand button — the bottom tab bar is
-// gone, the Launchpad IS the navigation.
+// The grid is drawn in two groups either side of a line — the apps that are
+// ON the dock (desktop) or the five-app access bar (mobile), then everything
+// else — so adding and removing is one idea with one meaning: an app moves
+// across the line. Desktop curates by right-click, persisted in
+// vira-dock-hidden; mobile curates by long-pressing into reorganize mode and
+// dragging, persisted in vira-mobile-dock. Both sync through /api/ui-state
+// like the dock order.
 const DOCK_LOCKED = new Set(["launchpad", "palette"]);  // the way back stays
 
 function dockHidden() {
@@ -7495,41 +7498,112 @@ function rebuildDock() {
   dockRefresh();
 }
 
-// renders into every .lp-grid on the page (the desktop window's section and
-// the mobile overlay share the renderer)
+// Is this id an app the grid can show? Chrome (the Launchpad tile itself,
+// the palette) is not, and a Reader with no personal pages has withdrawn.
+function appLive(id) {
+  if (DOCK_LOCKED.has(id)) return false;
+  if (id === "reader" && readerPages && !readerPages.length) return false;
+  return WINDOWS.some((w) => w.id === id);
+}
+
+// The canonical app order — the SAME list the desktop dock reads, so
+// rearranging the grid on the phone and dragging dock icons at the desk are
+// one fact rather than two that drift apart.
+function appOrder() {
+  return dockOrder().filter(appLive);
+}
+
+// Rewrite only the slots the moved apps occupy. Launchpad and the palette
+// hold their dock positions, a dormant Reader holds its place in line, and
+// an app that just left for the access bar keeps the slot it will come back
+// to — this is a permutation of a subset, not a re-listing.
+function saveAppOrder(ids) {
+  const queue = [...ids];
+  const moved = new Set(ids);
+  const out = dockOrder().map((id) => (moved.has(id) ? queue.shift() : id));
+  uiPush("vira-dock-order", lsSet("vira-dock-order", out));
+  if (isDesktop) rebuildDock();
+}
+
+function appSpec(id) { return WINDOWS.find((w) => w.id === id); }
+
+// renders into every .lp-body on the page (the desktop window's section and
+// the mobile overlay share the renderer), split into the two groups either
+// side of the line: what is on the dock / the access bar, then the rest.
 function renderLaunchpad() {
-  const grids = document.querySelectorAll(".lp-grid");
-  if (!grids.length) return;
-  const hidden = isDesktop ? dockHidden() : null;
-  const activeView = document.querySelector(".view.active")?.id || "";
-  grids.forEach((grid) => {
-    grid.innerHTML = "";
-    WINDOWS.forEach((spec) => {
-      if (spec.id === "launchpad") return;   // not itself
-      if (spec.id === "reader" && readerPages && !readerPages.length) return;
-      const cell = el("button", "lp-tile");
-      cell.dataset.app = spec.id;
-      const ic = el("div", "lp-ic");
-      ic.innerHTML = `<svg viewBox="0 0 24 24"><path d="${spec.icon}"/></svg>`;
-      if (hidden && !hidden.has(spec.id)) ic.appendChild(el("span", "lp-dot"));
-      cell.appendChild(ic);
-      cell.appendChild(el("div", "lp-label", spec.title));
-      if (!isDesktop && activeView === "view-" + spec.id)
-        cell.classList.add("current");
-      cell.addEventListener("click", () => openApp(spec.id));
-      if (isDesktop) cell.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-        const onDock = !dockHidden().has(spec.id);
-        showContextMenu(e.clientX, e.clientY, [
-          { head: spec.title },
-          { label: "Open", run: () => openApp(spec.id) },
-          { label: onDock ? "Remove from Dock" : "Add to Dock",
-            run: () => setDockHidden(spec.id, onDock) },
-        ]);
-      });
-      grid.appendChild(cell);
-    });
+  document.querySelectorAll(".lp-body").forEach((body) => {
+    // the desktop section is dead markup on a phone and the overlay is dead
+    // markup on a desk — only ever render the copy this width can reach, so
+    // a drag never finds two tiles wearing the same app id
+    if ((body.id === "lp-body-view") !== isDesktop) return;
+    const on = isDesktop
+      ? appOrder().filter((id) => !dockHidden().has(id))
+      : mdockIds();
+    const rest = appOrder().filter((id) => !on.includes(id));
+    body.innerHTML = "";
+    body.appendChild(lpSection("on", isDesktop ? "On the dock" : "In the bar", on));
+    body.appendChild(lpSection("rest", isDesktop ? "Launchpad only" : "All apps", rest));
   });
+  mdockRefresh();
+}
+
+function lpSection(kind, head, ids) {
+  const sec = el("div", "lp-sec");
+  sec.dataset.sec = kind;
+  sec.appendChild(el("div", "lp-sec-head", head));
+  const grid = el("div", "lp-grid");
+  ids.forEach((id) => grid.appendChild(lpTile(id, kind)));
+  sec.appendChild(grid);
+  lpSectionEmpty(grid, kind, ids.length);
+  return sec;
+}
+
+// an empty group still has to be a place you can drop something
+function lpSectionEmpty(grid, kind, count) {
+  grid.querySelector(".lp-sec-empty")?.remove();
+  if (count) return;
+  const line = kind === "on"
+    ? (isDesktop ? "Nothing on the dock" : "Drag an app here to put it on the bar")
+    : (isDesktop ? "Every app is on the dock" : "Every app is on the bar");
+  grid.appendChild(el("div", "lp-sec-empty", line));
+}
+
+function lpTile(id, kind) {
+  const spec = appSpec(id);
+  const cell = el("button", "lp-tile");
+  cell.dataset.app = id;
+  const jig = el("span", "lp-jig");
+  const ic = el("span", "lp-ic");
+  ic.innerHTML = `<svg viewBox="0 0 24 24"><path d="${spec.icon}"/></svg>`;
+  if (!isDesktop) {
+    const badge = el("span", "lp-badge", kind === "on" ? "−" : "+");
+    badge.setAttribute("aria-hidden", "true");
+    ic.appendChild(badge);
+  }
+  jig.appendChild(ic);
+  jig.appendChild(el("span", "lp-label", spec.title));
+  cell.appendChild(jig);
+  if (!isDesktop && document.querySelector(".view.active")?.id === "view-" + id)
+    cell.classList.add("current");
+  cell.addEventListener("click", (e) => {
+    if (Date.now() - lpDragEndAt < 350) return;   // the drop's trailing click
+    if (reorgOn) {                                // jiggling: taps rearrange
+      if (e.target.closest(".lp-badge")) toggleBar(id);
+      return;
+    }
+    openApp(id);
+  });
+  if (isDesktop) cell.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    const onDock = !dockHidden().has(id);
+    showContextMenu(e.clientX, e.clientY, [
+      { head: spec.title },
+      { label: "Open", run: () => openApp(id) },
+      { label: onDock ? "Remove from Dock" : "Add to Dock",
+        run: () => setDockHidden(id, onDock) },
+    ]);
+  });
+  return cell;
 }
 
 // the mobile overlay (built lazily; desktop uses the Launchpad window)
@@ -7539,27 +7613,388 @@ function ensureLaunchpadOverlay() {
   if (lpOverlay) return lpOverlay;
   lpOverlay = el("div", "launchpad");
   lpOverlay.id = "launchpad";
-  lpOverlay.appendChild(el("div", "lp-grid"));
+  const top = el("div", "lp-top");
+  top.appendChild(el("span", "hint lp-hint lp-hint-idle",
+    "Long-press an app to rearrange"));
+  top.appendChild(el("span", "hint lp-hint lp-hint-reorg",
+    "Drag across the line, or down onto the bar"));
+  const done = el("button", "lp-done", "Done");
+  done.addEventListener("click", () => setReorg(false));
+  top.appendChild(done);
+  lpOverlay.appendChild(top);
+  lpOverlay.appendChild(el("div", "lp-body"));
   lpOverlay.addEventListener("click", (e) => {
-    if (e.target === lpOverlay) closeLaunchpad();   // tap the scrim to dismiss
+    // tapping the sheet leaves reorganize mode first, dismisses second
+    if (e.target !== lpOverlay) return;
+    if (reorgOn) setReorg(false); else closeLaunchpad();
+  });
+  // Android fires contextmenu on a long press; that is our gesture, not the
+  // desktop right-click menu's
+  lpOverlay.addEventListener("contextmenu", (e) => {
+    e.preventDefault(); e.stopPropagation();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeLaunchpad();
+    if (e.key !== "Escape") return;
+    if (reorgOn) setReorg(false); else closeLaunchpad();
   });
   document.body.appendChild(lpOverlay);
   return lpOverlay;
 }
 
-function openLaunchpad() {
+function openLaunchpad(opts) {
   const ov = ensureLaunchpadOverlay();
   renderLaunchpad();
+  ov.classList.toggle("instant", !!opts?.instant);
+  // a long press on the ACCESS BAR turns reorganize mode on before the sheet
+  // that shows it exists — the overlay adopts the mode it was opened into
+  ov.classList.toggle("reorg", reorgOn);
   ov.classList.add("open");
   document.body.classList.add("lp-open");
 }
 
 function closeLaunchpad() {
+  setReorg(false);
   lpOverlay?.classList.remove("open");
   document.body.classList.remove("lp-open");
+}
+
+// ---------- mobile: the five-app access bar --------------------------------
+// The phone's dock. Glass across the bottom of the screen holding the five
+// apps the owner picked in the Launchpad; membership lives in
+// vira-mobile-dock and syncs through /api/ui-state like the desktop dock's
+// order, so a new origin (the Tailscale name, a test port) opens with the
+// owner's five instead of the defaults.
+const MDOCK_MAX = 5;
+const MDOCK_DEFAULT = ["feed", "people", "work", "brief", "search"];
+let mdockEl = null;
+
+function mdockIds() {
+  const stored = lsGet("vira-mobile-dock", null);
+  const out = [];
+  (Array.isArray(stored) ? stored : MDOCK_DEFAULT).forEach((id) => {
+    if (appLive(id) && !out.includes(id) && out.length < MDOCK_MAX) out.push(id);
+  });
+  return out;
+}
+
+function saveMdock(ids) {
+  uiPush("vira-mobile-dock", lsSet("vira-mobile-dock", ids));
+}
+
+function buildMobileDock() {
+  if (isDesktop || mdockEl) return;
+  mdockEl = el("nav", "mdock");
+  mdockEl.id = "mdock";
+  mdockEl.addEventListener("contextmenu", (e) => {
+    e.preventDefault(); e.stopPropagation();
+  });
+  document.body.appendChild(mdockEl);
+  renderMobileDock();
+}
+
+// `skip` is the app currently under a finger: its place renders as an empty
+// slot, so the bar previews the drop for the whole length of the drag.
+function renderMobileDock(ids, skip) {
+  if (!mdockEl) return;
+  mdockEl.innerHTML = "";
+  (ids || mdockIds()).forEach((id) => {
+    if (id === skip) { mdockEl.appendChild(el("div", "mdock-slot")); return; }
+    const spec = appSpec(id);
+    if (!spec) return;
+    const b = el("button", "mdock-item");
+    b.dataset.app = id;
+    b.innerHTML = `<svg viewBox="0 0 24 24"><path d="${spec.icon}"/></svg>`;
+    b.appendChild(el("span", "mdock-label", spec.title));
+    b.addEventListener("click", () => {
+      if (Date.now() - lpDragEndAt < 350 || reorgOn) return;
+      openApp(id);
+    });
+    mdockEl.appendChild(b);
+  });
+  mdockRefresh();
+}
+
+function mdockRefresh() {
+  const active = document.querySelector(".view.active")?.id || "";
+  mdockEl?.querySelectorAll(".mdock-item").forEach((b) =>
+    b.classList.toggle("on", active === "view-" + b.dataset.app));
+}
+
+// tap the corner badge: across the line and back, no drag required. A full
+// bar makes room by sending its last app back down to the grid.
+function toggleBar(id) {
+  const bar = mdockIds();
+  const i = bar.indexOf(id);
+  if (i >= 0) bar.splice(i, 1);
+  else {
+    if (bar.length >= MDOCK_MAX) bar.splice(MDOCK_MAX - 1, 1);
+    bar.push(id);
+  }
+  saveMdock(bar);
+  renderLaunchpad();
+  renderMobileDock();
+}
+
+// ---------- reorganize mode: long-press to jiggle, drag to rearrange -------
+// A long press anywhere in the Launchpad grid (or on the access bar) sets
+// every icon wobbling; from there a drag moves an app inside its group,
+// across the line into the other group, or straight down onto the bar. The
+// preview and the commit run the same pure function, so what the drag shows
+// is exactly what the drop writes. Nothing is saved until the finger lifts.
+const LP_HOLD_MS = 420;   // press this long to enter reorganize mode
+const LP_SLOP = 8;        // px of drift a hold survives before it reads as a scroll
+
+let reorgOn = false;
+let lpDragEndAt = 0;
+let lpPress = null;         // a pending long press
+let lpDrag = null;          // a live drag
+let lpScrollRaf = 0;
+
+function setReorg(on) {
+  if (reorgOn === on) return;
+  reorgOn = on;
+  lpOverlay?.classList.toggle("reorg", on);
+  mdockEl?.classList.toggle("reorg", on);
+  if (on) navigator.vibrate?.(12);
+}
+
+function initReorg() {
+  if (isDesktop) return;
+  document.addEventListener("pointerdown", lpPointerDown);
+  document.addEventListener("pointermove", lpPointerMove, { passive: false });
+  document.addEventListener("pointerup", (e) => lpPointerEnd(e, true));
+  document.addEventListener("pointercancel", (e) => lpPointerEnd(e, false));
+  // touch-action is decided when the finger lands, and the FIRST drag of a
+  // session lands before reorganize mode exists — so the sheet would still
+  // try to scroll under the icon being carried. Refusing the touchmove is
+  // what actually stops it.
+  document.addEventListener("touchmove", (e) => {
+    if (lpDrag) e.preventDefault();
+  }, { passive: false });
+}
+
+function lpPointerDown(e) {
+  if (lpDrag || e.button !== 0) return;
+  const tile = e.target.closest(".lp-tile, .mdock-item");
+  if (!tile || !tile.dataset.app) return;
+  lpPress = { tile, id: e.pointerId, x: e.clientX, y: e.clientY, timer: 0 };
+  // already jiggling: movement starts the drag straight away, so a tap can
+  // still land on the corner badge
+  if (reorgOn) return;
+  const p = lpPress;
+  p.timer = setTimeout(() => {
+    p.timer = 0;
+    setReorg(true);
+    startDrag(p);
+  }, LP_HOLD_MS);
+}
+
+function lpPointerMove(e) {
+  if (lpDrag) {
+    if (e.pointerId !== lpDrag.pid) return;
+    e.preventDefault();
+    dragTo(e.clientX, e.clientY);
+    return;
+  }
+  if (!lpPress || e.pointerId !== lpPress.id) return;
+  if (Math.abs(e.clientX - lpPress.x) <= LP_SLOP
+      && Math.abs(e.clientY - lpPress.y) <= LP_SLOP) return;
+  if (lpPress.timer) {          // the finger is scrolling, not holding
+    clearTimeout(lpPress.timer);
+    lpPress = null;
+    return;
+  }
+  const p = lpPress;
+  startDrag(p);
+  if (lpDrag) dragTo(e.clientX, e.clientY);
+}
+
+function lpPointerEnd(e, commit) {
+  if (lpDrag && e.pointerId === lpDrag.pid) { endDrag(commit); return; }
+  if (lpPress && e.pointerId === lpPress.id) {
+    clearTimeout(lpPress.timer);
+    lpPress = null;
+  }
+}
+
+function startDrag(p) {
+  lpPress = null;
+  const id = p.tile.dataset.app;
+  // the drag always carries the GRID tile, so a press that began on the bar
+  // opens the Launchpad first — there has to be somewhere to drag it to
+  if (!lpOverlay?.classList.contains("open")) openLaunchpad({ instant: true });
+  const tile = lpOverlay.querySelector(`.lp-tile[data-app="${id}"]`);
+  if (!tile) return;
+  const r = tile.getBoundingClientRect();
+  const onTile = p.tile === tile;
+  lpDrag = {
+    id, tile, pid: p.id, sec: null, idx: -1, scroll: 0,
+    x: p.x, y: p.y,
+    // the finger keeps whatever grip it took on the icon it actually pressed
+    gx: onTile ? p.x - r.left : r.width / 2,
+    gy: onTile ? p.y - r.top : r.height / 2,
+    ghost: el("div", "lp-ghost"),
+  };
+  lpDrag.ghost.style.width = r.width + "px";
+  lpDrag.ghost.appendChild(tile.cloneNode(true));
+  document.body.appendChild(lpDrag.ghost);
+  tile.classList.add("lifted");
+  lpOverlay.classList.add("dragging");
+  // capture on the overlay, not on the pressed icon: a bar icon is replaced
+  // by its empty slot the moment the drag starts, and a destroyed element
+  // drops the pointer
+  try { lpOverlay.setPointerCapture(p.id); } catch { /* stale pointer */ }
+  dragTo(p.x, p.y);
+}
+
+function dragTo(x, y) {
+  lpDrag.x = x; lpDrag.y = y;
+  lpDrag.ghost.style.transform =
+    `translate3d(${x - lpDrag.gx}px, ${y - lpDrag.gy}px, 0) scale(1.12)`;
+  lpAimScroll(y);
+  lpReflow();
+}
+
+function lpReflow() {
+  const hit = lpHitTest(lpDrag.x, lpDrag.y);
+  if (hit.sec === lpDrag.sec && hit.idx === lpDrag.idx) return;
+  lpDrag.sec = hit.sec;
+  lpDrag.idx = hit.idx;
+  const lists = lpPending(lpDrag);
+  const body = lpOverlay.querySelector(".lp-body");
+  lpFlip(body, () => {
+    lpLayout(body, "on", lists.on);
+    lpLayout(body, "rest", lists.rest);
+  });
+  renderMobileDock(lists.on, lpDrag.id);
+}
+
+// which group, and where in it, the point is aiming at
+function lpHitTest(x, y) {
+  const bar = mdockEl?.getBoundingClientRect();
+  if (bar && y >= bar.top) return { sec: "on", idx: lpRowIndex(x) };
+  const rest = lpOverlay.querySelector('.lp-sec[data-sec="rest"]');
+  const sec = rest && y >= rest.getBoundingClientRect().top ? "rest" : "on";
+  return { sec, idx: lpGridIndex(sec, x, y) };
+}
+
+// index along the bar. The dragged app is never one of the marks — on the
+// first hit test it is still drawn in the bar, and counting it would read
+// the icon as having moved one place right of where it has always been.
+function lpRowIndex(x) {
+  let i = 0;
+  mdockEl.querySelectorAll(".mdock-item").forEach((k) => {
+    if (k.dataset.app === lpDrag.id) return;
+    const r = k.getBoundingClientRect();
+    if (x >= r.left + r.width / 2) i++;
+  });
+  return i;
+}
+
+// index inside a wrapped grid: the first tile whose row the point has not
+// cleared and whose left half it has not passed
+function lpGridIndex(sec, x, y) {
+  const grid = lpOverlay.querySelector(`.lp-sec[data-sec="${sec}"] .lp-grid`);
+  const kids = [...grid.querySelectorAll(".lp-tile")].filter((t) => t !== lpDrag.tile);
+  for (let i = 0; i < kids.length; i++) {
+    const r = kids[i].getBoundingClientRect();
+    if (y < r.top) return i;
+    if (y <= r.bottom && x < r.left + r.width / 2) return i;
+  }
+  return kids.length;
+}
+
+// The two group lists the current aim produces. Pure: the drag preview and
+// the drop both call it, so the arrangement on screen at the moment the
+// finger lifts is the arrangement that gets written.
+function lpPending(d) {
+  const bar = mdockIds();
+  const on = bar.filter((id) => id !== d.id);
+  let rest = appOrder().filter((id) => !bar.includes(id) && id !== d.id);
+  if (d.sec === "on") {
+    on.splice(Math.min(d.idx, on.length), 0, d.id);
+    // five slots: the last app steps back down into the grid to make room
+    while (on.length > MDOCK_MAX) rest = lpCanonical([...rest, on.pop()]);
+  } else {
+    rest.splice(Math.min(d.idx, rest.length), 0, d.id);
+  }
+  return { on, rest };
+}
+
+// an app pushed off the bar returns to its own place in line, not the end
+function lpCanonical(ids) {
+  const order = appOrder();
+  return [...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+}
+
+function lpLayout(body, kind, ids) {
+  const grid = body.querySelector(`.lp-sec[data-sec="${kind}"] .lp-grid`);
+  ids.forEach((id) => {
+    const tile = body.querySelector(`.lp-tile[data-app="${id}"]`);
+    if (!tile) return;
+    grid.appendChild(tile);          // re-appending in order IS the order
+    const badge = tile.querySelector(".lp-badge");
+    if (badge) badge.textContent = kind === "on" ? "−" : "+";
+  });
+  lpSectionEmpty(grid, kind, ids.length);
+}
+
+// displaced icons slide to their new places instead of teleporting
+function lpFlip(body, mutate) {
+  const tiles = [...body.querySelectorAll(".lp-tile")];
+  if (REDUCED_MOTION) { mutate(); return; }
+  const first = tiles.map((t) => t.getBoundingClientRect());
+  mutate();
+  tiles.forEach((t, i) => {
+    const b = t.getBoundingClientRect();
+    const dx = first[i].left - b.left, dy = first[i].top - b.top;
+    if (!dx && !dy) return;
+    t.style.transition = "none";
+    t.style.transform = `translate(${dx}px, ${dy}px)`;
+    requestAnimationFrame(() => {
+      t.style.transition = "transform .16s ease";
+      t.style.transform = "";
+    });
+    clearTimeout(t._flip);
+    t._flip = setTimeout(() => { t.style.transition = ""; t.style.transform = ""; }, 240);
+  });
+}
+
+// the grid is taller than the sheet, and in jiggle mode a finger on an icon
+// carries the icon — so reaching the far end means dragging to the edge
+function lpAimScroll(y) {
+  const top = 96, bottom = innerHeight - (mdockEl?.offsetHeight || 0) - 44;
+  lpDrag.scroll = y < top ? -Math.min(16, (top - y) / 3)
+              : y > bottom ? Math.min(16, (y - bottom) / 3) : 0;
+  if (!lpDrag.scroll || lpScrollRaf) return;
+  const tick = () => {
+    lpScrollRaf = 0;
+    if (!lpDrag || !lpDrag.scroll) return;
+    const before = lpOverlay.scrollTop;
+    lpOverlay.scrollTop += lpDrag.scroll;
+    if (lpOverlay.scrollTop !== before) lpReflow();
+    lpScrollRaf = requestAnimationFrame(tick);
+  };
+  lpScrollRaf = requestAnimationFrame(tick);
+}
+
+function endDrag(commit) {
+  const d = lpDrag;
+  lpDrag = null;
+  cancelAnimationFrame(lpScrollRaf);
+  lpScrollRaf = 0;
+  d.ghost.remove();
+  d.tile.classList.remove("lifted");
+  lpOverlay.classList.remove("dragging");
+  lpDragEndAt = Date.now();
+  try { lpOverlay.releasePointerCapture(d.pid); } catch { /* already gone */ }
+  if (commit && d.sec) {
+    const lists = lpPending(d);
+    saveMdock(lists.on);
+    saveAppOrder(lists.rest);
+  }
+  renderLaunchpad();
+  renderMobileDock();
 }
 
 // particle constellation backdrop
@@ -7938,8 +8373,8 @@ addEventListener("hashchange", routeHash);
 
 // ---------- reader: launcher window for personal reading-room pages ----------
 // Pages are personal-layer static HTML under /reading/ (never committed);
-// the Reader lists whatever exists and shows it in a frame. With no pages
-// the dock icon and mobile tab remove themselves (readerProbe at boot).
+// the Reader lists whatever exists and shows it in a frame. With no pages it
+// withdraws from the dock, the grid and the access bar (readerProbe at boot).
 let readerPages = null;
 
 async function fetchReaderPages() {
@@ -7981,6 +8416,7 @@ async function readerProbe() {
   try { await fetchReaderPages(); } catch { readerPages = []; }
   if (readerPages && readerPages.length) return;
   document.querySelector('.dock-item[data-dock="reader"]')?.remove();
+  renderMobileDock();   // and off the phone's access bar, if it was on it
 }
 
 function initDesktop() {
@@ -8051,7 +8487,7 @@ function initDesktop() {
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
 const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
-                      "vira-setup-opened"];
+                      "vira-mobile-dock", "vira-setup-opened"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 
@@ -8111,6 +8547,8 @@ async function boot() {
   // windows, so a fresh origin comes up looking like live
   await syncUiState();
   if (isDesktop) initDesktop();
+  buildMobileDock();   // the phone's five-app access bar
+  initReorg();         // long-press the grid or the bar to rearrange both
   // the brand (upper left) is the Launchpad button: floating window on
   // desktop, full-screen grid overlay on mobile
   $("#brand-btn")?.addEventListener("click", () => openApp("launchpad"));
