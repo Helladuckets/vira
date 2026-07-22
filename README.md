@@ -1,7 +1,7 @@
 # Vira
 
-A personal AI chief of staff that runs entirely on your Mac. Vira watches
-your communications (iMessage, email), joins every inbound message to a
+A personal AI chief of staff that runs entirely on your device. Vira watches
+your communications (messaging, email), joins every inbound message to a
 dossier of the person who sent it, and surfaces what deserves your
 attention - with drafted replies in your own voice, semantic search over
 everything ever shared with you, and a cockpit that dispatches coding
