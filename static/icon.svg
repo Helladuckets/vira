@@ -1,0 +1,34 @@
+<!-- Vira app icon — the master. Every raster (apple-touch-icon, the PWA
+     192/512, the maskable cut) is generated from this file by
+     scripts/make-icons.sh; edit here, never the PNGs.
+
+     The mark: the wedge V of the wordmark held inside the solar orbit —
+     the same ring-and-centre glyph the top bar wears next to VIRA, and the
+     same sun Viracocha is named for. Palette is the Taurid brand book:
+     graphite tile, oxidized-bone metal. Full bleed and no border, because
+     iOS masks the tile to its own superellipse; the mark sits inside 72%
+     of the width so a maskable crop can never bite it. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#202324"/>
+      <stop offset="0.55" stop-color="#131516"/>
+      <stop offset="1" stop-color="#0a0b0b"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.42" r="0.6">
+      <stop offset="0" stop-color="#8a8478" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#8a8478" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="bone" x1="0" y1="0" x2="0.3" y2="1">
+      <stop offset="0" stop-color="#e6e1d5"/>
+      <stop offset="0.5" stop-color="#b6ae9d"/>
+      <stop offset="1" stop-color="#7e786c"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#tile)"/>
+  <rect width="512" height="512" fill="url(#halo)"/>
+  <circle cx="256" cy="256" r="178" fill="none" stroke="#a39c8d"
+          stroke-opacity="0.44" stroke-width="13"/>
+  <path d="M130 162 L208 162 L256 304 L314 162 L368 162 L256 364 Z"
+        fill="url(#bone)"/>
+</svg>

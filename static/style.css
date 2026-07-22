@@ -153,6 +153,19 @@ main { max-width: 720px; margin: 0 auto; padding: 0 var(--pad); }
 }
 h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 
+/* "Open in a browser tab" escapes (System Map, Design Studio, Reader, the
+   media viewer). On the desktop this is the intended drive — a full tab
+   beside the app. On the phone it is a trap: Vira is installed to the home
+   screen, so there is no tab bar and no back button, and a SAME-ORIGIN
+   target="_blank" does not open a tab — it replaces the app's only window
+   with a page that has no history to swipe back through, so the app has to
+   be force quit to recover (reported 2026-07-22 against the Reader). Every
+   one of these pages is already on screen in its own frame here, so below
+   the desktop breakpoint the escape hatch is simply not offered. Links that
+   leave the origin are untouched: iOS hands those to Safari, which the app
+   switcher gets you back from. */
+@media (max-width: 1099px) { .newtab { display: none; } }
+
 .live-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--text-faint); transition: background 0.3s;

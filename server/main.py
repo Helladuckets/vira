@@ -5,6 +5,7 @@ Run: .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8377
 """
 import asyncio
 import json
+import mimetypes
 import os
 import queue
 import time
@@ -39,6 +40,11 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                whatsapp)
 
 ROOT = Path(__file__).resolve().parent.parent
+
+# Python only learned .webmanifest in 3.13, and this ships on 3.10+ (the
+# Windows install). Without it StaticFiles hands the PWA manifest out as
+# application/octet-stream and Chrome drops it — no install, no icon.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 app = FastAPI(title="Vira")
 
