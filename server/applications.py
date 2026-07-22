@@ -29,7 +29,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import settings
+from . import jsonstore, settings
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "applications.json"
 
@@ -403,10 +403,7 @@ def _load_state():
 
 
 def _save_state(s):
-    STORE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE.with_name(STORE.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
-    tmp.replace(STORE)
+    jsonstore.write_atomic(STORE, s, indent=1, ensure_ascii=False)
 
 
 def get_state():

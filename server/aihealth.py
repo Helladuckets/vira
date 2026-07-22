@@ -112,6 +112,9 @@ def _strip_env():
     # Same gotcha as suggest.py: a session-scoped ANTHROPIC_*/CLAUDE* var makes
     # the child CLI ignore its stored login. Strip them so `auth status`
     # reports the REAL persistent credential state, not a var-shadowed one.
+    # DELIBERATE local copy of settings.strip_env(): the health module must
+    # not depend on modules it checks (governing principle in the module
+    # docstring) — do not "consolidate" this one away.
     return {k: v for k, v in os.environ.items()
             if not (k.startswith("ANTHROPIC_") or k.startswith("CLAUDE"))}
 
