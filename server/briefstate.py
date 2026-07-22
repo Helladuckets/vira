@@ -12,10 +12,10 @@ real state back to the CRM profile (see data.update_loop).
 Same cross-process discipline as the other JSON stores: fresh read per op,
 fcntl-locked mutations, atomic tmp+rename writes.
 """
-import json
 import time
 from pathlib import Path
 
+from . import jsonstore
 from .filelock import locked
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "brief-state.json"
@@ -23,10 +23,7 @@ MAX_KEYS = 500  # plenty; keys age out naturally as their rows stop deriving
 
 
 def _load():
-    try:
-        s = json.loads(STORE.read_text())
-    except (OSError, json.JSONDecodeError):
-        s = {}
+    s = jsonstore.read(STORE, {})
     if not isinstance(s, dict):
         s = {}
     s.setdefault("dismissed", {})
@@ -34,10 +31,7 @@ def _load():
 
 
 def _save(s):
-    STORE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STORE.with_name(STORE.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
-    tmp.replace(STORE)
+    jsonstore.write_atomic(STORE, s, indent=1, ensure_ascii=False)
 
 
 def dismiss(key):
