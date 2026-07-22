@@ -65,6 +65,54 @@ cmd_start() {
   echo "next: work in the worktree. Test-drive with: scripts/branch.sh serve $1"
 }
 
+# clone_data <src-data-dir> <dst-data-dir>
+#
+# An instant APFS clone of live data. Disposable; never shared. The source is
+# a RUNNING server, so it churns while the copy walks it — three rules keep
+# that from killing the clone:
+#
+#   - sqlite sidecars (-shm/-wal) are never copied. They appear and vanish as
+#     the server checkpoints (a vanished media-index.sqlite-wal used to abort
+#     the whole script under `set -e`), they rebuild themselves on open, and
+#     pairing a mid-transaction WAL with a separately-copied database would
+#     make the snapshot less consistent, not more.
+#   - every other top-level entry is copied on its own, so one entry's churn
+#     can't truncate the walk. A copy error is fatal only if the source still
+#     exists; an entry that disappeared mid-clone was transient and simply
+#     isn't part of this point-in-time snapshot.
+#   - the snapshot is built in a staging directory and moved into place in a
+#     single rename, so a failure can never leave a half-copied data/ behind
+#     for the next serve to trip over.
+#
+# The .test-snapshot marker is written last, inside the stage: it distinguishes
+# a real snapshot from a stray data/ created by module imports (e.g. running
+# the test suite), and it only ever appears on a complete clone.
+clone_data() {
+  local src=$1 dst=$2 stage="${2:h}/.data-snapshot.tmp" name churn=0
+  local -a entries
+  rm -rf "$dst" "$stage"
+  mkdir -p "$stage"
+  entries=("$src"/*(DN:t))
+  for name in $entries; do
+    [[ "$name" == *-shm || "$name" == *-wal ]] && continue
+    cp -Rc "$src/$name" "$stage/$name" 2>/dev/null || churn=1
+  done
+  for name in $entries; do
+    [[ "$name" == *-shm || "$name" == *-wal ]] && continue
+    [[ -e "$stage/$name" ]] && continue
+    [[ -e "$src/$name" ]] || continue           # vanished mid-clone; not ours
+    echo "error: data clone incomplete — could not copy $name from $src" >&2
+    rm -rf "$stage"
+    return 1
+  done
+  (( churn )) && echo "  (source changed mid-clone; affected entries skipped or partial)"
+  find "$stage" \( -name '*-shm' -o -name '*-wal' \) -delete
+  rm -f "$stage/launchd.log"
+  date > "$stage/.test-snapshot"
+  rm -rf "$dst"
+  mv "$stage" "$dst"
+}
+
 cmd_serve() {
   slug_check "$1"
   local fresh=${2:-} dir port pid
@@ -74,15 +122,9 @@ cmd_serve() {
   pid=$(instance_pid "$dir")
   [[ -n "$pid" ]] && { echo "already running (pid $pid, port $(instance_port "$dir"))"; exit 0; }
 
-  # Data: an instant APFS clone of live data. Disposable; never shared.
-  # The marker distinguishes a real snapshot from a stray data/ created by
-  # module imports (e.g. running the test suite) — no marker means re-clone.
   if [[ "$fresh" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
-    rm -rf "$dir/data"
     echo "cloning data snapshot (APFS copy-on-write)..."
-    cp -Rc "$LIVE/data" "$dir/data"
-    rm -f "$dir/data/launchd.log"
-    date > "$dir/data/.test-snapshot"
+    clone_data "$LIVE/data" "$dir/data" || exit 1
   fi
 
   # First free port in the test range.
@@ -199,6 +241,10 @@ cmd_discard() {
   fi
   echo "discarded $branch"
 }
+
+# Sourced rather than run (tests/test_branch_clone.py drives clone_data against
+# a synthetic source tree): define the functions, dispatch nothing.
+[[ "$ZSH_EVAL_CONTEXT" == *file* ]] && return 0
 
 [[ $# -lt 1 ]] && usage
 cmd=$1; shift
