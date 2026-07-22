@@ -1003,6 +1003,25 @@ def api_graph_status(email: str):
     return msgraph.flow_status(email.strip().lower())
 
 
+class ImapAddReq(BaseModel):
+    email: str
+    host: str
+    password: str
+
+
+@app.post("/api/mail/imap/add")
+def api_mail_imap_add(req: ImapAddReq):
+    """Add a Gmail/IMAP mailbox from the Setup window. Refused on passive
+    test instances — a clone must not write a real password into the
+    machine-wide secrets store."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(400, "passive test instance — mail isn't added here")
+    try:
+        return mail.add_imap_account(req.email, req.host, req.password)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+
+
 class DraftReq(BaseModel):
     to: str
     subject: str = ""

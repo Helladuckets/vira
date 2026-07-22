@@ -41,6 +41,50 @@ def keychain_password(account_email):
     return secrets.get(keychain_service(), account_email) or None
 
 
+def load_accounts():
+    """The configured accounts, tolerating both the bare-list and
+    {"accounts": [...]} shapes the file has carried."""
+    try:
+        raw = json.loads(ACCOUNTS.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    return raw if isinstance(raw, list) else raw.get("accounts", [])
+
+
+def _save_accounts(accts):
+    ACCOUNTS.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ACCOUNTS.with_name(ACCOUNTS.name + ".tmp")
+    tmp.write_text(json.dumps(accts, indent=1))
+    tmp.replace(ACCOUNTS)
+
+
+def add_imap_account(account_email, host, password):
+    """Wire a Gmail/IMAP mailbox from the app: the password lands in the
+    secrets ladder (never the JSON), the {email, host} row in
+    mail-accounts.json. The watcher picks it up within one poll — no
+    restart. Re-adding the same address updates its host in place."""
+    account_email = (account_email or "").strip().lower()
+    host = (host or "").strip()
+    password = password or ""
+    if "@" not in account_email:
+        raise ValueError("a valid email address is required")
+    if not host:
+        raise ValueError("an IMAP host is required (e.g. imap.gmail.com)")
+    if not password:
+        raise ValueError("a password is required")
+    secrets.set(keychain_service(), account_email, password)
+    accts = load_accounts()
+    for a in accts:
+        if (a.get("email") or "").strip().lower() == account_email \
+                and a.get("type") != "graph":
+            a["host"] = host
+            _save_accounts(accts)
+            return {"email": account_email, "host": host, "added": False}
+    accts.append({"email": account_email, "host": host})
+    _save_accounts(accts)
+    return {"email": account_email, "host": host, "added": True}
+
+
 def _decode_header(raw):
     if not raw:
         return ""

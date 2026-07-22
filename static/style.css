@@ -2244,6 +2244,31 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 }
 .setup-prov.on .setup-prov-state { color: var(--green); }
 
+/* The Manage band divider + its un-numbered entries: the config half of the
+   Setup surface sits below the numbered steps in the same rail. */
+.setup-rail-div {
+  margin-top: 10px; padding: 9px 10px 5px;
+  border-top: 1px solid var(--line);
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint);
+}
+.setup-step.s-manage .setup-dot { border-style: dotted; opacity: .75; }
+
+/* A labelled subsection inside a card (e.g. "Android phone", "WhatsApp"). */
+.setup-sub {
+  font-weight: 600; color: var(--text-head);
+  font-size: 13px; margin: 18px 0 6px;
+}
+
+/* The AI card's collapsible backend/model override. */
+.setup-adv { margin-top: 16px; }
+.setup-adv > summary {
+  cursor: pointer; color: var(--text-dim); font-size: 12.5px;
+  letter-spacing: .02em; list-style: none;
+}
+.setup-adv > summary::-webkit-details-marker { display: none; }
+.setup-adv[open] > summary { color: var(--text-head); margin-bottom: 6px; }
+
 /* Under the desktop breakpoint the rail becomes a horizontal stepper so the
    card keeps the full column width. */
 @media (max-width: 1099px) {
@@ -2254,6 +2279,10 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   }
   .setup-step { width: auto; flex: 0 0 auto; }
   .setup-step-sub { display: none; }
+  .setup-rail-div {
+    flex: 0 0 auto; align-self: center; margin: 0 2px; padding: 0 6px;
+    border-top: none;
+  }
 }
 
 /* ---------- Phone Link (Android companion) ---------- */
