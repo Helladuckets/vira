@@ -30,6 +30,9 @@ STORE = Path(__file__).resolve().parent.parent / "data" / "ui-state.json"
 # Only the keys that define the desktop arrangement sync. Everything else
 # in localStorage (sort choices, seen-flags) stays per-origin on purpose.
 KEYS = ("vira-desktop", "vira-dock-order", "vira-dock-hidden",
+        # the phone's five-app access bar — the mobile counterpart of the
+        # dock's curation, picked in the Launchpad and carried to any origin
+        "vira-mobile-dock",
         # which setup steps have already opened their module,
         # so a reload never re-opens what the owner closed
         "vira-setup-opened")

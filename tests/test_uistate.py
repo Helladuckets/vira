@@ -52,6 +52,16 @@ class UiStateTests(unittest.TestCase):
         uistate.save({"vira-dock-order": "[]"})
         self.assertEqual(uistate.load()["keys"]["vira-dock-hidden"], hidden)
 
+    def test_mobile_dock_key_persists(self):
+        # the phone's five-app bar rides the same store as the desktop dock,
+        # so a new origin (Tailscale name, test port) comes up with the
+        # owner's five instead of the defaults
+        bar = json.dumps(["feed", "people", "work", "brief", "search"])
+        out = uistate.save({"vira-mobile-dock": bar})
+        self.assertEqual(out["keys"]["vira-mobile-dock"], bar)
+        uistate.save({"vira-dock-order": "[]"})
+        self.assertEqual(uistate.load()["keys"]["vira-mobile-dock"], bar)
+
     def test_non_json_value_rejected(self):
         with self.assertRaises(ValueError):
             uistate.save({"vira-desktop": "not json"})
