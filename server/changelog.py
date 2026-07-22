@@ -31,7 +31,6 @@ import re
 from pathlib import Path
 
 from . import ideas as ideasstore
-from . import jobtitle
 from . import joblog
 
 SESSIONS = Path.home() / "TC-IL" / "Sessions"
@@ -93,9 +92,9 @@ def _parse_retro(path):
 def _job_entry(r, idea_texts):
     # The job's canonical name (an owner edit wins) heads the entry — the
     # same name the terminal title bar and Jobs list show, so a rename in
-    # one place is the name everywhere. jobtitle.name reads the stored
+    # one place is the name everywhere. joblog.name reads the stored
     # title, falling back to the derived default.
-    label = jobtitle.name(r, idea_texts.get(r.get("idea_id")))
+    label = joblog.name(r, idea_texts.get(r.get("idea_id")))
     # "orphaned" used to mean "killed by server restart"; since the durable
     # runner, jobs survive restarts — orphaned now means the runner died.
     status = {"done": "done", "error": "failed", "running": "running",
