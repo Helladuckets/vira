@@ -27,6 +27,8 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
+import urllib.request
 from pathlib import Path
 
 from . import secrets, settings
@@ -47,7 +49,22 @@ PROVIDERS = {
         "status_cmd": ["auth", "status"],
         "login_args": ["auth", "login"],
         "api_env": "VIRA_ANTHROPIC_KEY",
-        "models": ["sonnet", "opus", "haiku"],
+        # What each backend accepts. CLI entries are the aliases the binary
+        # resolves itself (session.MODEL_ALIASES widens the young ones);
+        # API entries are the fallback for when the live models call can't
+        # run. Both carry the label the UI shows, so a dropdown never has
+        # to guess a marketing name from an id.
+        "models": {
+            "cli": [("sonnet", "Sonnet 5"), ("opus", "Opus 4.8"),
+                    ("haiku", "Haiku 4.5"), ("fable", "Fable 5")],
+            "api": [("claude-sonnet-5", "Sonnet 5"),
+                    ("claude-opus-4-8", "Opus 4.8"),
+                    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+                    ("claude-fable-5", "Fable 5")],
+        },
+        "models_url": "https://api.anthropic.com/v1/models?limit=100",
+        # The data/config.json keys each dropdown writes (suggest.DEFAULTS).
+        "config_keys": {"cli": "cli_model", "api": "api_model"},
         # Live agent sessions are Claude Agent SDK — only this provider
         # drives Circuits, Judge, Agent Loops and the Ideas cockpit.
         "can": {"draft": True, "sessions": True},
@@ -61,7 +78,12 @@ PROVIDERS = {
         "status_cmd": ["login", "status"],
         "login_args": ["login"],
         "api_env": "VIRA_OPENAI_KEY",
-        "models": ["gpt-5.1-codex", "gpt-5.1"],
+        "models": {
+            "cli": [("gpt-5.1-codex", "GPT-5.1 Codex"), ("gpt-5.1", "GPT-5.1")],
+            "api": [("gpt-5.1", "GPT-5.1"), ("gpt-5.1-codex", "GPT-5.1 Codex")],
+        },
+        "models_url": "https://api.openai.com/v1/models",
+        "config_keys": {"cli": "openai_cli_model", "api": "openai_api_model"},
         # codex exec serves every suggest.complete path (drafts, dossiers,
         # the brief narrative). It cannot host live agent sessions.
         "can": {"draft": True, "sessions": False},
@@ -209,7 +231,7 @@ def probe(pid):
         "auth": auth,
         "detail": detail,
         "has_key": bool(key),
-        "models": list(spec["models"]),
+        "models": [m for m, _ in spec["models"]["cli"]],
         "can": dict(spec["can"]),
         "login_cmd": login_cmd,
         "connected": auth in (SIGNED_IN, KEY),
@@ -259,3 +281,139 @@ def auth_mode(pid=None):
     if not rec or not rec["connected"]:
         return ""
     return "subscription" if rec["auth"] == SIGNED_IN else "key"
+
+
+# ---------- the model catalog: what a picker is allowed to offer ----------
+#
+# A hardcoded model menu goes stale the week a model ships, and it lies in
+# the other direction too — offering a provider's models to someone who
+# never connected it. So every dropdown in the app (Setup's default
+# models, a circuit stage's model, the idea-run sheet) is fed from here.
+
+MODELS_TTL = 600.0        # how long a live /v1/models answer is reused
+MODELS_TIMEOUT = 8
+MODELS_CAP = 40
+OPTIONS_TTL = 30.0        # options() shells out per provider — don't per-card
+
+# Modalities a text pipeline can't drive; OpenAI's list mixes them in.
+_NOT_CHAT = ("audio", "realtime", "transcribe", "tts", "embedding", "image",
+             "moderation", "dall-e", "whisper", "sora")
+
+_models_cache = {}        # pid -> (fetched_at, [{"id","label"}], detail)
+_options_cache = {"at": 0.0, "payload": None}
+
+
+def _shape_models(pid, rows):
+    """A provider's raw /v1/models rows -> the picker's [{id, label}].
+
+    Anthropic hands back a display name and newest-first order, so the
+    rows are already the answer. OpenAI returns its whole catalog —
+    embeddings, speech, image models — in arbitrary order, so the chat
+    families are filtered out of it and sorted newest-first."""
+    out = []
+    if pid == "anthropic":
+        for r in rows:
+            mid = str(r.get("id") or "")
+            if mid:
+                out.append({"id": mid,
+                            "label": str(r.get("display_name") or mid)})
+    else:
+        chat = [r for r in rows
+                if str(r.get("id", "")).startswith(("gpt", "o1", "o3", "o4",
+                                                    "codex"))
+                and not any(t in str(r.get("id", "")) for t in _NOT_CHAT)]
+        chat.sort(key=lambda r: r.get("created") or 0, reverse=True)
+        out = [{"id": str(r["id"]), "label": str(r["id"])} for r in chat]
+    return out[:MODELS_CAP]
+
+
+def _fetch_models(pid, key):
+    """Ask the provider itself. Returns (models, detail); ([], reason) on
+    any failure — a stale or missing live list falls back to the curated
+    one, it never breaks the picker."""
+    spec = PROVIDERS[pid]
+    url = spec.get("models_url")
+    if not url:
+        return [], "no models endpoint"
+    headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"}
+               if pid == "anthropic" else {"authorization": f"Bearer {key}"})
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=MODELS_TIMEOUT) as r:
+            payload = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001 — never raise out of a lookup
+        return [], f"live list unavailable ({str(e)[:100]})"
+    rows = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return [], "unexpected models response"
+    got = _shape_models(pid, rows)
+    return got, (f"live from your API key — {len(got)} models" if got
+                 else "the API key returned no usable models")
+
+
+def _live_models(pid, refresh=False):
+    key = api_key(pid)
+    if not key:
+        return [], "no API key on file"
+    now = time.monotonic()
+    with _lock:
+        hit = _models_cache.get(pid)
+    if hit and not refresh and now - hit[0] < MODELS_TTL:
+        return hit[1], hit[2]
+    got, detail = _fetch_models(pid, key)
+    with _lock:
+        _models_cache[pid] = (now, got, detail)
+    return got, detail
+
+
+def catalog(pid, refresh=False):
+    """What this provider can be pointed at, per backend.
+
+    The CLI list is the alias set its binary accepts — neither CLI has a
+    "list models" subcommand to ask, and an alias is the spelling that
+    keeps working across releases. The API list IS asked live, against the
+    key on file, because that is the one place a true answer exists."""
+    spec = PROVIDERS.get(pid)
+    if not spec:
+        return {"cli": [], "api": [], "api_live": False, "api_detail": ""}
+    live, detail = _live_models(pid, refresh)
+    curated = [{"id": i, "label": lb} for i, lb in spec["models"]["api"]]
+    return {"cli": [{"id": i, "label": lb} for i, lb in spec["models"]["cli"]],
+            "api": live or curated,
+            "api_live": bool(live),
+            "api_detail": detail}
+
+
+def options(refresh=False):
+    """Everything a model picker needs, in one payload: each provider,
+    whether it is usable here, what each of its backends accepts, and the
+    config key a choice writes. Setup's default-model dropdowns and the
+    Circuits stage tray both read this, so no picker can drift from what
+    this machine actually has."""
+    now = time.monotonic()
+    with _lock:
+        cached = _options_cache["payload"]
+        fresh = now - _options_cache["at"] < OPTIONS_TTL
+    if cached and fresh and not refresh:
+        return cached
+    provs = []
+    for pid, spec in PROVIDERS.items():
+        rec = probe(pid) or {}
+        provs.append({
+            "id": pid, "label": spec["label"],
+            "connected": bool(rec.get("connected")),
+            "auth": rec.get("auth", ABSENT),
+            "has_key": bool(rec.get("has_key")),
+            "sessions": bool(spec["can"]["sessions"]),
+            "config_keys": dict(spec["config_keys"]),
+            **catalog(pid, refresh),
+        })
+    # active()'s ladder, re-derived from the records already probed above
+    # rather than probing every provider a second time.
+    want = str(settings.raw().get("ai_provider") or "anthropic")
+    usable = [p["id"] for p in provs if p["connected"]]
+    payload = {"providers": provs,
+               "active": want if want in usable else next(iter(usable), "")}
+    with _lock:
+        _options_cache.update(at=now, payload=payload)
+    return payload
