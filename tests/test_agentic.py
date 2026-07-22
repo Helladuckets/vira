@@ -122,6 +122,53 @@ class JudgeTests(unittest.TestCase):
         self.assertIn('"grade"', p)
 
 
+class RecordAndCloseTests(unittest.TestCase):
+    """The shared judge epilogue — verdict onto the ledger, note onto the
+    idea. Both judge paths (the /api/judge watcher and circuits' judge
+    stages) end here; the note format is load-bearing for the change log."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for mod, attr, name in ((joblog, "STORE", "jobs-log.json"),
+                                (ideas, "STORE", "ideas.json")):
+            p = mock.patch.object(mod, attr, Path(self.tmp.name) / name)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_records_verdict_and_stamps_idea_note(self):
+        it = ideas.add("ship the ledger")
+        joblog.record_launch({"id": "job1", "prompt": "x", "cwd": "/tmp",
+                              "idea_id": it["id"]})
+        verdict = {"grade": "B+", "score": 82, "summary": "solid",
+                   "findings": [], "recommendation": "ship"}
+        out = judge.record_and_close("job1", verdict,
+                                     judge_jid="judgejob12345",
+                                     idea_id=it["id"])
+        self.assertEqual(out["judge_job"], "judgejob12345")
+        rec = joblog.get_record("job1")
+        self.assertEqual(rec["judge"]["grade"], "B+")
+        note = next(i for i in ideas.list_items()
+                    if i["id"] == it["id"])["note"]
+        self.assertEqual(note, "judged B+ (job judgejob)")
+
+    def test_note_appends_to_existing_with_separator(self):
+        it = ideas.add("ship it", note="planned earlier")
+        joblog.record_launch({"id": "job2", "prompt": "x", "cwd": "/tmp"})
+        judge.record_and_close("job2", {"grade": "A"},
+                               judge_jid="jj345678xx", idea_id=it["id"])
+        note = next(i for i in ideas.list_items()
+                    if i["id"] == it["id"])["note"]
+        self.assertEqual(note, "planned earlier · judged A (job jj345678)")
+
+    def test_no_idea_no_note_write(self):
+        joblog.record_launch({"id": "job3", "prompt": "x", "cwd": "/tmp"})
+        v = judge.record_and_close("job3", {"grade": "C"},
+                                   judge_jid="zz11223344")
+        self.assertEqual(joblog.get_record("job3")["judge"]["grade"], "C")
+        self.assertEqual(v["grade"], "C")
+
+
 # ---------- circuits ----------
 
 class StubSessions:

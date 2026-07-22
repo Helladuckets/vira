@@ -167,6 +167,32 @@ def judge_model():
     return settings.get("judge_model") or "opus"
 
 
+def record_and_close(target_jid, verdict, judge_jid=None, idea_id=None):
+    """The shared judge epilogue: stamp the verdict with the judge's job
+    id, write it to the judged job's ledger record, and — when the judged
+    job was idea-linked — append the outcome note to the idea
+    (best-effort). Both judge paths end here: the ad-hoc /api/judge
+    watcher below and circuits' judge stages (whose gate/retry/cascade
+    logic stays in circuits.py). Returns the verdict as recorded."""
+    from . import ideas
+    v = dict(verdict)
+    if judge_jid:
+        v["judge_job"] = judge_jid
+    joblog.record_judge(target_jid, v)
+    if idea_id:
+        try:
+            it = next((i for i in ideas.list_items()
+                       if i["id"] == idea_id), None)
+            note = (it.get("note", "") + " · " if it and it.get("note")
+                    else "")
+            ideas.update(idea_id,
+                         note=f"{note}judged {v['grade']} "
+                              f"(job {(judge_jid or '')[:8]})")
+        except Exception:  # noqa: BLE001 — write-back is best-effort
+            pass
+    return v
+
+
 def launch_judge(jid, model=None):
     """Spawn a fresh judge session over a finished job; returns the judge's
     job id. A watcher thread parses the verdict when it lands and writes it
@@ -188,7 +214,7 @@ def launch_judge(jid, model=None):
 
 
 def _watch_judge(jid, judge_jid):
-    from . import ideas, session
+    from . import session
     deadline = time.time() + JUDGE_TIMEOUT
     while time.time() < deadline:
         snap = session.sessions.get(judge_jid) or joblog.get_record(judge_jid)
@@ -203,17 +229,6 @@ def _watch_judge(jid, judge_jid):
         verdict = {"grade": "?", "score": None,
                    "summary": "judge finished without a parseable verdict",
                    "findings": [], "recommendation": ""}
-    verdict["judge_job"] = judge_jid
-    joblog.record_judge(jid, verdict)
     judged = joblog.get_record(jid) or {}
-    if judged.get("idea_id"):
-        try:
-            it = next((i for i in ideas.list_items()
-                       if i["id"] == judged["idea_id"]), None)
-            note = (it.get("note", "") + " · " if it and it.get("note")
-                    else "")
-            ideas.update(judged["idea_id"],
-                         note=f"{note}judged {verdict['grade']} "
-                              f"(job {judge_jid[:8]})")
-        except Exception:  # noqa: BLE001 — write-back is best-effort
-            pass
+    record_and_close(jid, verdict, judge_jid=judge_jid,
+                     idea_id=judged.get("idea_id"))
