@@ -253,7 +253,15 @@ cmd_merge() {
 
   echo ""
   echo "merged. Post-merge checklist:"
-  if [[ -f "$dir/CLAUDE.md" ]] && ! diff -q "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" >/dev/null 2>&1; then
+  # CLAUDE.md is gitignored (the repo is public), so a spec line NEVER rides a
+  # merge. Two ways that goes wrong, and the silent one used to be invisible:
+  # an unprovisioned worktree has no copy at all, which means the session
+  # worked without the spec and any line it proposed lives only in its report.
+  if [[ -d "$dir" && ! -f "$dir/CLAUDE.md" ]]; then
+    echo "  [ ] this worktree had NO CLAUDE.md — the session never read the"
+    echo "      spec. Check its report for proposed spec lines and apply them"
+    echo "      to $LIVE/CLAUDE.md by hand; run 'branch.sh adopt' next time."
+  elif [[ -f "$dir/CLAUDE.md" ]] && ! diff -q "$LIVE/CLAUDE.md" "$dir/CLAUDE.md" >/dev/null 2>&1; then
     echo "  [ ] CLAUDE.md differs (gitignored — git did NOT carry it). Port by hand:"
     echo "      diff $LIVE/CLAUDE.md $dir/CLAUDE.md"
   fi
