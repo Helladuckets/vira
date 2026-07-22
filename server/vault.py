@@ -21,6 +21,8 @@ Everything else delegates to a lazily (re)built qocha.Vault.
 """
 import threading
 import time
+from datetime import date, datetime
+from datetime import time as dtime
 from pathlib import Path
 
 from qocha import Config as _QochaConfig, Vault as _QochaVault
@@ -106,8 +108,81 @@ def search(q, limit=10):
     return _vault().search(q, limit=limit)
 
 
-def ask(question, k=10):
-    return _vault().ask(question, k=k)
+def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
+    """Hybrid hits narrowed to a date window and optionally re-ordered by
+    note age. qocha ranks by similarity alone; `notes.mtime` has been in
+    the schema since the start but nothing ever queried it, which is why
+    "the most recent session where..." was unanswerable. ISO dates in,
+    hits out with `mtime` attached.
+
+    With no query text this is a pure browse: newest (or oldest) notes in
+    the window, one row per note.
+    """
+    lo = _epoch(since)
+    hi = _epoch(until)
+    q = (q or "").strip()
+    con = _connect()
+    try:
+        _init(con)
+        if not q:
+            where, params = [], []
+            if lo is not None:
+                where.append("n.mtime >= ?")
+                params.append(lo)
+            if hi is not None:
+                where.append("n.mtime < ?")
+                params.append(hi)
+            rows = con.execute(
+                "SELECT n.path, n.title, n.mtime, c.heading, c.text "
+                "FROM notes n LEFT JOIN chunks c"
+                " ON c.path=n.path AND c.seq=0"
+                + (" WHERE " + " AND ".join(where) if where else "")
+                + " ORDER BY n.mtime " + ("ASC" if order == "oldest"
+                                          else "DESC")
+                + " LIMIT ?", (*params, limit)).fetchall()
+            return [{"path": r["path"], "title": r["title"],
+                     "heading": r["heading"] or "", "text": r["text"] or "",
+                     "mtime": r["mtime"], "score": None} for r in rows]
+
+        # A filtered or re-ordered search has to over-fetch, and by a lot:
+        # "the newest note about X" means the newest of ALL the notes
+        # about X, not the newest of the ten the ranker happened to like
+        # best. A date window can cut the entire similarity head too.
+        deep = (max(limit * 8, 200)
+                if (lo is not None or hi is not None or order != "relevance")
+                else limit)
+        hits = _vault().search(q, limit=deep)
+        mt = {r["path"]: r["mtime"] for r in
+              con.execute("SELECT path, mtime FROM notes")}
+    finally:
+        con.close()
+
+    out = []
+    for h in hits:
+        m = mt.get(h["path"])
+        if lo is not None and (m is None or m < lo):
+            continue
+        if hi is not None and (m is None or m >= hi):
+            continue
+        out.append(dict(h, mtime=m))
+    if order in ("recent", "oldest"):
+        out.sort(key=lambda h: h["mtime"] or 0, reverse=order == "recent")
+    return out[:limit]
+
+
+def _epoch(iso):
+    """ISO date -> local-midnight unix seconds (mtime's own units)."""
+    if not iso:
+        return None
+    try:
+        return datetime.combine(date.fromisoformat(str(iso)[:10]),
+                                dtime.min).timestamp()
+    except ValueError:
+        return None
+
+
+def ask(question, k=10, hits=None):
+    return _vault().ask(question, k=k, hits=hits)
 
 
 def note_text(path):

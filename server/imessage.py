@@ -55,6 +55,14 @@ def apple_dt(ns):
     return datetime.fromtimestamp(ns / 1e9 + APPLE_EPOCH, tz=timezone.utc).astimezone()
 
 
+def apple_ns(dt):
+    """The inverse of apple_dt: datetime -> Apple-epoch nanoseconds. The
+    date-window seam every index converts through."""
+    if dt is None:
+        return None
+    return int((dt.timestamp() - APPLE_EPOCH) * 1e9)
+
+
 def _connect():
     return sqlite3.connect(f"file:{CHAT_DB}?mode=ro", uri=True)
 

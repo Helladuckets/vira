@@ -44,24 +44,32 @@ def _require_np():
 
 # ---------- FTS ----------
 
-def fts_queries(q):
-    """User text -> ranked fts5 queries: all-terms first (precise hits
-    dominate), then any-term (recall for conversational phrasing)."""
+def fts_queries(q, phrases=()):
+    """User text -> ranked fts5 queries: quoted phrases first (a phrase
+    the user typed in quotes is the one thing they are sure of), then
+    all-terms (precise hits dominate), then any-term (recall for
+    conversational phrasing)."""
+    out = []
+    for p in phrases:
+        terms = re.findall(r"[A-Za-z0-9']+", p)
+        if terms:                       # one quoted phrase = one fts5 phrase
+            out.append('"' + " ".join(terms) + '"')
     terms = re.findall(r"[A-Za-z0-9']+", q)
     if not terms:
-        return []
+        return out
     all_q = " ".join(f'"{t}"' for t in terms)
     any_q = " OR ".join(f'"{t}"' for t in terms)
-    return [all_q, any_q] if len(terms) > 1 else [any_q]
+    out += [all_q, any_q] if len(terms) > 1 else [any_q]
+    return out
 
 
-def rank_fts(con, q, cand, limit, table="fts"):
+def rank_fts(con, q, cand, limit, table="fts", phrases=()):
     """bm25-ordered rowids matching q, best-first: the all-terms query
     ranks ahead of any-term, duplicates and rows outside the cand set
     (None = unfiltered) are dropped. limit caps each fts query AND the
     fused list."""
     out, seen = [], set()
-    for fq in fts_queries(q):
+    for fq in fts_queries(q, phrases):
         rows = con.execute(
             f"SELECT rowid, bm25({table}) AS r FROM {table} "
             f"WHERE {table} MATCH ? ORDER BY r LIMIT ?",

@@ -21,9 +21,11 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                briefstate, changelog,
                circuits,
                companion,
+               crmindex,
                data as crm,
                designstudio,
                feedstate,
+               find,
                frontdoor,
                reading,
                fixtures, ideas, imessage, jobboards, jobfiles, joblog,
@@ -32,7 +34,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
-               photos, plans, radar,
+               photos, plans, radar, textindex,
                receipts,
                resolver,
                routines,
@@ -82,6 +84,7 @@ whatsapp_watcher = whatsapp.WhatsAppWatcher(watcher)
 # deleted 2026-07-21; it delegated verbatim).
 jobs = session.sessions
 indexer = mediaindex.Indexer()
+text_indexer = textindex.Indexer()      # message bodies + CRM vectors
 mercury_poller = mercury.Poller()
 receipts_sweeper = receipts.Sweeper()
 vault_indexer = vault.VaultIndexer()
@@ -108,6 +111,7 @@ async def _startup():
     whatsapp_watcher.start()   # dormant until a WhatsApp pairing exists
     photos.start_background_build()
     indexer.start()
+    text_indexer.start()
     backup.start()
     mercury_poller.start()
     receipts_sweeper.start()
@@ -561,6 +565,54 @@ def api_search_ask(body: AskBody):
     if not q:
         raise HTTPException(400, "empty question")
     return msearch.ask(q)
+
+
+# ---------- Find: one search over all four databases ----------
+# The GET runs rung 1 only (no model, safe to debounce on input); the
+# POST is the deliberate ask that spends rung 2. See server/find.py.
+
+@app.get("/api/find")
+def api_find(q: str = "", limit: int = 20, db: str | None = None,
+             since: str | None = None, until: str | None = None,
+             kind: str | None = None, person: str | None = None):
+    p = find.plan(q)
+    if db in find.DATABASES:          # the UI's per-tab narrowing
+        p["databases"] = [db]
+        p["primary"] = db
+    for key, val in (("since", since), ("until", until),
+                     ("person", person)):
+        if val:
+            p["filters"][key] = val
+    if kind:
+        p["filters"]["kind"] = [k for k in kind.split(",") if k]
+    if any((since, until, kind, person)):
+        p["why"] = find._why(p)       # the chip must show what ran
+    out = find.run(p, limit=max(1, min(limit, 100)))
+    for g in out["groups"].values():
+        g.pop("hits", None)           # engine-native payload; server-side
+    return out
+
+
+@app.post("/api/find/ask")
+def api_find_ask(body: AskBody):
+    q = body.question.strip()
+    if not q:
+        raise HTTPException(400, "empty question")
+    return find.ask(q)
+
+
+@app.get("/api/find/status")
+def api_find_status():
+    """One header for four corpora — what is indexed, and what is not."""
+    def safe(fn):
+        try:
+            return fn()
+        except Exception as e:      # noqa: BLE001 — a dormant corpus is
+            return {"error": str(e)[:120]}      # a state, not a failure
+
+    return {"media": safe(mediaindex.status), "notes": safe(vault.status),
+            "people": safe(crmindex.status),
+            "messages": safe(textindex.status)}
 
 
 @app.get("/api/search/faces")
