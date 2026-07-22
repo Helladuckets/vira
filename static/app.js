@@ -5619,9 +5619,17 @@ $("#brain-input")?.addEventListener("keydown", (e) => {
 });
 $("#note-back")?.addEventListener("click", closeNote);
 
-// ----- Radar: who to talk to + introductions -----
+// ----- Radar: who to talk to + who to put in a room together -----
 
-let radarIntrosGen = null;
+let radarGroupingsGen = null;
+
+// The move a grouping proposes, in the owner's words rather than the
+// engine's enum.
+const MOVE_LABEL = {
+  post_to_group: "bring it up in the group",
+  group_chat: "start a group chat",
+  introduction: "introduce them",
+};
 
 async function loadRadar() {
   const r = await api("/api/radar");
@@ -5636,66 +5644,122 @@ async function loadRadar() {
     row.appendChild(score);
     const mid = el("div", "radar-mid");
     mid.appendChild(el("div", "radar-name", p.person_name));
-    mid.appendChild(el("div", "radar-why", (p.reasons || []).join(" · ")));
+    const reasons = p.reasons || [];
+    // a marker is a live thing to say, so it gets its own line above the
+    // scoring reasons instead of being buried in the dot-joined list
+    if (p.marker && reasons.length) {
+      mid.appendChild(el("div", "radar-marker", reasons[0]));
+      if (reasons.length > 1)
+        mid.appendChild(el("div", "radar-why", reasons.slice(1).join(" · ")));
+    } else {
+      mid.appendChild(el("div", "radar-why", reasons.join(" · ")));
+    }
     row.appendChild(mid);
     row.addEventListener("click", () => openPerson(p.person_id));
     people.appendChild(row);
   });
-  radarIntrosGen = r.generated || null;
-  $("#radar-intros-meta").textContent = r.generated
+  radarGroupingsGen = r.generated || null;
+  $("#radar-groupings-meta").textContent = r.generated
     ? "curated " + fmtTime(r.generated) : "not yet scanned";
-  const intros = $("#radar-intros");
-  intros.innerHTML = "";
-  if (!(r.intros || []).length)
-    intros.appendChild(el("div", "empty left",
-      "No introductions on deck — Rescan looks for shared ground across "
-      + "your most active contacts."));
-  (r.intros || []).forEach((i) => {
-    const card = el("div", "intro-card");
-    const head = el("div", "intro-head");
-    const a = el("span", "intro-name click", i.a_name);
-    a.addEventListener("click", () => openPerson(i.a_id));
-    const b = el("span", "intro-name click", i.b_name);
-    b.addEventListener("click", () => openPerson(i.b_id));
-    head.appendChild(a);
-    head.appendChild(el("span", "intro-x", "×"));
-    head.appendChild(b);
-    const dis = el("button", "idea-del", "×");
-    dis.title = "Dismiss this introduction";
-    dis.addEventListener("click", async () => {
-      await post("/api/radar/dismiss", { key: i.key });
-      card.remove();
-      toast("Dismissed", [["Undo", async () => {
-        await post("/api/radar/dismiss", { key: i.key, restore: true });
-        loadRadar();
-      }]]);
-    });
-    head.appendChild(dis);
-    card.appendChild(head);
-    card.appendChild(el("div", "intro-why", i.why));
-    if (i.opener) {
-      const op = el("div", "intro-opener");
-      op.appendChild(el("span", "intro-opener-label", "opener"));
-      op.appendChild(el("span", null, i.opener));
-      const copy = el("button", "brief-act", "copy");
-      copy.addEventListener("click", () => {
-        navigator.clipboard?.writeText(i.opener);
-        toast("Opener copied");
-      });
-      op.appendChild(copy);
-      card.appendChild(op);
-    }
-    intros.appendChild(card);
+  const box = $("#radar-groupings");
+  box.innerHTML = "";
+  if (!(r.groupings || []).length)
+    box.appendChild(el("div", "empty left",
+      "No groupings on deck — Rescan looks for shared ground across your "
+      + "most active contacts, and for what they have been sending you."));
+  (r.groupings || []).forEach((g) => groupingCard(box, g));
+}
+
+function groupingCard(box, g) {
+  const card = el("div", "grp-card");
+  const head = el("div", "grp-head");
+  const members = el("div", "grp-members");
+  (g.members || []).forEach((m, i) => {
+    if (i) members.appendChild(el("span", "grp-plus", "+"));
+    const name = el("span", "grp-name click", m.name);
+    name.addEventListener("click", () => openPerson(m.person_id));
+    members.appendChild(name);
   });
+  head.appendChild(members);
+  const dis = el("button", "idea-del", "×");
+  dis.title = "Dismiss this grouping";
+  dis.addEventListener("click", async () => {
+    await post("/api/radar/dismiss", { key: g.key });
+    card.remove();
+    toast("Dismissed", [["Undo", async () => {
+      await post("/api/radar/dismiss", { key: g.key, restore: true });
+      loadRadar();
+    }]]);
+  });
+  head.appendChild(dis);
+  card.appendChild(head);
+
+  const meta = el("div", "grp-meta");
+  if (g.topic) meta.appendChild(el("span", "grp-topic", g.topic));
+  const move = MOVE_LABEL[g.move] || MOVE_LABEL.group_chat;
+  meta.appendChild(el("span", "grp-move" + (g.move === "post_to_group"
+    ? " on" : ""), move));
+  // most group chats are unnamed — still say the thread is there, since
+  // that is the whole difference between "post it" and "start one"
+  if (g.existing_group)
+    meta.appendChild(el("span", "grp-thread",
+      g.existing_group.name || "existing thread"));
+  // the deterministic half without its curation pass — say so, so a raw
+  // card reads as "rescan" rather than as a dim engine
+  if (g.curated === false) {
+    const raw = el("span", "grp-raw", "raw match");
+    raw.title = "The curation pass did not run for this batch — Rescan to "
+      + "get the named topic and a drafted opener.";
+    meta.appendChild(raw);
+  }
+  card.appendChild(meta);
+
+  if (g.why) card.appendChild(el("div", "grp-why", g.why));
+
+  // event-triggered cards say what landed and who brought it
+  const t = g.trigger || {};
+  if (t.type === "event") {
+    const src = el("div", "grp-src");
+    const who = t.from_name && t.from_name !== "you"
+      ? t.from_name + " shared" : "you saved";
+    src.appendChild(el("span", "grp-src-who", who));
+    const title = t.title || t.domain || t.url;
+    if (t.url) {
+      const a = el("a", "grp-src-link", title);
+      a.href = t.url;
+      a.target = "_blank";
+      a.rel = "noreferrer noopener";
+      src.appendChild(a);
+    } else {
+      src.appendChild(el("span", "grp-src-link", title));
+    }
+    src.appendChild(el("span", "grp-src-when",
+      [t.domain, fmtTime(t.when)].filter(Boolean).join(" · ")));
+    card.appendChild(src);
+  }
+
+  if (g.opener) {
+    const op = el("div", "grp-opener");
+    op.appendChild(el("span", "grp-opener-label", "opener"));
+    op.appendChild(el("span", null, g.opener));
+    const copy = el("button", "brief-act", "copy");
+    copy.addEventListener("click", () => {
+      navigator.clipboard?.writeText(g.opener);
+      toast("Opener copied");
+    });
+    op.appendChild(copy);
+    card.appendChild(op);
+  }
+  box.appendChild(card);
 }
 
 $("#radar-refresh")?.addEventListener("click", () => loadRadar());
-$("#radar-intros-refresh")?.addEventListener("click", async () => {
-  const btn = $("#radar-intros-refresh");
+$("#radar-groupings-refresh")?.addEventListener("click", async () => {
+  const btn = $("#radar-groupings-refresh");
   btn.disabled = true;
   btn.textContent = "scanning…";
-  const was = radarIntrosGen;
-  try { await post("/api/radar/intros/refresh", {}); } catch { /* best-effort */ }
+  const was = radarGroupingsGen;
+  try { await post("/api/radar/groupings/refresh", {}); } catch { /* best-effort */ }
   // curation runs one AI pass in the background — poll until it lands
   let tries = 0;
   startPoll(async (h) => {
@@ -6073,7 +6137,8 @@ async function routineForm(existing, prefill) {
   const prompt_ = el("textarea", "cir-input");
   prompt_.rows = 3;
   prompt_.placeholder = "The prompt this loop runs (muse composes its own)";
-  prompt_.value = r.prompt && r.prompt !== "__refresh_intros__" ? r.prompt : "";
+  const INTERNAL = ["__refresh_groupings__", "__refresh_intros__"];
+  prompt_.value = r.prompt && !INTERNAL.includes(r.prompt) ? r.prompt : "";
   const circuitSel = document.createElement("select");
   circuitSel.className = "idea-sort";
   circuitSel.style.display = "none";

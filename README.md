@@ -59,9 +59,14 @@ Local-first by design, with every egress path named and opt-in:
   the note in place. Vault knowledge also surfaces on person pages and
   inside every agent session as native tools.
 - **Radar** - who to talk to next, scored live with the reasons attached
-  (owed replies, going-quiet decay, stale loops, birthdays), plus an
-  introductions engine that finds pairs of your contacts with real common
-  ground and drafts the double-opt-in opener.
+  (owed replies, going-quiet decay, stale loops, birthdays), plus
+  **groupings**: two to five of your contacts who share real ground, with
+  the move that fits - post it in the group thread they already have,
+  start a new one, or make the introduction - and the opener drafted.
+  Groupings come from standing profile overlap and from what people
+  actually sent you lately (links read locally from your own message
+  history); when a shared item lands on exactly one person it becomes a
+  conversation marker on their row instead.
 - **Circuits** - multi-model agent pipelines as executable DAGs: one
   model plans read-only, another builds on autopilot, and a fresh session
   judges the result against the original ask - with a grade gate that
