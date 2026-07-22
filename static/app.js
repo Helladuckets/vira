@@ -8903,30 +8903,6 @@ function fdWhatIsThis(mod) {
   head.appendChild(x);
   card.appendChild(head);
 
-  const stage = el("div", "fd-video");
-  const vid = document.createElement("video");
-  vid.src = mod.demo;
-  vid.controls = true;
-  vid.autoplay = true;
-  vid.muted = true;              // autoplay is only permitted muted
-  vid.loop = true;
-  vid.playsInline = true;
-  vid.preload = "metadata";
-  const failed = () => {
-    if (stage.dataset.failed) return;
-    stage.dataset.failed = "1";
-    stage.innerHTML = "";
-    stage.appendChild(el("p", "fd-video-miss",
-      "The demo clip could not load — it is hosted online and this "
-      + "install cannot reach it right now. Everything below still applies."));
-  };
-  vid.addEventListener("error", failed);
-  // A src that resolves to an error page fires no media error on some
-  // browsers; nothing playable after a few seconds means the same thing.
-  setTimeout(() => { if (!vid.videoWidth) failed(); }, 6000);
-  stage.appendChild(vid);
-  card.appendChild(stage);
-
   const body = el("div", "fd-modal-body");
   String(mod.what || "").split("\n\n").forEach((para) => {
     if (para.trim()) body.appendChild(el("p", null, para.trim()));
@@ -8944,7 +8920,6 @@ function fdWhatIsThis(mod) {
   requestAnimationFrame(() => wrap.classList.add("open"));
 
   function close() {
-    vid.pause();
     wrap.classList.remove("open");
     setTimeout(() => wrap.remove(), 200);
     document.removeEventListener("keydown", onKey);
