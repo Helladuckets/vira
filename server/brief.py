@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import briefstate
+from . import channels
 from . import data as crm
 from . import imessage
 from . import journal
@@ -159,13 +160,7 @@ _m365_cache = {"at": 0, "today": [], "tomorrow": [], "status": None}
 
 
 def _graph_accounts():
-    try:
-        accounts = json.loads(
-            (Path(__file__).resolve().parent.parent / "data" /
-             "mail-accounts.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [a["email"] for a in accounts if a.get("type") == "graph"]
+    return [a["email"] for a in channels.graph_accounts()]
 
 
 def _m365_events():
