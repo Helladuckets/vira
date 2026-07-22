@@ -1,30 +1,13 @@
 <!-- Vira app icon, maskable cut. Android crops an installed icon to whatever
      shape the launcher uses and only guarantees the middle 80% survives, so
-     this is icon.svg with the mark pulled in to 56% of the width. Same
-     artwork otherwise — regenerate the raster with scripts/make-icons.sh. -->
+     this is icon.svg with the mark pulled in far enough that no crop can
+     clip the chevron's arms. Same artwork otherwise — regenerate the raster
+     with scripts/make-icons.sh. -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0.35" y2="1">
-      <stop offset="0" stop-color="#202324"/>
-      <stop offset="0.55" stop-color="#131516"/>
-      <stop offset="1" stop-color="#0a0b0b"/>
-    </linearGradient>
-    <radialGradient id="halo" cx="0.5" cy="0.42" r="0.6">
-      <stop offset="0" stop-color="#8a8478" stop-opacity="0.22"/>
-      <stop offset="1" stop-color="#8a8478" stop-opacity="0"/>
-    </radialGradient>
-    <linearGradient id="bone" x1="0" y1="0" x2="0.3" y2="1">
-      <stop offset="0" stop-color="#e6e1d5"/>
-      <stop offset="0.5" stop-color="#b6ae9d"/>
-      <stop offset="1" stop-color="#7e786c"/>
-    </linearGradient>
-  </defs>
-  <rect width="512" height="512" fill="url(#tile)"/>
-  <rect width="512" height="512" fill="url(#halo)"/>
-  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
-    <circle cx="256" cy="256" r="178" fill="none" stroke="#a39c8d"
-            stroke-opacity="0.44" stroke-width="13"/>
-    <path d="M130 162 L208 162 L256 304 L314 162 L368 162 L256 364 Z"
-          fill="url(#bone)"/>
+  <rect width="512" height="512" fill="#1a1d1e"/>
+  <g transform="translate(256 256) scale(0.82) translate(-256 -256)">
+    <path d="M136 144 L256 392 L376 144" fill="none" stroke="#8a8478"
+          stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="256" cy="96" r="22.4" fill="#8a8478"/>
   </g>
 </svg>
