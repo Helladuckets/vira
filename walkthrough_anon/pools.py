@@ -169,8 +169,30 @@ overlap remote hook hooks glance action worth land lands landed
 mom dad mum mama papa nana grandma grandpa aunt uncle cousin sister
 brother son daughter wife husband partner baby babysitter nanny sitter
 doctor dentist coach teacher vet plumber cleaner landlord neighbor
+pick picks picked picking apply applies applied applying track tracks
+tracked tracking rank ranks ranked score scores scored match matches
+matched mode modes queue queues room rooms board boards click clicks
+clicked tap taps tapped skip skips skipped sort sorts sorted filter
+filters filtered draft drafts drafted mark marks marked star stars
+starred save saves saved share shares shared view views viewed
+delivery management client clients sector sectors domain domains
+industry industries commercial technical strategy solutions systems
+services partner partners lead leads leadership senior staff principal
+director manager engineer architect analyst associate specialist
+consultant advisor capital ventures labs studio holdings enterprise
+platform product products program programs project projects operations
+finance financial research science sales marketing support success
 """
 .split())
+# Why the block above: these are ORDINARY WORDS OF THIS APP'S OWN PROSE
+# that also happen to be real surnames. A contact named Pick made the
+# anonymizer rewrite the word "pick" everywhere, and a reading room's
+# subtitle came out of a capture reading "Varga a moment, varga a mode".
+# That is not a leak — it is the opposite — but it makes an anonymized
+# film look broken, which is its own reason not to ship it. Demoting
+# them here keeps "Pick Whitfield" mapped as a person while leaving the
+# verb alone. Add to this list whenever a capture reads oddly; the
+# scanner gate covers the leak direction, nothing else covers this one.
 
 COMMON_WORDS = COMMON_WORDS | COMMON_ENGLISH
 

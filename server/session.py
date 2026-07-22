@@ -76,10 +76,11 @@ SESSION_DEFAULTS = {
 }
 
 # Tools the READ-ONLY policy strips even when auto-allowed (audit P1-4):
-# Task spawns subagents that answer to their own gate, WebSearch is network
-# egress not a read, and update_module_map is the one true write on the
-# vira native server. Read-only means reads.
-READ_ONLY_EXCLUDE = {"Task", "WebSearch", "mcp__vira__update_module_map"}
+# Task spawns subagents that answer to their own gate, and WebSearch is
+# network egress not a read. The vira native server's write tools come
+# from viratools.WRITE_TOOLS so a new one is excluded the day it ships
+# rather than the day someone notices. Read-only means reads.
+READ_ONLY_EXCLUDE = {"Task", "WebSearch"} | viratools.WRITE_TOOLS
 
 # UI/circuit model keywords -> ids the CLI actually accepts. The short
 # aliases (sonnet/opus/haiku) are CLI-native; fable is new enough that the

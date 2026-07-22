@@ -494,6 +494,46 @@ async def _t_update_module_map(args):
         _update_module_map_text, args.get("modules_json")))
 
 
+# ---------- first-run setup writes (server/frontdoor.py) ----------
+# Both are dispatched only by a module's front door, and both exist so the
+# setup session never touches config or the served page tree by hand.
+
+def _create_reading_room_text(slug, title, subtitle, items_json):
+    from . import readingroom
+    try:
+        items = json.loads(items_json or "")
+    except json.JSONDecodeError as e:
+        return (f"error: items_json is not valid JSON ({e}). Pass the whole "
+                "item array as a single JSON string.")
+    try:
+        res = readingroom.build(slug, title, subtitle or "", items)
+    except readingroom.BuildError as e:
+        return f"error: {e}"
+    except OSError as e:
+        return f"error: could not write the room ({e})"
+    return readingroom.summary_line(res)
+
+
+async def _t_create_reading_room(args):
+    return _txt(await asyncio.to_thread(
+        _create_reading_room_text, args.get("slug"), args.get("title"),
+        args.get("subtitle"), args.get("items_json")))
+
+
+def _configure_applications_text(config_json):
+    from . import frontdoor
+    try:
+        res = frontdoor.configure_applications(config_json)
+    except frontdoor.ConfigError as e:
+        return f"error: {e}"
+    return frontdoor.configure_summary(res)
+
+
+async def _t_configure_applications(args):
+    return _txt(await asyncio.to_thread(
+        _configure_applications_text, args.get("config_json")))
+
+
 # ---------- the SDK server ----------
 
 # (name, description, input schema, handler). Schemas use the SDK's simple
@@ -555,9 +595,44 @@ TOOL_SPECS = [
      "name+what required; a payload that drops too many existing modules "
      "is refused. Use only when refreshing the system map.",
      {"modules_json": str}, _t_update_module_map),
+    ("create_reading_room",
+     "Build a reading room — a researched consumption queue — and write "
+     "it as a live page in the owner's Reader. Pass the COMPLETE item "
+     "array as items_json (a JSON string). Each item: title (required), "
+     "url, date YYYY-MM-DD, type, mode watch|listen|read, prio P1|P2|P3, "
+     "people [], venue, note, why, status MISSING|PARTIAL|HAVE, vault, "
+     "pay. The server validates, dedupes on a stable id, renders the page "
+     "and writes it — never write reading-room HTML yourself. Rebuilding "
+     "an existing slug is a repass and preserves the owner's done-marks.",
+     {"slug": str, "title": str, "subtitle": str, "items_json": str},
+     _t_create_reading_room),
+    ("configure_applications",
+     "Apply first-run setup for the Applications module. Pass config_json "
+     "as a JSON string: {record_dir, locations: [str], remote_ok: bool, "
+     "boards: [{company, ats, slug, query, location, note}]}. ats is "
+     "greenhouse|ashby|lever|microsoft|google|manual. The server creates "
+     "the record and universe directories, writes the config keys, "
+     "registers every board, and starts the first poll — never edit "
+     "data/config.json or the boards registry by hand. An EMPTY locations "
+     "list means unfiltered; never guess a city.",
+     {"config_json": str}, _t_configure_applications),
 ]
 
 TOOL_NAMES = [f"mcp__vira__{name}" for name, *_ in TOOL_SPECS]
+
+# The tools on this server that MUTATE. Every other spec renders text from
+# an existing loader, which is what makes the whole server auto-allowed in
+# interactive sessions (runner.Runner.auto_allow). Read-only sessions —
+# judges, circuit read stages — must be denied these, so the list lives
+# here beside the tools rather than as a hand-maintained copy in
+# session.py that the next write tool would quietly fall out of.
+# propose_idea is deliberately absent: it STAGES to a queue the owner must
+# approve, which is why it was safe to ship as a read-adjacent tool.
+WRITE_TOOLS = {
+    "mcp__vira__update_module_map",
+    "mcp__vira__create_reading_room",
+    "mcp__vira__configure_applications",
+}
 
 _server = None
 

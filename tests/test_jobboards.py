@@ -59,6 +59,20 @@ ADJ = {
 }
 
 
+# The owner-config this suite pins itself to. jobboards.location_rule()
+# reads data/config.json, which is the RUNNING INSTANCE's file — without
+# this every eligibility assertion below would depend on how the machine
+# running the tests happens to be set up.
+NYC_CONFIG = {"applications_locations": ["New York", "NYC"],
+              "applications_remote_ok": True}
+
+
+def NYC_RULE():
+    with mock.patch.object(jobboards.settings, "raw",
+                           return_value=NYC_CONFIG):
+        return jobboards.location_rule()
+
+
 class NormAndEligibility(unittest.TestCase):
 
     def test_greenhouse_parse_and_comp(self):
@@ -80,18 +94,24 @@ class NormAndEligibility(unittest.TestCase):
         self.assertIn("Remote", out[0]["locations"])
 
     def test_location_rule(self):
+        # The rule is CONFIGURED, so the test configures it. Reading the
+        # developer's own data/config.json here would make the suite pass
+        # or fail depending on whose machine it runs on — and would hide
+        # the unconfigured-means-unfiltered default from the assertions
+        # entirely (that property is covered in test_frontdoor).
+        rule = NYC_RULE()
         ok = {"locations": ["New York City, NY"]}
         bare_remote = {"locations": ["Remote"]}
         us_remote = {"locations": ["San Francisco", "Remote"]}
         foreign_remote = {"locations": ["Seoul", "Remote"]}
         foreign_only = {"locations": ["London"]}
         eu_remote = {"locations": ["Remote - Europe"]}
-        self.assertTrue(jobboards.eligible_location(ok))
-        self.assertTrue(jobboards.eligible_location(bare_remote))
-        self.assertTrue(jobboards.eligible_location(us_remote))
-        self.assertFalse(jobboards.eligible_location(foreign_remote))
-        self.assertFalse(jobboards.eligible_location(foreign_only))
-        self.assertFalse(jobboards.eligible_location(eu_remote))
+        self.assertTrue(jobboards.eligible_location(ok, rule))
+        self.assertTrue(jobboards.eligible_location(bare_remote, rule))
+        self.assertTrue(jobboards.eligible_location(us_remote, rule))
+        self.assertFalse(jobboards.eligible_location(foreign_remote, rule))
+        self.assertFalse(jobboards.eligible_location(foreign_only, rule))
+        self.assertFalse(jobboards.eligible_location(eu_remote, rule))
 
     def test_adjudication_cut_by_title_and_comp_never_function(self):
         strat = {"uid": "x1", "title": "Deployment Strategist",
@@ -122,6 +142,11 @@ class PollDiffAndNotify(unittest.TestCase):
                               return_value=self.dir),
             mock.patch.object(jobboards, "_adjudication",
                               return_value=ADJ),
+            # poll_once and the ping label both read the owner's location
+            # rule from config; pin it so the suite tests the code rather
+            # than the machine it runs on.
+            mock.patch.object(jobboards.settings, "raw",
+                              return_value=NYC_CONFIG),
         ]
         for p in patches:
             p.start()
@@ -146,7 +171,10 @@ class PollDiffAndNotify(unittest.TestCase):
         self.assertEqual(r1["eligible_new"], 1)   # the AE is cut
         self.assertEqual(len(sent1), 1)
         self.assertIn("Deployment Strategist", sent1[0][0])
-        self.assertIn("(NYC)", sent1[0][0])
+        # The ping names the place the role actually matched, echoed from
+        # the owner's own configured list, rather than a label hardcoded
+        # to one city.
+        self.assertIn("(New York)", sent1[0][0])
 
         # second poll: nothing new, nothing re-notified
         r2, sent2 = self._poll(GH_PAYLOAD)
