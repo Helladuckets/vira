@@ -137,5 +137,56 @@ class Provisioning(unittest.TestCase):
         self.assertIn("live tree", r.stderr)
 
 
+class MergeChecklistSpecWarning(unittest.TestCase):
+    """CLAUDE.md is gitignored, so a spec line never rides a merge. The merge
+    checklist has to say so — including in the silent case where the worktree
+    has no copy at all, which means the session worked without the spec."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.live = self.root / "vira"
+        self.live.mkdir()
+        git("init", "-q", "-b", "main", ".", cwd=self.live)
+        # merge preflights both trees clean, so the fixture needs the real
+        # repo's ignores for the provisioned pieces
+        (self.live / ".gitignore").write_text("CLAUDE.md\n.venv\n.claude/\n")
+        git("add", ".gitignore", cwd=self.live)
+        git("-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-q", "-m", "base", cwd=self.live)
+        (self.live / "CLAUDE.md").write_text("the operational spec")
+        (self.live / ".venv").mkdir()
+        (self.live / ".claude").mkdir()
+        (self.live / ".claude" / "launch.json").write_text("{}")
+        self.wt = self.live / ".claude" / "worktrees" / "feat"
+        self.wt.parent.mkdir(parents=True)
+        git("worktree", "add", "-q", "-b", "claude/feat", str(self.wt), "main",
+            cwd=self.live)
+        # something to merge
+        (self.wt / "f.txt").write_text("work")
+        git("add", "f.txt", cwd=self.wt)
+        git("-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-q", "-m", "work", cwd=self.wt)
+
+    def test_warns_when_worktree_never_had_the_spec(self):
+        r = run_in(self.live, 'cmd_merge feat')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("NO CLAUDE.md", r.stdout)
+        self.assertIn("adopt", r.stdout)
+
+    def test_warns_when_the_spec_was_edited_in_the_worktree(self):
+        (self.wt / "CLAUDE.md").write_text("the operational spec\nplus a line")
+        r = run_in(self.live, 'cmd_merge feat')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("CLAUDE.md differs", r.stdout)
+
+    def test_quiet_when_the_spec_matches(self):
+        (self.wt / "CLAUDE.md").write_text("the operational spec")
+        r = run_in(self.live, 'cmd_merge feat')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("CLAUDE.md", r.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
