@@ -10,6 +10,12 @@ on demand with macOS-native tools (sips for images, ffmpeg for video first
 frames) and cached in data/media-thumbs/; favicons for link rows are fetched
 once per domain and cached in data/favicon-cache/ so the client never talks
 to a third party directly.
+
+Attachments macOS has offloaded to iCloud (Messages in iCloud evicts the
+oldest files when true free space runs low) are still listed — flagged
+`evicted`, never silently dropped — and their cached thumbnails keep serving,
+so a conversation's media history doesn't appear to shrink just because the
+originals moved to the cloud.
 """
 import bisect
 import hashlib
@@ -199,7 +205,8 @@ def _domain(url):
 def person_media(pid):
     """{photos, links, docs} shared in this person's direct conversation.
     Complete — every item in the thread's history, no caps (the client
-    previews a slice and lazy-loads thumbnails, so big sets are fine)."""
+    previews a slice and lazy-loads thumbnails, so big sets are fine),
+    including items whose originals now live only in iCloud."""
     chat_ids = _person_chat_ids(pid)
     return media_for_chats(chat_ids)
 
@@ -221,8 +228,8 @@ def media_for_chats(chat_ids):
         if name.lower().endswith(SKIP_NAMES):
             continue
         path = Path(fname).expanduser()
-        if not path.exists():   # purged from the local attachment cache
-            continue
+        # not on disk = offloaded to iCloud, not gone — keep it listed
+        evicted = not path.exists()
         when = apple_dt(date_ns)
         caption = msg_text(mtext, mblob)
         if caption:  # sent in the same message as the attachment
@@ -238,6 +245,8 @@ def media_for_chats(chat_ids):
             "when": when.isoformat() if when else None,
             "context": ctx,
         }
+        if evicted:
+            entry["evicted"] = True
         mime = mime or ""
         if mime.startswith(IMAGE_MIME):
             photos.append({**entry, "kind": "image"})
@@ -474,9 +483,11 @@ def thread_window(pid, att_id, before=60, after=40,
 
 # ---------- files + thumbnails ----------
 
-def attachment_path(att_id):
+def attachment_path(att_id, allow_missing=False):
     """Resolved on-disk path for an attachment, or None. Only paths under
-    ~/Library/Messages/Attachments are ever served."""
+    ~/Library/Messages/Attachments are ever served. allow_missing returns
+    the recorded path even when the file is evicted to iCloud (for cached
+    thumbnail lookups, which outlive the original)."""
     con = _connect()
     try:
         row = con.execute(
@@ -491,7 +502,7 @@ def attachment_path(att_id):
         path.relative_to(ATTACH_ROOT.resolve())
     except ValueError:
         return None, None, None
-    if not path.exists():
+    if not allow_missing and not path.exists():
         return None, None, None
     return path, row[1] or "application/octet-stream", row[2] or path.name
 
@@ -521,17 +532,44 @@ def indexed_file(att_id):
     return path, row[1] or "application/octet-stream", row[2] or path.name
 
 
-def _resolve_media(att_id):
+def _resolve_media(att_id, allow_missing=False):
     """Path/mime/name from chat.db first, then the email index."""
-    path, mime, name = attachment_path(att_id)
+    path, mime, name = attachment_path(att_id, allow_missing)
     if path:
         return path, mime, name
     return indexed_file(att_id)
 
 
 def _cache_key(path, suffix):
-    h = hashlib.md5(f"{path}|{path.stat().st_mtime}|{suffix}".encode()).hexdigest()
+    """Keyed on path alone: attachment files never change in place, and an
+    mtime-based key becomes uncomputable the moment macOS evicts the original
+    to iCloud — orphaning a thumbnail that still exists on disk."""
+    h = hashlib.md5(f"{path}|{suffix}".encode()).hexdigest()
     return THUMBS / f"{h}.jpg"
+
+
+def _legacy_cache_key(path, suffix):
+    """The pre-eviction-aware key (carried st_mtime); only computable while
+    the source file is still on disk. Used to migrate old cache entries."""
+    try:
+        mt = path.stat().st_mtime
+    except OSError:
+        return None
+    h = hashlib.md5(f"{path}|{mt}|{suffix}".encode()).hexdigest()
+    return THUMBS / f"{h}.jpg"
+
+
+def _cached(path, suffix):
+    """Existing cached derivative for path, or None. Migrates legacy-keyed
+    files to the durable key so they survive a later eviction."""
+    out = _cache_key(path, suffix)
+    if out.exists():
+        return out
+    legacy = _legacy_cache_key(path, suffix)
+    if legacy and legacy != out and legacy.exists():
+        legacy.replace(out)
+        return out
+    return None
 
 
 def _probe_duration(path):
@@ -547,13 +585,17 @@ def _probe_duration(path):
 
 def thumbnail(att_id, size=480):
     """Cached JPEG thumbnail for an image or video attachment. Returns the
-    cache path or None. Video thumbs also record duration into media-meta."""
-    path, mime, _name = _resolve_media(att_id)
+    cache path or None. Video thumbs also record duration into media-meta.
+    Serves the cached thumb even when the original is evicted to iCloud."""
+    path, mime, _name = _resolve_media(att_id, allow_missing=True)
     if not path:
         return None
+    hit = _cached(path, f"thumb{size}")
+    if hit:
+        return hit
+    if not path.exists():   # evicted before a thumb was ever generated
+        return None
     out = _cache_key(path, f"thumb{size}")
-    if out.exists():
-        return out
     THUMBS.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp.jpg")
     try:
@@ -584,12 +626,19 @@ def thumbnail(att_id, size=480):
 
 def preview_file(att_id):
     """(path, media_type, filename) for viewing in a browser. HEIC/TIFF get a
-    cached full-size JPEG conversion (Chrome can't render HEIC natively)."""
-    path, mime, name = _resolve_media(att_id)
+    cached full-size JPEG conversion (Chrome can't render HEIC natively).
+    For an evicted original, the best cached derivative still serves."""
+    path, mime, name = _resolve_media(att_id, allow_missing=True)
     if not path:
         return None, None, None
+    if not path.exists():
+        for suffix in ("full", "thumb480"):
+            hit = _cached(path, suffix)
+            if hit:
+                return hit, "image/jpeg", Path(name).stem + ".jpg"
+        return None, None, None
     if mime in ("image/heic", "image/heif", "image/tiff"):
-        out = _cache_key(path, "full")
+        out = _cached(path, "full") or _cache_key(path, "full")
         if not out.exists():
             THUMBS.mkdir(parents=True, exist_ok=True)
             tmp = out.with_suffix(".tmp.jpg")

@@ -1,9 +1,11 @@
 """Contact photos: extract thumbnails from the local AddressBook stores and
 map them to CRM person ids by shared email/phone. Deterministic sqlite reads;
-thumbnails cached on disk once extracted.
+thumbnails cached on disk and re-extracted whenever the AddressBook stores
+change, so an updated contact photo reaches Vira without a restart.
 """
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from . import data as crm
@@ -11,6 +13,9 @@ from . import fixtures, settings
 
 AB_GLOB = Path.home() / "Library" / "Application Support" / "AddressBook" / "Sources"
 CACHE = Path(__file__).resolve().parent.parent / "data" / "photo-cache"
+
+# how often the watcher re-stats the AddressBook stores for changes
+RESCAN_S = 600
 
 _index = {}
 _built = threading.Event()
@@ -30,8 +35,29 @@ def _image_bytes(blob):
     return None
 
 
+def _write_cache(pid, img):
+    """Write/refresh one cached thumbnail. Rewrites when the bytes changed —
+    an exists-check alone froze every avatar at its first extraction."""
+    out = CACHE / f"{pid}.jpg"
+    try:
+        if out.exists() and out.read_bytes() == img:
+            return out
+    except OSError:
+        pass
+    out.write_bytes(img)
+    return out
+
+
+def _ab_stamp():
+    """Newest mtime across the AddressBook stores (0.0 when none exist)."""
+    return max((db.stat().st_mtime
+                for db in AB_GLOB.glob("*/AddressBook-v22.abcddb")),
+               default=0.0)
+
+
 def build_index():
-    """person_id -> cached thumbnail path. Run once in the background."""
+    """person_id -> cached thumbnail path. Safe to re-run; refreshes any
+    thumbnail whose AddressBook bytes changed since the last pass."""
     CACHE.mkdir(parents=True, exist_ok=True)
     handle_to_pid = crm._load()["by_handle"]
     seen = set()
@@ -69,15 +95,31 @@ def build_index():
             if not img:
                 continue
             seen.add(pid)
-            out = CACHE / f"{pid}.jpg"
-            if not out.exists():
-                out.write_bytes(img)
-            _index[pid] = out
+            try:
+                _index[pid] = _write_cache(pid, img)
+            except OSError:
+                continue
     _built.set()
 
 
+def _watch_loop():
+    """Build once, then rebuild whenever an AddressBook store's mtime moves —
+    a synced contact-photo change lands within RESCAN_S without a restart."""
+    stamp = _ab_stamp()
+    build_index()
+    while True:
+        time.sleep(RESCAN_S)
+        try:
+            now = _ab_stamp()
+            if now > stamp:
+                stamp = now
+                build_index()
+        except Exception:  # noqa: BLE001 — never kill the watcher
+            pass
+
+
 def start_background_build():
-    threading.Thread(target=build_index, daemon=True, name="vira-photos").start()
+    threading.Thread(target=_watch_loop, daemon=True, name="vira-photos").start()
 
 
 def photo_path(pid):
