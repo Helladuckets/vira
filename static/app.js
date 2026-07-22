@@ -7774,6 +7774,11 @@ function initNavDrawer() {
     const dy = e.clientY - sy;
     if (!claimed) {
       if (Math.abs(dy) > SLOP && Math.abs(dy) > Math.abs(dx)) { pid = null; return; }
+      // a surface that opened mid-gesture owns it now — a long-press on the
+      // bar's leftmost icon starts in the edge zone, then the customize
+      // sheet appears under the same finger, and a drag from there is an
+      // icon being carried, not the drawer being pulled
+      if (blocked()) { pid = null; return; }
       const wanted = opening ? dx : -dx;
       if (wanted > CLAIM && Math.abs(dx) > Math.abs(dy) * 1.4) {
         claimed = true;
