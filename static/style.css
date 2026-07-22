@@ -1213,8 +1213,29 @@ body.lp-open .mdock { z-index: 960; }
 body.nd-open #shell,
 body.nd-open .mdock,
 body.nd-open .scroll-fade { transform: translateX(var(--nd-w)); }
-/* locked from the moment the drag is claimed, not just when it lands — a
-   half-pushed page would otherwise scroll sideways into the gap */
+/* Locked from the moment the drag is claimed, not just when it lands — a
+   half-pushed page would otherwise scroll sideways into the gap.
+
+   The <html> half is what makes the <body> half do anything, and without
+   it the page ZOOMS OUT instead of sliding. A pushed page sticks one
+   drawer-width past the right edge, and only an ancestor can clip that
+   away. <body> is the ancestor — but `overflow` set on <body> is
+   PROPAGATED to the viewport whenever <html> is `visible`, and the body
+   box itself is then treated as `visible` and clips nothing. So the rule
+   below locked scrolling and left the overhang in the document: 402 + 310
+   = 712px of content on a 402px screen. iOS does what it does with a
+   document wider than the screen — shrink-to-fit — and scales the whole
+   page to ~0.56 so the drawer and the page both fit, which reads as the
+   page resizing rather than sliding.
+
+   Giving <html> its own overflow stops the propagation, so <body> keeps
+   its value and finally clips its own box. The document then measures
+   exactly one screen wide and there is nothing to shrink to. Scroll
+   position is untouched: the page comes back where it was. Only #shell
+   needs this — the bar and the fade are fixed, and fixed boxes never
+   contribute to the document's scrollable area. */
+html:has(> body.nd-open),
+html:has(> body.nd-drag) { overflow: hidden; }
 body.nd-open, body.nd-drag { overflow: hidden; }
 
 .nd-scrim {
