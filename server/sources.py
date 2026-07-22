@@ -224,6 +224,27 @@ def _probe_companion(ctx):
             "action": "" if devs else "Pair in Phone Link"}
 
 
+def _probe_whatsapp(ctx):
+    """WhatsApp (P3): a pairing-based source like the companion. Present
+    once the sidecar toolchain is installed; configured = a device link
+    exists. Purely filesystem — never calls the sidecar, so the probe can
+    never block a Setup render on an HTTP timeout."""
+    from . import whatsapp
+    linked = whatsapp.linked()
+    if linked:
+        detail = ("Linked as a WhatsApp device — inbound messages land in "
+                  "the feed. Receive-only: Vira never sends.")
+    elif whatsapp.installed():
+        detail = ("Link Vira as a WhatsApp device to feed inbound messages "
+                  "into the feed. Receive-only.")
+    else:
+        detail = ("Sidecar not installed — run: cd bridge/whatsapp && "
+                  "npm install, then link in Settings > WhatsApp.")
+    return {"present": whatsapp.installed(), "configured": linked,
+            "count": 0, "detail": detail,
+            "action": "" if linked else "Connect in Settings > WhatsApp"}
+
+
 # ---------- the table ----------
 # id doubles as the refs.import_source tag the importers stamp, so a row's
 # "configured" is readable straight off the imported data. needs_disk marks
@@ -270,6 +291,14 @@ SOURCES = {
         "needs_disk": False,
         "card": "companion",
         "probe": _probe_companion,
+    },
+    "whatsapp": {
+        "label": "WhatsApp",
+        "kind": MESSAGES,
+        "platforms": ALL_PLATFORMS,
+        "needs_disk": False,
+        "card": "whatsapp",
+        "probe": _probe_whatsapp,
     },
     "imap-mail": {
         "label": "Email (IMAP)",
