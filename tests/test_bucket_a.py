@@ -149,7 +149,10 @@ class JudgeSymlinkTests(unittest.TestCase):
 
 class UpdaterGuardTests(unittest.TestCase):
     def test_apply_refuses_without_supervisor(self):
-        with mock.patch("server.update.settings.raw", return_value={}):
+        # Pinned to the Mac path; the Windows twin (windows_task_name)
+        # lives in test_update.SupervisorSeamTests.
+        with mock.patch("server.update.settings.IS_WIN", False), \
+             mock.patch("server.update.settings.raw", return_value={}):
             with self.assertRaises(ValueError) as ctx:
                 update.apply()
         self.assertIn("launchd_label", str(ctx.exception))
