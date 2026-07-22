@@ -1019,7 +1019,9 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 .lp-tile.current .lp-ic { border-color: var(--accent); }
 .lp-hint { text-align: center; }
 
-/* mobile: the full-screen overlay */
+/* mobile: the full-screen overlay — the CUSTOMIZE sheet since 2026-07-22:
+   the drawer is the launcher; this surface is reached from a long-press on
+   the access bar (or Edit in the drawer) purely to rearrange and curate */
 .launchpad {
   position: fixed; inset: 0; z-index: 950; display: none;
   overflow-y: auto; background: var(--scrim);
@@ -1106,7 +1108,6 @@ body.lp-open { overflow: hidden; }
 .lp-ghost .lp-tile { width: 100%; }
 
 @media (prefers-reduced-motion: reduce) {
-  .launchpad.open { animation: none; }
   .lp-ic, .lp-tile:hover .lp-ic { transition: none; transform: none; }
   /* no wobble: reorganize mode announces itself by lighting every icon */
   .launchpad.reorg .lp-jig { animation: none; }
@@ -1180,6 +1181,128 @@ body.lp-open .mdock { z-index: 960; }
   }
   .subsviz-frame { height: calc(100dvh - 230px - var(--mdock-h)); }
   .atlas-stage { height: calc(100dvh - 320px - var(--mdock-h)); }
+}
+
+/* ---------- mobile nav drawer (the Launchpad as a left column) ----------
+   Swipe in from the left edge or tap the brand. The page slides right with
+   it, the way the drawer reads on the reference phone — and "the page" is
+   everything that reads as page: #shell, the access bar and the scroll
+   fade. The bar and veil are fixed body children (a transformed ancestor
+   would re-anchor them to content instead of the viewport), so they carry
+   the same slide explicitly rather than inheriting it. */
+:root { --nd-w: min(310px, 82vw); }
+
+#shell { transition: transform .22s ease; }
+.mdock, .scroll-fade { transition: transform .22s ease; }
+body.nd-open #shell,
+body.nd-open .mdock,
+body.nd-open .scroll-fade { transform: translateX(var(--nd-w)); }
+/* locked from the moment the drag is claimed, not just when it lands — a
+   half-pushed page would otherwise scroll sideways into the gap */
+body.nd-open, body.nd-drag { overflow: hidden; }
+
+.nd-scrim {
+  position: fixed; inset: 0; z-index: 900;
+  background: #000; opacity: 0; pointer-events: none;
+  transition: opacity .22s ease;
+}
+body.nd-open .nd-scrim { opacity: .5; pointer-events: auto; }
+
+.navdrawer {
+  position: fixed; top: 0; bottom: 0; left: 0; z-index: 940;
+  width: var(--nd-w); display: flex; flex-direction: column;
+  background: var(--bg-raised); border-right: 1px solid var(--line);
+  transform: translateX(-100%); visibility: hidden; pointer-events: none;
+  transition: transform .22s ease, visibility .22s;
+}
+/* shut means inert: a slide-out that gets interrupted or throttled can rest
+   part-way on screen, and it must not eat taps meant for the page */
+body.nd-open .navdrawer, body.nd-drag .navdrawer {
+  visibility: visible; pointer-events: auto;
+}
+body.nd-open .navdrawer { transform: none; }
+/* the finger owns the position mid-drag — no transition to fight it */
+body.nd-drag .navdrawer, body.nd-drag #shell, body.nd-drag .nd-scrim,
+body.nd-drag .mdock, body.nd-drag .scroll-fade {
+  transition: none;
+}
+/* a claimed drag must not paint a text selection across the page it pushes */
+body.nd-drag { user-select: none; -webkit-user-select: none; }
+
+.nd-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between;
+  padding: calc(14px + env(safe-area-inset-top)) 18px 12px;
+}
+/* Edit: the way into the customize sheet without knowing the long-press */
+.nd-edit {
+  background: none; border: 0; padding: 4px 2px; cursor: pointer;
+  color: var(--text-faint); font-family: var(--mono); font-size: 10px;
+  letter-spacing: .14em; text-transform: uppercase;
+  -webkit-tap-highlight-color: transparent;
+}
+.nd-edit:active { color: var(--accent); }
+.nd-brand {
+  display: flex; align-items: center; gap: 8px;
+  font-family: "SF Pro Display", -apple-system, sans-serif;
+  font-weight: 500; letter-spacing: 0.35em; font-size: 15px;
+  color: var(--accent);
+}
+.nd-list {
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch; padding: 2px 8px 14px;
+}
+/* the same two groups the customize sheet draws, as list headings */
+.nd-sec-head {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--text-faint);
+  margin: 12px 10px 4px;
+}
+.nd-sec-head:first-child { margin-top: 4px; }
+.nd-row {
+  width: 100%; display: flex; align-items: center; gap: 13px;
+  padding: 10px 10px; background: none; border: 0; border-radius: var(--radius);
+  color: var(--text); font-family: inherit; font-size: 14.5px; text-align: left;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+}
+.nd-row:active { background: var(--hover-wash); }
+.nd-row.current { background: var(--sel-bg); color: var(--sel-text); }
+.nd-ic {
+  flex: none; width: 22px; height: 22px;
+  display: flex; align-items: center; justify-content: center;
+}
+.nd-ic svg {
+  width: 20px; height: 20px; stroke: var(--text-dim); fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
+}
+.nd-row.current .nd-ic svg { stroke: var(--accent-bright); }
+.nd-label { flex: 1; min-width: 0; }
+
+/* the gear sits in the lower left, under a hairline */
+.nd-foot {
+  flex: none; border-top: 1px solid var(--line);
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom));
+}
+.nd-gear {
+  display: flex; align-items: center; gap: 12px;
+  background: none; border: 0; padding: 4px 4px; cursor: pointer;
+  color: var(--text-dim); font-family: inherit; font-size: 13.5px;
+  -webkit-tap-highlight-color: transparent;
+}
+.nd-gear-ic {
+  flex: none; width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-card); border: 1px solid var(--line);
+}
+.nd-gear-ic svg {
+  width: 19px; height: 19px; stroke: var(--text-dim); fill: none;
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.nd-gear:active { color: var(--accent); }
+.nd-gear:active .nd-gear-ic { border-color: var(--accent); }
+.nd-gear:active .nd-gear-ic svg { stroke: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  .navdrawer, #shell, .nd-scrim, .mdock, .scroll-fade { transition: none; }
 }
 
 .empty { color: var(--text-faint); font-size: 13.5px; padding: 18px 4px; text-align: center; }
@@ -1322,9 +1445,11 @@ body.lp-open .mdock { z-index: 960; }
 /* ---------- desktop: dock + floating windows over a constellation ---------- */
 @media (min-width: 1100px) {
   body { padding-bottom: 0; overflow: hidden; }
-  /* the phone's chrome never shows on a desk: the overlay, the access bar,
-     and the fade that dissolves the column into it */
-  .launchpad, .mdock, .scroll-fade { display: none !important; }
+  /* the phone's chrome never shows on a desk: the drawer + its scrim, the
+     customize overlay, the access bar, and the fade that dissolves the
+     column into it */
+  .navdrawer, .nd-scrim, .launchpad, .mdock, .scroll-fade { display: none !important; }
+  #shell { transform: none !important; }
   main { display: none; } /* the sections live inside floating windows */
 
   #constellation { position: fixed; inset: 0; z-index: 0; pointer-events: none; }

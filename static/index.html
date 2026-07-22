@@ -19,6 +19,29 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<!-- Left nav drawer (mobile): swipe in from the left edge, or tap the brand.
+     The Launchpad as a scrollable list — icon + label per app — with Setup
+     on the gear at the foot. #shell is everything the drawer pushes aside;
+     it only ever carries a transform while the drawer is open or dragging. -->
+<div class="nd-scrim" id="nd-scrim"></div>
+<aside class="navdrawer" id="navdrawer" aria-label="Apps" aria-hidden="true">
+  <div class="nd-head">
+    <span class="nd-brand"><svg class="brand-solar" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/></svg>VIRA</span>
+    <button class="nd-edit" id="nd-edit"
+            title="Rearrange apps and pick the access bar's five">Edit</button>
+  </div>
+  <nav class="nd-list" id="nd-list"></nav>
+  <div class="nd-foot">
+    <button class="nd-gear" id="nd-gear" title="Setup">
+      <!-- a cog, not the Setup window's sun-spoked glyph: a ring with stubby
+           teeth reads as "settings" at 19px where bare spokes read as a sun -->
+      <span class="nd-gear-ic"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6zM12 5.4a6.6 6.6 0 1 0 0 13.2 6.6 6.6 0 0 0 0-13.2zM18.2 12h2.2M3.6 12h2.2M12 5.8V3.6M12 20.4v-2.2M16.38 7.62l1.56-1.56M6.06 17.94l1.56-1.56M16.38 16.38l1.56 1.56M6.06 6.06l1.56 1.56"/></svg></span>
+      <span class="nd-gear-label">Setup</span>
+    </button>
+  </div>
+</aside>
+
+<div id="shell">
 <header class="topbar">
   <button class="brand" id="brand-btn" title="Launchpad"><svg class="brand-solar" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/></svg>VIRA</button>
   <span class="inst-badge" id="inst-badge" hidden>TEST</span>
@@ -407,6 +430,7 @@
       the line — the top group is the dock.</p>
   </section>
 </main>
+</div><!-- /#shell -->
 
 <!-- The column dissolves into the bottom of the phone instead of being
      guillotined by the bezel: a fixed veil sitting just above the access

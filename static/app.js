@@ -5353,7 +5353,8 @@ function openApp(id) {
     return;
   }
   if (id === "launchpad") { openLaunchpad(); return; }
-  closeLaunchpad();
+  closeLaunchpad();   // the drawer, if it sent us here
+  closeReorg();       // the customize sheet, if a tap in it navigated
   document.querySelectorAll(".view").forEach((v) =>
     v.classList.toggle("active", v.id === "view-" + id));
   viewLoad(id);
@@ -7606,7 +7607,11 @@ function lpTile(id, kind) {
   return cell;
 }
 
-// the mobile overlay (built lazily; desktop uses the Launchpad window)
+// ---------- the customize sheet (mobile) -----------------------------------
+// The full-screen grid stopped being the phone's launcher when the nav
+// drawer landed (2026-07-22) — it survives as the CUSTOMIZE surface: two
+// groups either side of the line, long-press to jiggle, drag onto the bar.
+// Reached from a long-press on the access bar, or Edit in the drawer.
 let lpOverlay = null;
 
 function ensureLaunchpadOverlay() {
@@ -7626,7 +7631,7 @@ function ensureLaunchpadOverlay() {
   lpOverlay.addEventListener("click", (e) => {
     // tapping the sheet leaves reorganize mode first, dismisses second
     if (e.target !== lpOverlay) return;
-    if (reorgOn) setReorg(false); else closeLaunchpad();
+    if (reorgOn) setReorg(false); else closeReorg();
   });
   // Android fires contextmenu on a long press; that is our gesture, not the
   // desktop right-click menu's
@@ -7635,13 +7640,13 @@ function ensureLaunchpadOverlay() {
   });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    if (reorgOn) setReorg(false); else closeLaunchpad();
+    if (reorgOn) setReorg(false); else closeReorg();
   });
   document.body.appendChild(lpOverlay);
   return lpOverlay;
 }
 
-function openLaunchpad(opts) {
+function openReorg(opts) {
   const ov = ensureLaunchpadOverlay();
   renderLaunchpad();
   ov.classList.toggle("instant", !!opts?.instant);
@@ -7652,10 +7657,175 @@ function openLaunchpad(opts) {
   document.body.classList.add("lp-open");
 }
 
-function closeLaunchpad() {
+function closeReorg() {
   setReorg(false);
   lpOverlay?.classList.remove("open");
   document.body.classList.remove("lp-open");
+}
+
+// ---------- mobile nav drawer: the Launchpad as a left column ----------
+// The phone's launcher (2026-07-22): the same apps the grid shows, read as
+// a scrollable icon+label column that swipes in from the left edge — the
+// brand button opens it too, and Setup lives on the gear at the foot. The
+// rows mirror the customize sheet's two groups, reading the same stores
+// (mdockIds + appOrder), so the drawer and the grid never disagree.
+function renderNavDrawer() {
+  const list = $("#nd-list");
+  if (!list) return;
+  const activeView = document.querySelector(".view.active")?.id || "";
+  const bar = mdockIds();
+  // Setup is not listed — the gear at the foot is its row — unless the
+  // owner deliberately put it on the bar, where hiding it would lie
+  const rest = appOrder().filter((id) => !bar.includes(id) && id !== "setup");
+  list.innerHTML = "";
+  const row = (id) => {
+    const spec = appSpec(id);
+    if (!spec) return;
+    const r = el("button", "nd-row");
+    r.dataset.app = id;
+    const ic = el("span", "nd-ic");
+    ic.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${spec.icon}"/></svg>`;
+    r.appendChild(ic);
+    r.appendChild(el("span", "nd-label", spec.title));
+    if (activeView === "view-" + id) {
+      r.classList.add("current");
+      r.setAttribute("aria-current", "page");
+    }
+    r.addEventListener("click", () => openApp(id));
+    list.appendChild(r);
+  };
+  if (bar.length) list.appendChild(el("div", "nd-sec-head", "In the bar"));
+  bar.forEach(row);
+  if (rest.length) list.appendChild(el("div", "nd-sec-head", "All apps"));
+  rest.forEach(row);
+}
+
+const drawerWidth = () =>
+  $("#navdrawer")?.getBoundingClientRect().width || Math.min(310, innerWidth * 0.82);
+
+function openLaunchpad() {           // the drawer IS the mobile launcher
+  renderNavDrawer();
+  dragPaint(null);                   // drop any mid-drag inline transforms
+  document.body.classList.add("nd-open");
+  $("#navdrawer")?.setAttribute("aria-hidden", "false");
+}
+
+function closeLaunchpad() {
+  if (!document.body.classList.contains("nd-open")) return;
+  dragPaint(null);
+  document.body.classList.remove("nd-open");
+  $("#navdrawer")?.setAttribute("aria-hidden", "true");
+}
+
+// paint an in-progress drag: x is how far the drawer's right edge has come
+// in from the left (0 = shut, width = wide open). null hands the position
+// back to the stylesheet so the open/close transition can run.
+function dragPaint(x) {
+  const drawer = $("#navdrawer"), scrim = $("#nd-scrim"), shell = $("#shell");
+  if (!drawer || !scrim || !shell) return;
+  // "the page" is everything that rides with it: the shell, the access bar
+  // and the scroll fade (fixed body children, so they carry it themselves)
+  const riders = [shell, $("#mdock"), document.querySelector(".scroll-fade")]
+    .filter(Boolean);
+  if (x === null) {
+    drawer.style.transform = "";
+    riders.forEach((n) => { n.style.transform = ""; });
+    scrim.style.opacity = "";
+    return;
+  }
+  const w = drawerWidth();
+  drawer.style.transform = `translateX(${x - w}px)`;
+  riders.forEach((n) => { n.style.transform = `translateX(${x}px)`; });
+  scrim.style.opacity = (0.5 * (x / w)).toFixed(3);
+}
+
+// Edge swipe. Opening is claimed only from the left ~24px and only once the
+// gesture is clearly rightward, so vertical scrolling and the feed's
+// swipe-left-to-hide are untouched. Closing can start anywhere on the drawer
+// or the scrim.
+function initNavDrawer() {
+  const drawer = $("#navdrawer");
+  if (!drawer || isDesktop) return;
+  const EDGE = 24, CLAIM = 12, SLOP = 12;
+  let sx = 0, sy = 0, dx = 0, pid = null, claimed = false, opening = false;
+  let lastX = 0, lastT = 0, vx = 0, dragEndAt = 0;
+
+  const isOpen = () => document.body.classList.contains("nd-open");
+  // a lit panel / sheet / customize overlay owns the gesture, not the drawer
+  const blocked = () =>
+    document.querySelector(".panel.open, .sheet.open, .launchpad.open");
+
+  addEventListener("pointerdown", (e) => {
+    if (claimed) return;             // a live drag already owns the gesture
+    pid = null;
+    if (e.pointerType === "mouse" || blocked()) return;
+    opening = !isOpen();
+    if (opening && e.clientX > EDGE) return;
+    if (!opening && !drawer.contains(e.target) && e.target !== $("#nd-scrim")) return;
+    sx = lastX = e.clientX; sy = e.clientY; dx = 0; vx = 0;
+    lastT = e.timeStamp; pid = e.pointerId;
+  }, { passive: true });
+
+  addEventListener("pointermove", (e) => {
+    if (pid !== e.pointerId) return;
+    dx = e.clientX - sx;
+    const dy = e.clientY - sy;
+    if (!claimed) {
+      if (Math.abs(dy) > SLOP && Math.abs(dy) > Math.abs(dx)) { pid = null; return; }
+      const wanted = opening ? dx : -dx;
+      if (wanted > CLAIM && Math.abs(dx) > Math.abs(dy) * 1.4) {
+        claimed = true;
+        // fill it before it comes into view, or the first swipe of the
+        // session drags in an empty panel and the rows pop in at the end
+        if (opening) renderNavDrawer();
+        document.body.classList.add("nd-drag");
+        try { drawer.setPointerCapture(e.pointerId); } catch { /* fine */ }
+      } else return;
+    }
+    // velocity over a >=10ms window: coalesced 120Hz samples arrive close
+    // enough together that a sub-millisecond dt reads a 2px nudge as a fling
+    const dt = e.timeStamp - lastT;
+    if (dt >= 10) {
+      vx = (e.clientX - lastX) / dt;                // px per ms
+      lastX = e.clientX; lastT = e.timeStamp;
+    }
+    const w = drawerWidth();
+    dragPaint(Math.max(0, Math.min(w, (opening ? 0 : w) + dx)));
+  }, { passive: true });
+
+  const finish = (e) => {
+    if (pid === null || pid !== e.pointerId) return;
+    pid = null;
+    if (!claimed) return;
+    claimed = false;
+    dragEndAt = Date.now();
+    document.body.classList.remove("nd-drag");
+    const w = drawerWidth();
+    // a finger that stalled before lifting isn't a fling, whatever it was
+    // doing 200ms ago — fall back to how far it actually got
+    const flung = e.timeStamp - lastT < 120 && Math.abs(vx) > 0.45;
+    const open = flung ? vx > 0
+      : (opening ? dx > w * 0.4 : w + dx > w * 0.6);
+    if (open) openLaunchpad(); else { dragPaint(null); closeLaunchpad(); }
+  };
+  addEventListener("pointerup", finish, { passive: true });
+  addEventListener("pointercancel", finish, { passive: true });
+
+  // a drag that lands on a row ends in a pointerup there, and the click that
+  // follows would open that app -- swallow that one (same guard the dock uses)
+  drawer.addEventListener("click", (e) => {
+    if (Date.now() - dragEndAt < 350) { e.stopPropagation(); e.preventDefault(); }
+  }, true);
+
+  $("#nd-scrim")?.addEventListener("click", closeLaunchpad);
+  $("#nd-gear")?.addEventListener("click", () => openApp("setup"));
+  // Edit: hand off to the customize sheet, already jiggling
+  $("#nd-edit")?.addEventListener("click", () => {
+    closeLaunchpad();
+    setReorg(true);
+    openReorg({ instant: true });
+  });
+  addEventListener("keydown", (e) => { if (e.key === "Escape") closeLaunchpad(); });
 }
 
 // ---------- mobile: the five-app access bar --------------------------------
@@ -7822,7 +7992,7 @@ function startDrag(p) {
   const id = p.tile.dataset.app;
   // the drag always carries the GRID tile, so a press that began on the bar
   // opens the Launchpad first — there has to be somewhere to drag it to
-  if (!lpOverlay?.classList.contains("open")) openLaunchpad({ instant: true });
+  if (!lpOverlay?.classList.contains("open")) openReorg({ instant: true });
   const tile = lpOverlay.querySelector(`.lp-tile[data-app="${id}"]`);
   if (!tile) return;
   const r = tile.getBoundingClientRect();
@@ -8550,8 +8720,13 @@ async function boot() {
   buildMobileDock();   // the phone's five-app access bar
   initReorg();         // long-press the grid or the bar to rearrange both
   // the brand (upper left) is the Launchpad button: floating window on
-  // desktop, full-screen grid overlay on mobile
-  $("#brand-btn")?.addEventListener("click", () => openApp("launchpad"));
+  // desktop, the left nav drawer on mobile (tap toggles it)
+  initNavDrawer();
+  $("#brand-btn")?.addEventListener("click", () => {
+    if (!isDesktop && document.body.classList.contains("nd-open"))
+      closeLaunchpad();
+    else openApp("launchpad");
+  });
   initSearchView();
   initIdeas();
   routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
