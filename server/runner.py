@@ -29,8 +29,8 @@ from pathlib import Path
 
 from . import jobfiles, joblog, viratools
 from .session import (OUTPUT_CAP, READ_ONLY_EXCLUDE, _extract_plan_md,
-                      _mark_idea, _publish_plan, _sdk_env, _tool_preview,
-                      _tool_summary)
+                      _finalize_plan, _mark_idea, _plan_ref, _sdk_env,
+                      _tool_preview, _tool_summary)
 
 try:
     from claude_agent_sdk import (
@@ -318,18 +318,24 @@ class Runner:
         self.state["result_text"] = (result_text or "")[:RESULT_KEEP]
         if self.interrupted or self.closing:
             self.append("[vira] session interrupted\n")
-        # Plan sessions produce markdown read-only; the runner publishes it
-        # (deterministic, survives the server being down). Stay "running"
-        # until the publish finishes so the UI streams through to the URL.
+        # Plan sessions produce markdown read-only; the runner finalizes it
+        # (deterministic, survives the server being down): saves it to the
+        # vault as a reopenable note, and — on the owner's own machine — also
+        # publishes the hosted lab page. Stay "running" until this finishes so
+        # the UI streams through to the saved/published references.
+        plan_res = None
         if ok and spec.get("publish_plan") and not (self.interrupted
                                                     or self.closing):
             md = _extract_plan_md(result_text or self.output_tail)
-            self.append("\n[vira] publishing plan to the lab…\n")
-            url = await asyncio.to_thread(_publish_plan, md)
+            self.append("\n[vira] saving the plan…\n")
+            plan_res = await asyncio.to_thread(
+                _finalize_plan, md, spec.get("idea_id"), spec["id"])
             self.append((
-                f"[vira] plan published: {url}\n" if url else
-                "[vira] plan publish failed — see "
-                "~/.claude/logs/plan-html-deploy.log\n"))
+                f"[vira] plan saved: {_plan_ref(plan_res)}\n"
+                if plan_res.get("plan_id") else
+                "[vira] plan could not be saved — see runner.log\n"))
+            if plan_res.get("url"):
+                self.append(f"[vira] plan published: {plan_res['url']}\n")
         status = ("done" if ok or self.interrupted or self.closing
                   else "error")
         self.state["status"] = status
@@ -339,6 +345,7 @@ class Runner:
         if spec.get("idea_id"):
             _mark_idea({"id": spec["id"], "idea_id": spec["idea_id"],
                         "publish_plan": spec.get("publish_plan"),
+                        "plan": plan_res,
                         "output": self.output_tail},
                        ok and not (self.interrupted or self.closing),
                        interrupted=self.interrupted or self.closing)

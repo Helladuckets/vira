@@ -2287,8 +2287,8 @@ function ideaPlanPrompt(it, extra, cwd) {
     "implementation plan.",
     "",
     "Output ONLY the plan as markdown — no preamble, no closing remarks, no",
-    "code fence around the whole thing. Vira publishes it as a rich multi-page",
-    "hosted plan page. Follow this plan format exactly:",
+    "code fence around the whole thing. Vira saves it to your vault as a note",
+    "and renders it in an in-app plan viewer. Follow this plan format exactly:",
     '- First line: "# Title" (a short noun phrase, max ~8 words).',
     '- Then "## Executive Summary" (2-3 sentences: what is built, the approach,',
     "  the key tradeoff or risk).",
@@ -2301,7 +2301,7 @@ function ideaPlanPrompt(it, extra, cwd) {
 let ideaRunCtx = null;
 function ideaRunNote(mode) {
   if (mode === "plan")
-    return "Read-only in the repo (gate-enforced). Publishes a full hosted HTML plan page.";
+    return "Read-only in the repo (gate-enforced). Saves the plan to your vault and opens it in the Plans window.";
   return $("#idea-run-autopilot").checked
     ? "Full autonomy in the target repo (edits + commands, no prompts). Will not commit or push."
     : "Interactive: edits and commands pause for your Approve/Deny in the session panel. Will not commit or push.";
@@ -2547,10 +2547,22 @@ async function loadNotify() {
 // Append text with any http(s) URLs as real clickable links (new tab) —
 // built from text nodes + anchor elements, never innerHTML.
 function appendLinkified(parent, text) {
-  const re = /https?:\/\/[^\s]+/g;
+  // URLs open in a new tab; [plan <id>: <title>] tokens (stamped on idea
+  // notes and echoed in the job terminal) open the saved plan in-app — the
+  // reopenable reference that outlives the job terminal.
+  const re = /https?:\/\/[^\s]+|\[plan (pl_[a-z0-9]+): ([^\]]+)\]/g;
   let last = 0, m;
   while ((m = re.exec(text)) !== null) {
     if (m.index > last) parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+    if (m[1]) {
+      const id = m[1], title = m[2];
+      const a = el("a", "plan-link", title);
+      a.href = "#"; a.title = "Open this plan";
+      a.addEventListener("click", (e) => { e.preventDefault(); openPlan(id); });
+      parent.appendChild(a);
+      last = m.index + m[0].length;
+      continue;
+    }
     let url = m[0];
     const trail = (url.match(/[).,;:!?]+$/) || [""])[0];
     if (trail) url = url.slice(0, -trail.length);
@@ -2579,7 +2591,7 @@ function appendInline(parent, text) {
 function renderTermLine(line) {
   const t = line.replace(/^\s+/, "");
   const div = document.createElement("div");
-  if (/^\[vira\] (plan published|plan publish failed|job failed|session failed|permission|approved|denied|interrupt|session closed|session interrupted)/.test(t)) {
+  if (/^\[vira\] (plan saved|plan published|plan could not be saved|plan publish failed|job failed|session failed|permission|approved|denied|interrupt|session closed|session interrupted)/.test(t)) {
     div.className = "term-line term-note"; appendLinkified(div, line);
   } else if (t.startsWith("[you]")) {
     div.className = "term-line term-you"; div.textContent = line;
@@ -4750,6 +4762,7 @@ function viewLoad(id) {
     loadIdeas().catch(() => {});
     if (ideasTab === "log") loadChangelog().catch(() => {});
   }
+  if (id === "plans") loadPlans().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "companion") loadCompanion().catch(() => {});
@@ -4874,6 +4887,91 @@ async function openNoteByRef(ref) {
     if (hits.length) openNote(hits[0].path, hits[0].title);
     else toast("No note found for " + ref);
   } catch { toast("Note lookup failed"); }
+}
+
+// ----- Plans: Plan-mode output saved to the vault, reopenable in-app -----
+
+let plansCache = [];
+
+async function loadPlans() {
+  const meta = $("#plans-meta");
+  try {
+    const r = await api("/api/plans");
+    plansCache = r.plans || [];
+  } catch (e) {
+    if (meta) meta.textContent = "unavailable";
+    return;
+  }
+  const list = $("#plans-list");
+  list.innerHTML = "";
+  if (meta) meta.textContent = plansCache.length
+    ? plansCache.length + (plansCache.length === 1 ? " plan" : " plans") : "";
+  if (!plansCache.length) {
+    list.appendChild(el("div", "empty left",
+      "No plans yet. Run “Plan” on an idea and it lands here."));
+    return;
+  }
+  plansCache.forEach((p) => list.appendChild(planRow(p)));
+}
+
+function planRow(p) {
+  const box = el("div", "plan-item");
+  const top = el("div", "plan-item-top");
+  const name = el("button", "plan-item-name", p.title || "Untitled plan");
+  name.title = "Open this plan";
+  name.addEventListener("click", () => openPlan(p.id));
+  top.appendChild(name);
+  const delBtn = el("button", "idea-del", "×");
+  delBtn.title = "Delete";
+  delBtn.addEventListener("click", async () => {
+    if (!confirm("Delete this plan? It is removed from your vault too.")) return;
+    try {
+      await del("/api/plans/" + p.id);
+      plansCache = plansCache.filter((x) => x.id !== p.id);
+      loadPlans();
+    } catch (e) { alert("Delete failed: " + e.message); }
+  });
+  top.appendChild(delBtn);
+  box.appendChild(top);
+  const bits = [p.created ? fmtTime(p.created) : "",
+    p.missing ? "file missing" : "",
+    p.lab_url ? "hosted" : ""].filter(Boolean);
+  if (bits.length)
+    box.appendChild(el("div", "plan-item-meta", bits.join(" · ")));
+  return box;
+}
+
+// Open a saved plan in the shared markdown focus panel (the vault note
+// viewer). Works from anywhere the plan is referenced — the Plans window,
+// an idea note, or the job terminal — so a closed viewer always reopens.
+async function openPlan(id) {
+  const panel = $("#note-panel");
+  panel.classList.add("open");
+  enterFocus(panel, () => panel.classList.remove("open"));
+  $("#note-title").textContent = "Plan";
+  const body = $("#note-body");
+  body.innerHTML = "";
+  body.appendChild(el("div", "spin", "Loading plan…"));
+  try {
+    const p = await api("/api/plans/" + id);
+    $("#note-title").textContent = p.title || "Plan";
+    body.innerHTML = "";
+    if (p.lab_url) {
+      const a = el("a", "plan-hosted", "Open hosted version");
+      a.href = p.lab_url; a.target = "_blank"; a.rel = "noopener";
+      body.appendChild(a);
+    }
+    const md = el("div", "plan-md");
+    md.innerHTML = p.missing
+      ? "<p class='hint'>The plan file is no longer in the vault.</p>"
+      : mdToHtml(p.markdown);
+    body.appendChild(md);
+    md.querySelectorAll(".note-link").forEach((a) =>
+      a.addEventListener("click", () => openNoteByRef(a.dataset.ref)));
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty left", "Plan unavailable: " + e.message));
+  }
 }
 
 // ----- Brain: grounded chat over the vault -----
@@ -6049,6 +6147,8 @@ const WINDOWS = [
     icon: "M4 5h16v14H4zM7.5 15.5l3.5-4 2.5 3 2-2.5 3 3.5M9 9.5a1 1 0 1 0 0-.01" },
   { id: "ideas", title: "Ideas & On-Hold", w: 480,
     icon: "M9 18h6M10 21h4M12 3a6 6 0 0 0-3.8 10.6c.7.6 1.3 1.4 1.3 2.4h5c0-1 .6-1.8 1.3-2.4A6 6 0 0 0 12 3z" },
+  { id: "plans", title: "Plans", w: 520,
+    icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
   { id: "brain", title: "Brain", w: 560,
     icon: "M12 4a5 5 0 0 0-5 5c0 1.2.4 2.2 1 3a4 4 0 0 0 1 6.5V21h6v-2.5A4 4 0 0 0 16 12c.6-.8 1-1.8 1-3a5 5 0 0 0-5-5zM9.5 9.5h5M12 9.5V15" },
   { id: "radar", title: "Radar", w: 560,
