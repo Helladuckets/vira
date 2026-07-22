@@ -404,6 +404,27 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .idea-del:hover { color: var(--red); border-color: var(--line); }
 .idea-meta { font-size: 11px; color: var(--text-faint); margin-top: 6px; }
 .idea-meta a, .term-note a { color: var(--accent); text-decoration: underline; word-break: break-all; }
+/* Plans window + saved-plan viewer (Plan-mode output) */
+.plan-link { color: var(--accent); text-decoration: underline; cursor: pointer; }
+.plan-item {
+  border: 1px solid var(--line); border-left: 3px solid var(--accent);
+  border-radius: 2px; padding: 10px 12px; margin-bottom: 8px;
+  background: var(--bg-card);
+}
+.plan-item-top { display: flex; align-items: center; gap: 8px; }
+.plan-item-name {
+  flex: 1; text-align: left; font: inherit; font-size: 13.5px;
+  background: none; border: none; color: inherit; cursor: pointer;
+  padding: 0; line-height: 1.4;
+}
+.plan-item-name:hover { color: var(--accent); }
+.plan-item-meta { font-size: 11px; color: var(--text-faint); margin-top: 5px; }
+.plan-hosted {
+  display: inline-block; margin-bottom: 12px; font-size: 12px;
+  color: var(--accent); text-decoration: underline;
+}
+.plan-md { line-height: 1.5; }
+
 .idea-run { display: flex; gap: 8px; margin-top: 9px; }
 .idea-run-btn {
   padding: 5px 13px; font-size: 12px; border-radius: 2px; cursor: pointer;
