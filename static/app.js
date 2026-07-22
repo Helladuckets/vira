@@ -3104,40 +3104,14 @@ $("#jobs-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
     if (hist) loadJobsHistory().catch(() => {});
   }));
 
-// ---------- settings ----------
-let cfg = null;
-$("#settings-btn").addEventListener("click", async () => {
-  cfg = await api("/api/config");
-  _instCfg = cfg;  // keep the cockpit banner cache fresh
-  $("#cfg-cli-model").value = cfg.cli_model;
-  $("#cfg-api-model").value = cfg.api_model;
-  const ge = $("#graph-email");
-  if (ge && !ge.value) ge.value = cfg.graph_email || "";
-  $("#cfg-api-hint").textContent = cfg.api_key_present
-    ? "API key detected (" + cfg.api_key_env + ")."
-    : "No API key found — set " + cfg.api_key_env + " in the server environment to enable the API backend.";
-  document.querySelectorAll("#backend-seg .seg-btn").forEach((b) =>
-    b.classList.toggle("on", b.dataset.v === cfg.ai_backend));
-  renderMailAccounts().catch(() => {});
-  refreshUpdateStatus(false).catch(() => {});
-  api("/api/notify").then(({ config: nc }) => {
-    document.querySelectorAll("#notify-seg .seg-btn").forEach((b) =>
-      b.classList.toggle("on", b.dataset.v === (nc.enabled ? "on" : "off")));
-    const h = $("#notify-handle");
-    if (h) h.value = nc.handle || "";
-  }).catch(() => {});
-  startWaPoll();
-  $("#settings-sheet").classList.add("open");
-});
+// ---------- settings, merged into the Setup window (2026-07-21) ----------
+// The gear opens Setup — one surface that is both the first-run walkthrough
+// and the always-revisitable config board. The helpers below (mail,
+// WhatsApp, notifications, updates, backend) are called by Setup's manage
+// cards; see renderSetup / SETUP_MANAGE / cardChannels / cardAi.
+$("#settings-btn").addEventListener("click", () => openApp("setup"));
 
-document.querySelectorAll("#notify-seg .seg-btn").forEach((b) =>
-  b.addEventListener("click", () => {
-    document.querySelectorAll("#notify-seg .seg-btn").forEach((x) =>
-      x.classList.toggle("on", x === b));
-  }));
-
-$("#notify-test")?.addEventListener("click", async () => {
-  const btn = $("#notify-test");
+async function notifyTest(btn) {
   const hint = $("#notify-hint");
   btn.disabled = true;
   hint.textContent = "Sending…";
@@ -3150,7 +3124,12 @@ $("#notify-test")?.addEventListener("click", async () => {
   } finally {
     btn.disabled = false;
   }
-});
+}
+
+async function notifySave(enabled, handle) {
+  await post("/api/notify/config",
+    { enabled, handle: handle || null }).catch(() => {});
+}
 
 // ---------- updates (pull + restart when the remote is ahead) ----------
 
@@ -3178,16 +3157,15 @@ async function refreshUpdateStatus(fetch) {
   }
 }
 
-$("#upd-check")?.addEventListener("click", async () => {
-  const btn = $("#upd-check");
+async function updCheck(btn) {
   btn.disabled = true;
   $("#upd-hint").textContent = "Checking…";
   await refreshUpdateStatus(true);
   btn.disabled = false;
-});
+}
 
-$("#upd-apply")?.addEventListener("click", async () => {
-  const btn = $("#upd-apply"), hint = $("#upd-hint");
+async function applyUpdate(btn) {
+  const hint = $("#upd-hint");
   btn.disabled = true;
   hint.textContent = "Pulling…";
   try {
@@ -3207,20 +3185,21 @@ $("#upd-apply")?.addEventListener("click", async () => {
     hint.textContent = "Update failed: " + e.message;
     btn.disabled = false;
   }
-});
+}
 
 // passive check shortly after load: a quiet toast when the remote is ahead
 setTimeout(async () => {
   try {
     const u = await api("/api/update?fetch=1");
     if (u && u.git && u.behind > 0)
-      toast(`Vira update available (${u.behind} commit${u.behind > 1 ? "s" : ""}) — open Settings to apply`);
+      toast(`Vira update available (${u.behind} commit${u.behind > 1 ? "s" : ""}) — open Setup to apply`);
   } catch { /* offline or not a clone — stay quiet */ }
 }, 6000);
 
 async function renderMailAccounts() {
   const res = await api("/api/feed");
   const box = $("#mail-accounts");
+  if (!box) return;
   box.innerHTML = "";
   const entries = Object.entries(res.mail || {});
   if (!entries.length) {
@@ -3236,7 +3215,7 @@ async function renderMailAccounts() {
 }
 
 let graphPoll;
-$("#graph-connect").addEventListener("click", async () => {
+async function graphConnect() {
   const emailAddr = $("#graph-email").value.trim();
   if (!emailAddr) return;
   const hint = $("#graph-hint");
@@ -3276,14 +3255,39 @@ $("#graph-connect").addEventListener("click", async () => {
     hint.textContent = "Failed: " + e.message;
     btn.disabled = false;
   }
-});
+}
+
+// Add a Gmail/IMAP mailbox from the Setup mail card. The password rides the
+// server's secrets ladder (Keychain / Credential Manager), never the JSON.
+async function imapAdd(btn, fields) {
+  const hint = $("#imap-hint");
+  btn.disabled = true;
+  hint.textContent = "Adding…";
+  try {
+    const r = await post("/api/mail/imap/add", {
+      email: fields.email.value.trim(),
+      host: fields.host.value.trim(),
+      password: fields.password.value,
+    });
+    hint.textContent = (r.added ? "Added " : "Updated ") + r.email +
+      " — the feed picks up new mail within a minute.";
+    fields.password.value = "";
+    renderMailAccounts().catch(() => {});
+  } catch (e) {
+    hint.textContent = "Failed: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // WhatsApp card: status + pairing QR + ingest. The card polls only while
-// the settings sheet is open; on live the server-side watcher does the
-// real work and this is just the connect/QR surface.
+// it is on screen; on live the server-side watcher does the real work and
+// this is just the connect/QR surface.
 let waPoll;
 async function waTick() {
   const stat = $("#wa-status"), hint = $("#wa-hint");
   const qrBox = $("#wa-qr-box"), btn = $("#wa-connect");
+  if (!stat) { stopWaPoll(); return; }   // card left the screen — self-stop
   let st;
   try {
     st = await api("/api/whatsapp/status");
@@ -3319,7 +3323,7 @@ async function waTick() {
     if (!st.installed)
       hint.textContent = "Sidecar not installed — run: cd bridge/whatsapp && npm install";
     else if (st.passive)
-      hint.textContent = "Test instance: start the sidecar by hand (scripts/whatsapp-sidecar.sh), then reopen this sheet.";
+      hint.textContent = "Test instance: start the sidecar by hand (scripts/whatsapp-sidecar.sh), then reopen Phone & channels.";
     else if (st.linked)
       hint.textContent = "The sidecar starts on its own within a few seconds.";
   }
@@ -3330,7 +3334,7 @@ function startWaPoll() {
   waPoll = setInterval(() => waTick().catch(() => {}), 4000);
 }
 function stopWaPoll() { clearInterval(waPoll); waPoll = null; }
-$("#wa-connect").addEventListener("click", async () => {
+async function waConnect() {
   const hint = $("#wa-hint");
   hint.textContent = "Starting the sidecar…";
   try {
@@ -3339,7 +3343,7 @@ $("#wa-connect").addEventListener("click", async () => {
     hint.textContent = e.message || String(e);
   }
   startWaPoll();
-});
+}
 
 // Passive test instance: the server never runs the watcher, so the browser
 // drives ingest — armed only once a hand-started sidecar is actually seen.
@@ -3351,32 +3355,11 @@ async function waPassiveInit() {
   } catch { /* older server without the route */ }
 }
 
-document.querySelectorAll("#backend-seg .seg-btn").forEach((b) =>
-  b.addEventListener("click", () => {
-    document.querySelectorAll("#backend-seg .seg-btn").forEach((x) =>
-      x.classList.toggle("on", x === b));
-  }));
-$("#settings-close").addEventListener("click", () => {
-  stopWaPoll();
-  $("#settings-sheet").classList.remove("open");
-});
-$("#settings-save").addEventListener("click", async () => {
-  const backend = document.querySelector("#backend-seg .seg-btn.on")?.dataset.v || "cli";
+// Backend + default-model override, saved from the AI card's Advanced block.
+async function backendSave(backend, cliModel, apiModel) {
   await post("/api/config", {
-    ai_backend: backend,
-    cli_model: $("#cfg-cli-model").value.trim(),
-    api_model: $("#cfg-api-model").value.trim(),
-  });
-  const notifyOn = document.querySelector("#notify-seg .seg-btn.on")?.dataset.v;
-  if (notifyOn) {
-    await post("/api/notify/config", {
-      enabled: notifyOn === "on",
-      handle: $("#notify-handle").value.trim() || null,
-    }).catch(() => {});
-  }
-  stopWaPoll();
-  $("#settings-sheet").classList.remove("open");
-});
+    ai_backend: backend, cli_model: cliModel, api_model: apiModel });
+}
 
 // ---------- daily brief ----------
 let briefLoadedAt = 0;
@@ -3972,9 +3955,8 @@ async function companionPairStart() {
       : "Pairing failed: " + e.message));
   }
 }
-
-$("#companion-pair")?.addEventListener("click", () => companionPairStart());
-$("#companion-refresh")?.addEventListener("click", () => loadCompanion().catch(() => {}));
+// Pair / Refresh buttons are bound when cardChannels builds them (the
+// companion surface now lives inside the Setup window, not its own view).
 
 // ---------- subscriptions (ledger + renewal radar + launchpad) ----------
 let subsData = null;
@@ -4365,20 +4347,35 @@ let setupPollTimer = null;
 // (onboard.steps) from the world, never stored, so re-entry resumes
 // wherever the machine actually is instead of replaying a saved cursor.
 
-let setupActive = null;          // step id pinned by a rail click
+let setupActive = null;          // step id / manage id pinned by a rail click
 let setupSt = null;              // raw /api/onboard, for card bodies
+let setupExtra = null;           // config-card state (notify / companion / update)
 
 async function loadSetup() {
   const body = $("#setup-body");
   if (!body) return;
-  const [flow, st] = await Promise.all([
+  const [flow, st, extra] = await Promise.all([
     api("/api/onboard/steps"),
     api("/api/onboard"),
+    loadSetupExtra(),
   ]);
   setupSt = st;
+  setupExtra = extra;
   renderSetup(flow, st);
   launchUnlocked(flow);
   if (st.dossiers && st.dossiers.running) pollSetup();
+}
+
+// The config half of Setup — cheap local reads that feed the manage rail
+// sublines and the cards' first paint. Update is the un-fetched (local sha)
+// call; the slow network fetch only runs when the owner opens the card.
+async function loadSetupExtra() {
+  const [notify, companion, update] = await Promise.all([
+    api("/api/notify").then((r) => r.config).catch(() => null),
+    api("/api/companion/status").catch(() => null),
+    api("/api/update").catch(() => null),
+  ]);
+  return { notify, companion, update };
 }
 
 function pollSetup() {
@@ -4506,45 +4503,59 @@ function renderSetup(flow, st) {
     ? "all set" : `${flow.done} of ${flow.total} done`;
 
   const steps = flow.steps;
-  // Pinned step if the owner clicked one and it still exists; otherwise the
-  // first unfinished step — which is what makes re-entry land in the right
-  // place with nothing persisted. Skipped steps (sources that cannot exist
-  // on this platform) stay visible in the rail but never claim the pane.
-  let active = steps.find((s) => s.id === setupActive);
+  // Active is a step OR a manage entry the owner clicked; otherwise the first
+  // unfinished step — which is what makes re-entry land in the right place
+  // with nothing persisted. Skipped steps (sources that cannot exist on this
+  // platform) stay visible in the rail but never claim the pane.
+  let active = steps.find((s) => s.id === setupActive)
+    || SETUP_MANAGE.find((m) => m.id === setupActive);
   if (!active)
     active = steps.find((s) => s.state !== "done" && s.state !== "skipped")
       || steps[0];
+  const activeId = active.id;
 
   body.replaceChildren();
   const wrap = el("div", "setup-wrap");
 
-  // rail: every step, always visible
+  // rail: numbered guided steps, then the un-numbered manage entries — the
+  // full table of contents of everything configurable, so a set-up Vira's
+  // Setup window IS the "what's my setup" reminder.
   const rail = el("div", "setup-rail");
-  steps.forEach((s, i) => {
-    const row = el("button", "setup-step" + (s.id === active.id ? " on" : "")
-      + " s-" + s.state);
+  const railRow = (id, cls, title, sub) => {
+    const row = el("button", "setup-step" + (id === activeId ? " on" : "") + cls);
     row.appendChild(el("span", "setup-dot"));
     const txt = el("div", "setup-step-txt");
-    txt.appendChild(el("div", "setup-step-title", `${i + 1}. ${s.title}`));
-    const sub = s.state === "skipped" ? "not on this machine"
-      : s.blocker || (s.state === "done" ? "done" : s.unlocks);
+    txt.appendChild(el("div", "setup-step-title", title));
     if (sub) txt.appendChild(el("div", "setup-step-sub", sub));
     row.appendChild(txt);
-    row.onclick = () => { setupActive = s.id; renderSetup(flow, st); };
+    row.onclick = () => { leaveManageCard(); setupActive = id; renderSetup(flow, st); };
     rail.appendChild(row);
+  };
+  steps.forEach((s, i) => {
+    const sub = s.state === "skipped" ? "not on this machine"
+      : s.blocker || (s.state === "done" ? "done" : s.unlocks);
+    railRow(s.id, " s-" + s.state, `${i + 1}. ${s.title}`, sub);
   });
+  rail.appendChild(el("div", "setup-rail-div", "Manage"));
+  SETUP_MANAGE.forEach((m) =>
+    railRow(m.id, " s-manage", m.title, manageSubline(m.id)));
   wrap.appendChild(rail);
 
   // pane: the active card only
   const pane = el("div", "setup-pane");
   const card = setupCard(active.title);
-  if (active.blocker)
-    card.appendChild(el("p", "hint setup-warn", "Blocked — " + active.blocker));
-  ({ ai: cardAi, disk: cardDisk, contacts: cardContacts,
-     dossiers: cardDossiers, brain: cardBrain, mail: cardMail
-   }[active.id] || cardMail)(card, active, st);
-  if (active.unlocks)
-    card.appendChild(el("p", "setup-unlocks", "Unlocks " + active.unlocks));
+  const mgr = SETUP_MANAGE.find((m) => m.id === activeId);
+  if (mgr) {
+    mgr.render(card, st);
+  } else {
+    if (active.blocker)
+      card.appendChild(el("p", "hint setup-warn", "Blocked — " + active.blocker));
+    ({ ai: cardAi, disk: cardDisk, contacts: cardContacts,
+       dossiers: cardDossiers, brain: cardBrain, mail: cardMail
+     }[activeId] || cardMail)(card, active, st);
+    if (active.unlocks)
+      card.appendChild(el("p", "setup-unlocks", "Unlocks " + active.unlocks));
+  }
   pane.appendChild(card);
   wrap.appendChild(pane);
   body.appendChild(wrap);
@@ -4629,6 +4640,45 @@ function cardAi(card, step, st) {
     tile.appendChild(row);
     card.appendChild(tile);
   });
+
+  // Advanced — the manual backend + default-model override the retired
+  // settings sheet held. Most owners never touch it; the provider tiles
+  // above are the real control. Kept so nothing in config becomes unreachable.
+  const adv = el("details", "setup-adv");
+  adv.appendChild(el("summary", null, "Advanced — backend & default models"));
+  const seg = el("div", "seg"); seg.id = "backend-seg";
+  [["cli", "Max plan (claude CLI)"], ["api", "API"]].forEach(([v, label]) => {
+    const b = el("button", "seg-btn", label); b.dataset.v = v;
+    b.onclick = () => seg.querySelectorAll(".seg-btn")
+      .forEach((x) => x.classList.toggle("on", x === b));
+    seg.appendChild(b);
+  });
+  adv.appendChild(seg);
+  const cliF = el("label", "field", "CLI model");
+  const cliI = el("input"); cliI.id = "cfg-cli-model"; cliI.type = "text";
+  cliI.spellcheck = false; cliF.appendChild(cliI); adv.appendChild(cliF);
+  const apiF = el("label", "field", "API model");
+  const apiI = el("input"); apiI.id = "cfg-api-model"; apiI.type = "text";
+  apiI.spellcheck = false; apiF.appendChild(apiI); adv.appendChild(apiF);
+  const ahint = el("p", "hint", ""); ahint.id = "cfg-api-hint"; adv.appendChild(ahint);
+  const abar = el("div", "setup-row");
+  const asave = el("button", "btn primary", "Save");
+  asave.onclick = () => setupAct(asave, async () => {
+    await backendSave($("#backend-seg .seg-btn.on")?.dataset.v || "cli",
+      cliI.value.trim(), apiI.value.trim());
+    return {};
+  }, () => "Saved");
+  abar.appendChild(asave); adv.appendChild(abar);
+  card.appendChild(adv);
+  api("/api/config").then((cfg) => {
+    cliI.value = cfg.cli_model || "";
+    apiI.value = cfg.api_model || "";
+    ahint.textContent = cfg.api_key_present
+      ? "API key detected (" + cfg.api_key_env + ")."
+      : "No API key found — set " + cfg.api_key_env + " to enable the API backend.";
+    seg.querySelectorAll(".seg-btn").forEach((b) =>
+      b.classList.toggle("on", b.dataset.v === cfg.ai_backend));
+  }).catch(() => {});
 }
 
 function cardDisk(card, step, st) {
@@ -4792,9 +4842,182 @@ function cardBrain(card, step, st) {
 function cardMail(card, step, st) {
   card.appendChild(el("p", "hint",
     `${st.mail.accounts} mail ${st.mail.accounts === 1 ? "account" : "accounts"} ` +
-    `connected. Add Gmail/IMAP or Microsoft 365 from Settings (the gear, top ` +
-    `right) to fold email into the feed, the brief and receipts.`));
+    `connected. Fold Gmail/IMAP or Microsoft 365 into the feed, the brief and ` +
+    `receipts — mail is fetched and stored on this machine.`));
   (step.sources || []).forEach((row) => card.appendChild(srcTile(row)));
+
+  // Connected accounts + their live status (the retired sheet's Mail card).
+  const acctBox = el("div", null); acctBox.id = "mail-accounts";
+  card.appendChild(acctBox);
+  renderMailAccounts().catch(() => {});
+
+  // Microsoft 365 — one-time device-code login.
+  card.appendChild(el("div", "setup-sub", "Microsoft 365 / Outlook"));
+  const gbar = el("div", "setup-row");
+  const gmail = el("input"); gmail.id = "graph-email"; gmail.className = "search";
+  gmail.type = "email"; gmail.placeholder = "you@yourtenant.com";
+  gmail.spellcheck = false;
+  const gbtn = el("button", "btn", "Connect M365");
+  gbtn.onclick = () => graphConnect();
+  gbar.appendChild(gmail); gbar.appendChild(gbtn);
+  card.appendChild(gbar);
+  const ghint = el("p", "hint", ""); ghint.id = "graph-hint";
+  card.appendChild(ghint);
+
+  // Gmail / IMAP — address + host to the app, password to the secrets store.
+  card.appendChild(el("div", "setup-sub", "Gmail / IMAP"));
+  const iemail = el("input"); iemail.className = "search"; iemail.type = "email";
+  iemail.placeholder = "you@gmail.com"; iemail.spellcheck = false;
+  const ihost = el("input"); ihost.className = "search"; ihost.type = "text";
+  ihost.placeholder = "imap.gmail.com"; ihost.spellcheck = false;
+  const ipass = el("input"); ipass.className = "search"; ipass.type = "password";
+  ipass.placeholder = "app password"; ipass.autocomplete = "off";
+  const irow = el("div", "setup-row");
+  irow.appendChild(iemail); irow.appendChild(ihost);
+  const irow2 = el("div", "setup-row");
+  const ibtn = el("button", "btn", "Add mailbox");
+  ibtn.onclick = () => imapAdd(ibtn, { email: iemail, host: ihost, password: ipass });
+  irow2.appendChild(ipass); irow2.appendChild(ibtn);
+  card.appendChild(irow);
+  card.appendChild(irow2);
+  const ihint = el("p", "hint",
+    "Gmail needs an app password (myaccount.google.com/apppasswords). The " +
+    "password is stored in your device's secrets store, never in a file.");
+  ihint.id = "imap-hint";
+  card.appendChild(ihint);
+}
+
+// ---- manage cards: the config half of the Setup surface ----------------
+// The numbered steps above are the first-run path; these un-numbered entries
+// hold the always-there config the retired settings sheet carried, plus the
+// phone / WhatsApp channels. They reuse the helpers in the settings region
+// (companion, WhatsApp, notify, update) — this is only their new home.
+
+const SETUP_MANAGE = [
+  { id: "channels", title: "Phone & channels", render: cardChannels },
+  { id: "notifications", title: "Notifications", render: cardNotifications },
+  { id: "updates", title: "Updates", render: cardUpdates },
+];
+
+function manageSubline(id) {
+  const x = setupExtra || {};
+  if (id === "channels") {
+    const n = (x.companion && (x.companion.devices || [])
+      .filter((d) => !d.pending).length) || 0;
+    return n ? `${n} phone${n === 1 ? "" : "s"} paired` : "phone · WhatsApp";
+  }
+  if (id === "notifications")
+    return x.notify ? (x.notify.enabled ? "on" : "off") : "";
+  if (id === "updates") {
+    if (!x.update || !x.update.git) return "";
+    return x.update.behind > 0 ? `${x.update.behind} available` : "up to date";
+  }
+  return "";
+}
+
+// Stop the channel-card pollers when the owner navigates away from it.
+function leaveManageCard() {
+  stopWaPoll();
+  if (companionPollT) { clearInterval(companionPollT); companionPollT = null; }
+}
+
+function cardChannels(card) {
+  card.appendChild(el("p", "hint",
+    "Bring other messaging channels into Vira. On this Mac iMessage is " +
+    "already covered by Full Disk Access — pair an Android phone or link " +
+    "WhatsApp to fold the rest into the feed. Both are receive-only, and " +
+    "everything stays on this machine."));
+
+  // Android phone (the companion) — reuses loadCompanion / companionPairStart.
+  card.appendChild(el("div", "setup-sub", "Android phone"));
+  const cbar = el("div", "setup-row");
+  const cpair = el("button", "btn primary", "Pair a phone");
+  cpair.id = "companion-pair";
+  cpair.onclick = () => companionPairStart();
+  const cref = el("button", "btn", "Refresh");
+  cref.id = "companion-refresh";
+  cref.onclick = () => loadCompanion().catch(() => {});
+  cbar.appendChild(cpair); cbar.appendChild(cref);
+  card.appendChild(cbar);
+  const cqr = el("div", "companion-qr"); cqr.id = "companion-qr"; cqr.hidden = true;
+  card.appendChild(cqr);
+  const cbody = el("div", "list"); cbody.id = "companion-body";
+  card.appendChild(cbody);
+  loadCompanion().catch(() => {});
+
+  // WhatsApp — reuses waTick / waConnect; the poll runs only while shown.
+  card.appendChild(el("div", "setup-sub", "WhatsApp"));
+  const wbar = el("div", "setup-row");
+  const wc = el("button", "btn", "Connect WhatsApp"); wc.id = "wa-connect";
+  wc.onclick = () => waConnect();
+  const wstat = el("span", "hint"); wstat.id = "wa-status";
+  wstat.style.alignSelf = "center";
+  wbar.appendChild(wc); wbar.appendChild(wstat);
+  card.appendChild(wbar);
+  const wqr = el("div"); wqr.id = "wa-qr-box"; wqr.style.display = "none";
+  const wimg = el("img"); wimg.id = "wa-qr"; wimg.alt = "WhatsApp pairing QR";
+  wimg.style.width = "190px"; wimg.style.maxWidth = "100%";
+  wqr.appendChild(wimg); card.appendChild(wqr);
+  const wh = el("p", "hint",
+    "Inbound WhatsApp lands in the feed once a device link is scanned. " +
+    "Receive-only: Vira never sends.");
+  wh.id = "wa-hint";
+  card.appendChild(wh);
+  startWaPoll();
+}
+
+function cardNotifications(card) {
+  const nc = (setupExtra && setupExtra.notify) || {};
+  card.appendChild(el("p", "hint",
+    "When an email from an active-tier contact lands, Vira pings you over " +
+    "iMessage. Throttled: one per sender per 6h, 20 a day max. Changes save " +
+    "as you make them."));
+  const seg = el("div", "seg"); seg.id = "notify-seg";
+  [["on", "On"], ["off", "Off"]].forEach(([v, label]) => {
+    const b = el("button", "seg-btn" + (
+      (nc.enabled ? "on" : "off") === v ? " on" : ""), label);
+    b.dataset.v = v;
+    b.onclick = () => {
+      seg.querySelectorAll(".seg-btn").forEach((x) =>
+        x.classList.toggle("on", x === b));
+      notifySave(v === "on", $("#notify-handle").value.trim());
+    };
+    seg.appendChild(b);
+  });
+  card.appendChild(seg);
+  const f = el("label", "field", "iMessage handle for pings");
+  const inp = el("input"); inp.id = "notify-handle"; inp.type = "text";
+  inp.spellcheck = false; inp.placeholder = "+1917…"; inp.value = nc.handle || "";
+  inp.onchange = () => notifySave(
+    $("#notify-seg .seg-btn.on")?.dataset.v === "on", inp.value.trim());
+  f.appendChild(inp);
+  card.appendChild(f);
+  const bar = el("div", "setup-row");
+  const test = el("button", "btn", "Send test message");
+  test.onclick = () => notifyTest(test);
+  const hint = el("span", "hint"); hint.id = "notify-hint";
+  hint.style.alignSelf = "center";
+  bar.appendChild(test); bar.appendChild(hint);
+  card.appendChild(bar);
+}
+
+function cardUpdates(card) {
+  card.appendChild(el("p", "hint",
+    "Vira updates from its git remote: fast-forward the code, reinstall " +
+    "dependencies, and restart in place."));
+  const cur = el("p", "hint", "Checking…"); cur.id = "upd-current";
+  card.appendChild(cur);
+  const bar = el("div", "setup-row");
+  const chk = el("button", "btn", "Check for updates");
+  chk.onclick = () => updCheck(chk);
+  const ap = el("button", "btn primary", "Update & restart");
+  ap.id = "upd-apply"; ap.style.display = "none";
+  ap.onclick = () => applyUpdate(ap);
+  const hint = el("span", "hint"); hint.id = "upd-hint";
+  hint.style.alignSelf = "center";
+  bar.appendChild(chk); bar.appendChild(ap); bar.appendChild(hint);
+  card.appendChild(bar);
+  refreshUpdateStatus(false).catch(() => {});
 }
 
 
@@ -4816,7 +5039,6 @@ function viewLoad(id) {
   if (id === "plans") loadPlans().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
-  if (id === "companion") loadCompanion().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "brain") loadBrain().catch(() => {});
   if (id === "radar") loadRadar().catch(() => {});
@@ -6214,8 +6436,6 @@ const WINDOWS = [
     icon: "M4 12a8 8 0 0 1 14-5.3M20 12a8 8 0 0 1-14 5.3M18 4v3h-3M6 20v-3h3" },
   { id: "subs", title: "Subscriptions", w: 660,
     icon: "M3 6.5h18v11H3zM3 10h18M6 14.5h5M15.5 14.5h2.5" },
-  { id: "companion", title: "Phone Link", w: 460,
-    icon: "M8 2.5h8a1.5 1.5 0 0 1 1.5 1.5v16A1.5 1.5 0 0 1 16 21.5H8A1.5 1.5 0 0 1 6.5 20V4A1.5 1.5 0 0 1 8 2.5zM6.5 6h11M6.5 18h11M11 20h2" },
   { id: "subsviz", title: "Morning Picker", w: 1040,
     icon: "M3 5h18v14H3zM6.5 5v14M17.5 5v14M3 9.5h3.5M3 14.5h3.5M17.5 9.5H21M17.5 14.5H21M10 9.5h4v5h-4z" },
   { id: "design", title: "Design Studio", w: 1360,

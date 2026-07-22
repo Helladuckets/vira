@@ -50,17 +50,8 @@
     <div id="journal-list" class="list"></div>
   </section>
 
-  <!-- PHONE LINK (Android companion: pairing, ingest status, pings) -->
-  <section id="view-companion" class="view">
-    <div class="section-head"><h2>Phone Link</h2>
-      <button class="fchip sm" id="companion-pair" style="margin-left:auto">Pair a phone</button>
-      <button class="fchip sm" id="companion-refresh">Refresh</button>
-    </div>
-    <div class="radar-sub"><span>Android companion</span>
-      <span class="hint">texts and app notifications reach Vira through a paired phone — everything stays on this machine</span></div>
-    <div id="companion-qr" class="companion-qr" hidden></div>
-    <div id="companion-body" class="list"></div>
-  </section>
+  <!-- Phone Link retired 2026-07-21: Android companion pairing now lives
+       in the Setup window's Phone & channels card. -->
 
   <!-- FEED -->
   <section id="view-feed" class="view active">
@@ -574,63 +565,9 @@
   </div>
 </div>
 
-<!-- SETTINGS SHEET -->
-<div id="settings-sheet" class="sheet">
-  <div class="sheet-card">
-    <h3>Assistant backend</h3>
-    <div class="seg" id="backend-seg">
-      <button data-v="cli" class="seg-btn">Max plan (claude CLI)</button>
-      <button data-v="api" class="seg-btn">API</button>
-    </div>
-    <label class="field">CLI model
-      <input id="cfg-cli-model" type="text" spellcheck="false"></label>
-    <label class="field">API model
-      <input id="cfg-api-model" type="text" spellcheck="false"></label>
-    <p class="hint" id="cfg-api-hint"></p>
-    <h3 class="sheet-sub">Mail accounts</h3>
-    <div id="mail-accounts"></div>
-    <div class="runbar">
-      <input id="graph-email" class="search" type="email"
-             placeholder="you@yourtenant.com" spellcheck="false">
-      <button class="btn" id="graph-connect">Connect M365</button>
-    </div>
-    <p class="hint" id="graph-hint"></p>
-    <h3 class="sheet-sub">WhatsApp</h3>
-    <div class="runbar">
-      <button class="btn" id="wa-connect">Connect WhatsApp</button>
-      <span class="hint" id="wa-status" style="align-self:center"></span>
-    </div>
-    <div id="wa-qr-box" style="display:none">
-      <img id="wa-qr" alt="WhatsApp pairing QR">
-    </div>
-    <p class="hint" id="wa-hint">Inbound WhatsApp lands in the feed once a
-      device link is scanned. Receive-only: Vira never sends.</p>
-    <h3 class="sheet-sub">Notifications</h3>
-    <div class="seg" id="notify-seg">
-      <button data-v="on" class="seg-btn">On</button>
-      <button data-v="off" class="seg-btn">Off</button>
-    </div>
-    <label class="field">iMessage handle for pings
-      <input id="notify-handle" type="text" spellcheck="false" placeholder="+1917…"></label>
-    <p class="hint">Email from an active-tier contact pings this handle over
-      iMessage. Throttled: one per sender per 6h, 20 a day max.</p>
-    <div class="runbar" style="margin-bottom:0">
-      <button class="btn small" id="notify-test">Send test message</button>
-      <span class="hint" id="notify-hint" style="align-self:center"></span>
-    </div>
-    <h3 class="sheet-sub">Updates</h3>
-    <p class="hint" id="upd-current">Checking…</p>
-    <div class="runbar" style="margin-bottom:0">
-      <button class="btn small" id="upd-check">Check for updates</button>
-      <button class="btn small primary" id="upd-apply" style="display:none">Update &amp; restart</button>
-      <span class="hint" id="upd-hint" style="align-self:center"></span>
-    </div>
-    <div class="row-end">
-      <button class="btn" id="settings-close">Close</button>
-      <button class="btn primary" id="settings-save">Save</button>
-    </div>
-  </div>
-</div>
+<!-- Settings sheet retired 2026-07-21: config now lives in the Setup window
+     (the gear button opens it). Backend, mail, WhatsApp, notifications and
+     updates are cards in that one surface. -->
 
 <script src="/app.js"></script>
 <script src="/atlas.js"></script>
