@@ -251,11 +251,17 @@ DEFAULT_MODULES = [
      "updated": TODAY},
     {"id": "radar-engine", "name": "Radar engine", "layer": "engine",
      "group": "rhythm", "kind": "scoring",
-     "what": "Scores who to talk to next (every row says why) and scouts "
-             "introduction pairs among the people you know.",
-     "links": [{"to": "crm-data", "how": "scores people from"}],
+     "what": "Scores who to talk to next (every row says why) and sizes "
+             "GROUPINGS — two to five people who share ground, with the "
+             "move that fits (post to the thread they already have, start "
+             "a group chat, make an introduction). Two triggers: standing "
+             "profile overlap, and links your contacts actually shared "
+             "lately. An item that lands on one person becomes a "
+             "conversation marker on their row instead.",
+     "links": [{"to": "crm-data", "how": "scores people from"},
+               {"to": "chat-db", "how": "reads shared links from"}],
      "endpoints": ["/api/radar"],
-     "keywords": ["radar", "intro", "score"],
+     "keywords": ["radar", "grouping", "marker", "intro", "score"],
      "updated": TODAY},
     {"id": "sessions", "name": "Agent runtime", "layer": "engine",
      "group": "operate", "kind": "supervisor + durable runner",
@@ -467,10 +473,12 @@ DEFAULT_MODULES = [
      "updated": TODAY},
     {"id": "radar-win", "name": "Radar", "layer": "surface",
      "group": "rhythm", "kind": "dock window",
-     "what": "Who to talk to next and who to introduce — the relationship "
-             "rhythm surface.",
+     "what": "Who to talk to next and who to put in a room together — the "
+             "relationship rhythm surface. Grouping cards name the topic, "
+             "the audience, and the move; person rows carry the live "
+             "marker when something just landed on their ground.",
      "links": [{"to": "radar-engine", "how": "renders"}],
-     "keywords": ["radar window"],
+     "keywords": ["radar window", "groupings"],
      "updated": TODAY},
     {"id": "circuits-win", "name": "Circuits", "layer": "surface",
      "group": "operate", "kind": "dock window",

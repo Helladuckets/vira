@@ -52,16 +52,19 @@ SEEDS = [
                        "owner to approve or decline.",
     },
     {
+        # id kept from the introductions era: _load() never prunes store
+        # rows, so a new id would orphan the live one (see RESEEDS below)
         "id": "intro-scout",
-        "name": "Intro scout — refresh introductions",
+        "name": "Grouping scout — refresh groupings",
         "kind": "custom",
         "every_hours": 168,
         "enabled": True,
         "notify": False,
         "model": "",
-        "prompt": "__refresh_intros__",   # internal dispatch, no session
-        "description": "Weekly refresh of the who-should-meet-whom "
-                       "introduction candidates in the Radar window.",
+        "prompt": "__refresh_groupings__",  # internal dispatch, no session
+        "description": "Weekly refresh of the Radar window's groupings — "
+                       "who to convene around what, and the conversation "
+                       "markers riding on what people just shared.",
     },
     {
         "id": "atlas-refresh",
@@ -97,6 +100,13 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# A seeded routine that gets renamed in a release needs its stored row
+# brought along — seeds only apply to ids the store has never seen, so an
+# instance that already has the row would keep the superseded name
+# forever. id -> the exact old name that may be overwritten from SEEDS.
+RESEEDS = {"intro-scout": "Intro scout — refresh introductions"}
+
+
 def _load():
     try:
         s = json.loads(STORE.read_text())
@@ -116,6 +126,18 @@ def _load():
             r.setdefault("last_status", None)
             s["routines"].append(r)
             changed = True
+            continue
+        stale = RESEEDS.get(seed["id"])
+        if not stale:
+            continue
+        for r in s["routines"]:
+            # only an untouched row is reseeded — a name the owner edited
+            # is theirs and stays
+            if r["id"] == seed["id"] and r.get("name") == stale:
+                r["name"] = seed["name"]
+                r["description"] = seed["description"]
+                r["prompt"] = seed["prompt"]
+                changed = True
     if changed:
         _save(s)
     return s
@@ -277,13 +299,16 @@ def dispatch(r):
         _stamp(r["id"], last_run=_now_iso(), last_run_id=run["id"],
                last_job=None, last_status="running")
         return {"run_id": run["id"]}
-    if (r.get("prompt") or "") == "__refresh_intros__":
+    # __refresh_intros__ is the pre-groupings token; a store row minted
+    # before the reframe still carries it, so both dispatch the same way
+    if (r.get("prompt") or "") in ("__refresh_groupings__",
+                                   "__refresh_intros__"):
         from . import radar
-        threading.Thread(target=radar.refresh_intros, daemon=True,
-                         name="vira-intro-scout").start()
+        threading.Thread(target=radar.refresh_groupings, daemon=True,
+                         name="vira-grouping-scout").start()
         _stamp(r["id"], last_run=_now_iso(), last_job=None,
                last_run_id=None, last_status="done")
-        return {"internal": "refresh_intros"}
+        return {"internal": "refresh_groupings"}
     if (r.get("prompt") or "") == "__refresh_atlas__":
         from . import atlas
         atlas.refresh(narrate=True)      # already runs in its own thread
