@@ -2,7 +2,6 @@
 map them to CRM person ids by shared email/phone. Deterministic sqlite reads;
 thumbnails cached on disk once extracted.
 """
-import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -18,8 +17,7 @@ _built = threading.Event()
 
 
 def _digits10(s):
-    d = re.sub(r"\D", "", s or "")
-    return d[-10:] if len(d) >= 10 else d
+    return crm.norm_digits(s)     # the CRM's canonical 10-digit norm
 
 
 def _image_bytes(blob):
