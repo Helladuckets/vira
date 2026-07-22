@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import backup, data as crm, judge, msgraph, update
+from server import backup, data as crm, judge, msgraph, update, viratools
 from server.session import READ_ONLY_EXCLUDE, _sdk_env
 
 
@@ -125,8 +125,23 @@ class SdkEnvTests(unittest.TestCase):
 
     def test_read_only_exclude_names_the_non_reads(self):
         self.assertEqual(READ_ONLY_EXCLUDE,
-                         {"Task", "WebSearch",
-                          "mcp__vira__update_module_map"})
+                         {"Task", "WebSearch"} | viratools.WRITE_TOOLS)
+
+    def test_read_only_excludes_every_vira_write_tool(self):
+        """The property, not the list: a write tool added to the native
+        server must be denied to read-only sessions the day it ships. The
+        frozen-set version of this test passed while two new writes were
+        reachable from a judge."""
+        for name in viratools.WRITE_TOOLS:
+            self.assertIn(name, READ_ONLY_EXCLUDE)
+            self.assertIn(name, viratools.TOOL_NAMES)
+
+    def test_write_tools_are_actually_registered(self):
+        """A rename that misses WRITE_TOOLS would silently un-exclude the
+        tool — the set must name real specs, not historical ones."""
+        registered = set(viratools.TOOL_NAMES)
+        self.assertTrue(viratools.WRITE_TOOLS <= registered,
+                        f"stale: {viratools.WRITE_TOOLS - registered}")
 
 
 class JudgeSymlinkTests(unittest.TestCase):

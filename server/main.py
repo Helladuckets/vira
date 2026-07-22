@@ -24,6 +24,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                data as crm,
                designstudio,
                feedstate,
+               frontdoor,
                reading,
                fixtures, ideas, imessage, jobboards, jobfiles, joblog,
                journal,
@@ -735,6 +736,81 @@ class ReadingDoneReq(BaseModel):
     id: str | None = None
     done: bool = True
     merge: list[str] | None = None
+
+
+# ---------- module front doors (server/frontdoor.py: the path from a
+# dormant module to a live one — what a module IS, a demo clip, and the
+# interview that sets it up, dispatched as a live session) ----------
+
+@app.get("/api/frontdoor")
+def api_frontdoor():
+    return frontdoor.state()
+
+
+class ResumeReq(BaseModel):
+    filename: str | None = ""
+    content_b64: str
+
+
+@app.post("/api/frontdoor/resume")
+def api_frontdoor_resume(req: ResumeReq):
+    """Stage an uploaded resume for the Applications interview."""
+    try:
+        return frontdoor.stage_resume(req.filename, req.content_b64)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"could not save the file: {e}")
+
+
+class FrontDoorSetupReq(BaseModel):
+    answers: dict | None = None
+    model: str | None = None
+
+
+@app.post("/api/frontdoor/{module_id}/setup")
+def api_frontdoor_setup(module_id: str, req: FrontDoorSetupReq):
+    """Dispatch a module's setup as a live agent session. The session
+    reports through the normal job panel, and the front door polls its
+    own probe — a module goes live because its data landed, never
+    because a run said so."""
+    if module_id not in frontdoor.BY_ID:
+        raise HTTPException(404, "unknown module")
+    try:
+        prompt, derived = frontdoor.setup_prompt(module_id, req.answers or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    try:
+        jid = jobs.launch(prompt, str(ROOT), None, req.model, False, None,
+                          "interactive")
+    except ValueError as e:
+        raise HTTPException(429, str(e))
+    frontdoor.record_run(module_id, jid, req.answers or {})
+    return {"job_id": jid, **derived}
+
+
+@app.post("/api/frontdoor/{module_id}/setup-prompt")
+def api_frontdoor_setup_prompt(module_id: str, req: FrontDoorSetupReq):
+    """The composed prompt without launching anything — for copying into
+    a separate session. No job, no state write."""
+    if module_id not in frontdoor.BY_ID:
+        raise HTTPException(404, "unknown module")
+    try:
+        prompt, derived = frontdoor.setup_prompt(module_id, req.answers or {})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"prompt": prompt, "cwd": str(ROOT), **derived}
+
+
+class DismissReq(BaseModel):
+    undo: bool = False
+
+
+@app.post("/api/frontdoor/{module_id}/dismiss")
+def api_frontdoor_dismiss(module_id: str, req: DismissReq):
+    if module_id not in frontdoor.BY_ID:
+        raise HTTPException(404, "unknown module")
+    return {"dismissed": frontdoor.dismiss(module_id, req.undo)}
 
 
 @app.get("/api/reading/pages")
