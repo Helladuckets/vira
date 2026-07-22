@@ -95,6 +95,14 @@ def _decode_header(raw):
     return "".join(out)
 
 
+def strip_html(text):
+    """HTML mail body -> readable plain text. Shared with the body index
+    (textindex), which gets its HTML from Graph rather than MIME."""
+    text = re.sub(r"<style.*?</style>|<script.*?</script>", " ", text or "",
+                  flags=re.S | re.I)
+    return re.sub(r"<[^>]+>", " ", text)
+
+
 def _body_preview(msg, limit=400):
     """Plain-text preview of the message body."""
     part = msg
@@ -115,9 +123,7 @@ def _body_preview(msg, limit=400):
     except Exception:  # noqa: BLE001 — malformed MIME; skip preview
         return ""
     if part.get_content_type() == "text/html":
-        text = re.sub(r"<style.*?</style>|<script.*?</script>", " ", text,
-                      flags=re.S | re.I)
-        text = re.sub(r"<[^>]+>", " ", text)
+        text = strip_html(text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:limit]
 

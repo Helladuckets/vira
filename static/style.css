@@ -1340,6 +1340,24 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 .media-tile.purged, .doc-row.purged { opacity: .55; }
 
+/* ---------- Find: the sorter's plan chip ---------- */
+/* The router shows its work. A guess the owner cannot see is worse than
+   no router at all, so whatever the planner read out of the query sits
+   above the results with a dismiss. */
+.find-bar { margin-bottom: 8px; }
+.find-why { min-height: 0; margin: 2px 0 6px; }
+.find-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 3px 6px 3px 10px; border-radius: 2px; font-size: 12px;
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+.find-chip-x {
+  background: none; border: 0; color: inherit; cursor: pointer;
+  font-size: 14px; line-height: 1; padding: 0 2px; opacity: .6;
+}
+.find-chip-x:hover { opacity: 1; }
+
 /* ---------- morning picker (subs-visuals) ---------- */
 .subsviz-meta { display: flex; align-items: center; gap: 10px; margin: 0 2px 10px; }
 .subsviz-empty {

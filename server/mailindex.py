@@ -48,7 +48,7 @@ from . import channels
 from . import data as crm
 from . import mail as mailmod
 from . import mediaindex
-from .imessage import APPLE_EPOCH
+from .imessage import apple_ns
 
 _DATA = Path(__file__).resolve().parent.parent / "data"
 ATTACH_DIR = _DATA / "mail-attachments"
@@ -71,7 +71,7 @@ def _my_addresses():
 
 def _apple_ns(dt):
     """Aware datetime -> Apple-epoch nanoseconds (index convention)."""
-    return int((dt.timestamp() - APPLE_EPOCH) * 1e9)
+    return apple_ns(dt)
 
 
 def _synth_id(account, msg_id, key):
