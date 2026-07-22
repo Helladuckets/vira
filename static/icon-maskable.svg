@@ -1,0 +1,13 @@
+<!-- Vira app icon, maskable cut. Android crops an installed icon to whatever
+     shape the launcher uses and only guarantees the middle 80% survives, so
+     this is icon.svg with the mark pulled in far enough that no crop can
+     clip the chevron's arms. Same artwork otherwise — regenerate the raster
+     with scripts/make-icons.sh. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#1a1d1e"/>
+  <g transform="translate(256 256) scale(0.82) translate(-256 -256)">
+    <path d="M136 144 L256 392 L376 144" fill="none" stroke="#8a8478"
+          stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="256" cy="96" r="22.4" fill="#8a8478"/>
+  </g>
+</svg>

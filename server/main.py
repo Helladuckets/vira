@@ -5,6 +5,7 @@ Run: .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8377
 """
 import asyncio
 import json
+import mimetypes
 import os
 import queue
 import time
@@ -40,6 +41,11 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
 
 ROOT = Path(__file__).resolve().parent.parent
 
+# Python only learned .webmanifest in 3.13, and this ships on 3.10+ (the
+# Windows install). Without it StaticFiles hands the PWA manifest out as
+# application/octet-stream and Chrome drops it — no install, no icon.
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
 app = FastAPI(title="Vira")
 
 
@@ -48,11 +54,21 @@ app = FastAPI(title="Vira")
 # run week-old app.js and silently skip new behavior (bit us twice
 # 2026-07-16: the live layout seeding, and the :8379 instance clobber).
 # no-cache = revalidate every load; StaticFiles' ETag makes that a 304.
+#
+# The icon types are on the list for the same reason, learned the hard way
+# 2026-07-22: a phone was wearing a months-old favicon as its home-screen
+# app icon. Safari had cached the icon heuristically (no Cache-Control, so
+# it invents its own freshness window), and iOS copies whatever the browser
+# hands it at Add-to-Home-Screen time and then never re-fetches. Ship a new
+# icon without this and the tile keeps the stale one.
+_REVALIDATE = (".js", ".css", ".html", ".svg", ".png", ".ico", ".webmanifest")
+
+
 @app.middleware("http")
 async def _static_no_cache(request, call_next):
     resp = await call_next(request)
     p = request.url.path
-    if p == "/" or p.endswith((".js", ".css", ".html")):
+    if p == "/" or p.endswith(_REVALIDATE):
         resp.headers.setdefault("Cache-Control", "no-cache")
     return resp
 
