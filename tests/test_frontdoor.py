@@ -141,11 +141,10 @@ class ReadingRoomValidationTest(unittest.TestCase):
 class FrontDoorStateTest(unittest.TestCase):
     def test_every_module_declares_the_full_contract(self):
         for mod in frontdoor.MODULES:
-            for key in ("id", "title", "blurb", "what", "demo", "cta",
+            for key in ("id", "title", "blurb", "what", "cta",
                         "probe", "ask"):
                 self.assertIn(key, mod, f"{mod.get('id')} missing {key}")
             self.assertTrue(mod["ask"], f"{mod['id']} has no interview")
-            self.assertTrue(mod["demo"].startswith(frontdoor.DEMO_BASE))
             for q in mod["ask"]:
                 self.assertIn(q["kind"], ("text", "textarea", "choice",
                                           "multi", "file"))

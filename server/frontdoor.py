@@ -12,7 +12,6 @@ A front door replaces the dead end. Every setup-able module declares:
 
   - `blurb`  — what it is, in one line a stranger understands
   - `what`   — the longer answer behind "What is this?"
-  - `demo`   — a short anonymized clip, hosted publicly (see DEMO_BASE)
   - `ask`    — the interview that collects what setup needs
   - `probe`  — whether the module is live yet, derived from the world
 
@@ -50,15 +49,6 @@ from .filelock import locked
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE = ROOT / "data" / "frontdoor.json"
-
-# The demo clips live on a PUBLIC path of the owner's site, outside the
-# Access-gated /lab/* tree — a stranger's install has no credential, so a
-# gated URL would render an empty player for everyone but the owner. The
-# clips are anonymized before they ship (walkthrough_anon + the scanner
-# gate); the player degrades to the text explainer when the fetch fails,
-# so an offline install or a domain outage costs the caption, not the
-# front door.
-DEMO_BASE = "https://thedurham.nyc/demo"
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_UPLOAD = 8 * 1024 * 1024      # a resume; the cap is a sanity bound
@@ -118,7 +108,6 @@ MODULES = [
                 "Vira interviews you about the subject, then researches "
                 "it and builds the room. You can have as many as you "
                 "like; each one is its own queue.",
-        "demo": f"{DEMO_BASE}/reader.mp4",
         "cta": "Build a reading room",
         "probe": _reader_state,
         "ask": [
@@ -179,7 +168,6 @@ MODULES = [
                 "gaps, and the result becomes the source every future "
                 "application draws its claims from. Nothing is ever "
                 "submitted for you.",
-        "demo": f"{DEMO_BASE}/applications.mp4",
         "cta": "Set up applications",
         "probe": _applications_state,
         "ask": [
