@@ -2447,7 +2447,11 @@ function openIdeaRun(it, mode) {
   $("#idea-run-text").textContent = it.text;
   $("#idea-run-cwd").value =
     localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
-  $("#idea-run-model").value = localStorage.getItem("vira-idea-model") || "";
+  // The model menu is built from the catalog, not a hand-list in the
+  // markup — the same source Setup's defaults and circuit stages read.
+  modelCatalog().then((cat) => fillModelSelect(
+    $("#idea-run-model"), sessionModels(cat),
+    localStorage.getItem("vira-idea-model") || "", "Default (config)"));
   $("#idea-run-extra").value = "";
   // Implement defaults to the gated interactive session; autopilot (today's
   // bypassPermissions behavior) is an explicit opt-out, remembered locally.
@@ -2824,6 +2828,52 @@ async function instanceConfig() {
 }
 async function defaultModelLabel() {
   return ccModelLabel((await instanceConfig()).cli_model) || "Sonnet 5";
+}
+
+// ---------- the model catalog: every dropdown's single source ----------
+// What THIS machine can actually be pointed at — each provider's CLI
+// aliases, and for the API backend the live list from the key on file.
+// Fetched once per page (the server probes each CLI, so it is not free)
+// and shared by Setup's default-model block, the circuit stage tray and
+// the idea-run sheet, so no picker can offer a model that isn't there.
+let _modelCat = null;
+function modelCatalog(refresh) {
+  if (!_modelCat || refresh)
+    _modelCat = api("/api/models" + (refresh ? "?refresh=true" : ""))
+      .catch(() => ({ providers: [], active: "" }));
+  return _modelCat;
+}
+
+// Live agent sessions are Claude Agent SDK, so a circuit stage can only
+// run on the session-capable provider's aliases.
+function sessionModels(cat) {
+  return ((cat.providers || []).find((p) => p.sessions) || {}).cli || [];
+}
+
+// Fill a <select> from a catalog list. A configured value the catalog does
+// not know (hand-edited config, a model retired since) stays selectable —
+// the picker must never silently move what the app runs on.
+function fillModelSelect(sel, list, current, firstLabel) {
+  const cur = current || "";
+  sel.innerHTML = "";
+  if (firstLabel != null) {
+    const o = el("option", null, firstLabel);
+    o.value = "";
+    sel.appendChild(o);
+  }
+  (list || []).forEach((m) => {
+    const o = el("option", null,
+                 m.label && m.label !== m.id ? m.label + " · " + m.id : m.id);
+    o.value = m.id;
+    sel.appendChild(o);
+  });
+  if (cur && !(list || []).some((m) => m.id === cur)) {
+    const o = el("option", null, cur + " (from your config)");
+    o.value = cur;
+    sel.appendChild(o);
+  }
+  sel.value = cur;
+  return sel;
 }
 
 // The Claude Code pixel-robot mascot, in coral (currentColor), eyes/mouth cut to bg.
@@ -3554,10 +3604,12 @@ async function waPassiveInit() {
   } catch { /* older server without the route */ }
 }
 
-// Backend + default-model override, saved from the AI card's Advanced block.
-async function backendSave(backend, cliModel, apiModel) {
-  await post("/api/config", {
-    ai_backend: backend, cli_model: cliModel, api_model: apiModel });
+// Backend + default models, saved from the AI card's model block. The
+// cached instance config is dropped so anything that names the default
+// model (the session welcome line) picks the change up without a reload.
+async function backendSave(body) {
+  await post("/api/config", body);
+  _instCfg = null;
 }
 
 // ---------- daily brief ----------
@@ -4838,11 +4890,19 @@ function cardAi(card, step, st) {
     card.appendChild(tile);
   });
 
-  // Advanced — the manual backend + default-model override the retired
-  // settings sheet held. Most owners never touch it; the provider tiles
-  // above are the real control. Kept so nothing in config becomes unreachable.
-  const adv = el("details", "setup-adv");
-  adv.appendChild(el("summary", null, "Advanced — backend & default models"));
+  // Backend + default models. Always on screen, never behind a disclosure
+  // twisty: this is live config, not trivia. Every draft, dossier and
+  // brief runs through the backend picked here, and an agent session that
+  // names no model of its own starts on the CLI model. The dropdowns are
+  // built from the model catalog — the aliases this Mac's CLI accepts and,
+  // when a key is on file, the live list that key can reach — so the menu
+  // can never offer something the owner has no way to run.
+  const adv = el("section", "setup-adv");
+  adv.appendChild(el("div", "setup-sub", "Backend & default models"));
+  adv.appendChild(el("p", "hint",
+    "Reply drafts, dossiers and the daily brief run on the backend picked "
+    + "here. Agent sessions — cockpit runs, circuits, loops — start on the "
+    + "CLI model unless the run or circuit stage names its own."));
   const seg = el("div", "seg"); seg.id = "backend-seg";
   [["cli", "Max plan (claude CLI)"], ["api", "API"]].forEach(([v, label]) => {
     const b = el("button", "seg-btn", label); b.dataset.v = v;
@@ -4851,30 +4911,51 @@ function cardAi(card, step, st) {
     seg.appendChild(b);
   });
   adv.appendChild(seg);
-  const cliF = el("label", "field", "CLI model");
-  const cliI = el("input"); cliI.id = "cfg-cli-model"; cliI.type = "text";
-  cliI.spellcheck = false; cliF.appendChild(cliI); adv.appendChild(cliF);
-  const apiF = el("label", "field", "API model");
-  const apiI = el("input"); apiI.id = "cfg-api-model"; apiI.type = "text";
-  apiI.spellcheck = false; apiF.appendChild(apiI); adv.appendChild(apiF);
+  const mbox = el("div", "setup-models"); adv.appendChild(mbox);
   const ahint = el("p", "hint", ""); ahint.id = "cfg-api-hint"; adv.appendChild(ahint);
   const abar = el("div", "setup-row");
   const asave = el("button", "btn primary", "Save");
-  asave.onclick = () => setupAct(asave, async () => {
-    await backendSave($("#backend-seg .seg-btn.on")?.dataset.v || "cli",
-      cliI.value.trim(), apiI.value.trim());
-    return {};
-  }, () => "Saved");
   abar.appendChild(asave); adv.appendChild(abar);
   card.appendChild(adv);
-  api("/api/config").then((cfg) => {
-    cliI.value = cfg.cli_model || "";
-    apiI.value = cfg.api_model || "";
+
+  const picks = [];        // {key, sel} — the config field each writes
+  asave.onclick = () => setupAct(asave, async () => {
+    const body = { ai_backend: $("#backend-seg .seg-btn.on")?.dataset.v || "cli" };
+    picks.forEach(({ key, sel }) => { body[key] = sel.value; });
+    await backendSave(body);
+    return {};
+  }, () => "Saved");
+  Promise.all([api("/api/config"), modelCatalog(true)]).then(([cfg, cat]) => {
     ahint.textContent = cfg.api_key_present
       ? "API key detected (" + cfg.api_key_env + ")."
       : "No API key found — set " + cfg.api_key_env + " to enable the API backend.";
     seg.querySelectorAll(".seg-btn").forEach((b) =>
       b.classList.toggle("on", b.dataset.v === cfg.ai_backend));
+    // A group per provider that is actually usable here. If none is
+    // connected yet the first one still renders, so its config keys never
+    // become unreachable.
+    const provs = (cat.providers || []).filter((p) => p.connected);
+    mbox.innerHTML = "";
+    (provs.length ? provs : (cat.providers || []).slice(0, 1)).forEach((p) => {
+      const g = el("div", "setup-mgroup");
+      const head = el("div", "setup-mgroup-head");
+      head.appendChild(el("span", "setup-mgroup-name", p.label));
+      if (p.id === cat.active)
+        head.appendChild(el("span", "setup-mgroup-tag", "in use"));
+      g.appendChild(head);
+      [["CLI model (subscription login)", "cli"],
+       ["API model", "api"]].forEach(([label, kind]) => {
+        const f = el("label", "field", label);
+        const sel = fillModelSelect(el("select"), p[kind],
+                                    cfg[p.config_keys[kind]]);
+        f.appendChild(sel);
+        g.appendChild(f);
+        picks.push({ key: p.config_keys[kind], sel });
+      });
+      g.appendChild(el("p", "hint", "API models: " + p.api_detail
+        + (p.api_live ? "" : " — showing Vira's own list")));
+      mbox.appendChild(g);
+    });
   }).catch(() => {});
 }
 
@@ -5749,8 +5830,10 @@ function stageDepths(stages) {
   return depth;
 }
 
-function circuitChain(stages) {
-  // compact preview: stages grouped by depth, joined with trace arrows
+// The compact stage preview: stages grouped by depth, joined with trace
+// arrows. Pass `edit` and every chip becomes a button that opens that
+// stage's option tray — the same graph doubles as the editor's tab row.
+function circuitChain(stages, edit) {
   const depth = stageDepths(stages);
   const cols = [];
   stages.forEach((s) => {
@@ -5762,11 +5845,24 @@ function circuitChain(stages) {
     if (i) wrap.appendChild(el("span", "cir-wire"));
     const c = el("span", "cir-col");
     col.forEach((s) => {
-      const chip = el("span", "cir-chip" + (s.mode === "judge" ? " judge" : ""));
+      const touched = edit && edit.edited(s.id);
+      const chip = el(edit ? "button" : "span",
+        "cir-chip" + (s.mode === "judge" ? " judge" : "")
+        + (edit ? " click" : "") + (edit && edit.open === s.id ? " on" : "")
+        + (touched ? " edited" : ""));
       chip.appendChild(el("span", "cir-chip-name", s.name || s.id));
-      const ml = s.mode === "judge"
-        ? "judge" : STAGE_MODEL_LABEL(s.model) || "default";
-      chip.appendChild(el("span", "cir-chip-model", ml));
+      // The chip prints the model the step will ACTUALLY run on, so an
+      // edit is visible on the graph without opening anything.
+      const model = edit ? edit.model(s) : s.model;
+      chip.appendChild(el("span", "cir-chip-model",
+        STAGE_MODEL_LABEL(model)
+        || (s.mode === "judge" ? "judge" : "default")));
+      if (touched) chip.appendChild(el("span", "cir-chip-edit", "edited"));
+      if (edit) {
+        chip.type = "button";
+        chip.title = "Options for this step — model, instructions, how it runs";
+        chip.addEventListener("click", () => edit.pick(s.id));
+      }
       c.appendChild(chip);
     });
     wrap.appendChild(c);
@@ -5777,42 +5873,224 @@ function circuitChain(stages) {
 async function loadCircuits() {
   const box = $("#circuits-list");
   if (!box) return;
-  const { circuits: defs } = await api("/api/circuits");
+  const [{ circuits: defs }, cat] = await Promise.all([
+    api("/api/circuits"), modelCatalog()]);
   box.innerHTML = "";
-  defs.forEach((c) => {
-    const card = el("div", "cir-card");
-    card.appendChild(el("div", "cir-name", c.name));
-    if (c.description) card.appendChild(el("div", "cir-desc", c.description));
-    card.appendChild(circuitChain(c.stages));
-    const form = el("div", "cir-form");
-    const inp = el("textarea", "cir-input");
-    inp.rows = 2;
-    inp.placeholder = "What should this circuit work on?";
-    const cwd = el("input", "cir-cwd");
-    cwd.type = "text";
-    cwd.placeholder = "working directory (optional, e.g. ~/workspace/vira)";
-    const go = el("button", "btn primary", "Run circuit");
-    go.addEventListener("click", async () => {
-      const input = inp.value.trim();
-      if (!input) { inp.focus(); return; }
-      go.disabled = true;
-      go.textContent = "Launching…";
+  defs.forEach((c) => box.appendChild(circuitCard(c, sessionModels(cat))));
+}
+
+// One circuit, ready to run — and ready to retune first. A circuit is a
+// template, not a contract: clicking any stage chip opens its option tray
+// (which model, instructions only this run carries, how it runs, and for a
+// judge its grade gate). Edits live on the card and ride the run request,
+// so the saved circuit is untouched until "Save as circuit default".
+function circuitCard(c, models) {
+  const card = el("div", "cir-card");
+  card.appendChild(el("div", "cir-name", c.name));
+  if (c.description) card.appendChild(el("div", "cir-desc", c.description));
+
+  const edits = {};                       // stage id -> fields being changed
+  let open = null;                        // the stage whose tray is showing
+  const chainBox = el("div");
+  const tray = el("div", "cir-tray");
+  tray.style.display = "none";
+  card.appendChild(chainBox);
+  card.appendChild(tray);
+
+  // The effective value of a field: this card's edit if it has one, else
+  // what the circuit says. Judge-gate fields live one level down.
+  const val = (s, key) => {
+    const e = edits[s.id] || {};
+    if (key in e) return e[key];
+    if (key === "min_grade" || key === "max_retries")
+      return (s.judge || {})[key];
+    return s[key];
+  };
+  const dirty = (sid) => Object.keys(edits[sid] || {}).length > 0;
+  const anyEdits = () => c.stages.some((s) => dirty(s.id));
+  // A field change repaints the CHAIN only — repainting the tray would
+  // yank the cursor out of the box being typed in.
+  const set = (sid, key, v) => {
+    (edits[sid] = edits[sid] || {})[key] = v;
+    drawChain();
+  };
+
+  function drawChain() {
+    chainBox.innerHTML = "";
+    chainBox.appendChild(circuitChain(c.stages, {
+      open, edited: dirty,
+      model: (s) => val(s, "model") || "",
+      pick: (sid) => { open = open === sid ? null : sid; draw(); },
+    }));
+  }
+  function drawTray() {
+    const s = c.stages.find((x) => x.id === open);
+    tray.innerHTML = "";
+    tray.style.display = s ? "" : "none";
+    if (s) tray.appendChild(stageTray(s, ctx));
+  }
+  const draw = () => { drawChain(); drawTray(); };
+
+  const ctx = {
+    models, val, set, dirty, anyEdits,
+    stageName: (sid) =>
+      (c.stages.find((x) => x.id === sid) || {}).name || sid,
+    reset: (sid) => { delete edits[sid]; draw(); },
+    save: async (btn) => {
+      if (!anyEdits()) { toast("No changes to save"); return; }
+      btn.disabled = true;
       try {
-        await post(`/api/circuits/${c.id}/run`,
-                   { input, cwd: cwd.value.trim() || null });
-        inp.value = "";
-        toast("Circuit running — see Runs");
-        setCircuitsTab("runs");
-      } catch (e) { alert("Run failed: " + e.message); }
-      go.disabled = false;
-      go.textContent = "Run circuit";
-    });
-    form.appendChild(inp);
-    form.appendChild(cwd);
-    form.appendChild(go);
-    card.appendChild(form);
-    box.appendChild(card);
+        const saved = await post(`/api/circuits/${c.id}/stages`,
+                                 { stages: edits });
+        c.stages = saved.stages;
+        Object.keys(edits).forEach((k) => delete edits[k]);
+        draw();
+        toast("Saved — this is how the circuit runs from now on");
+      } catch (e) { alert("Save failed: " + e.message); }
+      btn.disabled = false;
+    },
+  };
+  draw();
+
+  const form = el("div", "cir-form");
+  const inp = el("textarea", "cir-input");
+  inp.rows = 2;
+  inp.placeholder = "What should this circuit work on?";
+  const cwd = el("input", "cir-cwd");
+  cwd.type = "text";
+  cwd.placeholder = "working directory (optional, e.g. ~/workspace/vira)";
+  const go = el("button", "btn primary", "Run circuit");
+  go.addEventListener("click", async () => {
+    const input = inp.value.trim();
+    if (!input) { inp.focus(); return; }
+    go.disabled = true;
+    go.textContent = "Launching…";
+    try {
+      await post(`/api/circuits/${c.id}/run`, {
+        input, cwd: cwd.value.trim() || null, stages: edits });
+      inp.value = "";
+      toast("Circuit running — see Runs");
+      setCircuitsTab("runs");
+    } catch (e) { alert("Run failed: " + e.message); }
+    go.disabled = false;
+    go.textContent = "Run circuit";
   });
+  form.appendChild(inp);
+  form.appendChild(cwd);
+  form.appendChild(go);
+  card.appendChild(form);
+  return card;
+}
+
+// One stage's option tray. Deliberately the knobs and not the wiring: a
+// run may retune a step, never re-plumb the pipeline — ids, needs and
+// judge targets are the graph the driver depends on. The step's brief is
+// shown read-only so added instructions have context; they are appended
+// after it, and told they win a disagreement.
+function stageTray(s, ctx) {
+  const judgeStage = s.mode === "judge";
+  const wrap = el("div", "cir-tray-in");
+  const head = el("div", "cir-tray-head");
+  head.appendChild(el("span", "cir-tray-name", s.name || s.id));
+  head.appendChild(el("span", "cir-tray-sub",
+    [judgeStage ? "fresh-eyes judge" : (s.mode || "interactive"),
+     (s.needs || []).length
+       ? "runs after " + s.needs.map(ctx.stageName).join(" + ")
+       : "starts the circuit"].join(" · ")));
+  wrap.appendChild(head);
+
+  const mf = el("label", "field", "Model");
+  const msel = fillModelSelect(el("select"), ctx.models, ctx.val(s, "model"),
+    judgeStage ? "Judge default (from config)" : "Vira's default (from config)");
+  msel.addEventListener("change", () => ctx.set(s.id, "model", msel.value));
+  mf.appendChild(msel);
+  wrap.appendChild(mf);
+
+  const xf = el("label", "field", "Instructions for this step");
+  const xa = el("textarea");
+  xa.rows = 3;
+  xa.spellcheck = false;
+  xa.placeholder = judgeStage
+    ? "What should this judge weigh hardest?"
+    : "Anything this step must know, do, or leave alone…";
+  xa.value = ctx.val(s, "extra") || "";
+  xa.addEventListener("input", () => ctx.set(s.id, "extra", xa.value));
+  xf.appendChild(xa);
+  wrap.appendChild(xf);
+
+  const row = el("div", "cir-tray-row");
+  if (judgeStage) {
+    const gf = el("label", "field", "Grade gate");
+    const gs = el("select");
+    [["", "No gate — record the grade and finish"]].concat(
+      ["A+", "A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D+", "D", "D-", "F"]
+        .map((g) => [g, "Below " + g + " — send it back"])).forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      gs.appendChild(o);
+    });
+    gs.value = ctx.val(s, "min_grade") || "";
+    gs.addEventListener("change", () => ctx.set(s.id, "min_grade", gs.value));
+    gf.appendChild(gs);
+    row.appendChild(gf);
+    const rf = el("label", "field narrow", "Retries");
+    const ri = el("input");
+    ri.type = "number";
+    ri.min = 0;
+    ri.max = 5;
+    ri.value = ctx.val(s, "max_retries") || 0;
+    ri.addEventListener("change",
+      () => ctx.set(s.id, "max_retries", Number(ri.value) || 0));
+    rf.appendChild(ri);
+    row.appendChild(rf);
+    wrap.appendChild(row);
+    const target = (s.judge || {}).retry_stage;
+    if (target) wrap.appendChild(el("p", "hint",
+      "A grade under the gate re-runs " + ctx.stageName(target)
+      + " with this judge's findings, up to the retry count."));
+  } else {
+    const hf = el("label", "field", "How it runs");
+    const hs = el("select");
+    [["interactive", "Interactive — asks before edits and commands"],
+     ["autopilot", "Autopilot — full autonomy, no prompts"]].forEach(([v, t]) => {
+      const o = el("option", null, t);
+      o.value = v;
+      hs.appendChild(o);
+    });
+    hs.value = ctx.val(s, "mode") || "interactive";
+    hs.addEventListener("change", () => ctx.set(s.id, "mode", hs.value));
+    hf.appendChild(hs);
+    row.appendChild(hf);
+    wrap.appendChild(row);
+    const ro = el("label", "run-flag");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = !!ctx.val(s, "read_only");
+    cb.addEventListener("change", () => ctx.set(s.id, "read_only", cb.checked));
+    ro.appendChild(cb);
+    ro.appendChild(el("span", null,
+      "Read-only — explore and report, change nothing"));
+    wrap.appendChild(ro);
+  }
+
+  if (s.prompt) {
+    const d = el("details", "cir-tray-brief");
+    d.appendChild(el("summary", null, "What this step is told"));
+    d.appendChild(el("pre", "cir-tray-pre", s.prompt));
+    wrap.appendChild(d);
+  }
+
+  const bar = el("div", "cir-tray-bar");
+  bar.appendChild(el("span", "hint",
+    "Changes apply to the next run of this circuit."));
+  const rst = el("button", "btn small", "Reset step");
+  rst.addEventListener("click", () => ctx.reset(s.id));
+  const sv = el("button", "btn small", "Save as circuit default");
+  sv.addEventListener("click", () => ctx.save(sv));
+  bar.appendChild(rst);
+  bar.appendChild(sv);
+  wrap.appendChild(bar);
+  return wrap;
 }
 
 function runStageGraph(run) {
