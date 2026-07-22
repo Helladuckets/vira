@@ -2716,3 +2716,118 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   width: 220px; height: 220px; display: block;
   background: #fff; padding: 8px; border-radius: 12px;
 }
+
+/* ---------- module front doors ----------
+   A module whose setup has not run keeps its place everywhere and answers
+   with a door instead of an empty view: what it is, a clip behind "What is
+   this?", and the interview that builds it. */
+
+/* The door replaces the module's own content rather than sitting above it —
+   a half-rendered empty catalog under a setup prompt reads as broken. */
+.view.fd-on > *:not(.fd) { display: none !important; }
+
+.fd { padding: 2px 0 8px; }
+.fd-head { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; }
+.fd-head h2 { margin: 0; }
+.fd-tag {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 8px;
+}
+.fd-blurb {
+  color: var(--text-dim); font-size: 13.5px; line-height: 1.5;
+  margin: 0 0 14px; max-width: 62ch;
+}
+.fd-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.fd-detail { margin-top: 10px; }
+.fd-running {
+  border: 1px solid var(--accent-line); border-radius: 11px;
+  background: var(--accent-soft); padding: 12px 13px;
+}
+.fd-running p { margin: 0 0 10px; font-size: 13px; color: var(--text); }
+
+/* the interview */
+.fd-form { margin-top: 4px; max-width: 62ch; }
+.fd-q { margin-bottom: 15px; }
+.fd-q-label {
+  display: block; font-size: 13.5px; font-weight: 600;
+  color: var(--text-head); margin-bottom: 3px;
+}
+.fd-q-help {
+  margin: 0 0 6px; font-size: 12px; color: var(--text-dim); line-height: 1.45;
+}
+.fd-input {
+  width: 100%; background: var(--bg-raised); border: 1px solid var(--line);
+  color: var(--text); border-radius: 9px; padding: 8px 10px;
+  font: inherit; font-size: 13.5px; outline: none;
+}
+.fd-input:focus { border-color: var(--accent); }
+textarea.fd-input { resize: vertical; line-height: 1.45; }
+.fd-file { padding: 7px 9px; font-size: 12.5px; color: var(--text-dim); }
+.fd-opts { display: flex; flex-direction: column; gap: 6px; }
+.fd-opt {
+  display: flex; gap: 9px; align-items: flex-start; cursor: pointer;
+  border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px;
+  background: var(--bg-raised);
+}
+.fd-opt:hover { background: var(--hover-wash); }
+.fd-opt input { margin-top: 2px; accent-color: var(--accent); }
+.fd-opt-text { display: flex; flex-direction: column; gap: 2px; }
+.fd-opt-label { font-size: 13px; color: var(--text); }
+.fd-opt-hint { font-size: 11.5px; color: var(--text-faint); line-height: 1.4; }
+.fd-err {
+  color: var(--red); font-size: 12.5px; margin: 0 0 10px;
+  border-left: 2px solid var(--red-line); padding-left: 9px;
+}
+
+/* "What is this?" */
+.fd-modal {
+  position: fixed; inset: 0; z-index: 400; display: grid; place-items: center;
+  background: var(--scrim-strong); padding: 20px;
+  opacity: 0; transition: opacity .18s ease;
+  -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px);
+}
+.fd-modal.open { opacity: 1; }
+.fd-modal-card {
+  width: min(680px, 100%); max-height: 88vh; overflow: auto;
+  background: var(--bg-modal); border: 1px solid var(--line);
+  border-radius: 15px; box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+  transform: translateY(6px); transition: transform .18s ease;
+}
+.fd-modal.open .fd-modal-card { transform: none; }
+.fd-modal-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 15px 11px; border-bottom: 1px solid var(--line);
+}
+.fd-modal-head h3 { margin: 0; font-size: 15.5px; color: var(--text-head); }
+.fd-modal-x {
+  margin-left: auto; background: none; border: none; cursor: pointer;
+  color: var(--text-faint); font-size: 21px; line-height: 1; padding: 0 2px;
+}
+.fd-modal-x:hover { color: var(--text); }
+.fd-video { background: var(--bg-stage); display: grid; place-items: center; }
+.fd-video video { width: 100%; display: block; max-height: 46vh; }
+.fd-video-miss {
+  margin: 0; padding: 26px 20px; text-align: center; max-width: 46ch;
+  font-size: 12.5px; color: var(--text-faint); line-height: 1.5;
+}
+.fd-modal-body { padding: 14px 16px 4px; }
+.fd-modal-body p {
+  margin: 0 0 11px; font-size: 13.5px; line-height: 1.55; color: var(--text);
+}
+.fd-modal-foot {
+  padding: 6px 16px 15px; display: flex; gap: 8px; align-items: center;
+}
+
+/* the Launchpad tile, not set up yet */
+.lp-tile.unconfigured .lp-ic { opacity: .42; border-style: dashed; }
+.lp-tile.unconfigured .lp-label { color: var(--text-faint); }
+.lp-tile.unconfigured:hover .lp-ic { opacity: .72; }
+.lp-setup {
+  position: absolute; right: -3px; bottom: -3px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); color: var(--accent-contrast);
+  font-size: 12px; font-weight: 700; line-height: 15px; text-align: center;
+  opacity: 1;
+}
+.lp-tile.unconfigured .lp-ic { position: relative; overflow: visible; }

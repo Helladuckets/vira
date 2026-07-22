@@ -1,12 +1,16 @@
-"""Applications module — the job-application front door.
+"""Applications module — the job-application catalog.
 
-Turns the careers-teardown work (the lab explainers: fit-scored role lists
-for Anthropic, OpenAI, and the full frontier boards) into a live backend: a
-merged, deduplicated role catalog the owner can star, comment on, track
+A merged, deduplicated role catalog the owner can star, comment on, track
 status against, and — the point — hit Apply on, which dispatches the
 `application-package` skill as a live agent session that builds the full
-package (tailored CV, cover letter, form answers, interview prep) in the
-self-record's 15-applications/.
+package (tailored CV, cover letter, form answers, interview prep) inside
+the owner's self-record.
+
+Roles arrive from two kinds of source: the live board poller
+(server/jobboards.py, generic — a registry of company boards per ATS) and
+any static corpora the owner points `applications_sources` at. Setup
+(server/frontdoor.py) wires the first for a new install; the second is
+how an existing analysis pipeline plugs in.
 
 Design:
 - **Roles are read, never owned.** The teardown data.js files stay the source
@@ -51,15 +55,20 @@ def connections_csv() -> Path:
 
 
 def universe_dir() -> Path:
-    """The curated candidate universe — the OWNER-ADJUDICATED starting point
-    (v2 repass, 2026-07-14: 181 NYC/remote roles at both labs, 50 deep-read
-    and scored/tiered/laned, adversarially verified). This, not the raw
-    boards, is the module's default view; the raw corpora remain as the
-    'all' view for discovering postings newer than the last repass."""
+    """The curated candidate universe — the adjudicated starting point that
+    the module shows by default; the raw corpora remain as the 'all' view
+    for discovering postings newer than the last repass.
+
+    The path is configuration, not convention. It used to default to one
+    instance's filing scheme (`11-future-role/analysis`), which meant a
+    stranger's install pointed at a directory that only ever existed on
+    one Mac. Setup writes `applications_universe` when it builds the
+    record; the neutral fallback below is what a hand-configured install
+    gets."""
     override = settings.raw().get("applications_universe")
     if override:
         return Path(str(override)).expanduser()
-    return self_record() / "11-future-role" / "analysis"
+    return self_record() / "analysis"
 
 
 def sources():

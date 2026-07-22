@@ -172,6 +172,13 @@ DEFAULT_MODULES = [
              "non-regenerable files. Secrets only in the Keychain.",
      "links": [], "keywords": ["config", "watermark", "backup"],
      "updated": TODAY},
+    {"id": "reading-store", "name": "Reading progress", "layer": "store",
+     "group": "know", "kind": "JSON files (data/reading/)",
+     "what": "What the owner has finished in each reading room, one store "
+             "per room. Server-side rather than per-browser on purpose: "
+             "progress made on the phone has to be there at the desk.",
+     "links": [], "keywords": ["reading", "done marks", "progress"],
+     "updated": TODAY},
 
     # ---------- engines: the server subsystems ----------
     {"id": "watcher", "name": "iMessage watcher", "layer": "engine",
@@ -329,6 +336,39 @@ DEFAULT_MODULES = [
      "endpoints": ["/api/notify", "/api/update"],
      "keywords": ["notify", "update", "backup", "launchd"],
      "updated": TODAY},
+    {"id": "job-boards", "name": "Job boards", "layer": "engine",
+     "group": "operate", "kind": "registry + fetchers + poller",
+     "what": "The live role feed behind Applications: a registry of "
+             "company boards (greenhouse, ashby, lever, microsoft, "
+             "google, or manual), a deterministic fetcher per system, and "
+             "a poll loop that diffs each sweep so it knows what is new "
+             "and what closed. Eligibility gates the phone ping, never "
+             "the data — a role that misses the owner's location rule is "
+             "still in the snapshot. Scoring is agent work, dispatched "
+             "on demand; everything here is plain HTTP and JSON.",
+     "links": [{"to": "applications-win", "how": "feeds"},
+               {"to": "housekeeping", "how": "pings through"}],
+     "endpoints": ["/api/jobboards", "/api/jobboards/board"],
+     "keywords": ["job boards", "greenhouse", "ashby", "poller", "ats"],
+     "updated": TODAY},
+    {"id": "front-doors", "name": "Module front doors", "layer": "engine",
+     "group": "operate", "kind": "registry + interview + validated writes",
+     "what": "The path from a dormant module to a live one. A module with "
+             "no config keeps its place in the Launchpad and opens a "
+             "front door instead of an empty view: what it is, a short "
+             "clip, and an interview whose answers become the prompt for "
+             "a live agent session. The session proposes; the server "
+             "validates and applies — config and generated pages are "
+             "never written by the agent's own hands. Readiness is "
+             "derived by re-probing, so a module goes live because its "
+             "data landed, not because a run said so.",
+     "links": [{"to": "sessions", "how": "dispatches setup to"},
+               {"to": "reader-win", "how": "sets up"},
+               {"to": "applications-win", "how": "sets up"}],
+     "endpoints": ["/api/frontdoor", "/api/frontdoor/{id}/setup"],
+     "keywords": ["front door", "onboarding", "setup", "dormant",
+                  "interview"],
+     "updated": TODAY},
 
     # ---------- surfaces: what the owner actually touches ----------
     {"id": "feed-win", "name": "Incoming", "layer": "surface",
@@ -471,6 +511,33 @@ DEFAULT_MODULES = [
                {"to": "changelog-engine", "how": "shows recent changes from"}],
      "endpoints": ["/api/map", "/api/map/refresh"],
      "keywords": ["system map", "modules page", "atlas"],
+     "updated": TODAY},
+    {"id": "applications-win", "name": "Applications", "layer": "surface",
+     "group": "operate", "kind": "dock window",
+     "what": "The job-application catalog: every role worth the owner's "
+             "time, scored against their own record, starred, commented "
+             "and status-tracked. Apply dispatches an agent session that "
+             "drafts the whole package in the self-record — a tailored "
+             "CV, cover letter, form answers and interview prep. Nothing "
+             "is ever submitted for the owner.",
+     "links": [{"to": "job-boards", "how": "reads roles from"},
+               {"to": "sessions", "how": "dispatches package builds to"},
+               {"to": "front-doors", "how": "is set up by"}],
+     "endpoints": ["/api/applications", "/api/applications/{uid}/apply"],
+     "keywords": ["applications", "jobs", "roles", "apply", "self-record"],
+     "updated": TODAY},
+    {"id": "reader-win", "name": "Reader", "layer": "surface",
+     "group": "know", "kind": "dock window",
+     "what": "Reading rooms: researched consumption queues on one subject "
+             "each — the talks, papers, posts and episodes worth the "
+             "time, ranked and deduplicated, filtered by watch/listen/"
+             "read. Done-marks live server-side, so a room reads the same "
+             "on the phone as at the desk. Any number of rooms; each is "
+             "its own queue.",
+     "links": [{"to": "reading-store", "how": "tracks progress in"},
+               {"to": "front-doors", "how": "is set up by"}],
+     "endpoints": ["/api/reading/pages", "/api/reading/{name}/done"],
+     "keywords": ["reader", "reading room", "queue", "watch listen read"],
      "updated": TODAY},
     {"id": "quick", "name": "Quick actions", "layer": "surface",
      "group": "operate", "kind": "Cmd-K + right-click",

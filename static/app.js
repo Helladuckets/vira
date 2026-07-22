@@ -5415,6 +5415,14 @@ function viewLoad(id) {
   if (id === "subsviz") loadSubsViz().catch(() => {});
   if (id === "launchpad") renderLaunchpad();
   if (id === "setup") loadSetup().catch(() => {});
+  // A module that is not set up yet answers with its front door rather
+  // than an empty view. Re-probed on every open, so a module that went
+  // live in another tab comes up as itself.
+  if (fdGet(id)) {
+    loadFrontDoor(true).then(() => {
+      if (fdDormant(id)) fdMount(id); else fdUnmount(id);
+    }).catch(() => {});
+  }
 }
 
 // Open an app on either width: floating window on desktop; on mobile the
@@ -7629,8 +7637,10 @@ function buildDock() {
   items.palette = pal;
   const hidden = dockHidden();   // curated subset; Launchpad + palette always
   dockOrder().forEach((id) => {
-    // dormant Reader stays out on a rebuild too (readerProbe handles boot)
-    if (id === "reader" && readerPages && !readerPages.length) return;
+    // The dock is the curated working set, so a module that is not set up
+    // yet stays off it — it is still in the Launchpad, wearing the
+    // unconfigured state, which is where it should be discovered.
+    if (fdDormant(id)) return;
     if (items[id] && !hidden.has(id)) dock.appendChild(items[id]);
   });
   makeDockReorderable(dock);
@@ -7778,10 +7788,12 @@ function rebuildDock() {
 }
 
 // Is this id an app the grid can show? Chrome (the Launchpad tile itself,
-// the palette) is not, and a Reader with no personal pages has withdrawn.
+// the palette) is not. A DORMANT module still is: it keeps its tile and
+// wears the unconfigured state, because the grid is where someone goes to
+// find out what this app can do, and withdrawing from it made the modules
+// with the most setup cost the hardest ones to discover.
 function appLive(id) {
   if (DOCK_LOCKED.has(id)) return false;
-  if (id === "reader" && readerPages && !readerPages.length) return false;
   return WINDOWS.some((w) => w.id === id);
 }
 
@@ -7858,6 +7870,13 @@ function lpTile(id, kind) {
     const badge = el("span", "lp-badge", kind === "on" ? "−" : "+");
     badge.setAttribute("aria-hidden", "true");
     ic.appendChild(badge);
+  }
+  // Dormant reads as an invitation, not as broken: the icon lightens and
+  // picks up a set-up mark, and opening it lands on the front door.
+  if (fdDormant(id)) {
+    cell.classList.add("unconfigured");
+    cell.title = "Not set up yet — open it to start";
+    ic.appendChild(el("span", "lp-setup", "+"));
   }
   jig.appendChild(ic);
   jig.appendChild(el("span", "lp-label", spec.title));
@@ -8826,10 +8845,374 @@ function routeHash() {
 }
 addEventListener("hashchange", routeHash);
 
+// ---------- module front doors ----------
+// A dormant module is one whose config is absent: the code works, it just
+// has nothing to show. That used to be a dead end — the Reader deleted its
+// own dock icon and skipped itself in the grid, so the one surface where a
+// stranger could have found it was the one surface that hid it.
+//
+// Now every setup-able module keeps its tile and, when dormant, opens a
+// front door instead of an empty view: what it is, a short clip behind
+// "What is this?", and the interview that sets it up. The interview is
+// dispatched as a live agent session; readiness comes from re-probing the
+// server, never from the run claiming success.
+let fdState = null;              // {modules:[…]} — the registry + readiness
+let fdPoll = null;               // live poll handle while a setup runs
+
+async function loadFrontDoor(force) {
+  if (fdState && !force) return fdState;
+  try { fdState = await api("/api/frontdoor"); }
+  catch { fdState = { modules: [] }; }
+  return fdState;
+}
+
+function fdGet(id) {
+  return (fdState?.modules || []).find((m) => m.id === id) || null;
+}
+
+function fdDormant(id) {
+  const m = fdGet(id);
+  return !!m && !m.ready;
+}
+
+/* ---- "What is this?" ---- */
+
+// The clip is hosted publicly and fetched over the network, so treat it as
+// something that may simply not arrive: an offline install, a blocked
+// egress, a domain outage. The prose is the artifact; the video is the
+// flourish, and its absence costs a caption, never the explanation.
+function fdWhatIsThis(mod) {
+  const wrap = el("div", "fd-modal");
+  const card = el("div", "fd-modal-card");
+  const head = el("div", "fd-modal-head");
+  head.appendChild(el("h3", null, mod.title));
+  const x = el("button", "fd-modal-x");
+  x.setAttribute("aria-label", "Close");
+  x.textContent = "×";
+  head.appendChild(x);
+  card.appendChild(head);
+
+  const stage = el("div", "fd-video");
+  const vid = document.createElement("video");
+  vid.src = mod.demo;
+  vid.controls = true;
+  vid.autoplay = true;
+  vid.muted = true;              // autoplay is only permitted muted
+  vid.loop = true;
+  vid.playsInline = true;
+  vid.preload = "metadata";
+  const failed = () => {
+    if (stage.dataset.failed) return;
+    stage.dataset.failed = "1";
+    stage.innerHTML = "";
+    stage.appendChild(el("p", "fd-video-miss",
+      "The demo clip could not load — it is hosted online and this "
+      + "install cannot reach it right now. Everything below still applies."));
+  };
+  vid.addEventListener("error", failed);
+  // A src that resolves to an error page fires no media error on some
+  // browsers; nothing playable after a few seconds means the same thing.
+  setTimeout(() => { if (!vid.videoWidth) failed(); }, 6000);
+  stage.appendChild(vid);
+  card.appendChild(stage);
+
+  const body = el("div", "fd-modal-body");
+  String(mod.what || "").split("\n\n").forEach((para) => {
+    if (para.trim()) body.appendChild(el("p", null, para.trim()));
+  });
+  card.appendChild(body);
+
+  const foot = el("div", "fd-modal-foot");
+  const go = el("button", "btn primary", mod.cta);
+  go.addEventListener("click", () => { close(); fdOpenInterview(mod.id); });
+  foot.appendChild(go);
+  card.appendChild(foot);
+
+  wrap.appendChild(card);
+  document.body.appendChild(wrap);
+  requestAnimationFrame(() => wrap.classList.add("open"));
+
+  function close() {
+    vid.pause();
+    wrap.classList.remove("open");
+    setTimeout(() => wrap.remove(), 200);
+    document.removeEventListener("keydown", onKey);
+  }
+  function onKey(e) { if (e.key === "Escape") close(); }
+  x.addEventListener("click", close);
+  wrap.addEventListener("click", (e) => { if (e.target === wrap) close(); });
+  document.addEventListener("keydown", onKey);
+}
+
+/* ---- the front door itself ---- */
+
+function fdView(id) { return $("#view-" + id); }
+
+function fdMount(id) {
+  const mod = fdGet(id);
+  const view = fdView(id);
+  if (!mod || !view || mod.ready) return fdUnmount(id);
+  let panel = view.querySelector(":scope > .fd");
+  if (!panel) {
+    panel = el("div", "fd");
+    view.prepend(panel);
+  }
+  view.classList.add("fd-on");
+  panel.innerHTML = "";
+
+  const head = el("div", "fd-head");
+  head.appendChild(el("h2", null, mod.title));
+  head.appendChild(el("span", "fd-tag", "not set up"));
+  panel.appendChild(head);
+  panel.appendChild(el("p", "fd-blurb", mod.blurb));
+
+  const run = mod.run;
+  if (run) {
+    // A setup already dispatched and the module still not live: show the
+    // run rather than the form, so a second click cannot start a twin.
+    const live = el("div", "fd-running");
+    live.appendChild(el("p", null,
+      "Setup is running. It researches, writes, and reports back here — "
+      + "you can watch it work or leave it to finish."));
+    const row = el("div", "fd-actions");
+    const watch = el("button", "btn primary", "Watch it work");
+    watch.addEventListener("click", () => openSession(run.job_id));
+    row.appendChild(watch);
+    const again = el("button", "btn", "Start over");
+    again.addEventListener("click", () => fdOpenInterview(id));
+    row.appendChild(again);
+    live.appendChild(row);
+    panel.appendChild(live);
+    fdWatch();
+    return;
+  }
+
+  const row = el("div", "fd-actions");
+  const go = el("button", "btn primary", mod.cta);
+  go.addEventListener("click", () => fdOpenInterview(id));
+  row.appendChild(go);
+  const what = el("button", "btn", "What is this?");
+  what.addEventListener("click", () => fdWhatIsThis(mod));
+  row.appendChild(what);
+  panel.appendChild(row);
+  panel.appendChild(el("p", "hint fd-detail", mod.detail || ""));
+}
+
+function fdUnmount(id) {
+  const view = fdView(id);
+  if (!view) return;
+  view.classList.remove("fd-on");
+  view.querySelector(":scope > .fd")?.remove();
+}
+
+/* ---- the interview ---- */
+
+function fdField(q) {
+  const wrap = el("div", "fd-q");
+  const lab = el("label", "fd-q-label", q.label);
+  lab.htmlFor = "fdq-" + q.id;
+  wrap.appendChild(lab);
+  if (q.help) wrap.appendChild(el("p", "fd-q-help", q.help));
+  let input;
+  if (q.kind === "textarea") {
+    input = el("textarea", "fd-input");
+    input.rows = 3;
+  } else if (q.kind === "choice") {
+    input = el("div", "fd-opts");
+    (q.options || []).forEach((o) => {
+      const b = el("label", "fd-opt");
+      const r = document.createElement("input");
+      r.type = "radio";
+      r.name = "fdq-" + q.id;
+      r.value = o.value;
+      if (o.value === q.default) r.checked = true;
+      b.appendChild(r);
+      const t = el("span", "fd-opt-text");
+      t.appendChild(el("span", "fd-opt-label", o.label));
+      if (o.hint) t.appendChild(el("span", "fd-opt-hint", o.hint));
+      b.appendChild(t);
+      input.appendChild(b);
+    });
+  } else if (q.kind === "multi") {
+    input = el("div", "fd-opts");
+    (q.options || []).forEach((o) => {
+      const b = el("label", "fd-opt");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.value = o.value;
+      if ((q.default || []).includes(o.value)) c.checked = true;
+      b.appendChild(c);
+      b.appendChild(el("span", "fd-opt-label", o.label));
+      input.appendChild(b);
+    });
+  } else if (q.kind === "file") {
+    input = document.createElement("input");
+    input.type = "file";
+    input.className = "fd-input fd-file";
+    if (q.accept) input.accept = q.accept;
+  } else {
+    input = document.createElement("input");
+    input.type = "text";
+    input.className = "fd-input";
+    if (q.placeholder) input.placeholder = q.placeholder;
+    if (q.default) input.value = q.default;
+  }
+  if (input.tagName === "TEXTAREA" && q.placeholder) {
+    input.placeholder = q.placeholder;
+  }
+  input.id = "fdq-" + q.id;
+  input.dataset.qid = q.id;
+  input.dataset.kind = q.kind || "text";
+  wrap.appendChild(input);
+  return wrap;
+}
+
+function fdReadAnswers(form) {
+  const out = {};
+  form.querySelectorAll("[data-qid]").forEach((node) => {
+    const id = node.dataset.qid;
+    const kind = node.dataset.kind;
+    if (kind === "choice") {
+      out[id] = node.querySelector("input:checked")?.value || "";
+    } else if (kind === "multi") {
+      out[id] = [...node.querySelectorAll("input:checked")].map((c) => c.value);
+    } else if (kind === "file") {
+      out[id] = node.files?.[0] || null;
+    } else {
+      out[id] = node.value.trim();
+    }
+  });
+  return out;
+}
+
+function fdOpenInterview(id) {
+  const mod = fdGet(id);
+  const view = fdView(id);
+  if (!mod || !view) return;
+  let panel = view.querySelector(":scope > .fd");
+  if (!panel) { fdMount(id); panel = view.querySelector(":scope > .fd"); }
+  if (!panel) return;
+  view.classList.add("fd-on");
+  panel.innerHTML = "";
+
+  const head = el("div", "fd-head");
+  head.appendChild(el("h2", null, mod.cta));
+  panel.appendChild(head);
+  panel.appendChild(el("p", "fd-blurb",
+    "Answer what you can. Vira takes it from here — it will tell you "
+    + "what it built and what it still needs from you."));
+
+  const form = el("form", "fd-form");
+  (mod.ask || []).forEach((q) => form.appendChild(fdField(q)));
+
+  const err = el("p", "fd-err");
+  err.hidden = true;
+  form.appendChild(err);
+
+  const row = el("div", "fd-actions");
+  const go = el("button", "btn primary", mod.cta);
+  go.type = "submit";
+  row.appendChild(go);
+  const back = el("button", "btn", "Back");
+  back.type = "button";
+  back.addEventListener("click", () => fdMount(id));
+  row.appendChild(back);
+  form.appendChild(row);
+  panel.appendChild(form);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    err.hidden = true;
+    const answers = fdReadAnswers(form);
+    const missing = (mod.ask || []).filter((q) => {
+      if (!q.required) return false;
+      const v = answers[q.id];
+      return Array.isArray(v) ? !v.length : !v;
+    });
+    if (missing.length) {
+      err.textContent = "Still needed: "
+        + missing.map((q) => q.label).join("; ");
+      err.hidden = false;
+      return;
+    }
+    go.disabled = true;
+    go.textContent = "Starting…";
+    try {
+      // A file answer is uploaded first and replaced by its staged path,
+      // so the dispatch payload stays plain JSON like every other call.
+      for (const q of mod.ask || []) {
+        if (q.kind !== "file" || !answers[q.id]) continue;
+        const file = answers[q.id];
+        const b64 = await fdFileToB64(file);
+        const up = await post("/api/frontdoor/resume",
+                              { filename: file.name, content_b64: b64 });
+        answers[q.id] = up.path;
+      }
+      const res = await post(`/api/frontdoor/${id}/setup`, { answers });
+      await loadFrontDoor(true);
+      const mod2 = fdGet(id);
+      if (mod2) mod2.run = { job_id: res.job_id };
+      fdMount(id);
+      toast("Setup dispatched — Vira is building it now");
+      openSession(res.job_id);
+      refreshJobs?.().catch(() => {});
+    } catch (e2) {
+      err.textContent = "Could not start: " + e2.message;
+      err.hidden = false;
+      go.disabled = false;
+      go.textContent = mod.cta;
+    }
+  });
+}
+
+function fdFileToB64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(new Error("could not read that file"));
+    r.readAsDataURL(file);
+  });
+}
+
+/* ---- readiness ---- */
+
+// A module goes live because its DATA landed, not because a session said
+// so — so the front door re-probes the server rather than trusting the
+// run. When a probe flips, the door comes down and the real module is
+// underneath it.
+function fdWatch() {
+  if (fdPoll) return;
+  fdPoll = startPoll(async (h) => {
+    const before = (fdState?.modules || [])
+      .filter((m) => m.ready).map((m) => m.id).join(",");
+    await loadFrontDoor(true);
+    const after = (fdState?.modules || [])
+      .filter((m) => m.ready).map((m) => m.id).join(",");
+    (fdState?.modules || []).forEach((m) => {
+      if (m.ready) { fdUnmount(m.id); } else { fdMount(m.id); }
+    });
+    if (before !== after) {
+      readerPages = null;               // the Reader re-reads its pages
+      renderLaunchpad();
+      (fdState?.modules || []).forEach((m) => {
+        if (m.ready && !before.includes(m.id)) {
+          toast(`${m.title} is ready`);
+          if (m.id === "reader") loadReader().catch(() => {});
+          if (m.id === "applications") renderApplications?.();
+        }
+      });
+    }
+    if (!(fdState?.modules || []).some((m) => !m.ready && m.run)) {
+      h.stop();
+      fdPoll = null;
+    }
+  }, 5000);
+}
+
 // ---------- reader: launcher window for personal reading-room pages ----------
 // Pages are personal-layer static HTML under /reading/ (never committed);
-// the Reader lists whatever exists and shows it in a frame. With no pages it
-// withdraws from the dock, the grid and the access bar (readerProbe at boot).
+// the Reader lists whatever exists and shows it in a frame. With no pages
+// the Reader shows its front door instead of withdrawing from the grid.
 let readerPages = null;
 
 async function fetchReaderPages() {
@@ -8866,12 +9249,14 @@ async function loadReader() {
 }
 
 async function readerProbe() {
-  // dormancy: with no personal pages the Reader removes its entry points
-  // (the Launchpad grid re-checks readerPages on every render)
+  // Dormancy no longer means disappearing. With no personal pages the
+  // Reader keeps its Launchpad tile (in the unconfigured state) and opens
+  // its front door instead; it stays off the dock and the phone's access
+  // bar, which are the curated working set rather than the catalog.
   try { await fetchReaderPages(); } catch { readerPages = []; }
   if (readerPages && readerPages.length) return;
   document.querySelector('.dock-item[data-dock="reader"]')?.remove();
-  renderMobileDock();   // and off the phone's access bar, if it was on it
+  renderMobileDock();
 }
 
 function initDesktop() {
@@ -9001,6 +9386,10 @@ async function boot() {
   // adopt the server-side arrangement BEFORE the desktop builds its
   // windows, so a fresh origin comes up looking like live
   await syncUiState();
+  // Readiness before the first paint: the dock and the Launchpad both ask
+  // fdDormant() as they build, and a late answer would draw every module
+  // as configured and then correct itself in front of the user.
+  await loadFrontDoor(true);
   if (isDesktop) initDesktop();
   buildMobileDock();   // the phone's five-app access bar
   initReorg();         // long-press the grid or the bar to rearrange both
@@ -9015,7 +9404,11 @@ async function boot() {
   initSearchView();
   initIdeas();
   routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
-  readerProbe();   // hide the Reader when no personal pages exist
+  readerProbe();   // keep a page-less Reader off the dock and access bar
+  // Any module still dormant gets its front door mounted now, so opening
+  // it from a deep link or the grid lands on the door already built.
+  (fdState?.modules || []).forEach((m) => { if (!m.ready) fdMount(m.id); });
+  if ((fdState?.modules || []).some((m) => !m.ready && m.run)) fdWatch();
   firstRunLanding();
   renderPeopleSort();
   loadBrief().catch(() => {});

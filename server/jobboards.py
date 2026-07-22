@@ -403,36 +403,93 @@ def _norm(board, uid, title, dept="", team="", locations=None,
 
 # ------------------------------------------------------------- eligibility
 
-NYC_RE = re.compile(r"new york|nyc", re.I)
 REMOTE_RE = re.compile(r"\bremote\b", re.I)
-NON_US_RE = re.compile(
+
+# The out-of-region and in-region hint sets. These are DEFAULTS for an
+# owner who works in the US — the shipped starting point for
+# `applications_remote_exclude` / `applications_region_hints`, both of
+# which config overrides wholesale. They are not a claim about where jobs
+# are worth having.
+DEFAULT_REMOTE_EXCLUDE = (
     r"europe|emea|\buk\b|london|paris|munich|berlin|frankfurt|madrid|"
     r"dublin|amsterdam|zurich|geneva|stockholm|warsaw|canada|toronto|"
     r"vancouver|montreal|india|bangalore|mumbai|apac|australia|sydney|"
     r"brazil|s[aã]o paulo|mexico|bogot|singapore|japan|tokyo|korea|seoul|"
     r"israel|tel aviv|riyadh|dubai|saudi|\buae\b|hong kong|taipei|"
-    r"beijing|shanghai|middle east|latam", re.I)
-US_HINT_RE = re.compile(
+    r"beijing|shanghai|middle east|latam")
+DEFAULT_REGION_HINTS = (
     r"\bUSA?\b|United States|San Francisco|Seattle|Austin|Boston|"
     r"Washington|Chicago|Los Angeles|Palo Alto|Mountain View|Denver|"
     r"Miami|Atlanta|,\s*[A-Z]{2}(?:,|\s|$)")
 
 
-def eligible_location(rec):
-    """The owner's location rule: New York City, or US-reachable remote.
-    A bare 'Remote' tag on a role whose named locations are all non-US
-    (Cohere Korea, Riyadh, ...) does not qualify."""
+def _rx(pattern):
+    """A compiled pattern, or None when the owner cleared it (empty
+    string / empty list means 'do not apply this test at all')."""
+    if not pattern:
+        return None
+    if isinstance(pattern, (list, tuple)):
+        parts = [str(p).strip() for p in pattern if str(p).strip()]
+        if not parts:
+            return None
+        pattern = "|".join(re.escape(p) for p in parts)
+    try:
+        return re.compile(pattern, re.I)
+    except re.error:            # a bad config pattern must not stop a poll
+        return None
+
+
+def location_rule():
+    """The owner's location rule, read from config.
+
+    `applications_locations` is a list of place substrings the owner will
+    work in ("New York", "NYC"). `applications_remote_ok` (default true)
+    accepts remote roles. `applications_remote_exclude` and
+    `applications_region_hints` tune which remote postings are actually
+    reachable — a bare "Remote" on a role whose named cities are all in
+    another region usually is not."""
+    cfg = settings.raw()
+    return {
+        "places": _rx(cfg.get("applications_locations")),
+        "remote_ok": cfg.get("applications_remote_ok", True) is not False,
+        "exclude": _rx(cfg.get("applications_remote_exclude")
+                       if "applications_remote_exclude" in cfg
+                       else DEFAULT_REMOTE_EXCLUDE),
+        "hints": _rx(cfg.get("applications_region_hints")
+                     if "applications_region_hints" in cfg
+                     else DEFAULT_REGION_HINTS),
+    }
+
+
+def eligible_location(rec, rule=None):
+    """Whether a role's location clears the owner's rule.
+
+    UNCONFIGURED MEANS UNFILTERED. An install that has never said where
+    its owner will work sees every role — inheriting some other owner's
+    city was the old behavior and it silently emptied the module for
+    anyone who did not live in it. Eligibility gates the phone ping and
+    the default view, never what is fetched: every role lands in the
+    snapshot either way."""
+    rule = rule or location_rule()
+    if rule["places"] is None and rule["remote_ok"]:
+        return True                       # nothing configured, nothing cut
     locs = rec.get("locations") or []
-    for loc in locs:
-        if NYC_RE.search(loc):
-            return True
+    if rule["places"] is not None:
+        for loc in locs:
+            if rule["places"].search(loc):
+                return True
+    if not rule["remote_ok"]:
+        return False
     if not any(REMOTE_RE.search(loc) for loc in locs):
         return False
+    if rule["exclude"] is None:
+        return True
     named = [loc for loc in locs if not REMOTE_RE.search(loc)]
-    if named and any(NON_US_RE.search(loc) for loc in named) \
-            and not any(US_HINT_RE.search(loc) for loc in named):
+    if named and any(rule["exclude"].search(loc) for loc in named) \
+            and not (rule["hints"] is not None
+                     and any(rule["hints"].search(loc) for loc in named)):
         return False
-    return not any(NON_US_RE.search(loc) for loc in locs if
+    return not any(rule["exclude"].search(loc) for loc in locs if
                    REMOTE_RE.search(loc))
 
 
@@ -565,10 +622,24 @@ def _notify_new(eligible_new, st_roles):
     if not fresh:
         return 0
     parts = []
+    # The ping's location label follows the owner's OWN rule: a role that
+    # matched a configured place is named by that place, anything else that
+    # got here is remote. With no places configured the label would be
+    # noise, so it is left off entirely.
+    rule = location_rule()
     for r in fresh[:NOTIFY_TITLES]:
-        loc = "NYC" if any(NYC_RE.search(x) for x in r["locations"]) \
-            else "Remote"
-        parts.append(f"{r['company']}: {r['title']} ({loc})")
+        locs = r.get("locations") or []
+        hit = ""
+        if rule["places"] is not None:
+            for x in locs:
+                m = rule["places"].search(x)
+                if m:
+                    hit = m.group(0)
+                    break
+            if not hit:
+                hit = "Remote"
+        parts.append(f"{r['company']}: {r['title']}"
+                     + (f" ({hit})" if hit else ""))
     text = f"Vira: {len(fresh)} new job{'s' if len(fresh) != 1 else ''} — " \
            + "; ".join(parts)
     if len(fresh) > NOTIFY_TITLES:
@@ -625,11 +696,21 @@ def _scored_uids():
 
 # --------------------------------------------------------- score dispatch
 
+SCORE_SHAPE = ("uid, fit (0-100), tier, final_tier, lane, why_fit, "
+               "lead_with, caveat, comp_note, verdict")
+
+
 def score_prompt(limit=40):
     """The prompt a 'Score new roles' dispatch hands an agent session
-    (cwd = the self-record, so its CLAUDE.md claim gate loads). The
-    session deep-reads the unscored eligible roles in the boards snapshot
-    and extends the candidate universe the same way the D6 pass did."""
+    (cwd = the self-record, so its CLAUDE.md claim gate loads when there
+    is one). The session deep-reads the unscored eligible roles in the
+    boards snapshot and extends the candidate universe.
+
+    Every reference below is DERIVED, not hardcoded: an install that has
+    accumulated a standing ruling and prior score files gets told to
+    honor them, and a fresh one — which has neither — gets the shape
+    described inline instead of being pointed at files that only ever
+    existed on one Mac."""
     from . import applications
     udir = applications.universe_dir()
     snapshot = _read_json(_snapshot_path(), {})
@@ -639,28 +720,51 @@ def score_prompt(limit=40):
             and not r.get("closed") and r["uid"] not in scored]
     todo.sort(key=lambda r: r.get("first_seen") or "", reverse=True)
     todo = todo[:limit]
-    lines = [
-        "Score the NEW job-board roles into the candidate universe. "
-        "Follow the standing method exactly:",
-        "",
-        f"1. Read the boards snapshot at {_snapshot_path()} — the roles "
-        "to score are listed below by uid.",
-        f"2. Read {udir}/2026-07-17_owner-adjudication.md (the standing "
-        "ruling) and score with the TWO-SCORE discipline: narrative "
-        "resonance AND screening probability, separately. Hard minimums "
-        "in a JD are probability screens, not reframes.",
-        "3. Every claim about the owner's background passes the FACTS.md "
-        "gate (this folder's CLAUDE.md governs).",
-        f"4. For each role, write a role file at {udir}/candidate-universe/"
-        "role/<uid>.json (same shape as the existing files) and append a "
-        f"score entry to {udir}/d6-raw-scores.json (same shape as "
-        "v2-raw-scores.json: uid, fit, tier, final_tier, lane, why_fit, "
-        "lead_with, caveat, comp_note, verdict).",
-        "5. Do NOT touch v2-raw-scores.json, owner-adjudication.json, or "
-        "the owner's eight picks.",
-        "",
-        f"ROLES TO SCORE ({len(todo)}):",
-    ]
+
+    # What this install actually has to honor.
+    ruling = sorted(udir.glob("*owner-adjudication*.md"))
+    prior = sorted(udir.glob("*-raw-scores.json"))
+    facts = applications.self_record() / "FACTS.md"
+    out_file = udir / f"{jobshared.now_iso()[:10]}-raw-scores.json"
+
+    step = 1
+
+    def nxt(text):
+        nonlocal step
+        line = f"{step}. {text}"
+        step += 1
+        return line
+
+    lines = ["Score the NEW job-board roles into the candidate universe.",
+             ""]
+    lines.append(nxt(f"Read the boards snapshot at {_snapshot_path()} — "
+                     "the roles to score are listed below by uid."))
+    if ruling:
+        lines.append(nxt(
+            f"Read {ruling[-1]} (the owner's standing ruling) and honor "
+            "it — picks stay picked, cuts stay cut."))
+    lines.append(nxt(
+        "Score with the TWO-SCORE discipline: narrative resonance AND "
+        "screening probability, separately. A hard minimum in a JD is a "
+        "probability screen, not something to reframe away."))
+    if facts.exists():
+        lines.append(nxt(
+            f"Every claim about the owner's background passes the "
+            f"{facts.name} gate — read {facts} first and assert nothing "
+            "it does not support."))
+    lines.append(nxt(
+        f"For each role write a role file at {udir}/candidate-universe/"
+        "role/<uid>.json (uid, company, title, team, function, locations, "
+        "seniority, salaryMin, salaryMax, comp, url, tags, blurb) and "
+        f"append a score entry to {out_file} — a JSON array of objects: "
+        f"{SCORE_SHAPE}."))
+    if prior:
+        names = ", ".join(p.name for p in prior)
+        lines.append(nxt(
+            f"Do NOT modify the existing score files ({names}) or "
+            "owner-adjudication.json — they are prior passes and the "
+            "owner's own calls. Your entries go in the new file only."))
+    lines += ["", f"ROLES TO SCORE ({len(todo)}):"]
     for r in todo:
         lines.append(json.dumps(
             {k: r.get(k) for k in ("uid", "company", "title", "locations",
