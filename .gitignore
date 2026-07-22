@@ -35,3 +35,6 @@ __pycache__/
 *.log
 .DS_Store
 run-taurid.sh
+
+# WhatsApp sidecar: pinned via package-lock.json; the tree itself never commits
+bridge/whatsapp/node_modules/

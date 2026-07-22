@@ -34,7 +34,8 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                receipts,
                routines,
                search as msearch, send, session, settings, subs_visuals,
-               subscriptions, suggest, triage, uistate, update, vault)
+               subscriptions, suggest, triage, uistate, update, vault,
+               whatsapp)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -57,6 +58,7 @@ async def _static_no_cache(request, call_next):
 
 watcher = imessage.Watcher()
 mail_watcher = mail.MailWatcher(watcher)
+whatsapp_watcher = whatsapp.WhatsAppWatcher(watcher)
 jobs = actions.Jobs()
 indexer = mediaindex.Indexer()
 mercury_poller = mercury.Poller()
@@ -82,6 +84,7 @@ async def _startup():
     session.sessions.start_supervisor()
     watcher.start()
     mail_watcher.start()
+    whatsapp_watcher.start()   # dormant until a WhatsApp pairing exists
     photos.start_background_build()
     indexer.start()
     backup.start()
@@ -596,13 +599,15 @@ def api_feed(limit: int = 50):
     if settings.fixture_mode():
         items = fixtures.feed_items(limit)
         feedstate.annotate(items)
-        return {"items": items, "watcher_ok": True, "mail": mail_watcher.status}
+        return {"items": items, "watcher_ok": True, "mail": mail_watcher.status,
+                "whatsapp": whatsapp_watcher.status}
     items = watcher.snapshot(limit)
     for it in items:  # photo cache builds in the background; check at read time
         it["has_photo"] = bool(it["person_id"] and photos.photo_path(it["person_id"]))
     feedstate.annotate(items)
     return {"items": items, "watcher_ok": getattr(watcher, "ok", False),
-            "mail": mail_watcher.status}
+            "mail": mail_watcher.status,
+            "whatsapp": whatsapp_watcher.status}
 
 
 class FeedStateReq(BaseModel):
@@ -990,6 +995,44 @@ def api_mail_draft(req: DraftReq):
                                  req.in_reply_to, req.references)
     except Exception as e:  # noqa: BLE001 — surface IMAP/Graph errors
         raise HTTPException(502, str(e)[:500])
+
+
+# ---------- whatsapp: linked-device connect + poll ----------
+
+@app.get("/api/whatsapp/status")
+def api_whatsapp_status():
+    return {"linked": whatsapp.linked(),
+            "installed": whatsapp.installed(),
+            "passive": bool(os.environ.get("VIRA_PASSIVE")),
+            "watcher": whatsapp_watcher.status,
+            "sidecar": whatsapp.sidecar_status()}
+
+
+@app.get("/api/whatsapp/qr")
+def api_whatsapp_qr():
+    return whatsapp.qr()
+
+
+@app.post("/api/whatsapp/pair")
+def api_whatsapp_pair():
+    """Start (or find) the sidecar so its pairing QR becomes available.
+    Refused on passive instances — the sidecar links a device to the
+    owner's account, so a test copy may only read one started by hand."""
+    try:
+        return {"sidecar": whatsapp.ensure_sidecar()}
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/whatsapp/poll")
+def api_whatsapp_poll():
+    """One explicit ingest pass. On live the watcher does this on its own;
+    this route serves the settings card's check-now and passive test
+    instances (reads the local sidecar only — no world action)."""
+    try:
+        return whatsapp.ingest(watcher)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e)[:300])
 
 
 # ---------- unknown-sender triage ----------
