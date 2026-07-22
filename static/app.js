@@ -1068,14 +1068,16 @@ function mediaSection(pid) {
     if (tab === "photos") {
       const grid = el("div", "media-grid" + (ctxOn ? " ctx" : ""));
       slice.forEach((p) => {
-        const tile = el("button", "media-tile");
-        tile.title = p.name + (p.from_me ? " — sent" : " — received");
+        const tile = el("button", "media-tile" + (p.evicted ? " purged" : ""));
+        tile.title = p.name + (p.from_me ? " — sent" : " — received")
+          + (p.evicted ? " — in iCloud, not on this Mac" : "");
         const img = document.createElement("img");
         img.loading = "lazy";
         img.src = "/api/media/thumb/" + p.id;
         img.alt = p.name;
         img.onerror = () => { tile.classList.add("broken"); img.remove(); };
         tile.appendChild(img);
+        if (p.evicted) tile.appendChild(el("span", "media-cloud", "iCloud"));
         if (p.kind === "video")
           tile.appendChild(el("span", "media-dur", fmtDur(p.duration) || "video"));
         if (p.from_me) tile.appendChild(el("span", "media-sent-dot"));
@@ -1129,11 +1131,12 @@ function mediaSection(pid) {
       });
     } else {
       slice.forEach((d) => {
-        const row = el("button", "doc-row");
+        const row = el("button", "doc-row" + (d.evicted ? " purged" : ""));
         row.appendChild(el("span", "doc-ext", d.ext || "FILE"));
         const main = el("div", "link-main");
         main.appendChild(el("div", "link-title", d.name));
-        const bits = [fmtBytes(d.size), fmtTime(d.when)];
+        const bits = [fmtBytes(d.size), fmtTime(d.when),
+                      d.evicted ? "in iCloud" : ""];
         main.appendChild(el("div", "link-sub", bits.filter(Boolean).join(" · ")));
         if (ctxOn) {
           const q = ctxLine(d.context, "link-ctx");
@@ -1141,8 +1144,14 @@ function mediaSection(pid) {
         }
         row.appendChild(main);
         row.appendChild(dirTag(d.from_me));
-        row.addEventListener("click", () =>
-          window.open("/api/media/file/" + d.id, "_blank"));
+        row.addEventListener("click", () => {
+          if (d.evicted) {
+            toast("In iCloud — open this conversation in Messages "
+                  + "to re-download it.");
+            return;
+          }
+          window.open("/api/media/file/" + d.id, "_blank");
+        });
         content.appendChild(row);
       });
     }
@@ -1240,12 +1249,14 @@ function renderSearchResults(box, list) {
       rs.forEach((r) => {
         const cell = el("div", "media-cell");
         const tile = el("button", "media-tile" + (r.purged ? " purged" : ""));
-        tile.title = (r.name || "") + (r.purged ? " — no longer on this Mac" : "");
+        tile.title = (r.name || "")
+          + (r.purged ? " — in iCloud, not on this Mac" : "");
         const img = document.createElement("img");
         img.loading = "lazy";
         img.src = "/api/media/thumb/" + r.id;
         img.onerror = () => { tile.classList.add("broken"); img.remove(); };
         tile.appendChild(img);
+        if (r.purged) tile.appendChild(el("span", "media-cloud", "iCloud"));
         if (r.kind === "video") tile.appendChild(el("span", "media-dur", "video"));
         if (r.from_me) tile.appendChild(el("span", "media-sent-dot"));
         if (r.source === "email") tile.addEventListener("click", () => openResult(r));

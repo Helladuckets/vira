@@ -513,7 +513,10 @@ def api_photo(pid: str):
     p = photos.photo_path(pid)
     if not p:
         raise HTTPException(404, "no photo")
-    return FileResponse(p, media_type="image/jpeg")
+    # no-cache = revalidate each time (cheap local 304s), so a refreshed
+    # contact photo isn't pinned stale by the browser cache
+    return FileResponse(p, media_type="image/jpeg",
+                        headers={"cache-control": "no-cache"})
 
 
 # ---------- shared media (links / photos / documents, like the Messages
