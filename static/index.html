@@ -479,9 +479,11 @@
 <!-- RUN SHEET -->
 <div id="run-sheet" class="sheet">
   <div class="sheet-card">
-    <div class="run-kind" id="run-kind"></div>
-    <h3 id="run-name"></h3>
-    <p class="hint" id="run-desc"></p>
+    <div class="sheet-head">
+      <div class="run-kind" id="run-kind"></div>
+      <h3 id="run-name"></h3>
+      <p class="hint" id="run-desc"></p>
+    </div>
     <div id="run-fields"></div>
     <label class="field" id="run-args-label">Arguments (optional)
       <input id="run-args" type="text" spellcheck="false" placeholder=""></label>
@@ -497,9 +499,11 @@
 <!-- RUN IDEA SHEET (Plan / Implement a backlog idea as a headless Vira job) -->
 <div id="idea-run-sheet" class="sheet">
   <div class="sheet-card">
-    <div class="run-kind" id="idea-run-mode"></div>
-    <h3 id="idea-run-title">Run idea</h3>
-    <p class="hint" id="idea-run-text"></p>
+    <div class="sheet-head">
+      <div class="run-kind" id="idea-run-mode"></div>
+      <h3 id="idea-run-title">Run idea</h3>
+      <p class="hint" id="idea-run-text"></p>
+    </div>
     <label class="field">Target repository
       <input id="idea-run-cwd" type="text" spellcheck="false"
              placeholder="~/workspace/vira"></label>
@@ -529,9 +533,11 @@
 <!-- APPLY SHEET (dispatch the application-package agent for a role) -->
 <div id="app-run-sheet" class="sheet">
   <div class="sheet-card">
-    <div class="run-kind">Apply</div>
-    <h3 id="app-run-title">Apply</h3>
-    <p class="hint" id="app-run-text"></p>
+    <div class="sheet-head">
+      <div class="run-kind">Apply</div>
+      <h3 id="app-run-title">Apply</h3>
+      <p class="hint" id="app-run-text"></p>
+    </div>
     <p class="hint warn" id="app-run-cut"></p>
     <label class="field">Model
       <select id="app-run-model">
@@ -558,8 +564,10 @@
 <!-- ADD TO CRM SHEET -->
 <div id="add-sheet" class="sheet">
   <div class="sheet-card">
-    <h3>Add to CRM</h3>
-    <p class="hint" id="add-handle-line"></p>
+    <div class="sheet-head">
+      <h3>Add to CRM</h3>
+      <p class="hint" id="add-handle-line"></p>
+    </div>
     <label class="field">Name
       <input id="add-name" type="text" spellcheck="false" placeholder="Full name"></label>
     <div class="field tell-vira">Tell Vira what you remember
