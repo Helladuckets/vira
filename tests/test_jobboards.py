@@ -157,14 +157,14 @@ class PollDiffAndNotify(unittest.TestCase):
         one = {"jobs": [GH_PAYLOAD["jobs"][1]]}
         r3, _ = self._poll(one)
         self.assertEqual(r3["closed"], 1)
-        snap = json.loads((self.dir / "snapshot.json").read_text())
+        snap = json.loads((self.dir / "snapshot.json").read_text(encoding="utf-8"))
         self.assertTrue(snap["roles"]["g-exlabs-111"].get("closed"))
 
         # it comes back -> reopened, but NOT re-notified (state remembers)
         r4, sent4 = self._poll(GH_PAYLOAD)
         self.assertEqual(r4["new"], 0)
         self.assertEqual(sent4, [])
-        snap = json.loads((self.dir / "snapshot.json").read_text())
+        snap = json.loads((self.dir / "snapshot.json").read_text(encoding="utf-8"))
         self.assertFalse(snap["roles"]["g-exlabs-111"].get("closed"))
 
     def test_failed_ping_leaves_undedupe(self):
@@ -183,7 +183,7 @@ class PollDiffAndNotify(unittest.TestCase):
                 mock.patch("server.notify.agent_ping", lambda *a, **k: True):
             r = jobboards.poll_once()
         self.assertEqual(r["closed"], 0)
-        snap = json.loads((self.dir / "snapshot.json").read_text())
+        snap = json.loads((self.dir / "snapshot.json").read_text(encoding="utf-8"))
         self.assertFalse(snap["roles"]["g-exlabs-111"].get("closed"))
         bid = jobboards._board_id(GH_BOARD)
         self.assertFalse(snap["boards"][bid]["ok"])
