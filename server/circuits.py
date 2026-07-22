@@ -48,6 +48,8 @@ TICK_S = 2.0
 OUTPUT_INJECT_CAP = 24_000
 RUNS_KEEP = 120
 MODES = ("interactive", "autopilot", "judge")
+EXTRA_CAP = 4_000        # per-stage owner instructions (tray) length cap
+MAX_RETRIES = 5          # ceiling a tray-set grade gate may ask for
 
 _dlock = threading.Lock()
 _rlock = threading.Lock()
@@ -330,6 +332,64 @@ def topo_order(stages):
     return order
 
 
+def apply_overrides(stages, overrides):
+    """Merge the Run tray's per-stage edits into `stages`, in place.
+
+    A circuit is a template, not a contract: the model a step runs on and
+    the instructions it carries are exactly the knobs an owner wants to
+    turn for ONE run — "same pipeline, but build on Opus, and stay off the
+    migrations". So the tray's edits ride the run request and land on the
+    run's frozen stages_def; the definition is only touched when they are
+    explicitly saved (update_stages).
+
+    Deliberately narrow: a run may retune a stage, never rewire the
+    circuit. Ids, needs and judge targets are the graph and stay put —
+    everything the driver relies on to be a DAG. Raises ValueError on an
+    unknown stage or an uneditable field, so a typo fails the run rather
+    than silently running the unedited pipeline."""
+    if not overrides:
+        return stages
+    by_id = {st["id"]: st for st in stages}
+    for sid, upd in overrides.items():
+        st = by_id.get(sid)
+        if st is None:
+            raise ValueError(f"unknown stage {sid!r}")
+        if not isinstance(upd, dict):
+            raise ValueError(f"stage {sid}: overrides must be an object")
+        is_judge = st.get("mode") == "judge"
+        for key, val in upd.items():
+            if key in ("min_grade", "max_retries"):
+                if not is_judge:
+                    raise ValueError(f"stage {sid}: {key} is a judge setting")
+                j = dict(st.get("judge") or {})
+                if key == "min_grade":
+                    grade = str(val or "").strip().upper()
+                    if grade and judge.grade_value(grade) is None:
+                        raise ValueError(f"stage {sid}: unknown grade {val!r}")
+                    j["min_grade"] = grade          # "" = run the gate off
+                else:
+                    j["max_retries"] = max(0, min(int(val or 0), MAX_RETRIES))
+                st["judge"] = j
+            elif key == "extra":
+                st["extra"] = str(val or "").strip()[:EXTRA_CAP]
+            elif key == "read_only":
+                if is_judge:                        # judges are read-only, full stop
+                    raise ValueError(f"stage {sid}: a judge is always read-only")
+                st["read_only"] = bool(val)
+            elif key == "mode":
+                mode = str(val or "").strip()
+                if is_judge or mode == "judge":
+                    raise ValueError(f"stage {sid}: a stage cannot change "
+                                     f"into or out of being a judge")
+                if mode:
+                    st["mode"] = mode               # validate_stages checks it
+            elif key == "model":
+                st["model"] = str(val or "").strip()
+            else:
+                raise ValueError(f"stage {sid}: {key!r} is not editable")
+    return stages
+
+
 def save_circuit(circ):
     """Create or update a definition (builtins can be updated too — they
     reseed only when absent)."""
@@ -351,6 +411,16 @@ def save_circuit(circ):
         s["circuits"].append(rec)
         _save_defs(s)
     return rec
+
+
+def update_stages(cid, overrides):
+    """Bake tray edits into the definition — the tray's "save as default".
+    Same merge a run uses, so what gets saved is exactly what was running."""
+    circ = get_circuit(cid)
+    if not circ:
+        raise KeyError(cid)
+    stages = apply_overrides(json.loads(json.dumps(circ["stages"])), overrides)
+    return save_circuit({**circ, "stages": stages})
 
 
 def delete_circuit(cid):
@@ -401,11 +471,15 @@ def get_run(run_id):
 
 
 def start_run(cid, input_text, cwd=None, notify=False, source="manual",
-              idea_id=None):
+              idea_id=None, overrides=None):
     circ = get_circuit(cid)
     if not circ:
         raise KeyError(cid)
-    validate_stages(circ["stages"])
+    # The run gets its OWN copy of the stages, tray edits merged in and
+    # then validated — so a bad override fails here, before any stage
+    # launches, and the definition on disk is untouched either way.
+    stages = apply_overrides(json.loads(json.dumps(circ["stages"])), overrides)
+    validate_stages(stages)
     input_text = (input_text or "").strip()
     if not input_text:
         raise ValueError("a run needs an input")
@@ -415,11 +489,11 @@ def start_run(cid, input_text, cwd=None, notify=False, source="manual",
         "input": input_text, "cwd": cwd or None, "idea_id": idea_id,
         "status": "running", "source": source, "notify": bool(notify),
         "started": _now(), "finished": None, "error": "",
-        "stages_def": json.loads(json.dumps(circ["stages"])),
+        "stages_def": stages,
         "stages": {st["id"]: {"status": "pending", "job_id": None,
                               "attempts": 0, "grade": None, "score": None,
                               "verdict": None, "feedback": ""}
-                   for st in circ["stages"]},
+                   for st in stages},
     }
 
     def fn(s):
@@ -627,20 +701,31 @@ class Driver(threading.Thread):
     def _launch_stage(self, run, st_def):
         from . import session
         sid = st_def["id"]
+        # The stage's own instructions from the tray: run-specific steer
+        # ("stay off the migrations", "grade the tests hardest") that the
+        # template can't know. They go LAST so they win a disagreement.
+        extra = (st_def.get("extra") or "").strip()
         if st_def.get("mode") == "judge":
             j = st_def.get("judge") or {}
             of = j.get("of") or (st_def.get("needs") or [])
             evidence = "\n\n".join(
                 f"[stage {o} output]\n{_stage_output(run, o)}" for o in of)
             target_cwd = run.get("cwd")
+            context = (f"This work was stage(s) {', '.join(of)} of the "
+                       f"'{run['circuit_name']}' pipeline.")
+            if extra:
+                context += ("\n\nThe owner asked you to weigh this in "
+                            "particular:\n" + extra)
             prompt = judge.build_prompt(
-                run["input"], evidence, cwd=target_cwd,
-                context=f"This work was stage(s) {', '.join(of)} of the "
-                        f"'{run['circuit_name']}' pipeline.")
+                run["input"], evidence, cwd=target_cwd, context=context)
             model = st_def.get("model") or judge.judge_model()
             mode, read_only = "interactive", True
         else:
             prompt = render_prompt(st_def.get("prompt") or "", run)
+            if extra:
+                prompt += ("\n\nADDITIONAL INSTRUCTIONS FROM THE OWNER for "
+                           "this run — they take precedence over the brief "
+                           "above:\n" + extra)
             fb = run["stages"][sid].get("feedback")
             if fb:
                 prompt += ("\n\nA fresh reviewer graded your previous "
