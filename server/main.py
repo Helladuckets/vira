@@ -25,7 +25,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                feedstate,
                reading,
                fixtures, ideas, imessage, jobboards, jobfiles, joblog,
-               jobtitle, journal,
+               journal,
                judge,
                mail,
                media,
@@ -1295,8 +1295,8 @@ def _ensure_names(rows, records=None):
             if idea_map is None:
                 idea_map = {x["id"]: x["text"] for x in ideas.list_items()}
             it = idea_map.get(rec["idea_id"])
-        row["title"] = jobtitle.name(rec, it)
-        row["command"] = rec.get("command") or jobtitle.command(rec, it)
+        row["title"] = joblog.name(rec, it)
+        row["command"] = rec.get("command") or joblog.command(rec, it)
     return rows
 
 
