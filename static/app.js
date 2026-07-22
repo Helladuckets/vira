@@ -5140,7 +5140,11 @@ function cardChannels(card) {
   card.appendChild(cqr);
   const cbody = el("div", "list"); cbody.id = "companion-body";
   card.appendChild(cbody);
-  loadCompanion().catch(() => {});
+  // The card is built DETACHED (renderSetup attaches the pane last), so the
+  // first load is deferred a tick — loadCompanion re-queries #companion-body
+  // from the document and would miss it mid-build, leaving the section empty
+  // until a manual Refresh (same bug class as cardNotifications' loadNotify).
+  setTimeout(() => loadCompanion().catch(() => {}), 0);
 
   // WhatsApp — reuses waTick / waConnect; the poll runs only while shown.
   card.appendChild(el("div", "setup-sub", "WhatsApp"));
@@ -5160,7 +5164,10 @@ function cardChannels(card) {
     "Receive-only: Vira never sends.");
   wh.id = "wa-hint";
   card.appendChild(wh);
-  startWaPoll();
+  // Deferred for the same detached-build reason: waTick's immediate first
+  // tick would read the #wa-status miss as "card left the screen" and the
+  // status would sit blank until the next 4s tick.
+  setTimeout(() => startWaPoll(), 0);
 }
 
 function cardNotifications(card) {
@@ -5224,7 +5231,9 @@ function cardUpdates(card) {
   hint.style.alignSelf = "center";
   bar.appendChild(chk); bar.appendChild(ap); bar.appendChild(hint);
   card.appendChild(bar);
-  refreshUpdateStatus(false).catch(() => {});
+  // Deferred past card attach (see cardChannels) — a detached #upd-current
+  // miss left the card stuck on "Checking…" until a manual check.
+  setTimeout(() => refreshUpdateStatus(false).catch(() => {}), 0);
 }
 
 
