@@ -1760,22 +1760,22 @@ def api_radar():
     return radar.compose()
 
 
-@app.post("/api/radar/intros/refresh")
+@app.post("/api/radar/groupings/refresh")
 def api_radar_refresh():
     import threading as _t
-    _t.Thread(target=radar.refresh_intros, daemon=True,
-              name="vira-intros-refresh").start()
+    _t.Thread(target=radar.refresh_groupings, daemon=True,
+              name="vira-groupings-refresh").start()
     return {"refreshing": True}
 
 
-class DismissIntroReq(BaseModel):
+class DismissGroupingReq(BaseModel):
     key: str
     restore: bool = False
 
 
 @app.post("/api/radar/dismiss")
-def api_radar_dismiss(req: DismissIntroReq):
-    radar.dismiss_intro(req.key, restore=req.restore)
+def api_radar_dismiss(req: DismissGroupingReq):
+    radar.dismiss(req.key, restore=req.restore)
     return {"ok": True}
 
 

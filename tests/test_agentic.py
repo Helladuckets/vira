@@ -1,7 +1,7 @@
 """Agentic-OS engine tests: vault chunking/search/ask grounding, judge
 verdict parsing + grade gates, circuit DAG validation + execution +
-grader-gated retry, routine due-logic, radar scoring + intro candidates,
-and the proposed-ideas staging flow.
+grader-gated retry, routine due-logic, radar scoring + groupings +
+conversation markers, and the proposed-ideas staging flow.
 
 Run: .venv/bin/python -m unittest discover tests
 """
@@ -557,6 +557,8 @@ FAKE_CRM = {
          "imsg_n": 800, "email_n": 10, "handles": {"imessage": []}},
         {"id": "p_c", "name": "Cy Moss", "profile_tier": "active",
          "imsg_n": 700, "email_n": 5, "handles": {"imessage": []}},
+        {"id": "p_d", "name": "Dov Ilan", "profile_tier": "active",
+         "imsg_n": 600, "email_n": 1, "handles": {"imessage": []}},
     ],
     "by_id": {},
     "profiles": {
@@ -568,15 +570,40 @@ FAKE_CRM = {
                                         "synthesizers"},
         "p_c": {"relationship_summary": "Corporate lawyer, marathon "
                                         "runner, hates wine"},
+        "p_d": {"relationship_summary": "Builds modular synthesizers in a "
+                                        "garage in Queens"},
     },
 }
 FAKE_CRM["by_id"] = {p["id"]: p for p in FAKE_CRM["people"]}
 
+SYNTH_LINK = {
+    "url": "https://pitchfork.com/news/modular-synthesizers-revival",
+    "title": "The modular synthesizers revival is here",
+    "domain": "pitchfork.com", "from_pid": "p_d", "from_name": "Dov Ilan",
+    "when": "2026-07-20T10:00:00-04:00",
+}
+WINE_LINK = {
+    "url": "https://winespectator.com/vineyard-land-prices",
+    "title": "Vineyard land prices hit a record",
+    "domain": "winespectator.com", "from_pid": "p_b",
+    "from_name": "Bo Reyes", "when": "2026-07-21T09:00:00-04:00",
+}
+
 
 class RadarTests(unittest.TestCase):
     def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name) / "radar-groupings.json"
+        self.legacy = Path(self.tmp.name) / "radar-intros.json"
         patches = [
+            # the store is real state on a live machine — every test reads
+            # and writes its own
+            mock.patch.object(radar, "STORE", self.store),
+            mock.patch.object(radar, "LEGACY", self.legacy),
             mock.patch("server.radar.crm._load", return_value=FAKE_CRM),
+            mock.patch("server.radar.crm.get_person",
+                       side_effect=lambda pid: {"master": {}}),
             mock.patch("server.radar.brief._unreplied_imessages",
                        return_value=[{"person_id": "p_a", "hours": 20}]),
             mock.patch("server.radar.brief._going_quiet",
@@ -591,6 +618,11 @@ class RadarTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
+    def _write_store(self, **kw):
+        self.store.write_text(json.dumps({"generated": None, "groupings": [],
+                                          "markers": [], "dismissed": [],
+                                          **kw}))
+
     def test_priority_scoring_and_reasons(self):
         rows = radar.priority_people()
         by_id = {r["person_id"]: r for r in rows}
@@ -603,14 +635,83 @@ class RadarTests(unittest.TestCase):
                             for x in by_id["p_c"]["reasons"]))
         self.assertTrue(any("hook" in x for x in by_id["p_a"]["reasons"]))
 
-    def test_intro_candidates_shared_rare_ground(self):
-        with mock.patch("server.radar.crm.get_person",
-                        side_effect=lambda pid: {"master": {}}):
-            pairs = radar.intro_candidates()
-        self.assertTrue(pairs)
-        a, b, score, shared = pairs[0]
-        self.assertEqual({a, b}, {"p_a", "p_b"})
-        self.assertIn("vineyard", shared)
+    def test_overlap_groupings_cluster_not_just_pairs(self):
+        """Three people on one rare topic is ONE room, not three pairs."""
+        with mock.patch.object(radar, "recent_links", return_value=[]):
+            cands, markers = radar.candidates()
+        self.assertFalse(markers)
+        rooms = [set(cd["members"]) for cd in cands]
+        self.assertIn({"p_a", "p_b", "p_d"}, rooms)       # the synth room
+        # the lawyer who hates wine belongs in none of them
+        self.assertFalse(any("p_c" in r for r in rooms))
+        trio = next(cd for cd in cands
+                    if set(cd["members"]) == {"p_a", "p_b", "p_d"})
+        self.assertIn("synthesizers", trio["topics"])
+        self.assertEqual(trio["trigger"]["type"], "overlap")
+
+    def test_event_grouping_excludes_the_sharer(self):
+        with mock.patch.object(radar, "recent_links",
+                               return_value=[SYNTH_LINK]):
+            cands, _ = radar.candidates()
+        live = [cd for cd in cands if cd["trigger"]["type"] == "event"]
+        self.assertTrue(live)
+        room = live[0]
+        self.assertEqual(set(room["members"]), {"p_a", "p_b"})
+        self.assertNotIn("p_d", room["members"])   # Dov brought it
+        self.assertEqual(room["trigger"]["from_name"], "Dov Ilan")
+        self.assertEqual(room["trigger"]["domain"], "pitchfork.com")
+
+    def test_nobody_is_offered_a_link_from_their_own_thread(self):
+        """The one embarrassing failure: pitching an article back to the
+        person it was already sent to."""
+        seen = dict(SYNTH_LINK, from_pid=None, from_name="you",
+                    seen_pids=["p_a"])
+        with mock.patch.object(radar, "recent_links", return_value=[seen]):
+            cands, _ = radar.candidates()
+        live = [cd for cd in cands if cd["trigger"]["type"] == "event"]
+        self.assertTrue(live)
+        # Ada was in the thread it was posted to; the others were not
+        self.assertEqual(set(live[0]["members"]), {"p_b", "p_d"})
+
+    def test_single_interested_person_becomes_a_marker(self):
+        with mock.patch.object(radar, "recent_links",
+                               return_value=[WINE_LINK]):
+            _, markers = radar.candidates()
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["person_id"], "p_a")
+        self.assertIn("Bo Reyes", markers[0]["text"])
+        self.assertIn("vineyard", markers[0]["topics"])
+
+    def test_marker_lifts_a_person_with_no_other_signal(self):
+        self._write_store(markers=[
+            {"person_id": "p_d", "text": "Bo shared “Synth revival” — "
+                                         "modular is their ground too",
+             "topics": ["modular"], "url": "https://x.test/1"}])
+        rows = radar.priority_people()
+        by_id = {r["person_id"]: r for r in rows}
+        self.assertIn("p_d", by_id)                  # nothing else surfaces
+        self.assertTrue(by_id["p_d"]["marker"])
+        self.assertIn("modular is their ground",
+                      by_id["p_d"]["reasons"][0])    # markers read first
+
+    def test_dismissals_survive_the_intro_to_grouping_rename(self):
+        self.legacy.write_text(json.dumps({
+            "generated": "2026-07-19T00:00:00+00:00",
+            "intros": [{"a_id": "p_a", "b_id": "p_b", "a_name": "Ada Vance",
+                        "b_name": "Bo Reyes", "why": "wine", "opener": "hi"},
+                       {"a_id": "p_a", "b_id": "p_d", "a_name": "Ada Vance",
+                        "b_name": "Dov Ilan", "why": "synths",
+                        "opener": "hey"}],
+            "dismissed": ["intro:p_a:p_b"]}))
+        out = radar.list_groupings()
+        keys = [g["key"] for g in out["groupings"]]
+        self.assertEqual(keys, ["grp:p_a:p_d"])      # the dismissal held
+        self.assertEqual(out["groupings"][0]["members"][1]["name"],
+                         "Dov Ilan")
+
+    def test_event_trigger_is_dormant_without_a_chat_db(self):
+        with mock.patch("server.settings.fixture_mode", return_value=True):
+            self.assertEqual(radar.recent_links(), [])
 
 
 # ---------- proposed ideas ----------

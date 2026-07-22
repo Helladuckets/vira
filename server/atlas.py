@@ -20,7 +20,7 @@ plus a deterministic label-propagation pass.
 The graph is a MATERIALIZED VIEW: build_graph() writes
 data/atlas-graph.json under the cross-process file lock, GET /api/atlas
 serves the cached file, and refresh happens on demand or on the weekly
-routine — never per page load (the radar-intros discipline). The one
+routine — never per page load (the radar-groupings discipline). The one
 optional AI step, narrate_edges(), labels the strongest cross-cluster
 edges with a one-line "why" via suggest.complete; deterministic signal
 labels render without it.
@@ -122,7 +122,7 @@ def _activity(p):
 
 
 def select_nodes(c=None, cap=None):
-    """The atlas node set: tiered-or-named people (intro_candidates' gate),
+    """The atlas node set: tiered-or-named people (radar's grouping gate),
     most-active first, capped for legibility. The owner's own row is
     excluded — it IS the ego."""
     c = c or crm._load()
