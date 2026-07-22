@@ -20,7 +20,7 @@ from .filelock import locked
 def read(path, default):
     """Tolerant fresh read: a missing or corrupt file returns `default`."""
     try:
-        return json.loads(Path(path).read_text())
+        return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return default
 

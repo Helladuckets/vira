@@ -29,7 +29,7 @@ class ReadWriteTests(unittest.TestCase):
         p = self.root / "sub" / "s.json"
         obj = {"b": "ü", "a": 1}
         jsonstore.write_atomic(p, obj, indent=1, ensure_ascii=False)
-        self.assertEqual(p.read_text(),
+        self.assertEqual(p.read_text(encoding="utf-8"),
                          json.dumps(obj, indent=1, ensure_ascii=False))
         self.assertFalse(p.with_name(p.name + ".tmp").exists())
 
@@ -38,7 +38,7 @@ class ReadWriteTests(unittest.TestCase):
         p = self.root / "picks.json"
         jsonstore.write_atomic(p, {"z": 1, "a": 2}, newline=True,
                                indent=2, sort_keys=True)
-        self.assertEqual(p.read_text(),
+        self.assertEqual(p.read_text(encoding="utf-8"),
                          json.dumps({"z": 1, "a": 2}, indent=2,
                                     sort_keys=True) + "\n")
 
@@ -50,13 +50,13 @@ class ReadWriteTests(unittest.TestCase):
 
         self.assertEqual(jsonstore.mutate(p, fn, {}), {"n": 1})
         self.assertEqual(jsonstore.mutate(p, fn, {}), {"n": 2})
-        self.assertEqual(json.loads(p.read_text()), {"n": 2})
+        self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"n": 2})
 
     def test_mutate_replacement_return(self):
         p = self.root / "r.json"
         out = jsonstore.mutate(p, lambda s: {"fresh": True}, {"old": 1})
         self.assertEqual(out, {"fresh": True})
-        self.assertEqual(json.loads(p.read_text()), {"fresh": True})
+        self.assertEqual(json.loads(p.read_text(encoding="utf-8")), {"fresh": True})
 
     def test_prune_oldest(self):
         bucket = {"a": 3, "b": 1, "c": 2, "d": 4}
@@ -97,7 +97,7 @@ class FeedStateAdoptionTests(unittest.TestCase):
 
     def test_on_disk_shape_unchanged(self):
         feedstate.set_state(7, read=True)
-        doc = json.loads(feedstate.STATE.read_text())
+        doc = json.loads(feedstate.STATE.read_text(encoding="utf-8"))
         self.assertEqual(set(doc), {"read", "hidden"})
         self.assertIn("7", doc["read"])
 
@@ -118,7 +118,7 @@ class TriageDismissAdoptionTests(unittest.TestCase):
         expect = json.dumps(
             {"dismissed": sorted({"+12125550142", "a@example.com"})},
             indent=1)
-        self.assertEqual(triage.STATE.read_text(), expect)
+        self.assertEqual(triage.STATE.read_text(encoding="utf-8"), expect)
         self.assertEqual(triage._dismissed(),
                          {"+12125550142", "a@example.com"})
 
