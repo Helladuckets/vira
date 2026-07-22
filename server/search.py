@@ -97,9 +97,18 @@ def _candidates(con, pid=None, sender_pid=None, kind=None, direction=None,
 
 
 def search(q=None, pid=None, sender_pid=None, kind=None, direction=None,
-           face_pid=None, since=None, until=None, limit=60):
+           face_pid=None, since=None, until=None, limit=60, exact=False,
+           phrases=(), order="relevance"):
     """Hybrid retrieval. Returns hydrated entries newest-first when no
-    query text, fused-relevance order otherwise."""
+    query text, fused-relevance order otherwise.
+
+    exact: the caller detected a literal the user is sure of (a filename,
+    a phone number, a quoted phrase). The bm25 order then leads and the
+    fused vector hits follow as a tail, instead of semantic neighbours
+    competing with the string the user actually named.
+    order: 'recent'/'oldest' re-sorts the result by date, with relevance
+    surviving only as the tiebreak.
+    """
     mediaindex._db().close()      # ensure schema exists on first call
     _matrices.load(_con)
     con = _con()
@@ -112,21 +121,33 @@ def search(q=None, pid=None, sender_pid=None, kind=None, direction=None,
             "WHERE 0"
         rows = con.execute(
             f"SELECT i.seq FROM items i {where} "
-            "ORDER BY i.date_ns DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY i.date_ns " + ("ASC" if order == "oldest" else "DESC")
+            + " LIMIT ?", (limit,)).fetchall()
         out = _hydrate(con, [r["seq"] for r in rows])
         con.close()
         return out
 
+    fts = retrieval.rank_fts(con, q, cand, limit=FTS_LIMIT, phrases=phrases)
     lists = [
-        retrieval.rank_fts(con, q, cand, limit=FTS_LIMIT),
+        fts,
         retrieval.rank_vec(_matrices.get("scene"), _scene_qvec(q), cand,
                            floor=0.05),
         retrieval.rank_vec(_matrices.get("text"), _text_qvec(q), cand,
                            floor=0.35),
     ]
     ranks = retrieval.rrf(lists)
-    top = sorted(ranks, key=ranks.get, reverse=True)[:limit]
+    top = sorted(ranks, key=ranks.get, reverse=True)
+    if exact and fts:
+        rest = [s for s in top if s not in set(fts)]
+        top = fts + rest
+    # a date sort has to run over every match, not the relevance head —
+    # the newest photo of a thing is rarely the best-scoring one
+    top = top[:max(limit * 8, 200)] if order in ("recent", "oldest") \
+        else top[:limit]
     out = _hydrate(con, top, scores=ranks)
+    if order in ("recent", "oldest"):
+        out.sort(key=lambda r: r["when"] or "", reverse=order == "recent")
+        out = out[:limit]
     con.close()
     return out
 
@@ -217,10 +238,12 @@ Reply with ONLY a JSON object, no prose:
  "direction": "<'received'|'sent'|null>",
  "kind": "<'photo'|'video'|'doc'|'audio'|'link'|null>",
  "face_person": "<person id of someone who should APPEAR IN the picture, or null>",
+ "since": "<YYYY-MM-DD or null>",
+ "until": "<YYYY-MM-DD or null>",
  "query": "<visual/content description to search for, a few words, or null>",
  "wants": "<one line: what would count as the answer>"
 }}
-Rules: face_person is only for people visible in the image, not the sender. Put scene words (objects, actions, settings) and document topics in query. Omit people's names from query when they are covered by person/sender/face_person."""
+Rules: face_person is only for people visible in the image, not the sender. Put scene words (objects, actions, settings) and document topics in query. Dates belong in since/until, never in query. Omit people's names from query when they are covered by person/sender/face_person."""
 
 NARRATE_PROMPT = """The user asked: {question}
 
@@ -247,26 +270,52 @@ def _people_for_prompt():
 RELAX_LADDER = (
     ("sender", None), ("direction", None), ("kind", None),
     ("person", None), ("face_person", None),
+    # dates last: a remembered month is usually the most deliberate part
+    # of a question, so it is the final thing given up
+    ("since", None), ("until", None),
 )
 
 
-def ask(question):
-    from .suggest import complete
-    raw = complete(PARSE_PROMPT.format(
-        people=_people_for_prompt(), question=question))
-    m = re.search(r"\{.*\}", raw or "", re.S)
-    if not m:
-        return {"answer": "I couldn't parse that question.", "results": []}
+def _ns(iso):
+    """ISO date from a parse -> the index's Apple-epoch nanoseconds."""
+    if not iso:
+        return None
+    from datetime import date as _d
+    from datetime import datetime as _dt
+    from datetime import time as _t
+
+    from .imessage import apple_ns
     try:
-        plan = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {"answer": "I couldn't parse that question.", "results": []}
+        return apple_ns(_dt.combine(_d.fromisoformat(str(iso)[:10]), _t.min))
+    except ValueError:
+        return None
+
+
+def ask(question, plan=None):
+    """plan: a parse the caller already paid for (find.py hands its own
+    plan over rather than making a second model call for the same
+    question). Without one, this parses the question itself as before."""
+    from .suggest import complete
+    if plan is None:
+        raw = complete(PARSE_PROMPT.format(
+            people=_people_for_prompt(), question=question))
+        m = re.search(r"\{.*\}", raw or "", re.S)
+        if not m:
+            return {"answer": "I couldn't parse that question.",
+                    "results": []}
+        try:
+            plan = json.loads(m.group(0))
+        except json.JSONDecodeError:
+            return {"answer": "I couldn't parse that question.",
+                    "results": []}
 
     def run(p):
         return search(q=p.get("query"), pid=p.get("person"),
                       sender_pid=p.get("sender"),
                       direction=p.get("direction"), kind=p.get("kind"),
-                      face_pid=p.get("face_person"), limit=8)
+                      face_pid=p.get("face_person"),
+                      since=_ns(p.get("since")), until=_ns(p.get("until")),
+                      limit=8)
 
     results = run(plan)
     relaxed = []

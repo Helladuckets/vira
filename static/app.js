@@ -1356,31 +1356,89 @@ function renderSearchResults(box, list) {
   });
 }
 
-function initSearchView() {
-  const root = $("#search-root");
+// ---------- Find: one box over four databases -------------------------
+// The merge of the old Search (media) and Brain (vault) windows. Typing
+// hits /api/find, which runs the deterministic half of the sorter only —
+// no model, so it is safe to debounce. A question committed with Enter
+// goes to /api/find/ask, which spends the model and answers through the
+// owning corpus's own contract (cited for notes, relax-and-narrate for
+// media). server/find.py carries the reasoning.
+
+const FIND_TABS = [["all", "All"], ["notes", "Notes"], ["media", "Media"],
+                   ["people", "People"], ["messages", "Messages"]];
+const FIND_EXAMPLES = [
+  "most recent session where we decided about the sorter",
+  "who works in insurance",
+  "photos from last March",
+];
+const FIND_PREVIEW = 4;      // rows per group on the All tab
+
+// the window's tab switch, exposed for aliases and deep links that land
+// before (or after) the view is built
+let findSetTab = null;
+let findPendingTab = null;
+
+function setFindTab(tab) {
+  if (findSetTab) findSetTab(tab);
+  else findPendingTab = tab;
+}
+
+function initFindView() {
+  const root = $("#find-root");
   if (!root) return;
-  let mode = "search";
+  let tab = "all";
   let kind = "";
-  const modes = el("div", "fchips tight");
+  let last = null;            // the envelope currently rendered
+  let seq = 0;                // drops out-of-order responses
+
+  const bar = el("div", "runbar find-bar");
   const input = el("input", "search");
   input.type = "text";
+  input.autocomplete = "off";
+  input.placeholder = "Search or ask across notes, media, people, messages…";
+  const askBtn = el("button", "btn primary", "Ask");
+  bar.appendChild(input);
+  bar.appendChild(askBtn);
+  const tabs = el("div", "fchips tight");
   const kinds = el("div", "fchips tight");
+  const why = el("div", "find-why");
   const status = el("div", "search-hint");
   const results = el("div", "search-results");
-  root.appendChild(modes);
-  root.appendChild(input);
+  const empty = el("div", "brain-empty");
+  empty.appendChild(el("p", "hint",
+    "One box over everything Vira holds: your vault notes, every photo, "
+    + "link and document ever shared, your contacts, and the text of your "
+    + "messages and mail. Ask a question and the answer cites its notes; "
+    + "type a name, a filename or a date and it filters."));
+  const examples = el("div", "brain-examples");
+  FIND_EXAMPLES.forEach((q) => {
+    const c = el("button", "fchip sm", q);
+    c.addEventListener("click", () => { input.value = q; run(true); });
+    examples.appendChild(c);
+  });
+  empty.appendChild(examples);
+  root.appendChild(bar);
+  root.appendChild(tabs);
   root.appendChild(kinds);
+  root.appendChild(why);
   root.appendChild(status);
   root.appendChild(results);
+  root.appendChild(empty);
 
-  const renderModes = () => {
-    modes.innerHTML = "";
-    [["search", "Search"], ["ask", "Ask Vira"]].forEach(([k, label]) => {
-      const c = el("button", "fchip sm" + (mode === k ? " on" : ""), label);
-      c.addEventListener("click", () => { mode = k; renderModes(); sync(); });
-      modes.appendChild(c);
+  const renderTabs = () => {
+    tabs.innerHTML = "";
+    FIND_TABS.forEach(([k, label]) => {
+      const n = last && k !== "all" ? (last.counts?.[k] ?? null) : null;
+      const c = el("button", "fchip sm" + (tab === k ? " on" : ""),
+                   label + (n ? ` ${n}` : ""));
+      c.addEventListener("click", () => {
+        tab = k;
+        renderTabs();
+        run();
+      });
+      tabs.appendChild(c);
     });
-    kinds.style.display = mode === "search" ? "" : "none";
+    kinds.style.display = (tab === "media") ? "" : "none";
   };
   const renderKinds = () => {
     kinds.innerHTML = "";
@@ -1391,57 +1449,228 @@ function initSearchView() {
       kinds.appendChild(c);
     });
   };
-  const sync = () => {
-    input.placeholder = mode === "search"
-      ? "Search every photo, link, and document ever shared…"
-      : "Ask a question — e.g. didn't someone send me a snowmobile picture?";
-    status.textContent = "";
-    results.innerHTML = "";
-    input.focus();
+
+  // The sorter has to show its work: what it read out of the query, and
+  // a way to drop it when it guessed wrong.
+  const renderWhy = (plan, extra) => {
+    why.innerHTML = "";
+    const text = [plan?.why, extra].filter(Boolean).join(" · ");
+    if (!text) return;
+    const chip = el("span", "find-chip", text);
+    const x = el("button", "find-chip-x", "×");
+    x.title = "Search the raw words instead";
+    x.addEventListener("click", () => {
+      run(false, {plain: true});
+    });
+    chip.appendChild(x);
+    why.appendChild(chip);
   };
 
   let timer = 0;
-  const run = async () => {
+  const run = async (ask, opts = {}) => {
     const q = input.value.trim();
-    if (!q) { results.innerHTML = ""; status.textContent = ""; return; }
-    if (mode === "search") {
-      status.textContent = "Searching…";
-      try {
-        const d = await api("/api/search?q=" + encodeURIComponent(q)
-          + (kind ? "&kind=" + kind : "") + "&limit=80");
-        status.textContent = d.results.length
-          ? `${d.results.length} matches` : "";
-        renderSearchResults(results, d.results);
-      } catch { status.textContent = "Search unavailable."; }
-    } else {
-      status.textContent = "Thinking — parsing, searching, checking near-misses…";
+    empty.style.display = q ? "none" : "";
+    if (!q) {
       results.innerHTML = "";
-      try {
-        const d = await post("/api/search/ask", { question: q });
-        status.textContent = "";
-        const ans = el("div", "ask-answer");
-        ans.textContent = d.answer || "No answer.";
-        results.appendChild(ans);
-        if (d.relaxed?.length)
-          results.appendChild(el("div", "search-hint",
-            "Relaxed: " + d.relaxed.join(", ")));
-        const box = el("div");
-        results.appendChild(box);
-        renderSearchResults(box, d.results || []);
-      } catch { status.textContent = "Ask failed — is the model backend up?"; }
+      status.textContent = "";
+      why.innerHTML = "";
+      return;
+    }
+    const mine = ++seq;
+    const params = new URLSearchParams({q, limit: tab === "all" ? 24 : 60});
+    if (tab !== "all") params.set("db", tab);
+    if (tab === "media" && kind) params.set("kind", kind);
+    if (opts.plain) params.set("db", tab === "all" ? "media" : tab);
+    status.textContent = ask ? "Thinking…" : "Searching…";
+    try {
+      const d = ask
+        ? await post("/api/find/ask", {question: q})
+        : await api("/api/find?" + params.toString());
+      if (mine !== seq) return;            // a newer keystroke won
+      last = d;
+      renderTabs();
+      renderWhy(d.plan, ask ? null : null);
+      status.textContent = "";
+      renderFind(results, d, tab, (t) => { tab = t; renderTabs(); run(); });
+    } catch (e) {
+      if (mine !== seq) return;
+      status.textContent = ask
+        ? "Ask failed — is the model backend up?"
+        : "Search unavailable.";
     }
   };
+
   input.addEventListener("input", () => {
-    if (mode !== "search") return;
     clearTimeout(timer);
-    timer = setTimeout(run, 350);
+    timer = setTimeout(() => run(false), 350);
   });
   input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { clearTimeout(timer); run(); }
+    if (e.key !== "Enter") return;
+    clearTimeout(timer);
+    // Enter on a question spends the model; Enter on a phrase just
+    // searches now instead of waiting out the debounce.
+    run(last?.plan?.shape === "answer" || looksLikeQuestion(input.value));
   });
-  renderModes();
+  askBtn.addEventListener("click", () => { clearTimeout(timer); run(true); });
+  findSetTab = (t) => {
+    if (!FIND_TABS.some(([k]) => k === t)) return;
+    tab = t;
+    renderTabs();
+    if (input.value.trim()) run(false);
+  };
+  renderTabs();
   renderKinds();
-  sync();
+  if (findPendingTab) { findSetTab(findPendingTab); findPendingTab = null; }
+  loadFindStatus();
+}
+
+function looksLikeQuestion(q) {
+  const w = (q || "").trim().split(/\s+/);
+  return /\?$/.test((q || "").trim())
+    || /^(who|what|when|where|why|which|how|did|does|do|is|are|was|were|can|could|should|would|will|have|has|had)$/i
+      .test(w[0] || "");
+}
+
+async function loadFindStatus() {
+  const line = $("#find-status");
+  if (!line) return;
+  try {
+    const s = await api("/api/find/status");
+    const bits = [];
+    if (s.notes?.notes) bits.push(`${s.notes.notes.toLocaleString()} notes`);
+    // the media index counts by kind, not as one total
+    const media = ["photo", "video", "doc", "link", "audio"]
+      .reduce((n, k) => n + (s.media?.[k] || 0), 0);
+    if (media) bits.push(`${media.toLocaleString()} media`);
+    if (s.people?.people) bits.push(`${s.people.people.toLocaleString()} people`);
+    const msgs = (s.messages?.messages || 0) + (s.messages?.emails || 0);
+    if (msgs) bits.push(`${msgs.toLocaleString()} messages`);
+    line.textContent = bits.join(" · ");
+  } catch { /* the header stays empty */ }
+}
+
+function renderFind(box, d, tab, goTab) {
+  box.innerHTML = "";
+  if (d.answer) box.appendChild(findAnswer(d));
+  const order = tab === "all"
+    ? (d.plan?.databases || []).filter((k) => d.groups?.[k])
+    : [tab];
+  let any = false;
+  order.forEach((k) => {
+    const g = d.groups?.[k];
+    if (!g) return;
+    const rows = g.rows || [];
+    if (tab === "all" && !rows.length) return;
+    any = any || !!rows.length;
+    const head = el("div", "sr-head",
+      `${FIND_TABS.find(([t]) => t === k)?.[1] || k}`
+      + (g.count ? ` (${g.count})` : ""));
+    if (g.note) head.appendChild(el("span", "hint", " " + g.note));
+    if (g.error) head.appendChild(el("span", "hint", " unavailable"));
+    box.appendChild(head);
+    const host = el("div");
+    box.appendChild(host);
+    const shown = tab === "all" ? rows.slice(0, FIND_PREVIEW) : rows;
+    if (k === "media") renderSearchResults(host, shown);
+    else if (k === "notes") renderNoteRows(host, shown);
+    else if (k === "people") renderPeopleRows(host, shown);
+    else renderMessageRows(host, shown);
+    if (tab === "all" && rows.length > shown.length) {
+      const more = el("button", "fchip sm",
+        `more in ${FIND_TABS.find(([t]) => t === k)?.[1] || k}`);
+      more.addEventListener("click", () => goTab(k));
+      box.appendChild(more);
+    }
+  });
+  if (!any) box.appendChild(el("div", "empty left", "No matches."));
+}
+
+function findAnswer(d) {
+  const wrap = el("div", "ask-answer");
+  // [[wiki refs]] become clickable chips, exactly as the Brain rendered
+  // them — the grounded contract survives the merge intact
+  const byRef = {};
+  (d.citations || []).forEach((c) => { byRef[c.ref.toLowerCase()] = c; });
+  (d.answer || "").split(/(\[\[[^\]]+\]\])/).forEach((p) => {
+    const m = p.match(/^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$/);
+    if (m) {
+      const c = byRef[m[1].trim().toLowerCase()];
+      const chip = el("span", "cite-chip" + (c ? "" : " dead"),
+                      m[1].split("/").pop());
+      if (c) chip.addEventListener("click", () => openNote(c.path, c.title));
+      wrap.appendChild(chip);
+    } else if (p) wrap.appendChild(document.createTextNode(p));
+  });
+  if ((d.citations || []).length) {
+    const rail = el("div", "cite-rail");
+    d.citations.forEach((c) => {
+      const chip = el("span", "cite-chip", c.title || c.ref);
+      chip.addEventListener("click", () => openNote(c.path, c.title));
+      rail.appendChild(chip);
+    });
+    wrap.appendChild(rail);
+  }
+  if (d.relaxed?.length)
+    wrap.appendChild(el("div", "search-hint",
+      "Relaxed: " + d.relaxed.join(", ")));
+  return wrap;
+}
+
+function renderNoteRows(box, rows) {
+  rows.forEach((r) => {
+    const row = el("button", "doc-row");
+    row.appendChild(el("span", "doc-ext", "NOTE"));
+    const main = el("div", "link-main");
+    main.appendChild(el("div", "link-title", r.title || r.path));
+    main.appendChild(el("div", "link-sub",
+      [r.heading, r.when ? fmtDay(r.when) : null].filter(Boolean)
+        .join(" · ")));
+    if (r.snippet) main.appendChild(el("div", "link-ctx", r.snippet));
+    row.appendChild(main);
+    row.addEventListener("click", () => openNote(r.path, r.title));
+    box.appendChild(row);
+  });
+}
+
+function renderPeopleRows(box, rows) {
+  rows.forEach((r) => {
+    const row = el("button", "doc-row");
+    row.appendChild(el("span", "doc-ext", "WHO"));
+    const main = el("div", "link-main");
+    main.appendChild(el("div", "link-title", r.name));
+    main.appendChild(el("div", "link-sub",
+      [r.relationship_class, r.imsg_n ? `${r.imsg_n} messages` : null]
+        .filter(Boolean).join(" · ")));
+    if (r.snippet) main.appendChild(el("div", "link-ctx", r.snippet));
+    row.appendChild(main);
+    row.addEventListener("click", () => openPerson(r.id));
+    box.appendChild(row);
+  });
+}
+
+function renderMessageRows(box, rows) {
+  rows.forEach((r) => {
+    const row = el("button", "doc-row");
+    row.appendChild(el("span", "doc-ext",
+                       r.source === "email" ? "MAIL" : "MSG"));
+    const main = el("div", "link-main");
+    main.appendChild(el("div", "link-title",
+      r.subject || r.text.slice(0, 90)));
+    main.appendChild(el("div", "link-sub",
+      [r.sender, r.person && r.person !== r.sender ? "with " + r.person : null,
+       r.is_group ? "group" : null, r.when ? fmtDay(r.when) : null]
+        .filter(Boolean).join(" · ")));
+    if (r.subject) main.appendChild(el("div", "link-ctx", r.text.slice(0, 200)));
+    row.appendChild(main);
+    if (r.person_id) row.addEventListener("click", () => openPerson(r.person_id));
+    box.appendChild(row);
+  });
+}
+
+function fmtDay(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? "" : d.toLocaleDateString(undefined,
+    {year: "numeric", month: "short", day: "numeric"});
 }
 
 // ---------- group threads: sortable, member-filterable, combined view ----------
@@ -5396,6 +5625,11 @@ const WORK_ALIAS = {
   routines: { tab: "dispatch", sub: "schedules" },
 };
 
+// Search and Brain folded into Find (2026-07-22). Old deep links,
+// palette entries, saved dock slots and right-click integrations all
+// come through here, exactly as the five cockpit windows do above.
+const FIND_ALIAS = { search: "media", brain: "notes" };
+
 function setWorkTab(tab, opts = {}) {
   workTab = tab;
   $("#work-tabs")?.querySelectorAll(".seg-btn")
@@ -5459,7 +5693,7 @@ function viewLoad(id) {
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
-  if (id === "brain") loadBrain().catch(() => {});
+  if (id === "find") loadFindStatus().catch(() => {});
   if (id === "radar") loadRadar().catch(() => {});
   if (id === "atlas") window.atlasLoad?.();
   if (id === "map") {
@@ -5495,6 +5729,10 @@ function openApp(id) {
     setWorkTab(alias.tab, { defer: true });
     if (alias.sub) setWorkSub(alias.sub, { defer: true });
     id = "work";
+  }
+  if (FIND_ALIAS[id]) {
+    setFindTab(FIND_ALIAS[id]);
+    id = "find";
   }
   if (typeof isDesktop !== "undefined" && isDesktop) {
     if (winState[id]) openWindow(id);
@@ -5681,91 +5919,6 @@ async function openPlan(id) {
 
 // ----- Brain: grounded chat over the vault -----
 
-const BRAIN_EXAMPLES = [
-  "What have I written about agent orchestration?",
-  "Summarize my latest session retros",
-  "What decisions are still open?",
-];
-let brainStatusLoaded = false;
-
-async function loadBrain() {
-  const box = $("#brain-examples");
-  if (box && !box.children.length) {
-    BRAIN_EXAMPLES.forEach((q) => {
-      const c = el("button", "fchip sm", q);
-      c.addEventListener("click", () => {
-        $("#brain-input").value = q;
-        askBrain();
-      });
-      box.appendChild(c);
-    });
-  }
-  try {
-    const s = await api("/api/vault/status");
-    $("#brain-status").textContent = s.available
-      ? `${s.notes.toLocaleString()} notes · ${s.chunks.toLocaleString()} `
-        + `chunks · ${s.vectors.toLocaleString()} vectors`
-      : "vault not found — set vault_root in config";
-    brainStatusLoaded = true;
-  } catch { /* status line stays as-is */ }
-}
-
-function brainBubble(cls, text) {
-  const log = $("#brain-log");
-  $("#brain-empty")?.remove();
-  const b = el("div", "brain-msg " + cls);
-  if (text != null) b.textContent = text;
-  log.appendChild(b);
-  log.scrollTop = log.scrollHeight;
-  return b;
-}
-
-async function askBrain() {
-  const inp = $("#brain-input");
-  const q = (inp.value || "").trim();
-  if (!q) { inp.focus(); return; }
-  inp.value = "";
-  brainBubble("you", q);
-  const wait = brainBubble("vira thinking", "searching your notes…");
-  try {
-    const r = await post("/api/vault/ask", { question: q });
-    wait.remove();
-    const b = brainBubble("vira");
-    // render the answer, replacing [[cites]] with clickable chips
-    const frag = document.createDocumentFragment();
-    const parts = (r.answer || "").split(/(\[\[[^\]]+\]\])/);
-    const byRef = {};
-    (r.citations || []).forEach((c) => { byRef[c.ref.toLowerCase()] = c; });
-    parts.forEach((p) => {
-      const m = p.match(/^\[\[([^\]|]+?)(?:\|[^\]]+)?\]\]$/);
-      if (m) {
-        const c = byRef[m[1].trim().toLowerCase()];
-        const chip = el("span", "cite-chip" + (c ? "" : " dead"),
-                        m[1].split("/").pop());
-        if (c) chip.addEventListener("click", () => openNote(c.path, c.title));
-        frag.appendChild(chip);
-      } else if (p) frag.appendChild(document.createTextNode(p));
-    });
-    b.appendChild(frag);
-    if ((r.citations || []).length) {
-      const rail = el("div", "cite-rail");
-      r.citations.forEach((c) => {
-        const chip = el("span", "cite-chip", c.title || c.ref);
-        chip.addEventListener("click", () => openNote(c.path, c.title));
-        rail.appendChild(chip);
-      });
-      b.appendChild(rail);
-    }
-  } catch (e) {
-    wait.remove();
-    brainBubble("vira error", "Ask failed: " + e.message);
-  }
-}
-
-$("#brain-ask")?.addEventListener("click", askBrain);
-$("#brain-input")?.addEventListener("keydown", (e) => {
-  if (e.key === "Enter") askBrain();
-});
 $("#note-back")?.addEventListener("click", closeNote);
 
 // ----- Radar: who to talk to + who to put in a room together -----
@@ -7110,12 +7263,10 @@ const WINDOWS = [
     icon: "M4 5h16M7.5 12h9M10.5 19h3" },
   { id: "applications", title: "Applications", w: 780,
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
-  { id: "search", title: "Search", w: 640,
-    icon: "M4 5h16v14H4zM7.5 15.5l3.5-4 2.5 3 2-2.5 3 3.5M9 9.5a1 1 0 1 0 0-.01" },
+  { id: "find", title: "Find", w: 720,
+    icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
   { id: "plans", title: "Plans", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
-  { id: "brain", title: "Brain", w: 560,
-    icon: "M12 4a5 5 0 0 0-5 5c0 1.2.4 2.2 1 3a4 4 0 0 0 1 6.5V21h6v-2.5A4 4 0 0 0 16 12c.6-.8 1-1.8 1-3a5 5 0 0 0-5-5zM9.5 9.5h5M12 9.5V15" },
   { id: "radar", title: "Radar", w: 560,
     icon: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0-10 0M12 12l6-6M12 12h.01" },
   { id: "atlas", title: "Visual Network", w: 900,
@@ -8263,14 +8414,25 @@ function initNavDrawer() {
 // order, so a new origin (the Tailscale name, a test port) opens with the
 // owner's five instead of the defaults.
 const MDOCK_MAX = 5;
-const MDOCK_DEFAULT = ["feed", "people", "work", "brief", "search"];
+const MDOCK_DEFAULT = ["feed", "people", "work", "brief", "find"];
 let mdockEl = null;
 
 function mdockIds() {
   const stored = lsGet("vira-mobile-dock", null);
+  const want = Array.isArray(stored) ? stored : MDOCK_DEFAULT;
   const out = [];
-  (Array.isArray(stored) ? stored : MDOCK_DEFAULT).forEach((id) => {
+  want.forEach((raw) => {
+    // a saved bar can name a window that has since been folded away
+    // (search/brain -> find). Without the alias the id fails appLive()
+    // and the slot silently disappears; and a bar that held BOTH old
+    // windows collapses to one, so the freed slot is refilled below
+    // rather than leaving the owner with a four-app bar.
+    const id = FIND_ALIAS[raw] ? "find" : raw;
     if (appLive(id) && !out.includes(id) && out.length < MDOCK_MAX) out.push(id);
+  });
+  const target = Math.min(want.length, MDOCK_MAX);
+  MDOCK_DEFAULT.forEach((id) => {
+    if (out.length < target && appLive(id) && !out.includes(id)) out.push(id);
   });
   return out;
 }
@@ -8711,8 +8873,11 @@ function paletteMatches(q) {
     workCmd("Jobs — Work · Live", "live"),
     workCmd("Circuits — Work · Recipes", "dispatch", "recipes"),
     workCmd("Agent Loops — Work · Schedules", "dispatch", "schedules"),
-    { label: "Search shared media", kind: "window",
-      run: () => openWindow("search") },
+    // the two folded retrieval windows stay findable by their old names
+    { label: "Search — Find · Media", kind: "find",
+      run: () => { setFindTab("media"); openWindow("find"); } },
+    { label: "Brain — Find · Notes", kind: "find",
+      run: () => { setFindTab("notes"); openWindow("find"); } },
     { label: "Settings", kind: "sheet", run: () => $("#settings-btn").click() },
     { label: "Close all windows", kind: "desktop",
       run: () => WINDOWS.forEach((w) => closeWindow(w.id)) },
@@ -8956,6 +9121,11 @@ const HASH_ROUTES = {
       setWorkTab(t, { defer: true });
     openApp("work");
   },
+  // #find, #find/notes|media|people|messages — and the two retired
+  // window names, which land on their old contents as a Find tab
+  "find": (rest) => { setFindTab(rest[0] || "all"); openApp("find"); },
+  "search": () => openApp("search"),
+  "brain": () => openApp("brain"),
 };
 
 function routeHash() {
@@ -9500,7 +9670,7 @@ async function boot() {
       closeLaunchpad();
     else openApp("launchpad");
   });
-  initSearchView();
+  initFindView();
   initIdeas();
   routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
   readerProbe();   // keep a page-less Reader off the dock and access bar
