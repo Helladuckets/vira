@@ -8,6 +8,7 @@ touches chat.db or the real AddressBook stores.
 Run: .venv/bin/python -m unittest tests.test_media_evicted
 """
 import os
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -119,6 +120,68 @@ class ContactPhotoRefresh(unittest.TestCase):
         with mock.patch.object(photos, "AB_GLOB",
                                Path(self.tmp.name) / "nope"):
             self.assertEqual(photos._ab_stamp(), 0.0)
+
+
+JPEG = b"\xff\xd8\xff"      # the signature _image_bytes slices to
+
+
+def _mk_store(dirpath, img, mod):
+    """A minimal AddressBook store: one carded contact with a photo."""
+    dirpath.mkdir(parents=True)
+    con = sqlite3.connect(dirpath / "AddressBook-v22.abcddb")
+    con.execute("CREATE TABLE ZABCDRECORD (Z_PK INTEGER PRIMARY KEY, "
+                "ZTHUMBNAILIMAGEDATA BLOB, ZMODIFICATIONDATE REAL)")
+    con.execute("CREATE TABLE ZABCDEMAILADDRESS (ZOWNER INTEGER, "
+                "ZADDRESS TEXT)")
+    con.execute("CREATE TABLE ZABCDPHONENUMBER (ZOWNER INTEGER, "
+                "ZFULLNUMBER TEXT)")
+    con.execute("INSERT INTO ZABCDRECORD VALUES (1, ?, ?)", (img, mod))
+    con.execute("INSERT INTO ZABCDEMAILADDRESS VALUES (1, 'pat@example.com')")
+    con.commit()
+    con.close()
+
+
+class NewestCardWins(unittest.TestCase):
+    """A contact carded in two stores (On My Mac + iCloud) with different
+    photos: the most recently modified card's photo must win, regardless of
+    which store the glob visits first."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        # "A-old" sorts before "B-new": first-store-wins would pick the
+        # stale photo — the modification date has to override that
+        _mk_store(root / "sources" / "A-old", JPEG + b"stale-face", 100.0)
+        _mk_store(root / "sources" / "B-new", JPEG + b"fresh-face", 200.0)
+        for target, val in (("AB_GLOB", root / "sources"),
+                            ("CACHE", root / "cache")):
+            p = mock.patch.object(photos, target, val)
+            p.start()
+            self.addCleanup(p.stop)
+        p = mock.patch.object(photos.crm, "_load", return_value={
+            "by_handle": {"pat@example.com": "p_pat"}})
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(photos._index.clear)
+
+    def test_newer_card_photo_wins(self):
+        photos.build_index()
+        out = photos.CACHE / "p_pat.jpg"
+        self.assertEqual(out.read_bytes(), JPEG + b"fresh-face")
+
+    def test_rerun_picks_up_updated_photo(self):
+        photos.build_index()
+        # the newer store's card gets a newer photo later on
+        db = photos.AB_GLOB / "B-new" / "AddressBook-v22.abcddb"
+        con = sqlite3.connect(db)
+        con.execute("UPDATE ZABCDRECORD SET ZTHUMBNAILIMAGEDATA=?, "
+                    "ZMODIFICATIONDATE=300.0", (JPEG + b"newest-face",))
+        con.commit()
+        con.close()
+        photos.build_index()
+        out = photos.CACHE / "p_pat.jpg"
+        self.assertEqual(out.read_bytes(), JPEG + b"newest-face")
 
 
 if __name__ == "__main__":

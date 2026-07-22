@@ -56,16 +56,19 @@ def _ab_stamp():
 
 
 def build_index():
-    """person_id -> cached thumbnail path. Safe to re-run; refreshes any
-    thumbnail whose AddressBook bytes changed since the last pass."""
+    """person_id -> cached thumbnail path. Safe to re-run. When a person's
+    card exists in several AddressBook stores (On My Mac + iCloud), the most
+    recently modified card wins — first-store-wins kept serving a photo the
+    newer store had already replaced."""
     CACHE.mkdir(parents=True, exist_ok=True)
     handle_to_pid = crm._load()["by_handle"]
-    seen = set()
+    best = {}                    # pid -> (card modification date, bytes)
     for db in AB_GLOB.glob("*/AddressBook-v22.abcddb"):
         try:
             con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
             rows = con.execute(
-                """SELECT r.Z_PK, r.ZTHUMBNAILIMAGEDATA FROM ZABCDRECORD r
+                """SELECT r.Z_PK, r.ZTHUMBNAILIMAGEDATA, r.ZMODIFICATIONDATE
+                   FROM ZABCDRECORD r
                    WHERE r.ZTHUMBNAILIMAGEDATA IS NOT NULL""").fetchall()
             emails = {}
             for owner, addr in con.execute(
@@ -78,7 +81,7 @@ def build_index():
             con.close()
         except sqlite3.Error:
             continue
-        for pk, blob in rows:
+        for pk, blob, mod in rows:
             pid = None
             for e in emails.get(pk, []):
                 pid = handle_to_pid.get(e)
@@ -89,16 +92,19 @@ def build_index():
                     pid = handle_to_pid.get(ph)
                     if pid:
                         break
-            if not pid or pid in seen:
+            if not pid:
                 continue
             img = _image_bytes(blob)
             if not img:
                 continue
-            seen.add(pid)
-            try:
-                _index[pid] = _write_cache(pid, img)
-            except OSError:
-                continue
+            mod = mod or 0.0
+            if pid not in best or mod > best[pid][0]:
+                best[pid] = (mod, img)
+    for pid, (_mod, img) in best.items():
+        try:
+            _index[pid] = _write_cache(pid, img)
+        except OSError:
+            continue
     _built.set()
 
 
