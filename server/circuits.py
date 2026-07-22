@@ -699,13 +699,13 @@ class Driver(threading.Thread):
         # gate passed, exhausted its retries, or no gate at all -> done
         upd["status"] = "done"
         changed[sid] = upd
-        # verdict rides back to the judged jobs' ledger rows
+        # verdict rides back to the judged jobs' ledger rows (the shared
+        # judge epilogue; no idea note here — _finalize owns the close-out)
         for o in (j.get("of") or []):
             ojid = run["stages"].get(o, {}).get("job_id")
             if ojid:
-                v = dict(verdict)
-                v["judge_job"] = st["job_id"]
-                joblog.record_judge(ojid, v)
+                judge.record_and_close(ojid, verdict,
+                                       judge_jid=st["job_id"])
 
     def _apply(self, run_id, changed, error=None):
         def fn(s):
