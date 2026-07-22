@@ -40,6 +40,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel
 
+from . import jsonstore
+
 TCIL_ROOT = Path("~/TC-IL").expanduser()
 STATE_FILE = TCIL_ROOT / "scripts" / "youtube-subs-visuals-state.json"
 
@@ -304,11 +306,9 @@ def apply(req: ApplyReq):
         if running and running["status"] == "running":
             raise HTTPException(409, "an apply job is already running for "
                                 f"this batch (job {running['id']})")
-        # atomic write, same tmp+rename pattern as the other Vira stores
-        tmp = batch / "picks.json.tmp"
-        tmp.write_text(json.dumps(req.picks, indent=2, sort_keys=True) + "\n",
-                       encoding="utf-8")
-        tmp.replace(batch / "picks.json")
+        # atomic write, the shared tmp+rename pattern (jsonstore)
+        jsonstore.write_atomic(batch / "picks.json", req.picks,
+                               newline=True, indent=2, sort_keys=True)
         jid = _jobs.launch(_apply_prompt(batch_dir), cwd=str(TCIL_ROOT),
                            permission_mode="bypassPermissions")
         _apply_jobs[batch_dir] = jid

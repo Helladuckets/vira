@@ -29,6 +29,18 @@ def strf(d, fmt):
     glibc/BSD extensions that raise ValueError on Windows, whose CRT
     spells the same thing %#I / %#d."""
     return d.strftime(fmt.replace("%-", "%#") if IS_WIN else fmt)
+
+
+def strip_env():
+    """A child-process environment with every ANTHROPIC_*/CLAUDE* var
+    removed. A session-scoped var makes a spawned claude CLI ignore its
+    own stored login (the CRM call_claude gotcha), so children must run
+    on the persistent credential. The one home for the strip — except
+    aihealth.py, which keeps its own copy BY DESIGN (health must not
+    depend on modules it checks). Distinct from session._sdk_env, which
+    BLANKS vars to "" because SDK options merge over os.environ."""
+    return {k: v for k, v in os.environ.items()
+            if not (k.startswith("ANTHROPIC_") or k.startswith("CLAUDE"))}
 CONFIG_PATH = ROOT / "data" / "config.json"
 FIXTURES = ROOT / "fixtures"
 FIXTURE_CRM = ROOT / "data" / "fixture-crm"

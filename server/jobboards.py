@@ -40,7 +40,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import settings
+from . import jsonstore, settings
 
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
@@ -84,10 +84,7 @@ def _read_json(path, default):
 
 
 def _write_json(path, obj):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, ensure_ascii=False))
-    tmp.replace(path)
+    jsonstore.write_atomic(path, obj, indent=1, ensure_ascii=False)
 
 
 def _now():

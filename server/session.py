@@ -41,7 +41,7 @@ from datetime import date
 from pathlib import Path
 
 from . import ideas, jobfiles, joblog, plans, settings, viratools
-from .suggest import _strip_env, config
+from .suggest import config
 
 try:
     import claude_agent_sdk  # noqa: F401 — presence check only; the runner
@@ -122,7 +122,7 @@ def _publish_plan(md):
     try:
         res = subprocess.run(["python3", str(PLAN_HOOK)], input=payload,
                              capture_output=True, text=True, timeout=300,
-                             env=_strip_env())
+                             env=settings.strip_env())
     except Exception:  # noqa: BLE001 — publish is best-effort
         return None
     m = re.search(r"https://\S+?/plans/\S+?\.html", res.stdout)
@@ -752,7 +752,7 @@ class Sessions:
         result_text = ""
         joblog.record_launch(d)
         try:
-            proc = subprocess.Popen(cmd, cwd=d["cwd"], env=_strip_env(),
+            proc = subprocess.Popen(cmd, cwd=d["cwd"], env=settings.strip_env(),
                                     stdout=subprocess.PIPE,
                                     stderr=subprocess.STDOUT, text=True)
             for line in proc.stdout:
