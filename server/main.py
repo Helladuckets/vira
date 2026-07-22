@@ -30,7 +30,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                mail,
                media,
                mediaindex, mercury, modulemap, msgraph, notify, onboard,
-               photos, radar,
+               photos, plans, radar,
                receipts,
                routines,
                search as msearch, send, session, settings, subs_visuals,
@@ -246,6 +246,29 @@ def api_ideas_remove(idea_id: str):
         return ideas.remove(idea_id)
     except KeyError:
         raise HTTPException(404, "unknown idea")
+
+
+# ----- saved plans (Plan-mode output: vault note + in-app viewer) -----
+
+@app.get("/api/plans")
+def api_plans():
+    return {"plans": plans.list_plans()}
+
+
+@app.get("/api/plans/{pid}")
+def api_plan(pid: str):
+    try:
+        return plans.get_plan(pid)
+    except KeyError:
+        raise HTTPException(404, "unknown plan")
+
+
+@app.delete("/api/plans/{pid}")
+def api_plan_remove(pid: str):
+    try:
+        return plans.delete_plan(pid)
+    except KeyError:
+        raise HTTPException(404, "unknown plan")
 
 
 @app.get("/api/changelog")

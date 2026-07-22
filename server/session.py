@@ -40,7 +40,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from . import ideas, jobfiles, joblog, settings, viratools
+from . import ideas, jobfiles, joblog, plans, settings, viratools
 from .suggest import _strip_env, config
 
 try:
@@ -129,6 +129,39 @@ def _publish_plan(md):
     return m.group(0) if m else None
 
 
+def _finalize_plan(md, idea_id=None, job_id=None):
+    """Finish a Plan-mode job: save the plan to the vault (universal — creates
+    a Vira vault if none is connected) and, when the owner's private lab hook
+    is present, ALSO publish the hosted page. Returns
+    {plan_id, title, url} — url is None off the owner's machine, plan_id is
+    None only if the vault save itself failed. Best-effort; never raises."""
+    if os.environ.get("VIRA_PASSIVE"):
+        # A test clone must never act on the world (send.py precedent): no lab
+        # publish, and no write into the owner's REAL vault — vault_root lives
+        # outside the cloned data/, so a save here would land in the live
+        # Obsidian vault. The plan markdown stays in the terminal.
+        return {"plan_id": None, "title": None, "url": None}
+    url = _publish_plan(md)          # private hook; None where absent
+    entry = None
+    try:
+        entry = plans.save_plan(md, idea_id=idea_id, job_id=job_id,
+                                lab_url=url)
+    except Exception:  # noqa: BLE001 — saving is best-effort, never fatal
+        entry = None
+    return {"plan_id": entry["id"] if entry else None,
+            "title": entry["title"] if entry else None,
+            "url": url}
+
+
+def _plan_ref(res):
+    """The reopenable in-app reference token stamped on idea notes and echoed
+    in the job terminal: [plan <id>: <title>]. `]` is swapped out of the
+    title so the client's linkifier (which stops at the first `]`) can never
+    truncate the visible name."""
+    title = (res.get("title") or "").replace("]", ")")
+    return f"[plan {res['plan_id']}: {title}]"
+
+
 def _mark_idea(job, ok, interrupted=False):
     """Final step of an idea-launched action: reflect the outcome back in the
     backlog. Implement success -> done; Plan success -> stays open, stamped
@@ -147,11 +180,20 @@ def _mark_idea(job, ok, interrupted=False):
             ideas.update(job["idea_id"],
                          note=f"action failed {stamp} (job {jid}) — see terminal")
         elif job.get("publish_plan"):
-            m = re.search(r"https://\S+?/plans/\S+?\.html",
-                          job["output"])
-            url = " — " + m.group(0) if m else ""
-            ideas.update(job["idea_id"],
-                         note=f"plan published {stamp} (job {jid}){url}")
+            # The finalize step (server/session._finalize_plan) saved the plan
+            # and stashed its {plan_id, title, url} on job["plan"]. Stamp the
+            # idea with a reopenable in-app reference — the [plan <id>: <title>]
+            # token linkifies in the Ideas note and the job terminal, opening
+            # the plan viewer even after the terminal is gone. The idea STAYS
+            # open: a plan is a step toward the idea, not the finished work.
+            res = job.get("plan") or {}
+            if res.get("plan_id"):
+                note = f"plan saved {stamp} (job {jid}): {_plan_ref(res)}"
+            elif res.get("url"):
+                note = f"plan published {stamp} (job {jid}) — {res['url']}"
+            else:
+                note = f"plan produced {stamp} (job {jid}) — see terminal"
+            ideas.update(job["idea_id"], note=note)
         else:
             ideas.update(job["idea_id"], status="done",
                          note=f"implemented by Vira {stamp} (job {jid})")
@@ -729,12 +771,14 @@ class Sessions:
         d["result_text"] = result_text
         if ok and d.get("publish_plan"):
             md = _extract_plan_md(result_text or d["output"])
-            self._append(s, "\n\n[vira] publishing plan to the lab…\n")
-            url = _publish_plan(md)
+            self._append(s, "\n\n[vira] saving the plan…\n")
+            res = _finalize_plan(md, d.get("idea_id"), d["id"])
+            d["plan"] = res
             self._append(s, (
-                f"[vira] plan published: {url}\n" if url else
-                "[vira] plan publish failed — see "
-                "~/.claude/logs/plan-html-deploy.log\n"))
+                f"[vira] plan saved: {_plan_ref(res)}\n" if res.get("plan_id")
+                else "[vira] plan could not be saved — see runner.log\n"))
+            if res.get("url"):
+                self._append(s, f"[vira] plan published: {res['url']}\n")
         d["status"] = "done" if ok else "error"
         if d.get("idea_id"):
             _mark_idea(d, ok)
