@@ -1086,17 +1086,24 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
   font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
   text-transform: uppercase; cursor: pointer;
 }
-.launchpad .lp-hint-reorg, .launchpad .lp-done { display: none; }
-.launchpad.reorg .lp-hint-idle { display: none; }
-.launchpad.reorg .lp-hint-reorg { display: block; }
-.launchpad.reorg .lp-done { display: block; }
+.lp-hint-reorg, .lp-done { display: none; }
+.lp-reorg .lp-hint-idle { display: none; }
+.lp-reorg .lp-hint-reorg { display: block; }
+.lp-reorg .lp-done { display: block; }
 body.lp-open { overflow: hidden; }
 
-/* ---------- reorganize mode (mobile): long-press to jiggle ----------
-   The phone's answer to right-click dock curation. Everything wobbles to
-   say "this is now a board you rearrange, not a menu you tap", and from
-   there an icon can be dragged inside its group, across the line into the
-   other group, or straight down onto the access bar. */
+/* ---------- reorganize mode: long-press to jiggle ----------
+   Everything wobbles to say "this is now a board you rearrange, not a menu
+   you tap", and from there an icon can be dragged inside its group, across
+   the line into the other group, or (on the phone) straight down onto the
+   access bar.
+
+   `.lp-reorg` sits on whichever surface is holding the grid — the customize
+   sheet on a phone, the Launchpad window's body at the desk — so these
+   rules never name a width. They used to be written against `.launchpad`,
+   which is the sheet and only ever exists on mobile; that is half of why a
+   desktop long press did nothing (the other half was the gesture never
+   being wired at all). Keep them host-relative. */
 @keyframes lp-jig-a {
   0%, 100% { transform: rotate(-1.15deg) translate(0, 0); }
   25%      { transform: rotate(1.05deg) translate(.4px, -.4px); }
@@ -1109,15 +1116,19 @@ body.lp-open { overflow: hidden; }
   50%      { transform: rotate(1deg) translate(.3px, -.4px); }
   75%      { transform: rotate(-1.05deg) translate(0, .3px); }
 }
-.launchpad.reorg .lp-jig { animation: lp-jig-a .27s linear infinite; }
-.launchpad.reorg .lp-tile:nth-child(even) .lp-jig {
+.lp-reorg .lp-jig { animation: lp-jig-a .27s linear infinite; }
+.lp-reorg .lp-tile:nth-child(even) .lp-jig {
   animation-name: lp-jig-b; animation-duration: .3s;
 }
-.launchpad.reorg .lp-tile:nth-child(3n) .lp-jig { animation-delay: -.11s; }
+.lp-reorg .lp-tile:nth-child(3n) .lp-jig { animation-delay: -.11s; }
 /* jiggle mode is drag-first: a finger on an icon moves the icon, it never
-   scrolls the sheet (the drag auto-scrolls at the edges instead) */
-.launchpad.reorg .lp-tile, .mdock.reorg .mdock-item { touch-action: none; }
-.launchpad.dragging { overflow: hidden; }
+   scrolls the surface (the drag auto-scrolls at the edges instead) */
+.lp-reorg .lp-tile, .mdock.reorg .mdock-item { touch-action: none; }
+/* the surface holds still while an icon is carried across it — the drag
+   steers the scroll itself. The window body declares overflow-y later in
+   this sheet, so the desktop half has to out-specify it rather than rely
+   on order. */
+.lp-dragging, .fwin-body.lp-dragging { overflow: hidden; }
 .lp-tile.lifted { opacity: .22; }
 .lp-tile.lifted .lp-jig { animation: none; }
 
@@ -1131,11 +1142,13 @@ body.lp-open { overflow: hidden; }
   color: var(--accent-bright); font-size: 13px; line-height: 1;
   box-shadow: 0 2px 8px rgba(0, 0, 0, .5);
 }
-.launchpad.reorg .lp-badge { display: flex; }
+.lp-reorg .lp-badge { display: flex; }
 
-/* the icon under the finger: lifted off the sheet, riding above everything */
+/* the icon under the finger: lifted off the surface, riding above
+   everything — including a floating window, whose z-index climbs by one on
+   every focus and so cannot be given a fixed ceiling to sit under */
 .lp-ghost {
-  position: fixed; left: 0; top: 0; z-index: 1100; pointer-events: none;
+  position: fixed; left: 0; top: 0; z-index: 4200; pointer-events: none;
   will-change: transform; filter: drop-shadow(0 14px 22px rgba(0, 0, 0, .6));
 }
 .lp-ghost .lp-jig { animation: none; }   /* the carried icon holds still */
@@ -1148,8 +1161,8 @@ body.lp-open { overflow: hidden; }
 @media (prefers-reduced-motion: reduce) {
   .lp-ic, .lp-tile:hover .lp-ic { transition: none; transform: none; }
   /* no wobble: reorganize mode announces itself by lighting every icon */
-  .launchpad.reorg .lp-jig { animation: none; }
-  .launchpad.reorg .lp-ic { border-color: var(--accent-line); }
+  .lp-reorg .lp-jig { animation: none; }
+  .lp-reorg .lp-ic { border-color: var(--accent-line); }
 }
 
 /* ---------- mobile: the five-app access bar ----------
