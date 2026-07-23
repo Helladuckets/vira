@@ -83,5 +83,7 @@
   "applications_remote_ok": true,
   "_applications_remote_ok": "Count remote postings as eligible. applications_remote_exclude / applications_region_hints (regex or list of substrings) tune which remote postings are actually reachable from where you are; both ship with US-centric defaults, and setting either to [] disables that test.",
   "whatsapp_bridge_port": 18377,
-  "_whatsapp_bridge_port": "Linked-device WhatsApp sidecar port (127.0.0.1 only). Dormant until paired via settings > WhatsApp. whatsapp_poll_seconds (default 5) and whatsapp_node_bin (default \"node\") tune the watcher and node binary."
+  "_whatsapp_bridge_port": "Linked-device WhatsApp sidecar port (127.0.0.1 only). Dormant until paired via settings > WhatsApp. whatsapp_poll_seconds (default 5) and whatsapp_node_bin (default \"node\") tune the watcher and node binary.",
+  "sms_fallback": true,
+  "_sms_fallback": "When an iMessage is not delivered (an Android/iMessage-less recipient), re-send it as a plain text. Needs Text Message Forwarding to the paired iPhone so Messages owns an SMS account. send_verify_seconds (default 8) is how long Vira watches chat.db for the delivery error before giving up (0 disables the reactive check). A contact can also be marked SMS on their person page, which sends as a text from the start."
 }
