@@ -73,7 +73,24 @@ SESSION_DEFAULTS = {
     "session_permission_timeout": 600,   # seconds until default-deny
     "session_default_mode": "interactive",
     "session_max_live": 4,               # concurrent detached sessions cap
+    "session_reply_window_hours": 12,    # safety reap for an idle linger
 }
+
+# The permission ladder, safest first. A session's mode is ONE of these —
+# it decides what the gate waves through, never whether the owner can talk
+# to the session (every mode is steerable; see the runner's reply window).
+#   interactive  every risky call raises an Approve/Deny card
+#   acceptedits  edits land unasked, commands still raise a card
+#   autopilot    bypassPermissions — the gate is off entirely
+# Ordered, so a future rung slots in without rewriting the callers.
+MODES = ("interactive", "acceptedits", "autopilot")
+
+# What "edits land unasked" means. The acceptedits rung is enforced in
+# Vira's OWN gate (runner.gate), not by handing the SDK its acceptEdits
+# permission_mode: the gate stays the single auditable place where policy
+# lives, so the rung can never quietly widen because an SDK release
+# changed what it short-circuits.
+EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 # Tools the READ-ONLY policy strips even when auto-allowed (audit P1-4):
 # Task spawns subagents that answer to their own gate, and WebSearch is
@@ -322,6 +339,16 @@ class DetachedJob:
     def status(self):
         return (self.last_state or {}).get("status", "running")
 
+    def working(self):
+        """Running AND actually consuming a turn. A session parked in its
+        reply window has finished its work and is only holding the door
+        open for the owner, so it must not block a new launch against the
+        live-session cap — otherwise a handful of unanswered questions
+        would wedge the cockpit shut."""
+        st = self.last_state or {}
+        return (st.get("status", "running") == "running"
+                and st.get("awaiting") != "reply")
+
 
 class Session:
     """Legacy fallback run (SDK unavailable): an in-server subprocess with
@@ -382,18 +409,18 @@ class Sessions:
     def launch(self, prompt, cwd=None, permission_mode=None, model=None,
                publish_plan=False, idea_id=None, mode=None,
                read_only=False, meta=None):
-        """Start a run; returns the job id. `mode` is "interactive"
-        (gated) or "autopilot" (bypassPermissions, no gating); when absent
-        it derives from the legacy permission_mode param, else the config
-        default. read_only=True disallows write tools at the SDK level and
-        the gate denies everything outside the auto-allow set instantly
-        (judge sessions, circuit read stages). `meta` is a small dict
-        recorded on the ledger row (circuit_run/stage/judge_of/routine_id).
-        Raises ValueError when the live-session cap is hit."""
-        if mode not in ("interactive", "autopilot"):
+        """Start a run; returns the job id. `mode` is one of MODES — the
+        permission ladder (interactive / acceptedits / autopilot); when
+        absent it derives from the legacy permission_mode param, else the
+        config default. read_only=True disallows write tools at the SDK
+        level and the gate denies everything outside the auto-allow set
+        instantly (judge sessions, circuit read stages). `meta` is a small
+        dict recorded on the ledger row (circuit_run/stage/judge_of/
+        routine_id). Raises ValueError when the live-session cap is hit."""
+        if mode not in MODES:
             mode = ("autopilot" if permission_mode == "bypassPermissions"
                     else str(_scfg("session_default_mode")))
-            if mode not in ("interactive", "autopilot"):
+            if mode not in MODES:
                 mode = "interactive"
         jid = uuid.uuid4().hex[:12]
         if cwd:
@@ -414,7 +441,7 @@ class Sessions:
             if live:
                 running = sum(
                     1 for x in self.sessions.values()
-                    if x.kind == "detached" and x.status() == "running")
+                    if x.kind == "detached" and x.working())
                 cap = int(_scfg("session_max_live"))
                 if running >= cap:
                     raise ValueError(
@@ -454,6 +481,7 @@ class Sessions:
             "started": data["started"],
             "auto_allow": list(_scfg("session_auto_allow")),
             "permission_timeout": float(_scfg("session_permission_timeout")),
+            "reply_window": float(_scfg("session_reply_window_hours")) * 3600,
         }
         jobfiles.write_json_atomic(jdir / "job.json", spec)
         (jdir / "control.jsonl").touch()
