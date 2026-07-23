@@ -2389,8 +2389,12 @@ function ideaRow(it) {
     const impl = el("button", "idea-run-btn implement", "Implement");
     impl.title = "Let Vira actually implement this in the target repo";
     impl.addEventListener("click", () => openIdeaRun(it, "implement"));
+    const copy = el("button", "idea-run-btn copy", "Copy");
+    copy.title = "Copy this idea as a prompt for another Claude Code session";
+    copy.addEventListener("click", () => copyIdeaPrompt(it));
     run.appendChild(plan);
     run.appendChild(impl);
+    run.appendChild(copy);
     box.appendChild(run);
   }
   return box;
@@ -2754,6 +2758,21 @@ function savedPermMode() {
   if (saved && PERM_MODES.some((m) => m.id === saved)) return saved;
   return localStorage.getItem("vira-idea-autopilot") === "1"
     ? "autopilot" : PERM_DEFAULT;
+}
+
+// Row-level "Copy" — hand the idea to another Claude Code session verbatim,
+// the same standard the journal lane's copy-as-prompt sets. Copies the
+// full implement prompt (the do-the-work variant) with a paste-safe cd
+// header, so it works dropped at a shell or into a running session.
+function copyIdeaPrompt(it) {
+  const cwd = localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
+  const prompt = ideaImplementPrompt(it, "", cwd, savedPermMode());
+  copyText(
+    "cd " + cwd + "\n\n" +
+    "(If this was pasted into an already-running session: cd to the path " +
+    "above and read its CLAUDE.md before building.)\n\n" + prompt,
+  ).then(() => toast("Prompt copied — paste into a terminal or Claude Code session"))
+    .catch((e) => toast("Copy failed: " + e.message));
 }
 
 let ideaRunCtx = null;
