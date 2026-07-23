@@ -72,6 +72,10 @@ DEFAULTS = {
     "whatsapp_bridge_port": 18377,       # linked-device sidecar, 127.0.0.1 only
     "whatsapp_poll_seconds": 5,          # watcher poll cadence against the sidecar
     "whatsapp_node_bin": "node",         # node binary for the sidecar (PATH or absolute)
+    "sms_fallback": True,                # re-send a failed iMessage as a text (needs
+                                         # Text Message Forwarding on the paired iPhone)
+    "send_verify_seconds": 8,            # how long to watch chat.db for an iMessage
+                                         # delivery error before giving up (0 = off)
 }
 
 
