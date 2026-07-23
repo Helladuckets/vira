@@ -47,7 +47,11 @@ RUNS = ROOT / "data" / "circuit-runs.json"
 TICK_S = 2.0
 OUTPUT_INJECT_CAP = 24_000
 RUNS_KEEP = 120
-MODES = ("interactive", "autopilot", "judge")
+# The session permission ladder (session.MODES — kept literal here because
+# `session` is imported lazily throughout this module to dodge a circular
+# import) plus "judge", the one stage kind that is a role rather than a
+# rung: read-only, grading the stages it names.
+MODES = ("interactive", "acceptedits", "autopilot", "judge")
 EXTRA_CAP = 4_000        # per-stage owner instructions (tray) length cap
 MAX_RETRIES = 5          # ceiling a tray-set grade gate may ask for
 
