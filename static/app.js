@@ -726,7 +726,22 @@ async function openPerson(pid) {
   composeBar.style.marginTop = "10px";
   const composeInput = el("input", "search");
   composeInput.type = "text";
-  composeInput.placeholder = "Write an iMessage to " + (p.name.split(" ")[0]) + "…";
+  composeInput.placeholder = "Write a message to " + (p.name.split(" ")[0]) + "…";
+  // Channel: Auto lets Vira pick (iMessage, or a text for an Android/SMS-only
+  // contact) and fall back to a text if the iMessage isn't delivered. The
+  // owner can pin it to iMessage or Text; the choice persists per person.
+  const chanSel = el("select", "sub-select");
+  chanSel.title = "How to send";
+  [["", "Auto"], ["imessage", "iMessage"], ["sms", "Text (SMS)"]].forEach(([v, lbl]) => {
+    const o = el("option", null, lbl); o.value = v; chanSel.appendChild(o);
+  });
+  api("/api/person/" + pid + "/send-channel").then((r) => {
+    if (r.pref && r.pref.channel) chanSel.value = r.pref.channel;
+  }).catch(() => {});
+  chanSel.addEventListener("change", () => {
+    post("/api/person/" + pid + "/send-channel",
+      { channel: chanSel.value || null }).catch(() => {});
+  });
   const composeSend = el("button", "btn primary", "Send");
   const doSend = async () => {
     const text = composeInput.value.trim();
@@ -734,13 +749,21 @@ async function openPerson(pid) {
     composeSend.disabled = true;
     composeSend.textContent = "Sending…";
     try {
-      await post("/api/send", { person_id: pid, text });
+      const r = await post("/api/send",
+        { person_id: pid, text, channel: chanSel.value || null });
       composeInput.value = "";
       const b = el("div", "bubble me");
       b.appendChild(document.createTextNode(text));
-      b.appendChild(el("div", "bubble-time", "just now"));
+      const via = r.channel === "sms" ? "text" : "iMessage";
+      b.appendChild(el("div", "bubble-time", "just now · " + via));
       thread.appendChild(b);
       thread.scrollTop = thread.scrollHeight;
+      if (r.downgraded) {
+        chanSel.value = "sms";  // Vira just learned this contact is SMS-only
+        toast("iMessage wasn't delivered — sent as a text instead.");
+      } else if (r.note) {
+        toast(r.note);
+      }
       composeSend.textContent = "Sent";
       confettiAt(composeSend);
       setTimeout(() => (composeSend.textContent = "Send"), 1200);
@@ -755,6 +778,7 @@ async function openPerson(pid) {
   composeSend.addEventListener("click", doSend);
   composeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doSend(); });
   composeBar.appendChild(composeInput);
+  composeBar.appendChild(chanSel);
   composeBar.appendChild(composeSend);
   tSec.appendChild(composeBar);
   colB.appendChild(tSec);
@@ -1862,8 +1886,10 @@ async function runSuggest(pid, channel, out, bar, personEmail) {
           sendBtn.disabled = true;
           sendBtn.textContent = "Sending…";
           try {
-            await post("/api/send", { person_id: pid, text: s.text });
-            sendBtn.textContent = "Sent";
+            const r = await post("/api/send", { person_id: pid, text: s.text });
+            sendBtn.textContent = r.channel === "sms" ? "Sent as text" : "Sent";
+            if (r.downgraded || r.note) toast(r.note ||
+              "iMessage wasn't delivered — sent as a text instead.");
             confettiAt(sendBtn);
           } catch (e) {
             sendBtn.textContent = "Failed";

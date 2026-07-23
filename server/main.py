@@ -38,7 +38,8 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                receipts,
                resolver,
                routines,
-               search as msearch, send, session, settings, subs_visuals,
+               search as msearch, send, sendpref, session, settings,
+               subs_visuals,
                subscriptions, suggest, triage, uistate, update, vault,
                whatsapp)
 
@@ -1121,17 +1122,36 @@ class SendReq(BaseModel):
     person_id: str | None = None
     handle: str | None = None
     text: str
+    channel: str | None = None  # "imessage" | "sms"; None = auto/proactive
 
 
 @app.post("/api/send")
 def api_send(req: SendReq):
     try:
-        used = send.send_imessage(req.text, req.person_id, req.handle)
-        return {"sent": True, "handle": used}
+        r = send.send_message(req.text, req.person_id, req.handle, req.channel)
+        return {"sent": True, "handle": r["handle"], "channel": r["channel"],
+                "downgraded": r["downgraded"], "note": r["note"]}
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception as e:  # noqa: BLE001 — surface Messages/permission errors
         raise HTTPException(502, str(e)[:500])
+
+
+class SendChannelReq(BaseModel):
+    channel: str | None = None  # "imessage" | "sms" | null/"auto" to clear
+
+
+@app.get("/api/person/{pid}/send-channel")
+def api_get_send_channel(pid: str):
+    return {"pref": sendpref.get(pid)}
+
+
+@app.post("/api/person/{pid}/send-channel")
+def api_set_send_channel(pid: str, req: SendChannelReq):
+    try:
+        return {"pref": sendpref.set_channel(pid, req.channel, source="owner")}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------- mail: M365 connect + drafts ----------
