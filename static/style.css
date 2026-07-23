@@ -536,10 +536,166 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .cl-job .cl-text { color: var(--text-dim); }
 
 /* person page */
-.p-hero { display: flex; gap: 14px; align-items: center; margin-bottom: 14px; }
-.p-hero .avatar { width: 64px; height: 64px; font-size: 22px; }
-.p-hero-name { font-size: 21px; font-weight: 500; letter-spacing: -0.01em; }
-.p-hero-sub { font-size: 13px; color: var(--text-dim); margin-top: 3px; }
+
+/* ---- the contact card: the top pane of every CRM person ----
+   Reads as a contact record, not a caption. Every value is click-to-edit;
+   a value the OWNER set carries a bone underline, a value Vira derived from
+   the CRM does not — so the card always says which parts are its own guess. */
+.ccard {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-card); margin-bottom: 16px; overflow: hidden;
+}
+.ccard-top {
+  display: flex; gap: 14px; align-items: center;
+  padding: 16px 16px 14px;
+}
+.ccard-top .avatar { width: 64px; height: 64px; font-size: 22px; flex: none; }
+.ccard-id { min-width: 0; flex: 1; }
+.ccard-name { font-size: 21px; color: var(--text-head); }
+.ccard-line {
+  font-size: 13px; color: var(--text-dim); margin-top: 3px;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px;
+}
+.ccard-line.two { color: var(--text-faint); }
+.ccard-dot { color: var(--text-faint); }
+
+/* every editable value: no boxes at rest, a wash on hover — the card should
+   look like a record, and only feel like a form once you reach for it */
+.ccard-edit { cursor: text; border-radius: 2px; }
+.ccard-edit:hover, .ccard-edit:focus-visible {
+  background: var(--hover-wash); outline: none;
+  box-shadow: 0 0 0 4px var(--hover-wash);
+}
+.ccard-val.ghost { color: var(--text-faint); font-style: italic; }
+/* a value the owner set carries a bone underline that hugs the words —
+   the rule follows the text, not the column, so a short answer in a wide
+   row does not read as an empty input */
+.ccard-val.owned {
+  text-decoration: underline; text-decoration-color: var(--accent-line);
+  text-underline-offset: 4px; text-decoration-thickness: 1px;
+}
+.ccard-input {
+  font: inherit; color: var(--text); background: var(--bg-raised);
+  border: 1px solid var(--accent-line); border-radius: 2px;
+  padding: 2px 6px; width: 100%; min-width: 120px;
+}
+.ccard-input:focus { outline: none; border-color: var(--accent); }
+
+/* Email above Phone, each with the card's full width. The card lives in a
+   narrow dossier column at every viewport, and side-by-side groups halved
+   that — enough to truncate ordinary addresses, which is the one thing a
+   contact record must never do. */
+.ccard-handles {
+  border-top: 1px solid var(--line); padding: 4px 16px 10px;
+}
+.ccard-hgroup { min-width: 0; }
+.ccard-sub {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 10px; text-transform: uppercase; color: var(--text-faint);
+  margin: 12px 0 6px;
+}
+.ccard-none { font-size: 12.5px; color: var(--text-faint); font-style: italic; }
+.ccard-h {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 0; font-size: 13px; color: var(--text); min-width: 0;
+}
+/* the address is the FLEXIBLE column and truncates; the star, the rank tag
+   and the mark button never do. A flex item defaults to min-width:auto and
+   so refuses to shrink below its min-content width, which for an unbreakable
+   handle is the whole string — without min-width:0 a long address shoves the
+   rank tag straight off the card. */
+.ccard-hval {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ccard-star { color: var(--accent-bright); flex: none; }
+.ccard-h.rank-primary .ccard-hval { color: var(--text-head); }
+/* former: kept on file, kept resolving inbound, never auto-picked */
+.ccard-h.rank-former .ccard-hval {
+  color: var(--text-faint); text-decoration: line-through;
+  text-decoration-color: var(--line-warm-bright);
+}
+.ccard-tag {
+  font-size: 9.5px; text-transform: uppercase; color: var(--text-faint);
+  border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px;
+  flex: none;
+}
+.ccard-tag.new { color: var(--accent-bright); border-color: var(--accent-line); }
+.ccard-more, .ccard-add {
+  background: none; border: none; cursor: pointer; padding: 2px 4px;
+  font-size: 9.5px; text-transform: uppercase; color: var(--text-faint);
+  opacity: 0; transition: opacity .12s, color .12s;
+}
+.ccard-h:hover .ccard-more, .ccard-d:hover .ccard-more,
+.ccard-sub:hover .ccard-add, .ccard-more:focus-visible,
+.ccard-add:focus-visible { opacity: 1; }
+.ccard-more:hover, .ccard-add:hover { color: var(--accent-bright); }
+.ccard-add.wide {
+  opacity: 1; margin-top: 8px; padding: 6px 0;
+  border-top: 1px dashed var(--line); width: 100%; text-align: left;
+}
+
+.ccard-details { border-top: 1px solid var(--line); padding: 10px 16px 14px; }
+.ccard-d {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 0; font-size: 13px;
+}
+.ccard-dlabel {
+  flex: none; width: 92px; font-size: 10px; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ccard-d .ccard-val { flex: 1; min-width: 0; color: var(--text); }
+
+/* the save bar only exists while there is something to save */
+.ccard-bar { display: none; }
+.ccard-bar.on {
+  display: flex; align-items: center; gap: 8px;
+  border-top: 1px solid var(--accent-line); background: var(--accent-soft);
+  padding: 9px 12px 9px 16px;
+}
+.ccard-count { flex: 1; font-size: 12px; color: var(--accent-bright); }
+
+/* the unsaved-changes dialog */
+.ccard-scrim {
+  position: fixed; inset: 0; z-index: 4200; background: var(--scrim-strong);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.ccard-dialog {
+  background: var(--bg-modal); border: 1px solid var(--accent-line);
+  border-radius: var(--radius); padding: 18px; width: min(460px, 100%);
+  max-height: 84vh; overflow: auto;
+}
+.ccard-dhead { font-size: 15px; color: var(--text-head); margin-bottom: 12px; }
+.ccard-dlist {
+  border: 1px solid var(--line); border-radius: 2px; padding: 8px 10px;
+  margin-bottom: 12px; max-height: 34vh; overflow: auto;
+}
+.ccard-drow {
+  display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap;
+  padding: 3px 0; font-size: 12.5px;
+}
+.ccard-dkey {
+  flex: none; min-width: 84px; font-size: 10px; text-transform: uppercase;
+  color: var(--text-faint);
+}
+.ccard-dfrom { color: var(--text-faint); text-decoration: line-through; }
+.ccard-darrow { color: var(--text-faint); }
+.ccard-dto { color: var(--text-head); }
+.ccard-dnote {
+  font-size: 12px; color: var(--text-dim); line-height: 1.5;
+  margin-bottom: 10px;
+}
+.ccard-dacts {
+  display: flex; gap: 8px; align-items: center; margin-top: 10px;
+}
+/* Discard is destructive and sits apart from the two safe answers, so it
+   can never be the button you hit by muscle memory */
+.ccard-dacts .danger { margin-right: auto; color: var(--red); }
+.ccard-dacts .danger:hover { border-color: var(--red-line); }
+
+@media (max-width: 620px) {
+  .ccard-dlabel { width: 76px; }
+}
 
 .p-section { margin: 18px 0; }
 .p-section h4 {
@@ -2424,7 +2580,7 @@ body { font-family: var(--sans); font-weight: 400; }
 h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .panel-title { font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; font-size: 13px; }
 .sheet-card h3 { font-weight: 400; letter-spacing: 0.05em; }
-.p-hero-name { font-weight: 300; letter-spacing: 0.03em; font-size: 22px; }
+.ccard-name { font-weight: 300; letter-spacing: 0.03em; font-size: 22px; }
 .sub-kpi-num, .sub-monthly { font-weight: 300; }
 .feed-name, .person-name, .link-title, .group-title, .action-name,
 .radar-name, .cir-name, .routine-name, .atlas-card-name, .atlas-tip-name,
@@ -2449,7 +2605,8 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .brief-sec-head, .icon-btn, .feed-add, .feed-hide, .hook-edit-btn,
 .nar-rewrite, .ctx-who, .idea-proposed-badge, .sub-attention-head,
 .sub-group-head h3, .hook-cta, .grp-opener-label, .sub-flag, .jn-stat,
-.ctx-head, .search-hint {
+.ctx-head, .search-hint,
+.ccard-sub, .ccard-tag, .ccard-more, .ccard-add, .ccard-dlabel, .ccard-dkey {
   font-family: var(--mono); letter-spacing: 0.15em;
 }
 .fchip { font-size: 10px; text-transform: uppercase; }
