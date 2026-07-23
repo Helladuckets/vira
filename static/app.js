@@ -688,9 +688,14 @@ async function loadPeople(q) {
 // a durable fact, a loop, or an instruction that needs a real session.
 // server/contactcard.py carries the reasoning for the split.
 
+// Two independent dimensions on every handle: RANK is which one Vira uses,
+// USE is which part of the person's life it belongs to. A work address can
+// be the primary one, and "personal" says nothing about whether it is
+// current — so neither menu group constrains the other.
 const RANK_ACTIONS = [["primary", "Set as primary"],
                       ["secondary", "Mark secondary"],
-                      ["former", "Mark former — out of date"]];
+                      ["archived", "Archive — out of date"]];
+const USE_ACTIONS = [["personal", "Personal"], ["work", "Work"]];
 
 // The one place the app answers "which address is actually theirs?". Before
 // the ranks existed this was handles[0], which on a contact carrying nine of
@@ -698,12 +703,12 @@ const RANK_ACTIONS = [["primary", "Set as primary"],
 function cardPrimary(card, kind) {
   const rows = (card?.handles || []).filter((h) => h.kind === kind);
   const hit = rows.find((h) => h.rank === "primary")
-           || rows.find((h) => h.rank !== "former");
+           || rows.find((h) => h.rank !== "archived");
   return hit ? hit.value : null;
 }
 
 function handleMark(h) {
-  return [h.rank || "unmarked", h.label].filter(Boolean).join(" · ");
+  return [h.rank || "unmarked", h.use].filter(Boolean).join(" · ");
 }
 
 // What the save dialog lists. Compact by design — label, before, after — so
@@ -732,8 +737,8 @@ function cardDiffRows(base, live) {
     const kind = h.kind === "email" ? "Email" : "Phone";
     if (!was) {
       rows.push({ label: kind, from: "",
-                  to: h.display + (h.rank ? " · " + h.rank : "") });
-    } else if (was.rank !== h.rank || was.label !== h.label) {
+                  to: [h.display, h.use, h.rank].filter(Boolean).join(" · ") });
+    } else if (was.rank !== h.rank || was.use !== h.use) {
       rows.push({ label: h.display, from: handleMark(was), to: handleMark(h) });
     }
   });
@@ -847,12 +852,11 @@ function makeContactCard(pid, card, ctx) {
     });
     if (h.rank) items.push({ label: "Clear mark", run: () => set({ rank: "" }) });
     items.push({ sep: true });
-    items.push({ label: h.label ? "Rename label…" : "Add a label…",
-                 run: () => {
-                   const v = prompt("Label this " + h.kind
-                                    + " (home, work, old phone…)", h.label || "");
-                   if (v !== null) set({ label: v.trim() });
-                 } });
+    USE_ACTIONS.forEach(([use, label]) => {
+      if (h.use !== use) items.push({ label, run: () => set({ use }) });
+    });
+    if (h.use) items.push({ label: "Neither", run: () => set({ use: "" }) });
+    items.push({ sep: true });
     items.push({ label: "Copy", run: () => copyText(h.value) });
     if (addedHandles.some((a) => a.value === h.value)) {
       items.push({ sep: true });
@@ -869,16 +873,15 @@ function makeContactCard(pid, card, ctx) {
     const row = el("div", "ccard-h" + (h.rank ? " rank-" + h.rank : ""));
     if (h.rank === "primary") row.appendChild(el("span", "ccard-star", "*"));
     row.appendChild(el("span", "ccard-hval", h.display));
-    if (h.label) row.appendChild(el("span", "ccard-tag", h.label));
-    if (h.rank)
-      row.appendChild(el("span", "ccard-tag rank", h.rank));
+    if (h.use) row.appendChild(el("span", "ccard-tag use", h.use));
+    if (h.rank) row.appendChild(el("span", "ccard-tag rank", h.rank));
     if (h.added) row.appendChild(el("span", "ccard-tag new", "added"));
     const more = el("button", "ccard-more", "mark");
-    more.title = "Set primary, secondary, or former";
+    more.title = "Rank it, or mark it personal or work";
     more.addEventListener("click", (e) => { e.stopPropagation(); handleMenu(e, h); });
     row.appendChild(more);
-    row.title = "Click to copy · right-click to mark primary, secondary, "
-              + "or former";
+    row.title = "Click to copy · right-click to rank it, or mark it personal "
+              + "or work";
     row.addEventListener("click", () => {
       copyText(h.value);
       toast("Copied " + h.display);
@@ -903,7 +906,7 @@ function makeContactCard(pid, card, ctx) {
         return;
       }
       live.handles.push({ key, kind, value: v, display: v, rank: "",
-                          label: "", added: true });
+                          use: "", added: true });
       addedHandles.push({ kind, value: v });
       sync();
     };
@@ -933,10 +936,14 @@ function makeContactCard(pid, card, ctx) {
     return row;
   };
 
-  const RANK_SORT = { primary: 0, "": 1, secondary: 2, former: 3 };
+  const RANK_SORT = { primary: 0, "": 1, secondary: 2, archived: 3 };
   const rankedHandles = (kind) => live.handles
     .filter((h) => h.kind === kind)
     .sort((a, b) => (RANK_SORT[a.rank] ?? 1) - (RANK_SORT[b.rank] ?? 1));
+  // Archived handles are still ON the card — they just stop taking up room
+  // on it. Kept open across repaints so un-archiving one does not slam the
+  // drawer shut on the others.
+  const archOpen = {};
 
   function paint() {
     bodyWrap.innerHTML = "";
@@ -968,8 +975,22 @@ function makeContactCard(pid, card, ctx) {
       add.addEventListener("click", () => addHandle(kind, grp));
       head.appendChild(add);
       grp.appendChild(head);
+      const live_ = rows.filter((h) => h.rank !== "archived");
+      const arch = rows.filter((h) => h.rank === "archived");
       if (!rows.length) grp.appendChild(el("div", "ccard-none", "none on file"));
-      rows.forEach((h) => grp.appendChild(handleRow(h)));
+      live_.forEach((h) => grp.appendChild(handleRow(h)));
+      if (arch.length) {
+        const toggle = el("button", "ccard-arch",
+          (archOpen[kind] ? "hide " : "") + arch.length + " archived");
+        toggle.title = "Out of date, kept on file — still resolves old "
+                     + "messages, never used to send";
+        toggle.addEventListener("click", () => {
+          archOpen[kind] = !archOpen[kind];
+          paint();
+        });
+        grp.appendChild(toggle);
+        if (archOpen[kind]) arch.forEach((h) => grp.appendChild(handleRow(h)));
+      }
       hwrap.appendChild(grp);
     });
     bodyWrap.appendChild(hwrap);
@@ -1038,7 +1059,7 @@ function makeContactCard(pid, card, ctx) {
       custom: live.custom.map((c) => ({ id: c.id.startsWith("f_new") ? "" : c.id,
                                         label: c.label, value: c.value })),
       handles: Object.fromEntries(live.handles.map(
-        (h) => [h.key, { rank: h.rank, label: h.label }])),
+        (h) => [h.key, { rank: h.rank, use: h.use }])),
       added: addedHandles.slice(),
       note: note || "",
     };
@@ -1283,6 +1304,10 @@ async function openPerson(pid) {
   composeBar.appendChild(chanSel);
   composeBar.appendChild(composeSend);
   tSec.appendChild(composeBar);
+  // Tell Vira heads the right-hand column, level with the contact card, and
+  // the thread sits directly under it: the two things you DO on this page —
+  // tell it something, read what was said — lead the column together.
+  colB.appendChild(tellSection(pid, p.name));
   colB.appendChild(tSec);
 
   const draftFromHook = async (hookText, detail) => {
@@ -1335,7 +1360,6 @@ async function openPerson(pid) {
 
   colA.appendChild(loopsSection(pid, prof?.open_loops));
   colA.appendChild(hooksSection(pid, prof?.hooks, draftFromHook));
-  colA.appendChild(tellSection(pid, p.name));
 
   // Group — the Visual Network grouping, editable from the profile (lazy;
   // the section only appears once the network graph exists)

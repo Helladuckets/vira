@@ -1,10 +1,10 @@
 """The contact card: the owner-editable top pane of every CRM person.
 
-Covers the overlay merge and its provenance, handle ranking (including the
-single-primary rule and what `former` does and does not change), the two
-write-through paths into the CRM registry, the passive-instance refusal, the
-change list, and the journal hand-off that makes saving a card the same act
-as telling Vira.
+Covers the overlay merge and its provenance, the two independent handle
+dimensions (rank — including the single-primary rule and what `archived` does
+and does not change — and use), the two write-through paths into the CRM
+registry, the passive-instance refusal, the change list, and the journal
+hand-off that makes saving a card the same act as telling Vira.
 
 Everything runs against a synthetic CRM in a temp dir — no real people.json
 is read or written, and every fixture name/handle is invented (the PII guard
@@ -163,9 +163,9 @@ class HandleTests(CardCase):
         self.assertEqual(contactcard.primary_handle(PID, "email"),
                          "d.vega@work.example.com")    # the owner's choice
 
-    def test_former_is_skipped_for_outbound_but_kept_and_still_resolves(self):
+    def test_archived_is_skipped_for_outbound_but_kept_and_still_resolves(self):
         k1 = contactcard.handle_key("email", "dana@example.com")
-        self.save(handles={k1: {"rank": "former"}})
+        self.save(handles={k1: {"rank": "archived"}})
         self.assertEqual(contactcard.primary_handle(PID, "email"),
                          "d.vega@work.example.com")
         keys = [r["key"] for r in contactcard.compose(PID)["handles"]]
@@ -174,42 +174,83 @@ class HandleTests(CardCase):
         crm.invalidate()
         self.assertEqual(crm.resolve_handle("dana@example.com"), PID)
 
-    def test_primary_handle_returns_none_when_everything_is_former(self):
+    def test_primary_handle_returns_none_when_everything_is_archived(self):
         self.save(handles={
-            contactcard.handle_key("email", "dana@example.com"): {"rank": "former"},
+            contactcard.handle_key("email", "dana@example.com"): {"rank": "archived"},
             contactcard.handle_key("email", "d.vega@work.example.com"):
-                {"rank": "former"}})
+                {"rank": "archived"}})
         self.assertIsNone(contactcard.primary_handle(PID, "email"))
 
-    def test_retired_handles_lists_only_the_former_ones(self):
-        self.save(handles={
-            contactcard.handle_key("email", "dana@example.com"): {"rank": "former"},
-            contactcard.handle_key("phone", "2025550188"): {"rank": "primary"}})
-        self.assertEqual(contactcard.retired_handles(PID), {"dana@example.com"})
+    def test_a_store_written_before_the_rename_still_means_archived(self):
+        """`former` was this rank's first name. A store carrying it keeps
+        meaning what it meant rather than silently reading as unranked —
+        which would put a retired address back in the outbound rotation."""
+        k1 = contactcard.handle_key("email", "dana@example.com")
+        self.store.write_text(json.dumps(
+            {"cards": {PID: {"handles": {k1: {"rank": "former"}}}}}))
+        row = next(r for r in contactcard.compose(PID)["handles"]
+                   if r["key"] == k1)
+        self.assertEqual(row["rank"], "archived")
+        self.assertEqual(contactcard.archived_handles(PID), {"dana@example.com"})
+        self.assertEqual(contactcard.primary_handle(PID, "email"),
+                         "d.vega@work.example.com")
 
-    def test_send_prefers_the_pinned_phone_and_skips_a_retired_one(self):
+    def test_archived_handles_lists_only_the_archived_ones(self):
+        self.save(handles={
+            contactcard.handle_key("email", "dana@example.com"): {"rank": "archived"},
+            contactcard.handle_key("phone", "2025550188"): {"rank": "primary"}})
+        self.assertEqual(contactcard.archived_handles(PID), {"dana@example.com"})
+
+    def test_send_prefers_the_pinned_phone_and_skips_an_archived_one(self):
         """The rank has to govern outbound or it is decoration: the
         recent-thread signal would otherwise keep texting a number the owner
-        had just retired."""
+        had just archived."""
         from server import send
         with mock.patch.object(send.imessage, "thread_for_person",
                                return_value=[{"handle": "+12025550188"}]):
             self.assertEqual(send.best_handle(PID), "+12025550188")
             self.save(handles={contactcard.handle_key("phone", "2025550188"):
-                               {"rank": "former"}})
-            # the retired number is skipped; the email handle is what is left
+                               {"rank": "archived"}})
+            # the archived number is skipped; the email handle is what is left
             self.assertEqual(send.best_handle(PID), "dana@example.com")
             self.save(added=[{"kind": "phone", "value": "2025550199"}],
                       handles={contactcard.handle_key("phone", "2025550199"):
                                {"rank": "primary"}})
             self.assertEqual(send.best_handle(PID), "+12025550199")
 
-    def test_labels_stick(self):
-        k = contactcard.handle_key("phone", "(202) 555-0188")
-        self.save(handles={k: {"label": "mobile"}})
+    def test_use_is_a_second_dimension_independent_of_rank(self):
+        """personal/work and primary/secondary/archived are orthogonal: a work
+        address can be the primary one, and marking a handle personal must not
+        disturb which one Vira writes to."""
+        work = contactcard.handle_key("email", "d.vega@work.example.com")
+        home = contactcard.handle_key("email", "dana@example.com")
+        self.save(handles={work: {"rank": "primary", "use": "work"},
+                           home: {"use": "personal"}})
+        rows = {r["key"]: r for r in contactcard.compose(PID)["handles"]}
+        self.assertEqual((rows[work]["rank"], rows[work]["use"]),
+                         ("primary", "work"))
+        self.assertEqual((rows[home]["rank"], rows[home]["use"]),
+                         ("", "personal"))
+        self.assertEqual(contactcard.primary_handle(PID, "email"),
+                         "d.vega@work.example.com")
+        # clearing the use leaves the rank alone
+        self.save(handles={work: {"use": ""}})
+        rows = {r["key"]: r for r in contactcard.compose(PID)["handles"]}
+        self.assertEqual((rows[work]["rank"], rows[work]["use"]), ("primary", ""))
+
+    def test_sorting_ignores_use_so_tagging_does_not_reshuffle(self):
+        before = [r["key"] for r in contactcard.compose(PID)["handles"]]
+        self.save(handles={contactcard.handle_key("email", "d.vega@work.example.com"):
+                           {"use": "work"}})
+        self.assertEqual([r["key"] for r in contactcard.compose(PID)["handles"]],
+                         before)
+
+    def test_a_junk_use_is_dropped_not_stored(self):
+        k = contactcard.handle_key("phone", "2025550188")
+        self.save(handles={k: {"use": "whatever"}})
         row = next(r for r in contactcard.compose(PID)["handles"]
                    if r["key"] == k)
-        self.assertEqual(row["label"], "mobile")
+        self.assertEqual(row["use"], "")
 
 
 class WriteThroughTests(CardCase):
@@ -286,13 +327,15 @@ class WriteThroughTests(CardCase):
 class SaveTests(CardCase):
     def test_change_list_reads_as_the_owner_would_say_it(self):
         k = contactcard.handle_key("email", "dana@example.com")
+        k2 = contactcard.handle_key("email", "d.vega@work.example.com")
         res = self.save(fields={"title": "Chief of Staff", "pronouns": "she/her"},
-                        handles={k: {"rank": "former"}})
+                        handles={k: {"rank": "archived"}, k2: {"use": "work"}})
         joined = " | ".join(res["changes"])
         self.assertIn('Title changed from "Head of Ops" to "Chief of Staff"',
                       joined)
         self.assertIn('Pronouns set to "she/her"', joined)
-        self.assertIn("marked former", joined)
+        self.assertIn("archived — out of date, kept on file", joined)
+        self.assertIn("is a work email", joined)
 
     def test_saving_a_card_files_a_journal_note_scoped_to_the_person(self):
         res = self.save(fields={"company": "Aurora Labs"},

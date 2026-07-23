@@ -27,13 +27,23 @@ read another):
     (triage.add_handles), so inbound mail and messages from it actually
     resolve to this person.
 
-Handle ranks
-------------
-primary / secondary / former. `former` is the answer to "this address is out
-of date" — it is kept, kept resolving inbound (that is how old threads stay
-joined to the right person), sorted last, and never auto-picked for anything
-outbound. Deleting a handle is deliberately not offered for that reason;
-only an unsaved, card-added handle can be dropped.
+Handles carry two independent dimensions
+----------------------------------------
+RANK — primary / secondary / archived — is which one Vira should USE.
+USE — personal / work — is which part of the person's life it belongs to.
+They are orthogonal on purpose: a work address can be the primary one, and
+knowing an address is personal says nothing about whether it is current.
+
+`archived` is the answer to "this one is out of date". It is kept, kept
+resolving inbound (that is how old threads stay joined to the right person),
+hidden behind a disclosure rather than cluttering the card, and never
+auto-picked for anything outbound. Deleting a handle is deliberately not
+offered for that reason; only an unsaved, card-added handle can be dropped.
+
+Rank stays one primary PER KIND rather than per (kind, use): `primary_handle`
+answers "which address does Vira write to", and nothing upstream of a reply
+draft supplies whether the moment is personal or work, so a second primary
+would only make that question ambiguous.
 
 `primary_handle` is what makes the rank load-bearing rather than decorative:
 the email-draft path used to take whichever address happened to be first in
@@ -51,10 +61,13 @@ STORE = Path(__file__).resolve().parent.parent / "data" / "contact-cards.json"
 
 MAX_VALUE = 400          # a card field is a label, not an essay
 MAX_CUSTOM = 24          # custom rows per person
-MAX_HANDLE_LABEL = 40
 
-RANKS = ("primary", "secondary", "former")
-_RANK_ORDER = {"primary": 0, "": 1, "secondary": 2, "former": 3}
+RANKS = ("primary", "secondary", "archived")
+USES = ("personal", "work")
+_RANK_ORDER = {"primary": 0, "": 1, "secondary": 2, "archived": 3}
+# `former` was this rank's first name; accept it so a store written before
+# the rename keeps meaning what it meant
+_RANK_ALIAS = {"former": "archived"}
 
 # Standard rows, in render order. `derive` names where the default comes
 # from; None means the field exists only when the owner fills it in.
@@ -130,9 +143,17 @@ def format_phone(digits):
     return digits or ""
 
 
+def norm_rank(rank):
+    rank = _RANK_ALIAS.get(rank, rank)
+    return rank if rank in RANKS else ""
+
+
 def _handle_rows(person, over):
     """Every known handle for a person, ranked. Registry order is preserved
-    inside a rank so an unranked card still reads the way the CRM built it."""
+    inside a rank so an unranked card still reads the way the CRM built it.
+    Sorting is by rank ALONE — `use` is shown as a tag rather than used as a
+    second sort key, so tagging an address personal does not make the list
+    reshuffle under the cursor."""
     h = person.get("handles") or {}
     rows, seen = [], set()
 
@@ -148,8 +169,8 @@ def _handle_rows(person, over):
         rows.append({
             "key": key, "kind": kind, "value": value,
             "display": format_phone(value) if kind == "phone" else value,
-            "rank": meta.get("rank") if meta.get("rank") in RANKS else "",
-            "label": _clean(meta.get("label"))[:MAX_HANDLE_LABEL],
+            "rank": norm_rank(meta.get("rank")),
+            "use": meta.get("use") if meta.get("use") in USES else "",
             "added": bool(meta.get("added")) or from_card,
         })
 
@@ -172,7 +193,7 @@ def _handle_rows(person, over):
 
 def primary_handle(pid, kind="email"):
     """The address Vira should actually use for this person: the one marked
-    primary, else the first that is not marked former, else None. This is the
+    primary, else the first that is not archived, else None. This is the
     whole point of the ranks — outbound picks a chosen handle, not handles[0].
     """
     from . import data as crm
@@ -185,23 +206,23 @@ def primary_handle(pid, kind="email"):
         if r["rank"] == "primary":
             return r["value"]
     for r in rows:
-        if r["rank"] != "former":
+        if r["rank"] != "archived":
             return r["value"]
     return None
 
 
-def retired_handles(pid):
-    """The set of this person's handles marked `former`, in both spellings a
-    caller might hold (lowercased email, ten-digit phone). Outbound paths
-    check this: "out of date but still stored" has to mean Vira stops using
-    it, or the mark is decoration.
+def archived_handles(pid):
+    """The set of this person's archived handles, in the normalized spelling a
+    caller holds (lowercased email, ten-digit phone). Outbound paths check
+    this: "out of date but still stored" has to mean Vira stops using it, or
+    the mark is decoration.
 
-    Retirement deliberately does NOT reach resolution — an old address still
+    Archiving deliberately does NOT reach resolution — an old address still
     joins its old messages to the right person.
     """
     out = set()
     for key, meta in (raw(pid)["handles"] or {}).items():
-        if isinstance(meta, dict) and meta.get("rank") == "former":
+        if isinstance(meta, dict) and norm_rank(meta.get("rank")) == "archived":
             _, _, val = key.partition(":")
             if val:
                 out.add(val)
@@ -317,19 +338,22 @@ def _describe(before, after, note):
         what = h["display"]
         if old is None:
             bits = [f"{h['kind']} {what} added"]
+            if h["use"]:
+                bits.append(f"as a {h['use']} {h['kind']}")
             if h["rank"]:
                 bits.append(f"marked {h['rank']}")
             lines.append(", ".join(bits))
             continue
         if old["rank"] != h["rank"]:
-            if h["rank"] == "former":
-                lines.append(f"{what} marked former — out of date, kept on file")
+            if h["rank"] == "archived":
+                lines.append(f"{what} archived — out of date, kept on file")
             elif h["rank"]:
                 lines.append(f"{what} marked {h['rank']} {h['kind']}")
             else:
                 lines.append(f"{what} no longer marked {old['rank']}")
-        if old["label"] != h["label"] and h["label"]:
-            lines.append(f'{what} labeled "{h["label"]}"')
+        if old["use"] != h["use"]:
+            lines.append(f"{what} is a {h['use']} {h['kind']}" if h["use"]
+                         else f"{what} no longer marked {old['use']}")
     if note:
         lines.append(note)
     return lines
@@ -451,17 +475,18 @@ def save(pid, draft, integrate=True):
             if kind not in ("email", "phone") or not val:
                 continue
             cur = dict(c["handles"].get(key) or {})
-            rank = meta.get("rank")
-            if rank in RANKS:
-                cur["rank"] = rank
-            elif "rank" in meta:
-                cur.pop("rank", None)
-            if "label" in meta:
-                lbl = _clean(meta.get("label"))[:MAX_HANDLE_LABEL]
-                if lbl:
-                    cur["label"] = lbl
+            if "rank" in meta:
+                rank = norm_rank(meta.get("rank"))
+                if rank:
+                    cur["rank"] = rank
                 else:
-                    cur.pop("label", None)
+                    cur.pop("rank", None)
+            if "use" in meta:
+                use = meta.get("use")
+                if use in USES:
+                    cur["use"] = use
+                else:
+                    cur.pop("use", None)
             if cur:
                 c["handles"][key] = cur
             else:

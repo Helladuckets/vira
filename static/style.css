@@ -610,17 +610,27 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 }
 .ccard-star { color: var(--accent-bright); flex: none; }
 .ccard-h.rank-primary .ccard-hval { color: var(--text-head); }
-/* former: kept on file, kept resolving inbound, never auto-picked */
-.ccard-h.rank-former .ccard-hval {
+/* archived: kept on file, kept resolving inbound, never auto-picked — and
+   folded away behind the drawer below rather than crowding the card */
+.ccard-h.rank-archived .ccard-hval {
   color: var(--text-faint); text-decoration: line-through;
   text-decoration-color: var(--line-warm-bright);
 }
+.ccard-arch {
+  background: none; border: none; cursor: pointer; text-align: left;
+  padding: 5px 0; font-size: 9.5px; text-transform: uppercase;
+  color: var(--text-faint); transition: color .12s;
+}
+.ccard-arch:hover { color: var(--accent-bright); }
 .ccard-tag {
   font-size: 9.5px; text-transform: uppercase; color: var(--text-faint);
   border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px;
   flex: none;
 }
 .ccard-tag.new { color: var(--accent-bright); border-color: var(--accent-line); }
+/* the second dimension reads in the steel voice, so which-one-Vira-uses and
+   which-part-of-their-life never blur into one another at a glance */
+.ccard-tag.use { color: var(--steel); border-color: var(--steel-line); }
 .ccard-more, .ccard-add {
   background: none; border: none; cursor: pointer; padding: 2px 4px;
   font-size: 9.5px; text-transform: uppercase; color: var(--text-faint);
@@ -2606,7 +2616,8 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .nar-rewrite, .ctx-who, .idea-proposed-badge, .sub-attention-head,
 .sub-group-head h3, .hook-cta, .grp-opener-label, .sub-flag, .jn-stat,
 .ctx-head, .search-hint,
-.ccard-sub, .ccard-tag, .ccard-more, .ccard-add, .ccard-dlabel, .ccard-dkey {
+.ccard-sub, .ccard-tag, .ccard-more, .ccard-add, .ccard-arch,
+.ccard-dlabel, .ccard-dkey {
   font-family: var(--mono); letter-spacing: 0.15em;
 }
 .fchip { font-size: 10px; text-transform: uppercase; }
