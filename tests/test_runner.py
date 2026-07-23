@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import jobfiles, joblog
+from server import jobfiles, joblog, session
 from server import runner as runner_mod
 
 
@@ -26,6 +26,7 @@ def make_spec(**over):
         "auto_allow": ["Read", "Grep", "Glob", "TodoWrite", "Task",
                        "NotebookRead", "WebSearch"],
         "permission_timeout": 600,
+        "reply_window": 30,
     }
     spec.update(over)
     return spec
@@ -257,6 +258,150 @@ class ControlTests(RunnerCase):
         rec = json.loads(store.read_text())["jobs"][0]
         self.assertEqual(rec["session_id"], "sess-abc-123")
         self.assertIn("sess-abc-123.jsonl", rec["transcript"])
+
+
+class AcceptEditsTests(RunnerCase):
+    """The middle rung: edits land unasked, commands still raise a card."""
+
+    def test_edit_tools_allow_without_a_card(self):
+        r = self.make_runner(mode="acceptedits")
+        for tool in sorted(session.EDIT_TOOLS):
+            res = self.run_gate(r, tool, {"file_path": "/tmp/x"})
+            self.assertEqual(res.behavior, "allow", tool)
+        self.assertEqual(r.state["pending"], [])
+
+    def test_commands_still_raise_a_card(self):
+        r = self.make_runner(mode="acceptedits")
+
+        async def approve(r):
+            req = r.state["pending"][0]["req_id"]
+            await r.handle({"op": "permission", "req_id": req, "allow": True})
+
+        res = self.run_gate(r, "Bash", {"command": "rm -rf /"}, approve)
+        self.assertEqual(res.behavior, "allow")
+        self.assertIn("permission needed", self.output(r))
+
+    def test_interactive_still_gates_edits(self):
+        """The rung has to actually be the thing that changed — the default
+        must not have quietly picked up auto-accept."""
+        r = self.make_runner(mode="interactive")
+
+        async def deny(r):
+            req = r.state["pending"][0]["req_id"]
+            await r.handle({"op": "permission", "req_id": req,
+                            "allow": False})
+
+        res = self.run_gate(r, "Edit", {"file_path": "/tmp/x"}, deny)
+        self.assertEqual(res.behavior, "deny")
+
+    def test_read_only_outranks_the_rung(self):
+        """Read-only denial outranks every allow (audit P1-4) — a plan
+        session set to acceptedits must still refuse to write."""
+        r = self.make_runner(mode="acceptedits", publish_plan=True)
+        res = self.run_gate(r, "Write", {"file_path": "/tmp/x"})
+        self.assertEqual(res.behavior, "deny")
+
+
+class ReplyWindowTests(RunnerCase):
+    """A finished turn parks the session open instead of ending it, so the
+    question an agent signs off with can actually be answered."""
+
+    def await_reply(self, r, *cmds, delay=0.01):
+        async def scenario():
+            task = asyncio.ensure_future(r.await_reply())
+            await asyncio.sleep(delay)
+            for c in cmds:
+                await r.handle(c)
+            return await task
+        return asyncio.run(scenario())
+
+    def test_reply_is_delivered_and_marks_the_turn_unfinished(self):
+        r = self.make_runner()
+        got = self.await_reply(r, {"op": "say", "text": "merge it"})
+        self.assertEqual(got, "merge it")
+        self.assertFalse(r.awaiting_reply)
+        self.assertIsNone(r.state["awaiting"])
+
+    def test_parked_state_is_what_keeps_the_compose_bar_live(self):
+        r = self.make_runner()
+
+        async def scenario():
+            task = asyncio.ensure_future(r.await_reply())
+            await asyncio.sleep(0.01)
+            # mid-park: this is exactly what the client polls
+            parked = (r.awaiting_reply, self.state(r)["awaiting"],
+                      self.state(r)["status"])
+            await r.handle({"op": "interrupt"})
+            await task
+            return parked
+
+        self.assertEqual(asyncio.run(scenario()), (True, "reply", "running"))
+
+    def test_finish_ends_the_window_without_aborting_the_run(self):
+        """Stop during the window is the Finish button. It must NOT set
+        `interrupted` — the work is already complete, and marking it
+        aborted would skip the idea close-out and the plan publish."""
+        r = self.make_runner()
+        self.assertIsNone(self.await_reply(r, {"op": "interrupt"}))
+        self.assertFalse(r.interrupted)
+        self.assertTrue(r.finished_cleanly)
+        self.assertIn("session finished by the owner", self.output(r))
+
+    def test_close_during_the_window_also_finishes_cleanly(self):
+        r = self.make_runner()
+        self.assertIsNone(self.await_reply(r, {"op": "close"}))
+        self.assertTrue(r.closing)
+        self.assertFalse(r.interrupted)
+        self.assertTrue(r.finished_cleanly)
+
+    def test_mid_turn_interrupt_still_aborts(self):
+        """The distinction has to hold in the other direction: a Stop that
+        is NOT in the reply window keeps its old abandon-the-run meaning."""
+        r = self.make_runner()
+        asyncio.run(r.handle({"op": "interrupt"}))
+        self.assertTrue(r.interrupted)
+        self.assertFalse(r.finished_cleanly)
+
+    def test_window_expires_into_a_finish(self):
+        r = self.make_runner(reply_window=0.05)
+        self.assertIsNone(self.await_reply(r, delay=0.2))
+        self.assertIn("closing the session", self.output(r))
+
+    def test_blank_steer_does_not_end_the_window(self):
+        r = self.make_runner()
+        got = self.await_reply(r,
+                               {"op": "say", "text": "   "},
+                               {"op": "say", "text": "discard"})
+        self.assertEqual(got, "discard")
+
+    def test_already_closing_never_parks(self):
+        r = self.make_runner()
+        r.closing = True
+        self.assertIsNone(asyncio.run(r.await_reply()))
+        self.assertFalse(r.awaiting_reply)
+
+
+class LiveCapTests(unittest.TestCase):
+    """A parked session has finished its work — it must not hold a slot
+    against session_max_live, or a few unanswered questions wedge the
+    cockpit shut."""
+
+    def make(self, status, awaiting):
+        h = session.DetachedJob.__new__(session.DetachedJob)
+        h.last_state = {"status": status, "awaiting": awaiting}
+        return h
+
+    def test_working_session_counts(self):
+        self.assertTrue(self.make("running", None).working())
+
+    def test_permission_card_still_counts(self):
+        self.assertTrue(self.make("running", "permission").working())
+
+    def test_parked_session_does_not_count(self):
+        self.assertFalse(self.make("running", "reply").working())
+
+    def test_finished_session_does_not_count(self):
+        self.assertFalse(self.make("done", None).working())
 
 
 if __name__ == "__main__":

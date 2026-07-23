@@ -527,12 +527,13 @@
         <option value="">Default (config)</option>
       </select>
     </label>
+    <label class="field" id="idea-run-perm-field">Permissions
+      <!-- the ladder, safest first; options are filled from PERM_MODES -->
+      <select id="idea-run-perm"></select>
+    </label>
     <label class="field">Additional instructions (optional)
       <textarea id="idea-run-extra" rows="3" spellcheck="false"
                 placeholder="Anything else Vira should know or do…"></textarea></label>
-    <label class="run-flag" id="idea-run-auto">
-      <input type="checkbox" id="idea-run-autopilot">
-      <span>autopilot — no permission prompts (full bypass)</span></label>
     <p class="hint" id="idea-run-note"></p>
     <div class="row-end">
       <button class="btn" id="idea-run-cancel">Cancel</button>
