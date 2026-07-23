@@ -66,6 +66,20 @@ def _load():
             if "@" not in im:
                 by_handle[norm_digits(im)] = p["id"]
 
+    # Handles the owner added on a contact card but that never landed in the
+    # registry (the write failed, or this is a fixture CRM) still resolve, so
+    # the next message from that address joins the person it was added to. An
+    # address the registry already owns is left alone — the card never steals
+    # a handle from another contact.
+    try:
+        from . import contactcard
+        for handle, pid in contactcard.added_handles().items():
+            key = handle.lower() if "@" in handle else norm_digits(handle)
+            if key and key not in by_handle and pid in by_id:
+                by_handle[key] = pid
+    except Exception:  # noqa: BLE001 — an overlay read must never break the CRM
+        pass
+
     profiles = {}
     prof_dir = root / "profiles"
     if prof_dir.exists():

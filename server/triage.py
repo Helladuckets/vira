@@ -257,6 +257,98 @@ def candidates():
     return out
 
 
+def _read_people_backed_up():
+    """Read people.json after taking a timestamped backup. Every write path
+    into the registry goes through this — the backup is the guarantee, and a
+    guarantee with more than one implementation is not one."""
+    people_path = _people()
+    try:
+        doc = json.loads(people_path.read_text())
+        backups = _backups()
+        backups.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(people_path, backups / f"people-{stamp}.json")
+    except FileNotFoundError:
+        # first person ever: mint the registry, so a CRM can grow from
+        # zero through triage alone (v9 onboarding)
+        people_path.parent.mkdir(parents=True, exist_ok=True)
+        doc = {"people": []}
+    return doc
+
+
+def _write_people(doc):
+    jsonstore.write_atomic(_people(), doc, indent=1, ensure_ascii=False)
+    crm.invalidate()
+
+
+def rename_person(person_id, name):
+    """Rename an existing registry entry in place. The contact card's name
+    field writes through to here rather than into Vira's overlay: a name is
+    registry data, and an overlaid one would leave the card reading something
+    the feed, brief, and people list did not."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("name required")
+    with _lock:
+        crm.invalidate()
+        doc = _read_people_backed_up()
+        person = next((p for p in doc["people"] if p["id"] == person_id), None)
+        if not person:
+            raise KeyError(person_id)
+        person["name"] = name
+        person.setdefault("refs", {})["vira_named"] = time.strftime("%Y-%m-%d")
+        _write_people(doc)
+        return person
+
+
+def add_handles(person_id, handles):
+    """Append emails/phones to an existing registry entry. `handles` is a list
+    of {kind: email|phone, value: ...}. A handle already owned by someone else
+    is refused rather than moved — reassigning one silently would re-point
+    every past message that resolved through it.
+
+    Mirrors add_person's shape: the raw handle also joins `imessage`, which is
+    the list send.best_handle falls back to.
+    """
+    with _lock:
+        crm.invalidate()
+        doc = _read_people_backed_up()
+        person = next((p for p in doc["people"] if p["id"] == person_id), None)
+        if not person:
+            raise KeyError(person_id)
+        h = person.setdefault("handles", {})
+        for bucket in ("imessage", "phones10", "emails"):
+            h.setdefault(bucket, [])
+        landed = []
+        for item in handles:
+            kind, value = item.get("kind"), (item.get("value") or "").strip()
+            if not value:
+                continue
+            owner = crm.resolve_handle(value)
+            if owner and owner != person_id:
+                raise ValueError(f"handle {value} already belongs to "
+                                 "another CRM person")
+            if kind == "email":
+                norm = value.lower()
+                bucket, existing = "emails", {e.lower() for e in h["emails"]}
+            else:
+                norm = crm.norm_digits(value)
+                bucket, existing = "phones10", set(h["phones10"])
+                if len(norm) < 10:
+                    raise ValueError(f"{value} is not a full phone number")
+            if norm in existing:
+                continue
+            h[bucket].append(norm)
+            if norm not in h["imessage"]:
+                h["imessage"].append(norm)
+            landed.append(norm)
+        if landed:
+            person.setdefault("refs", {})["vira_handles"] = \
+                time.strftime("%Y-%m-%d")
+            _write_people(doc)
+        return landed
+
+
 def add_person(name, handles, class_hint=None, note=None, person_id=None):
     """Append a person to people.json — or, when person_id names an existing
     placeholder entry, rename it in place. Record shape matches
@@ -269,18 +361,7 @@ def add_person(name, handles, class_hint=None, note=None, person_id=None):
         raise ValueError("at least one handle required")
     with _lock:
         crm.invalidate()
-        people_path = _people()
-        try:
-            doc = json.loads(people_path.read_text())
-            backups = _backups()
-            backups.mkdir(exist_ok=True)
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            shutil.copy2(people_path, backups / f"people-{stamp}.json")
-        except FileNotFoundError:
-            # first person ever: mint the registry, so a CRM can grow from
-            # zero through triage alone (v9 onboarding)
-            people_path.parent.mkdir(parents=True, exist_ok=True)
-            doc = {"people": []}
+        doc = _read_people_backed_up()
 
         if person_id:
             person = next((p for p in doc["people"] if p["id"] == person_id), None)
@@ -311,8 +392,5 @@ def add_person(name, handles, class_hint=None, note=None, person_id=None):
             }
             doc["people"].append(person)
 
-        tmp = people_path.with_name(people_path.name + ".tmp")
-        tmp.write_text(json.dumps(doc, indent=1, ensure_ascii=False))
-        tmp.replace(people_path)
-        crm.invalidate()
+        _write_people(doc)
         return person
