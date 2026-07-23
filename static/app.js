@@ -8100,16 +8100,30 @@ function bindMediaOpen(node, url) {
 const WIN_TITLES = Object.fromEntries(WINDOWS.map((w) => [w.id, w.title]));
 
 function ctxDescribe(target) {
-  const ctx = { component: "Vira", person: null, snippet: "" };
-  const sel = String(window.getSelection() || "").trim();
-  ctx.snippet = (sel || (target.textContent || ""))
-    .trim().replace(/\s+/g, " ").slice(0, 200);
+  const ctx = { component: "Vira", person: null, snippet: "", target: null };
+  const sel = String(window.getSelection() || "").trim().replace(/\s+/g, " ");
   const pp = target.closest("#person-panel");
   const fwin = target.closest(".fwin");
   const view = target.closest(".view");
   if (pp) {
     ctx.component = pp.dataset.pname ? "Profile: " + pp.dataset.pname : "Profile";
     if (pp.dataset.pid) ctx.person = { pid: pp.dataset.pid, name: pp.dataset.pname };
+    // Fidelity ladder for "Tell Vira about this…": the exact card under the
+    // cursor (a hook / an open loop) wins; else the section it sits in; else
+    // the person (the profile's own Tell Vira). `menu` is the phrase shown in
+    // the label; `note` is how the attached context names the thing.
+    const loopEl = target.closest(".loop");
+    const secEl = target.closest(".p-section");
+    if (loopEl) {
+      const isHook = loopEl.classList.contains("hook");
+      const text = (loopEl.querySelector(".hook-text")?.textContent || "").trim();
+      ctx.target = { menu: isHook ? "this hook" : "this open loop",
+                     note: isHook ? "Conversation hook" : "Open loop", text };
+    } else if (secEl) {
+      const title = (secEl.querySelector("h4")?.textContent || "").trim();
+      if (title) ctx.target = { menu: "the " + title.toLowerCase() + " section",
+                                note: title + " section", text: "" };
+    }
   } else if (target.closest("#viewer-panel")) {
     ctx.component = "Media viewer";
   } else if (target.closest("#job-panel")) {
@@ -8125,13 +8139,20 @@ function ctxDescribe(target) {
   const card = target.closest(".feed-item");
   if (!ctx.person && card?.dataset.pid)
     ctx.person = { pid: card.dataset.pid, name: card.dataset.pname || "" };
+  // snippet: a text selection wins; else the clicked card's own line; else
+  // (person-level) the clicked element's text. A section carries no snippet —
+  // its note already names it.
+  if (sel) ctx.snippet = sel.slice(0, 200);
+  else if (ctx.target) ctx.snippet = (ctx.target.text || "").slice(0, 200);
+  else ctx.snippet = (target.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
   return ctx;
 }
 
 function ctxIdeaComposer(x, y, ctx) {
   const where = ctx.component + (ctx.person ? " · " + ctx.person.name : "");
   ctxCompose(x, y, {
-    title: "New idea — " + where,
+    title: ctx.target ? "New idea about " + ctx.target.menu + " — " + ctx.component
+      : "New idea — " + where,
     placeholder: "What should change here?",
     submit: "Add idea",
     note: ctx.snippet
@@ -8140,7 +8161,8 @@ function ctxIdeaComposer(x, y, ctx) {
       : "Context attached: " + where,
     onSubmit: async (text) => {
       const bits = [ctx.component];
-      if (ctx.person) bits.push(ctx.person.name);
+      if (ctx.target) bits.push(ctx.target.note);
+      else if (ctx.person) bits.push(ctx.person.name);
       if (ctx.snippet) bits.push("\"" + ctx.snippet.slice(0, 120) + "\"");
       const it = await post("/api/ideas",
         { text: text + " [context: " + bits.join(" · ") + "]", source: "right-click" });
@@ -8158,19 +8180,28 @@ function ctxIdeaComposer(x, y, ctx) {
 // the Journal's export prompt.
 function ctxTellVira(x, y, ctx) {
   const first = ctx.person ? (ctx.person.name || "").split(" ")[0] : "";
-  const where = ctx.component + (ctx.person ? " · " + ctx.person.name : "");
+  // What the note is about, most specific first: the clicked card/section,
+  // else the person, else the component. `subject` phrases the title; `about`
+  // names it in the reassurance line under the box.
+  const subject = ctx.target ? ctx.target.menu : (first || null);
+  const about = ctx.target ? ctx.target.note
+    : ctx.person ? ctx.person.name : ctx.component;
   ctxCompose(x, y, {
-    title: (first ? "Tell Vira about " + first : "Tell Vira") + " — " + ctx.component,
-    placeholder: "What do you know? “this isn’t an overlap because…”, "
-      + "“merge this contact with…”, “I paid Mark back”. "
-      + "Saved, integrated, remembered.",
+    title: (subject ? "Tell Vira about " + subject : "Tell Vira") + " — " + ctx.component,
+    placeholder: ctx.target
+      ? "What do you know about " + ctx.target.menu + "? "
+        + "“this is done — we settled it on the phone”, “reword this to…”, "
+        + "“ignore this one”. Saved, integrated, remembered."
+      : "What do you know? “this isn’t an overlap because…”, "
+        + "“merge this contact with…”, “I paid Mark back”. "
+        + "Saved, integrated, remembered.",
     submit: "Save",
-    note: ctx.snippet
-      ? "Context attached: \"" + ctx.snippet.slice(0, 90)
-        + (ctx.snippet.length > 90 ? "…" : "") + "\""
-      : "Context attached: " + where,
+    note: "Filed against " + about
+      + (ctx.snippet ? ": “" + ctx.snippet.slice(0, 90)
+         + (ctx.snippet.length > 90 ? "…" : "") + "”" : ""),
     onSubmit: async (text) => {
       const bits = [ctx.component];
+      if (ctx.target) bits.push(ctx.target.note);
       if (ctx.snippet) bits.push("\"" + ctx.snippet.slice(0, 160) + "\"");
       const { entry } = await post("/api/brief/note", {
         text,
@@ -8276,13 +8307,15 @@ document.addEventListener("contextmenu", (e) => {
     items.push({ label: "Open profile", run: () => openPerson(card.dataset.pid) });
 
   items.push({
-    label: ctx.person
-      ? "Tell Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
+    label: ctx.target ? "Tell Vira about " + ctx.target.menu + "…"
+      : ctx.person ? "Tell Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
       : "Tell Vira…",
     run: () => ctxTellVira(e.clientX, e.clientY, ctx),
   });
-  items.push({ label: "New idea about this…",
-               run: () => ctxIdeaComposer(e.clientX, e.clientY, ctx) });
+  items.push({
+    label: "New idea about " + (ctx.target ? ctx.target.menu : "this") + "…",
+    run: () => ctxIdeaComposer(e.clientX, e.clientY, ctx),
+  });
   items.push({
     label: ctx.person
       ? "Ask Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
