@@ -8245,11 +8245,11 @@ function lpTile(id, kind) {
   const jig = el("span", "lp-jig");
   const ic = el("span", "lp-ic");
   ic.innerHTML = `<svg viewBox="0 0 24 24"><path d="${spec.icon}"/></svg>`;
-  if (!isDesktop) {
-    const badge = el("span", "lp-badge", kind === "on" ? "−" : "+");
-    badge.setAttribute("aria-hidden", "true");
-    ic.appendChild(badge);
-  }
+  // hidden until reorganize mode; both widths have one, so the tap-only
+  // path (and the reduced-motion path) works at the desk too
+  const badge = el("span", "lp-badge", kind === "on" ? "−" : "+");
+  badge.setAttribute("aria-hidden", "true");
+  ic.appendChild(badge);
   // Dormant reads as an invitation, not as broken: the icon lightens and
   // picks up a set-up mark, and opening it lands on the front door.
   if (fdDormant(id)) {
@@ -8265,7 +8265,7 @@ function lpTile(id, kind) {
   cell.addEventListener("click", (e) => {
     if (Date.now() - lpDragEndAt < 350) return;   // the drop's trailing click
     if (reorgOn) {                                // jiggling: taps rearrange
-      if (e.target.closest(".lp-badge")) toggleBar(id);
+      if (e.target.closest(".lp-badge")) lpToggleGroup(id);
       return;
     }
     openApp(id);
@@ -8329,6 +8329,7 @@ function openReorg(opts) {
   // a long press on the ACCESS BAR turns reorganize mode on before the sheet
   // that shows it exists — the overlay adopts the mode it was opened into
   ov.classList.toggle("reorg", reorgOn);
+  ov.classList.toggle("lp-reorg", reorgOn);   // setReorg had no host to mark
   ov.classList.add("open");
   document.body.classList.add("lp-open");
 }
@@ -8584,6 +8585,14 @@ function mdockRefresh() {
     b.classList.toggle("on", active === "view-" + b.dataset.app));
 }
 
+// The badge tap, either width: across the line and back, no drag required.
+// It is also the whole gesture under prefers-reduced-motion, where nothing
+// jiggles and the lit badges are what say the grid is editable.
+function lpToggleGroup(id) {
+  if (isDesktop) { setDockHidden(id, !dockHidden().has(id)); return; }
+  toggleBar(id);
+}
+
 // tap the corner badge: across the line and back, no drag required. A full
 // bar makes room by sending its last app back down to the grid.
 function toggleBar(id) {
@@ -8605,6 +8614,17 @@ function toggleBar(id) {
 // across the line into the other group, or straight down onto the bar. The
 // preview and the commit run the same pure function, so what the drag shows
 // is exactly what the drop writes. Nothing is saved until the finger lifts.
+//
+// BOTH WIDTHS since 2026-07-23. This was written as a phone gesture and was
+// wired that way — initReorg() returned on desktop, so a press-and-hold at
+// the desk did nothing at all — but every anchor it reached for was mobile
+// too: the full-screen customize sheet and the access bar were named
+// directly, so lifting the guard alone would have opened the phone's
+// overlay on top of the desk. What varies between the widths is only the
+// SURFACE the grid is drawn on (sheet vs the Launchpad window's scrolling
+// body) and the STORE the top group writes (the five-app bar vs the dock's
+// hidden set); the gesture, the hit test, the preview and the commit are
+// one implementation, so the two can no longer drift.
 const LP_HOLD_MS = 420;   // press this long to enter reorganize mode
 const LP_SLOP = 8;        // px of drift a hold survives before it reads as a scroll
 
@@ -8614,16 +8634,41 @@ let lpPress = null;         // a pending long press
 let lpDrag = null;          // a live drag
 let lpScrollRaf = 0;
 
+// The element the grid is living inside: the customize sheet on a phone,
+// the Launchpad window's scrolling body at the desk. It carries the reorg
+// class, owns the scroll the drag steers, and takes the pointer capture.
+function lpHost() {
+  if (!isDesktop) return lpOverlay;
+  return $("#lp-body-view")?.closest(".fwin-body") || null;
+}
+
+// the .lp-body this width actually renders into (renderLaunchpad fills one
+// and leaves the other dead, so this is never ambiguous)
+function lpBody(host) {
+  return (host || lpHost())?.querySelector(".lp-body") || null;
+}
+
+// mobile drops onto the access bar as well as the grid; the desk has no
+// such target — its top group IS the dock
+function lpBar() { return isDesktop ? null : mdockEl; }
+
+// the top group's membership, and where it is written
+function lpOnIds() {
+  return isDesktop ? appOrder().filter((id) => !dockHidden().has(id)) : mdockIds();
+}
+
+function lpOnMax() { return isDesktop ? Infinity : MDOCK_MAX; }
+
 function setReorg(on) {
   if (reorgOn === on) return;
   reorgOn = on;
-  lpOverlay?.classList.toggle("reorg", on);
+  lpHost()?.classList.toggle("lp-reorg", on);
+  lpOverlay?.classList.toggle("reorg", on);   // the sheet's own hint/Done row
   mdockEl?.classList.toggle("reorg", on);
   if (on) navigator.vibrate?.(12);
 }
 
 function initReorg() {
-  if (isDesktop) return;
   document.addEventListener("pointerdown", lpPointerDown);
   document.addEventListener("pointermove", lpPointerMove, { passive: false });
   document.addEventListener("pointerup", (e) => lpPointerEnd(e, true));
@@ -8635,6 +8680,23 @@ function initReorg() {
   document.addEventListener("touchmove", (e) => {
     if (lpDrag) e.preventDefault();
   }, { passive: false });
+  if (!isDesktop) return;
+  // The sheet gets its Done button and its ways out when it is built; the
+  // desktop window is markup that already exists, so wire the same three
+  // here: the button, Escape, and a click on the empty grid.
+  const host = lpHost();
+  host?.querySelector(".lp-done")?.addEventListener("click", () => setReorg(false));
+  host?.addEventListener("click", (e) => {
+    if (!reorgOn || Date.now() - lpDragEndAt < 350) return;
+    if (!e.target.closest(".lp-tile, .lp-done")) setReorg(false);
+  });
+  // capture, so leaving reorganize mode doesn't also close the window or
+  // drop out of focus mode behind it
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape" || !reorgOn) return;
+    e.stopPropagation();
+    setReorg(false);
+  }, true);
 }
 
 function lpPointerDown(e) {
@@ -8685,36 +8747,48 @@ function startDrag(p) {
   lpPress = null;
   const id = p.tile.dataset.app;
   // the drag always carries the GRID tile, so a press that began on the bar
-  // opens the Launchpad first — there has to be somewhere to drag it to
-  if (!lpOverlay?.classList.contains("open")) openReorg({ instant: true });
-  const tile = lpOverlay.querySelector(`.lp-tile[data-app="${id}"]`);
+  // opens the customize sheet first — there has to be somewhere to drag it
+  // to. At the desk the press can only have come from the grid, which means
+  // the window holding it is already open.
+  if (!isDesktop && !lpOverlay?.classList.contains("open"))
+    openReorg({ instant: true });
+  const host = lpHost();
+  const tile = host?.querySelector(`.lp-tile[data-app="${id}"]`);
   if (!tile) return;
   const r = tile.getBoundingClientRect();
   const onTile = p.tile === tile;
   lpDrag = {
-    id, tile, pid: p.id, sec: null, idx: -1, scroll: 0,
+    id, tile, host, pid: p.id, sec: null, idx: -1, scroll: 0,
     x: p.x, y: p.y,
+    // A window can be zoomed 0.6x-1.6x, and the ghost rides on the body at
+    // 1x — so it is drawn at the host's scale, or the carried icon would
+    // jump size the moment it left the grid.
+    zoom: r.width / (tile.offsetWidth || r.width) || 1,
     // the finger keeps whatever grip it took on the icon it actually pressed
     gx: onTile ? p.x - r.left : r.width / 2,
     gy: onTile ? p.y - r.top : r.height / 2,
     ghost: el("div", "lp-ghost"),
   };
-  lpDrag.ghost.style.width = r.width + "px";
+  lpDrag.ghost.style.width = (r.width / lpDrag.zoom) + "px";
+  if (lpDrag.zoom !== 1) lpDrag.ghost.style.zoom = lpDrag.zoom;
   lpDrag.ghost.appendChild(tile.cloneNode(true));
   document.body.appendChild(lpDrag.ghost);
   tile.classList.add("lifted");
-  lpOverlay.classList.add("dragging");
-  // capture on the overlay, not on the pressed icon: a bar icon is replaced
+  host.classList.add("lp-dragging");
+  // capture on the surface, not on the pressed icon: a bar icon is replaced
   // by its empty slot the moment the drag starts, and a destroyed element
   // drops the pointer
-  try { lpOverlay.setPointerCapture(p.id); } catch { /* stale pointer */ }
+  try { host.setPointerCapture(p.id); } catch { /* stale pointer */ }
   dragTo(p.x, p.y);
 }
 
 function dragTo(x, y) {
   lpDrag.x = x; lpDrag.y = y;
+  // the ghost is zoomed with its host, and a transform translates in the
+  // element's OWN scale — so the viewport offset is divided back out
+  const z = lpDrag.zoom;
   lpDrag.ghost.style.transform =
-    `translate3d(${x - lpDrag.gx}px, ${y - lpDrag.gy}px, 0) scale(1.12)`;
+    `translate3d(${(x - lpDrag.gx) / z}px, ${(y - lpDrag.gy) / z}px, 0) scale(1.12)`;
   lpAimScroll(y);
   lpReflow();
 }
@@ -8725,19 +8799,19 @@ function lpReflow() {
   lpDrag.sec = hit.sec;
   lpDrag.idx = hit.idx;
   const lists = lpPending(lpDrag);
-  const body = lpOverlay.querySelector(".lp-body");
+  const body = lpBody(lpDrag.host);
   lpFlip(body, () => {
     lpLayout(body, "on", lists.on);
     lpLayout(body, "rest", lists.rest);
   });
-  renderMobileDock(lists.on, lpDrag.id);
+  if (lpBar()) renderMobileDock(lists.on, lpDrag.id);
 }
 
 // which group, and where in it, the point is aiming at
 function lpHitTest(x, y) {
-  const bar = mdockEl?.getBoundingClientRect();
+  const bar = lpBar()?.getBoundingClientRect();
   if (bar && y >= bar.top) return { sec: "on", idx: lpRowIndex(x) };
-  const rest = lpOverlay.querySelector('.lp-sec[data-sec="rest"]');
+  const rest = lpDrag.host.querySelector('.lp-sec[data-sec="rest"]');
   const sec = rest && y >= rest.getBoundingClientRect().top ? "rest" : "on";
   return { sec, idx: lpGridIndex(sec, x, y) };
 }
@@ -8747,7 +8821,7 @@ function lpHitTest(x, y) {
 // the icon as having moved one place right of where it has always been.
 function lpRowIndex(x) {
   let i = 0;
-  mdockEl.querySelectorAll(".mdock-item").forEach((k) => {
+  lpBar().querySelectorAll(".mdock-item").forEach((k) => {
     if (k.dataset.app === lpDrag.id) return;
     const r = k.getBoundingClientRect();
     if (x >= r.left + r.width / 2) i++;
@@ -8758,7 +8832,7 @@ function lpRowIndex(x) {
 // index inside a wrapped grid: the first tile whose row the point has not
 // cleared and whose left half it has not passed
 function lpGridIndex(sec, x, y) {
-  const grid = lpOverlay.querySelector(`.lp-sec[data-sec="${sec}"] .lp-grid`);
+  const grid = lpDrag.host.querySelector(`.lp-sec[data-sec="${sec}"] .lp-grid`);
   const kids = [...grid.querySelectorAll(".lp-tile")].filter((t) => t !== lpDrag.tile);
   for (let i = 0; i < kids.length; i++) {
     const r = kids[i].getBoundingClientRect();
@@ -8772,13 +8846,14 @@ function lpGridIndex(sec, x, y) {
 // the drop both call it, so the arrangement on screen at the moment the
 // finger lifts is the arrangement that gets written.
 function lpPending(d) {
-  const bar = mdockIds();
-  const on = bar.filter((id) => id !== d.id);
-  let rest = appOrder().filter((id) => !bar.includes(id) && id !== d.id);
+  const top = lpOnIds();
+  const on = top.filter((id) => id !== d.id);
+  let rest = appOrder().filter((id) => !top.includes(id) && id !== d.id);
   if (d.sec === "on") {
     on.splice(Math.min(d.idx, on.length), 0, d.id);
-    // five slots: the last app steps back down into the grid to make room
-    while (on.length > MDOCK_MAX) rest = lpCanonical([...rest, on.pop()]);
+    // five slots on the phone: the last app steps back down into the grid
+    // to make room. The dock has no such ceiling.
+    while (on.length > lpOnMax()) rest = lpCanonical([...rest, on.pop()]);
   } else {
     rest.splice(Math.min(d.idx, rest.length), 0, d.id);
   }
@@ -8827,16 +8902,26 @@ function lpFlip(body, mutate) {
 // the grid is taller than the sheet, and in jiggle mode a finger on an icon
 // carries the icon — so reaching the far end means dragging to the edge
 function lpAimScroll(y) {
-  const top = 96, bottom = innerHeight - (mdockEl?.offsetHeight || 0) - 44;
+  // the sheet fills the phone, so its edges are the screen's; a window's
+  // edges are its own, and a drag past the bottom of a short window has to
+  // reach the far end of the grid the same way
+  let top, bottom;
+  if (isDesktop) {
+    const r = lpDrag.host.getBoundingClientRect();
+    top = r.top + 28; bottom = r.bottom - 28;
+  } else {
+    top = 96; bottom = innerHeight - (lpBar()?.offsetHeight || 0) - 44;
+  }
   lpDrag.scroll = y < top ? -Math.min(16, (top - y) / 3)
               : y > bottom ? Math.min(16, (y - bottom) / 3) : 0;
   if (!lpDrag.scroll || lpScrollRaf) return;
   const tick = () => {
     lpScrollRaf = 0;
     if (!lpDrag || !lpDrag.scroll) return;
-    const before = lpOverlay.scrollTop;
-    lpOverlay.scrollTop += lpDrag.scroll;
-    if (lpOverlay.scrollTop !== before) lpReflow();
+    const host = lpDrag.host;
+    const before = host.scrollTop;
+    host.scrollTop += lpDrag.scroll;
+    if (host.scrollTop !== before) lpReflow();
     lpScrollRaf = requestAnimationFrame(tick);
   };
   lpScrollRaf = requestAnimationFrame(tick);
@@ -8849,16 +8934,28 @@ function endDrag(commit) {
   lpScrollRaf = 0;
   d.ghost.remove();
   d.tile.classList.remove("lifted");
-  lpOverlay.classList.remove("dragging");
+  d.host.classList.remove("lp-dragging");
   lpDragEndAt = Date.now();
-  try { lpOverlay.releasePointerCapture(d.pid); } catch { /* already gone */ }
-  if (commit && d.sec) {
-    const lists = lpPending(d);
-    saveMdock(lists.on);
-    saveAppOrder(lists.rest);
-  }
+  try { d.host.releasePointerCapture(d.pid); } catch { /* already gone */ }
+  if (commit && d.sec) lpCommit(lpPending(d));
   renderLaunchpad();
   renderMobileDock();
+}
+
+// The one write, forked by what the top group MEANS on this width. On the
+// phone it is the five-app bar, a list of its own; at the desk it is the
+// dock, which is the app order minus a hidden set — so the arrangement is
+// stored as both halves of that: who is hidden, and the order the two
+// groups were left in. Group-major is what the grid already shows, so a
+// tile sent below the line comes back to the place it was dropped.
+function lpCommit(lists) {
+  if (!isDesktop) {
+    saveMdock(lists.on);
+    saveAppOrder(lists.rest);
+    return;
+  }
+  saveDockHidden(new Set(lists.rest));
+  saveAppOrder([...lists.on, ...lists.rest]);   // rebuilds the dock
 }
 
 // particle constellation backdrop
