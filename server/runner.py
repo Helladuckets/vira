@@ -28,9 +28,9 @@ import uuid
 from pathlib import Path
 
 from . import jobfiles, joblog, viratools
-from .session import (OUTPUT_CAP, READ_ONLY_EXCLUDE, _extract_plan_md,
-                      _finalize_plan, _mark_idea, _plan_ref, _sdk_env,
-                      _tool_preview, _tool_summary)
+from .session import (EDIT_TOOLS, OUTPUT_CAP, READ_ONLY_EXCLUDE,
+                      _extract_plan_md, _finalize_plan, _mark_idea,
+                      _plan_ref, _sdk_env, _tool_preview, _tool_summary)
 
 try:
     from claude_agent_sdk import (
@@ -52,6 +52,11 @@ except Exception as e:  # noqa: BLE001 — the server checked, but be loud
 HEARTBEAT = 2.0
 CONTROL_POLL = 0.25
 RESULT_KEEP = 20_000
+
+# Sentinel on the steering inbox: the owner ended the reply window rather
+# than answering. Distinct from a message so an empty Finish can't be
+# mistaken for a blank steer.
+_END = object()
 
 
 class Runner:
@@ -76,6 +81,14 @@ class Runner:
         self.client = None
         self.closing = False
         self.interrupted = False
+        self.reply_window = float(self.spec.get("reply_window") or 43200)
+        self.awaiting_reply = False      # parked at a turn boundary
+        # A turn that ended on its own means the work is complete. Ending
+        # the reply window after that is the owner saying "I'm done
+        # talking" — NOT an abandoned run — so the epilogue (plan publish,
+        # idea close-out) must still fire. Reset the moment a reply starts
+        # a new turn, so a genuine mid-turn Stop still reads as aborted.
+        self.finished_cleanly = False
         self._consumed = 0               # control.jsonl lines handled
         self.flush_state()
 
@@ -121,6 +134,12 @@ class Runner:
                                 cmd.get("scope") or "once",
                                 cmd.get("reason")))
         elif op == "interrupt":
+            if self.awaiting_reply:
+                # The turn is already over — Stop here is the Finish button,
+                # "I have nothing to add", not an abandoned run.
+                self.append("[vira] session finished by the owner\n")
+                self.inbox.put_nowait(_END)
+                return
             self.interrupted = True
             self.deny_pending("interrupted by the owner")
             self.append("[vira] interrupt requested — stopping at the next "
@@ -133,6 +152,10 @@ class Runner:
                     self.inbox.get_nowait()
                 except asyncio.QueueEmpty:
                     break
+            if self.awaiting_reply:
+                self.append("[vira] session closed by the owner\n")
+                self.inbox.put_nowait(_END)
+                return
             self.interrupted = True
             self.deny_pending("session closed by the owner")
             self.append("[vira] session closed by the owner\n")
@@ -155,6 +178,48 @@ class Runner:
             self.flush_state()
             await asyncio.sleep(HEARTBEAT)
 
+    # ----- the reply window -----
+
+    async def await_reply(self):
+        """Park at a completed turn boundary with the session still open.
+
+        Before this existed the runner ended the session the instant a turn
+        finished with an empty inbox, so an agent that closed by asking the
+        owner a question was already gone by the time the question was
+        read — the compose bar vanishes with the session, and the answer
+        had nowhere to go. Now the status stays `running` with awaiting
+        "reply", which is exactly what keeps the bar live, and the run only
+        finalizes when the owner says so (Finish) or the safety window
+        expires. Returns the message to deliver, or None to finish.
+        """
+        if self.closing or self.interrupted:
+            return None
+        self.finished_cleanly = True
+        self.awaiting_reply = True
+        self.state["awaiting"] = "reply"
+        self.append("[vira] turn complete — reply to keep going, or Finish "
+                    "to close the session\n")
+        self.flush_state()
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(self.inbox.get(),
+                                                  self.reply_window)
+                except asyncio.TimeoutError:
+                    hrs = self.reply_window / 3600
+                    self.append(f"[vira] no reply in {hrs:.0f}h — closing "
+                                f"the session\n")
+                    return None
+                if item is _END:
+                    return None
+                text = (item or "").strip()
+                if text:
+                    return text
+        finally:
+            self.awaiting_reply = False
+            self.state["awaiting"] = None
+            self.flush_state()
+
     # ----- the permission gate -----
 
     async def gate(self, tool_name, tool_input, context):  # noqa: ARG002
@@ -176,6 +241,11 @@ class Runner:
                         "auto-allowed read tools can see and describe any "
                         "needed change in your final report.")
         if tool_name in self.auto_allow or tool_name in self.session_allow:
+            return PermissionResultAllow()
+        if self.spec["mode"] == "acceptedits" and tool_name in EDIT_TOOLS:
+            # The middle rung: file edits land unasked, but commands and
+            # everything else still raise a card. Deliberately below the
+            # read-only denial above, which outranks every allow.
             return PermissionResultAllow()
         summary = _tool_summary({"name": tool_name, "input": tool_input})
         req_id = uuid.uuid4().hex[:8]
@@ -295,18 +365,42 @@ class Runner:
                             result_text, ok = r
                     if self.closing:
                         break
-                    # Turn boundary: deliver queued steering, else finish.
+                    # Turn boundary: deliver queued steering first.
                     steered = False
                     while not self.inbox.empty():
                         try:
-                            text = self.inbox.get_nowait()
+                            item = self.inbox.get_nowait()
                         except asyncio.QueueEmpty:
                             break
+                        if item is _END:
+                            continue
+                        self.finished_cleanly = False
                         self.append("[vira] steering delivered\n")
-                        await client.query(text)
+                        await client.query(item)
                         steered = True
-                    if not steered:
+                    if steered:
+                        continue
+                    # Nothing queued. The agent has stopped talking — and it
+                    # may have just ASKED the owner something (the merge /
+                    # test / discard decision every branch session ends on).
+                    # Hold the session open so that answer lands in this
+                    # conversation instead of arriving after it died.
+                    #
+                    # Two runs finalize immediately instead. A FAILED turn
+                    # must surface as an error now — parking it would show a
+                    # dead session as alive for hours and hide exactly the
+                    # auth failures the AI-health watcher exists to catch.
+                    # And a PLAN session's whole deliverable is published in
+                    # the epilogue, so lingering would withhold its own
+                    # output; refine a plan by running Plan again.
+                    reply = (await self.await_reply()
+                             if ok and not spec.get("publish_plan") else None)
+                    if reply is None:
                         done = True
+                    else:
+                        self.finished_cleanly = False
+                        self.append("[vira] reply delivered\n")
+                        await client.query(reply)
         except Exception as e:  # noqa: BLE001 — session surface, report all
             self.append(f"\n[vira] session failed: {e}\n")
             self.state["error"] = str(e)[:500]
@@ -316,7 +410,12 @@ class Runner:
             self.deny_pending("session ended")
 
         self.state["result_text"] = (result_text or "")[:RESULT_KEEP]
-        if self.interrupted or self.closing:
+        # Abandoned, not merely ended: a Stop/Close that landed on a
+        # COMPLETED turn (the reply window) is the owner closing the door
+        # on finished work, so the plan still publishes and the idea still
+        # closes out. Only a stop that cut a turn short counts as aborted.
+        aborted = (self.interrupted or self.closing) and not self.finished_cleanly
+        if aborted:
             self.append("[vira] session interrupted\n")
         # Plan sessions produce markdown read-only; the runner finalizes it
         # (deterministic, survives the server being down): saves it to the
@@ -324,8 +423,7 @@ class Runner:
         # publishes the hosted lab page. Stay "running" until this finishes so
         # the UI streams through to the saved/published references.
         plan_res = None
-        if ok and spec.get("publish_plan") and not (self.interrupted
-                                                    or self.closing):
+        if ok and spec.get("publish_plan") and not aborted:
             md = _extract_plan_md(result_text or self.output_tail)
             self.append("\n[vira] saving the plan…\n")
             plan_res = await asyncio.to_thread(
@@ -338,6 +436,7 @@ class Runner:
                 self.append(f"[vira] plan published: {plan_res['url']}\n")
         status = ("done" if ok or self.interrupted or self.closing
                   else "error")
+        self.awaiting_reply = False
         self.state["status"] = status
         self.state["awaiting"] = None
         self.state["pending"] = []
@@ -347,8 +446,7 @@ class Runner:
                         "publish_plan": spec.get("publish_plan"),
                         "plan": plan_res,
                         "output": self.output_tail},
-                       ok and not (self.interrupted or self.closing),
-                       interrupted=self.interrupted or self.closing)
+                       ok and not aborted, interrupted=aborted)
         joblog.record_finish(spec["id"], status,
                              result_text or self.state["error"])
         self.flush_state()

@@ -2655,18 +2655,29 @@ function ideaExtraBlock(extra) {
   return extra ? "\nAdditional instructions from the owner:\n" + extra + "\n" : "";
 }
 
-function ideaImplementPrompt(it, extra, cwd, interactive) {
+function ideaImplementPrompt(it, extra, cwd, perm) {
+  // What each rung stops for. The owner is reachable in ALL of them — the
+  // session holds open at the end of its turn, so a closing question is
+  // something they can actually answer rather than shout into a dead log.
+  const gate = {
+    interactive:
+      "Every edit and command pauses for the owner's approval; a denial is\n"
+      + "guidance, not failure — adjust your approach and continue.",
+    acceptedits:
+      "Your file edits apply without asking; commands still pause for the\n"
+      + "owner's approval. A denial is guidance, not failure — adjust and\n"
+      + "continue.",
+    autopilot:
+      "Nothing pauses for approval — you have full autonomy in this repo.",
+  }[perm] || "";
   return [
-    interactive
-      ? "You are Vira's coding agent, running under the owner's live"
-      : "You are Vira's autonomous coding agent, running headless (no interactive",
-    interactive
-      ? "supervision inside the git repository at " + cwd + ". Risky tool"
-      : "prompts available) inside the git repository at " + cwd + ".",
-    ...(interactive ? [
-      "calls (edits, commands) pause for the owner's approval; a denial is",
-      "guidance, not failure — adjust your approach and continue.",
-    ] : []),
+    "You are Vira's coding agent, working in the git repository at "
+      + cwd + ".",
+    gate,
+    "The owner is reachable the whole time: they can steer you mid-run, and",
+    "when you finish a turn the session stays open for their reply. So if you",
+    "need a decision, ASK and stop — do not guess, and do not sign off with a",
+    "question you have already assumed the answer to.",
     "",
     "This task comes from the owner's Vira idea backlog:",
     "",
@@ -2719,13 +2730,38 @@ function ideaPlanPrompt(it, extra, cwd) {
   ].join("\n");
 }
 
+// The permission ladder, safest first — mirrors server/session.py MODES.
+// Every rung is steerable: the compose bar is live for the whole session,
+// including the reply window it parks in once its turn is done. What the
+// rung decides is only how much reaches the Approve/Deny gate.
+const PERM_MODES = [
+  { id: "interactive", label: "Ask before edits and commands",
+    note: "Edits and commands pause for your Approve/Deny in the session panel." },
+  { id: "acceptedits", label: "Auto-accept edits, ask before commands",
+    note: "File edits land unasked; commands and everything else still ask." },
+  { id: "autopilot", label: "Full autonomy — no prompts",
+    note: "Full autonomy in the target repo (edits + commands, nothing asks)." },
+];
+const PERM_DEFAULT = "interactive";
+function permMode(id) {
+  return PERM_MODES.find((m) => m.id === id) || PERM_MODES[0];
+}
+// Remembered per the owner's last pick. Migrates the retired autopilot
+// checkbox: someone who left it ticked keeps landing on full autonomy
+// rather than being silently moved to a stricter rung.
+function savedPermMode() {
+  const saved = lsGet("vira-idea-perm", null);
+  if (saved && PERM_MODES.some((m) => m.id === saved)) return saved;
+  return localStorage.getItem("vira-idea-autopilot") === "1"
+    ? "autopilot" : PERM_DEFAULT;
+}
+
 let ideaRunCtx = null;
 function ideaRunNote(mode) {
   if (mode === "plan")
     return "Read-only in the repo (gate-enforced). Saves the plan to your vault and opens it in the Plans window.";
-  return $("#idea-run-autopilot").checked
-    ? "Full autonomy in the target repo (edits + commands, no prompts). Will not commit or push."
-    : "Interactive: edits and commands pause for your Approve/Deny in the session panel. Will not commit or push.";
+  return permMode($("#idea-run-perm").value).note
+    + " Will not commit or push.";
 }
 function openIdeaRun(it, mode) {
   ideaRunCtx = { it, mode };
@@ -2741,17 +2777,24 @@ function openIdeaRun(it, mode) {
     $("#idea-run-model"), sessionModels(cat),
     localStorage.getItem("vira-idea-model") || "", "Default (config)"));
   $("#idea-run-extra").value = "";
-  // Implement defaults to the gated interactive session; autopilot (today's
-  // bypassPermissions behavior) is an explicit opt-out, remembered locally.
-  $("#idea-run-auto").style.display = mode === "plan" ? "none" : "";
-  $("#idea-run-autopilot").checked =
-    localStorage.getItem("vira-idea-autopilot") === "1";
+  // Plan is read-only by construction, so the ladder has nothing to say
+  // there; Implement opens on whichever rung was used last.
+  const sel = $("#idea-run-perm");
+  sel.innerHTML = "";
+  PERM_MODES.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.label;
+    sel.appendChild(o);
+  });
+  sel.value = savedPermMode();
+  $("#idea-run-perm-field").style.display = mode === "plan" ? "none" : "";
   $("#idea-run-note").textContent = ideaRunNote(mode);
   ideaRunSheet.open();
   $("#idea-run-extra").focus();
 }
 const ideaRunSheet = bindSheet("#idea-run-sheet", "#idea-run-cancel");
-$("#idea-run-autopilot").addEventListener("change", () => {
+$("#idea-run-perm").addEventListener("change", () => {
   if (ideaRunCtx) $("#idea-run-note").textContent = ideaRunNote(ideaRunCtx.mode);
 });
 
@@ -2761,20 +2804,18 @@ $("#idea-run-go").addEventListener("click", async () => {
   const cwd = $("#idea-run-cwd").value.trim() || "~/workspace/vira";
   const model = $("#idea-run-model").value;
   const extra = $("#idea-run-extra").value;
-  const autopilot = mode !== "plan" && $("#idea-run-autopilot").checked;
+  const perm = mode === "plan" ? PERM_DEFAULT : $("#idea-run-perm").value;
   localStorage.setItem("vira-idea-cwd", cwd);
   localStorage.setItem("vira-idea-model", model);
-  if (mode !== "plan")
-    localStorage.setItem("vira-idea-autopilot", autopilot ? "1" : "0");
+  if (mode !== "plan") lsSet("vira-idea-perm", perm);
   const prompt = mode === "plan"
     ? ideaPlanPrompt(it, extra, cwd)
-    : ideaImplementPrompt(it, extra, cwd, !autopilot);
+    : ideaImplementPrompt(it, extra, cwd, perm);
   // Plan runs read-only (the session gate denies writes) and Vira publishes
-  // its markdown to the lab; Implement defaults to the gated interactive
-  // session, with autopilot (bypassPermissions) as the explicit opt-out.
-  const permission_mode = autopilot ? "bypassPermissions" : null;
+  // its markdown to the lab; Implement runs on the rung the owner picked.
+  const permission_mode = perm === "autopilot" ? "bypassPermissions" : null;
   const publish_plan = mode === "plan";
-  const runMode = autopilot ? "autopilot" : "interactive";
+  const runMode = perm;
   ideaRunSheet.close();
   const jid = await launchJob(prompt, cwd,
     { permission_mode, model, publish_plan, idea_id: it.id, mode: runMode });
@@ -3179,6 +3220,7 @@ function renderCCBanner(host, j, defModel, inst) {
   const model = ccModelLabel(j.model_used || j.model) || defModel;
   const mode = j.publish_plan ? "plan (read-only)"
     : j.mode === "autopilot" ? "autopilot"
+    : j.mode === "acceptedits" ? "auto-edits (commands gated)"
     : j.mode === "interactive" ? "interactive (gated)"
     : (j.permission_mode === "bypassPermissions" ? "implement" : "run");
   host.innerHTML = `<div class="cc-banner">
@@ -3294,9 +3336,14 @@ function createJobTerm(jid, refs) {
         r.title.textContent = j.title
           || (j.prompt || "").replace(/\s+/g, " ").slice(0, 90);
       const waiting = j.status === "running" && j.awaiting === "permission";
+      // Parked at a finished turn, holding open for the owner's answer —
+      // the work is done, nothing is burning, but the session is still live.
+      const replying = j.status === "running" && j.awaiting === "reply";
       const st = j.status === "running"
-        ? (waiting ? "waiting on you" : "working") : (j.status || "");
-      r.led.className = "term-dot " + (waiting ? "wait"
+        ? (waiting ? "waiting on you"
+          : replying ? "waiting on your reply" : "working")
+        : (j.status || "");
+      r.led.className = "term-dot " + (waiting || replying ? "wait"
         : j.status === "running" ? "run" : (j.status || ""));
       const modelLbl = ccModelLabel(j.model_used || j.model)
         || await defaultModelLabel();
@@ -3314,11 +3361,12 @@ function createJobTerm(jid, refs) {
       const out = (j.output || "").replace(/\n+$/, "");
       if (out.trim()) out.split("\n").forEach((ln) =>
         r.output.appendChild(renderTermLine(ln)));
-      if (j.status === "running" && !waiting)
+      if (j.status === "running" && !waiting && !replying)
         r.output.appendChild(el("span", "term-cursor"));
       this.renderPending(j);
       this.composeState(j);
-      if (atBottom || waiting) scroller.scrollTop = scroller.scrollHeight;
+      if (atBottom || waiting || replying)
+        scroller.scrollTop = scroller.scrollHeight;
       if (j.status !== "running") {
         this.stop();
         refreshJobs().catch(() => {});
@@ -3338,9 +3386,21 @@ function createJobTerm(jid, refs) {
     },
     composeState(j) {
       const live = !!j.live && j.status === "running";
+      // Stop and Finish are the same control wearing the right word: a
+      // mid-turn Stop cuts the work short, but at a finished turn there is
+      // nothing left to cut — it just closes the door.
+      const replying = live && j.awaiting === "reply";
       const r = this.refs;
       r.composebar.classList.toggle("off", !live);
+      r.composebar.classList.toggle("replying", replying);
       r.say.disabled = r.send.disabled = r.stopBtn.disabled = !live;
+      r.say.placeholder = replying
+        ? "Reply — this session is holding open for you"
+        : "Steer this session — delivered at the next turn";
+      r.stopBtn.textContent = replying ? "Finish" : "Stop";
+      r.stopBtn.title = replying
+        ? "Close the session — its work is already done and recorded"
+        : "End the current turn — takes effect at the next boundary; queued messages still deliver";
     },
     start() {
       activeTerms[this.jid] = this;
@@ -6335,8 +6395,7 @@ function stageTray(s, ctx) {
   } else {
     const hf = el("label", "field", "How it runs");
     const hs = el("select");
-    [["interactive", "Interactive — asks before edits and commands"],
-     ["autopilot", "Autopilot — full autonomy, no prompts"]].forEach(([v, t]) => {
+    PERM_MODES.map((m) => [m.id, m.label]).forEach(([v, t]) => {
       const o = el("option", null, t);
       o.value = v;
       hs.appendChild(o);

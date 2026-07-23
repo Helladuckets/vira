@@ -1413,9 +1413,12 @@ class RunReq(BaseModel):
     model: str | None = None
     publish_plan: bool = False
     idea_id: str | None = None
-    # "interactive" (gated, steerable) | "autopilot" (bypassPermissions).
-    # Absent -> derived from permission_mode, else the config default
-    # (session_default_mode, "interactive" out of the box).
+    # The permission ladder, safest first (session.MODES): "interactive"
+    # (every risky call gated) | "acceptedits" (edits land, commands gated)
+    # | "autopilot" (bypassPermissions). Absent -> derived from
+    # permission_mode, else the config default (session_default_mode,
+    # "interactive" out of the box). Every rung is steerable — the mode
+    # decides what the gate stops, never whether the owner can talk.
     mode: str | None = None
 
 
