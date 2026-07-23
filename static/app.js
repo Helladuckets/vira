@@ -675,11 +675,520 @@ async function loadPeople(q) {
   });
 }
 
+// ---------- the contact card: the top pane of every CRM person ----------
+// A real contact record rather than a derived caption. Every value is
+// click-to-edit, every email and phone carries a rank the owner sets by
+// right-clicking it, and NOTHING is written until Save — so a half-typed
+// correction can always be walked away from, and leaving with unsaved work
+// asks first (see cardGuard, wired into the focus stack).
+//
+// Save is not a form submit. It is telling Vira: the structured diff lands
+// deterministically in Vira's own store, and the same change is filed to the
+// brief journal, where the existing integration pass decides what it MEANS —
+// a durable fact, a loop, or an instruction that needs a real session.
+// server/contactcard.py carries the reasoning for the split.
+
+// Two independent dimensions on every handle: RANK is which one Vira uses,
+// USE is which part of the person's life it belongs to. A work address can
+// be the primary one, and "personal" says nothing about whether it is
+// current — so neither menu group constrains the other.
+const RANK_ACTIONS = [["primary", "Set as primary"],
+                      ["secondary", "Mark secondary"],
+                      ["archived", "Archive — out of date"]];
+const USE_ACTIONS = [["personal", "Personal"], ["work", "Work"]];
+
+// The one place the app answers "which address is actually theirs?". Before
+// the ranks existed this was handles[0], which on a contact carrying nine of
+// them is a coin toss.
+function cardPrimary(card, kind) {
+  const rows = (card?.handles || []).filter((h) => h.kind === kind);
+  const hit = rows.find((h) => h.rank === "primary")
+           || rows.find((h) => h.rank !== "archived");
+  return hit ? hit.value : null;
+}
+
+function handleMark(h) {
+  return [h.rank || "unmarked", h.use].filter(Boolean).join(" · ");
+}
+
+// What the save dialog lists. Compact by design — label, before, after — so
+// the owner can check a correction at a glance. The prose version of the same
+// diff is composed server-side for the journal, where sentences read better
+// than columns.
+function cardDiffRows(base, live) {
+  const rows = [];
+  const bf = Object.fromEntries(base.fields.map((f) => [f.key, f]));
+  live.fields.forEach((f) => {
+    const was = bf[f.key] ? bf[f.key].value : "";
+    if (f.value !== was) rows.push({ label: f.label, from: was, to: f.value });
+  });
+  const bc = new Map(base.custom.map((c) => [c.id, c]));
+  live.custom.forEach((c) => {
+    const was = bc.get(c.id);
+    bc.delete(c.id);
+    if (!was) rows.push({ label: c.label, from: "", to: c.value });
+    else if (was.value !== c.value || was.label !== c.label)
+      rows.push({ label: c.label, from: was.value, to: c.value });
+  });
+  bc.forEach((c) => rows.push({ label: c.label, from: c.value, to: "" }));
+  const bh = Object.fromEntries(base.handles.map((h) => [h.key, h]));
+  live.handles.forEach((h) => {
+    const was = bh[h.key];
+    const kind = h.kind === "email" ? "Email" : "Phone";
+    if (!was) {
+      rows.push({ label: kind, from: "",
+                  to: [h.display, h.use, h.rank].filter(Boolean).join(" · ") });
+    } else if (was.rank !== h.rank || was.use !== h.use) {
+      rows.push({ label: h.display, from: handleMark(was), to: handleMark(h) });
+    }
+  });
+  return rows;
+}
+
+// Click any value to edit it. Enter (or blur) commits, Escape reverts —
+// the same contract everywhere on the card, so there is nothing to learn.
+function inlineEdit(node, opts) {
+  const start = () => {
+    if (node.querySelector("input, textarea")) return;
+    const long = opts.multiline;
+    const inp = el(long ? "textarea" : "input", "ccard-input");
+    if (long) inp.rows = 2; else inp.type = "text";
+    inp.value = opts.get();
+    inp.placeholder = opts.placeholder || "";
+    const prev = node.innerHTML;
+    node.innerHTML = "";
+    node.appendChild(inp);
+    inp.focus();
+    inp.select();
+    let done = false;
+    const finish = (commit) => {
+      if (done) return;
+      done = true;
+      if (commit) opts.set(inp.value);
+      else node.innerHTML = prev;
+      if (commit || opts.repaint) opts.repaint && opts.repaint();
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+      else if (e.key === "Enter" && !(long && !e.metaKey && !e.ctrlKey)) {
+        e.preventDefault();
+        finish(true);
+      }
+    });
+    inp.addEventListener("blur", () => finish(true));
+  };
+  node.classList.add("ccard-edit");
+  node.tabIndex = 0;
+  node.addEventListener("click", start);
+  node.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && e.target === node) { e.preventDefault(); start(); }
+  });
+  return node;
+}
+
+function makeContactCard(pid, card, ctx) {
+  const clone = (o) => JSON.parse(JSON.stringify(o));
+  const base = clone(card);
+  let live = clone(card);
+  const touched = {};            // field key -> value to send ("" clears)
+  const addedHandles = [];       // handles typed in this draft
+  const node = el("div", "ccard");
+  const bodyWrap = el("div");
+  const bar = el("div", "ccard-bar");
+  node.appendChild(bodyWrap);
+  node.appendChild(bar);
+
+  const fieldOf = (k) => live.fields.find((f) => f.key === k) || {};
+  const setField = (k, v) => {
+    const f = fieldOf(k);
+    const val = (v || "").trim();
+    touched[k] = val;
+    // clearing an override falls back to what Vira derived, rather than
+    // leaving a hole where the CRM already has an answer
+    f.value = val || f.derived || "";
+    f.source = val ? "owner" : (f.derived ? "crm" : "empty");
+  };
+
+  const dirty = () => cardDiffRows(base, live).length > 0;
+  const sync = () => { paint(); ctx.onDirty && ctx.onDirty(dirty()); };
+
+  // ---- identity line: pronouns · relationship, then title · company.
+  // An unfilled one shows as a faint "+ pronouns" so the card teaches its
+  // own shape instead of hiding what it can hold.
+  const idLine = (keys, cls) => {
+    const line = el("div", "ccard-line " + cls);
+    keys.forEach((k, i) => {
+      const f = fieldOf(k);
+      if (i) line.appendChild(el("span", "ccard-dot", "·"));
+      const span = el("span", "ccard-val " + (f.value ? "" : "ghost"),
+                      f.value || "+ " + f.label.toLowerCase());
+      if (f.source === "owner") span.classList.add("owned");
+      span.title = f.source === "owner" ? "You set this — click to edit"
+        : f.value ? "Vira derived this from the CRM — click to correct"
+                  : "Click to add";
+      inlineEdit(span, { get: () => fieldOf(k).value, placeholder: f.placeholder,
+                         set: (v) => setField(k, v), repaint: sync });
+      line.appendChild(span);
+    });
+    return line;
+  };
+
+  const handleMenu = (ev, h) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const set = (patch) => {
+      Object.assign(h, patch);
+      if (patch.rank === "primary") {
+        live.handles.forEach((o) => {
+          if (o !== h && o.kind === h.kind && o.rank === "primary")
+            o.rank = "secondary";
+        });
+      }
+      sync();
+    };
+    const items = [{ head: h.display }];
+    RANK_ACTIONS.forEach(([rank, label]) => {
+      if (h.rank !== rank) items.push({ label, run: () => set({ rank }) });
+    });
+    if (h.rank) items.push({ label: "Clear mark", run: () => set({ rank: "" }) });
+    items.push({ sep: true });
+    USE_ACTIONS.forEach(([use, label]) => {
+      if (h.use !== use) items.push({ label, run: () => set({ use }) });
+    });
+    if (h.use) items.push({ label: "Neither", run: () => set({ use: "" }) });
+    items.push({ sep: true });
+    items.push({ label: "Copy", run: () => copyText(h.value) });
+    if (addedHandles.some((a) => a.value === h.value)) {
+      items.push({ sep: true });
+      items.push({ label: "Remove (not saved yet)", run: () => {
+        live.handles = live.handles.filter((o) => o !== h);
+        addedHandles.splice(addedHandles.findIndex((a) => a.value === h.value), 1);
+        sync();
+      } });
+    }
+    showContextMenu(ev.clientX, ev.clientY, items);
+  };
+
+  const handleRow = (h) => {
+    const row = el("div", "ccard-h" + (h.rank ? " rank-" + h.rank : ""));
+    if (h.rank === "primary") row.appendChild(el("span", "ccard-star", "*"));
+    row.appendChild(el("span", "ccard-hval", h.display));
+    if (h.use) row.appendChild(el("span", "ccard-tag use", h.use));
+    if (h.rank) row.appendChild(el("span", "ccard-tag rank", h.rank));
+    if (h.added) row.appendChild(el("span", "ccard-tag new", "added"));
+    const more = el("button", "ccard-more", "mark");
+    more.title = "Rank it, or mark it personal or work";
+    more.addEventListener("click", (e) => { e.stopPropagation(); handleMenu(e, h); });
+    row.appendChild(more);
+    row.title = "Click to copy · right-click to rank it, or mark it personal "
+              + "or work";
+    row.addEventListener("click", () => {
+      copyText(h.value);
+      toast("Copied " + h.display);
+    });
+    row.addEventListener("contextmenu", (e) => handleMenu(e, h));
+    return row;
+  };
+
+  const addHandle = (kind, wrap) => {
+    const form = el("div", "ccard-h adding");
+    const inp = el("input", "ccard-input");
+    inp.type = kind === "email" ? "email" : "tel";
+    inp.placeholder = kind === "email" ? "name@example.com" : "(555) 010-1234";
+    const commit = () => {
+      const v = inp.value.trim();
+      form.remove();
+      if (!v) return;
+      const key = kind + ":" + (kind === "email" ? v.toLowerCase()
+                                                 : v.replace(/\D/g, "").slice(-10));
+      if (live.handles.some((h) => h.key === key)) {
+        toast("Already on the card");
+        return;
+      }
+      live.handles.push({ key, kind, value: v, display: v, rank: "",
+                          use: "", added: true });
+      addedHandles.push({ kind, value: v });
+      sync();
+    };
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); commit(); }
+      if (e.key === "Escape") { e.stopPropagation(); form.remove(); }
+    });
+    inp.addEventListener("blur", commit);
+    form.appendChild(inp);
+    wrap.appendChild(form);
+    inp.focus();
+  };
+
+  // An empty row reads "+ birthday", never the example value — a greyed
+  // "June 3" sitting where a birthday goes is indistinguishable from a
+  // birthday. The example arrives as the input's own placeholder, which is
+  // exactly when it is useful.
+  const detailRow = (label, value, placeholder, get, set, owned) => {
+    const row = el("div", "ccard-d");
+    row.appendChild(el("span", "ccard-dlabel", label));
+    const v = el("span", "ccard-val " + (value ? "" : "ghost"),
+                 value || "+ " + label.toLowerCase());
+    if (owned) v.classList.add("owned");
+    inlineEdit(v, { get, set, placeholder, repaint: sync,
+                    multiline: label === "Note" });
+    row.appendChild(v);
+    return row;
+  };
+
+  const RANK_SORT = { primary: 0, "": 1, secondary: 2, archived: 3 };
+  const rankedHandles = (kind) => live.handles
+    .filter((h) => h.kind === kind)
+    .sort((a, b) => (RANK_SORT[a.rank] ?? 1) - (RANK_SORT[b.rank] ?? 1));
+  // Archived handles are still ON the card — they just stop taking up room
+  // on it. Kept open across repaints so un-archiving one does not slam the
+  // drawer shut on the others.
+  const archOpen = {};
+
+  function paint() {
+    bodyWrap.innerHTML = "";
+
+    const top = el("div", "ccard-top");
+    top.appendChild(avatarNode(pid, fieldOf("display_name").value,
+                               true, ctx.hasPhoto));
+    const idb = el("div", "ccard-id");
+    const nameEl = el("div", "ccard-name",
+                      fieldOf("display_name").value || "Unnamed contact");
+    inlineEdit(nameEl, { get: () => fieldOf("display_name").value,
+                         placeholder: "Their name",
+                         set: (v) => setField("display_name", v),
+                         repaint: sync });
+    nameEl.title = "Click to rename — this renames them everywhere in Vira";
+    idb.appendChild(nameEl);
+    idb.appendChild(idLine(["pronouns", "relationship"], "one"));
+    idb.appendChild(idLine(["title", "company"], "two"));
+    top.appendChild(idb);
+    bodyWrap.appendChild(top);
+
+    const hwrap = el("div", "ccard-handles");
+    [["email", "Email"], ["phone", "Phone"]].forEach(([kind, label]) => {
+      const rows = rankedHandles(kind);
+      const grp = el("div", "ccard-hgroup");
+      const head = el("div", "ccard-sub");
+      head.appendChild(el("span", null, label));
+      const add = el("button", "ccard-add", "add");
+      add.addEventListener("click", () => addHandle(kind, grp));
+      head.appendChild(add);
+      grp.appendChild(head);
+      const live_ = rows.filter((h) => h.rank !== "archived");
+      const arch = rows.filter((h) => h.rank === "archived");
+      if (!rows.length) grp.appendChild(el("div", "ccard-none", "none on file"));
+      live_.forEach((h) => grp.appendChild(handleRow(h)));
+      if (arch.length) {
+        const toggle = el("button", "ccard-arch",
+          (archOpen[kind] ? "hide " : "") + arch.length + " archived");
+        toggle.title = "Out of date, kept on file — still resolves old "
+                     + "messages, never used to send";
+        toggle.addEventListener("click", () => {
+          archOpen[kind] = !archOpen[kind];
+          paint();
+        });
+        grp.appendChild(toggle);
+        if (archOpen[kind]) arch.forEach((h) => grp.appendChild(handleRow(h)));
+      }
+      hwrap.appendChild(grp);
+    });
+    bodyWrap.appendChild(hwrap);
+
+    const dwrap = el("div", "ccard-details");
+    ["location", "birthday", "note"].forEach((k) => {
+      const f = fieldOf(k);
+      dwrap.appendChild(detailRow(f.label, f.value, f.placeholder,
+                                  () => fieldOf(k).value,
+                                  (v) => setField(k, v),
+                                  f.source === "owner"));
+    });
+    live.custom.forEach((c) => {
+      const row = detailRow(c.label, c.value, "add",
+                            () => c.value, (v) => { c.value = v.trim(); }, true);
+      row.classList.add("custom");
+      const del = el("button", "ccard-more", "remove");
+      del.addEventListener("click", () => {
+        live.custom = live.custom.filter((o) => o !== c);
+        sync();
+      });
+      row.appendChild(del);
+      dwrap.appendChild(row);
+    });
+    const addField = el("button", "ccard-add wide", "add a field");
+    addField.addEventListener("click", () => {
+      const label = prompt("What do you want to remember? (Kids, How we met, "
+                           + "Coffee order…)");
+      if (!label || !label.trim()) return;
+      live.custom.push({ id: "f_new" + live.custom.length + Date.now(),
+                         label: label.trim(), value: "" });
+      sync();
+    });
+    dwrap.appendChild(addField);
+    bodyWrap.appendChild(dwrap);
+
+    paintBar();
+  }
+
+  function paintBar() {
+    const rows = cardDiffRows(base, live);
+    bar.innerHTML = "";
+    bar.classList.toggle("on", rows.length > 0);
+    if (!rows.length) return;
+    bar.appendChild(el("span", "ccard-count",
+      rows.length + (rows.length === 1 ? " unsaved change"
+                                       : " unsaved changes")));
+    const discard = el("button", "btn small", "Discard");
+    discard.addEventListener("click", () => reset());
+    const save = el("button", "btn small primary", "Save & tell Vira");
+    save.addEventListener("click", () => openSaveDialog());
+    bar.appendChild(discard);
+    bar.appendChild(save);
+  }
+
+  function reset() {
+    live = clone(base);
+    Object.keys(touched).forEach((k) => delete touched[k]);
+    addedHandles.length = 0;
+    sync();
+  }
+
+  async function commit(note) {
+    const payload = {
+      fields: { ...touched },
+      custom: live.custom.map((c) => ({ id: c.id.startsWith("f_new") ? "" : c.id,
+                                        label: c.label, value: c.value })),
+      handles: Object.fromEntries(live.handles.map(
+        (h) => [h.key, { rank: h.rank, use: h.use }])),
+      added: addedHandles.slice(),
+      note: note || "",
+    };
+    const res = await post("/api/person/" + pid + "/card", payload);
+    Object.assign(base, clone(res.card));
+    live = clone(res.card);
+    Object.keys(touched).forEach((k) => delete touched[k]);
+    addedHandles.length = 0;
+    sync();
+    ctx.onSaved && ctx.onSaved(res);
+    return res;
+  }
+
+  function openSaveDialog(after) {
+    cardSaveDialog(cardDiffRows(base, live), {
+      name: fieldOf("display_name").value,
+      onSave: async (note) => {
+        const res = await commit(note);
+        (res.warnings || []).forEach((w) => toast(w));
+        toast(res.note_id ? "Saved — Vira is filing what it means…"
+                          : "Saved.");
+        if (res.note_id) watchCardNote(res.note_id);
+        after && after();
+      },
+      onDiscard: () => { reset(); after && after(); },
+    });
+  }
+
+  paint();
+  return { node, dirty, promptSave: openSaveDialog };
+}
+
+// The unsaved-changes gate. One dialog, three answers, and the wording says
+// what each one costs — "Discard" is the destructive button, so it never
+// looks like the safe default.
+function cardSaveDialog(rows, opts) {
+  closeCtxPops();
+  const scrim = el("div", "ccard-scrim");
+  const box = el("div", "ccard-dialog");
+  box.appendChild(el("div", "ccard-dhead",
+    "Save your changes to " + (opts.name || "this contact") + "?"));
+  const list = el("div", "ccard-dlist");
+  rows.forEach((r) => {
+    const line = el("div", "ccard-drow");
+    line.appendChild(el("span", "ccard-dkey", r.label));
+    if (r.from) line.appendChild(el("span", "ccard-dfrom", r.from));
+    if (r.from && r.to) line.appendChild(el("span", "ccard-darrow", "→"));
+    line.appendChild(el("span", "ccard-dto", r.to || "cleared"));
+    list.appendChild(line);
+  });
+  box.appendChild(list);
+  box.appendChild(el("div", "ccard-dnote",
+    "Saving tells Vira. The card updates now, and Vira files what the change "
+    + "means — a fact worth keeping, a loop it closes, or a job that needs a "
+    + "session."));
+  const ta = el("textarea", "hook-input");
+  ta.rows = 2;
+  ta.placeholder = "Anything else Vira should know? (optional)";
+  box.appendChild(ta);
+  const row = el("div", "ccard-dacts");
+  const discard = el("button", "btn small danger", "Discard changes");
+  const keep = el("button", "btn small", "Keep editing");
+  const save = el("button", "btn small primary", "Save & tell Vira");
+  const close = () => { scrim.remove(); document.removeEventListener("keydown", esc, true); };
+  const esc = (e) => {
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+  };
+  discard.addEventListener("click", () => { close(); opts.onDiscard(); });
+  keep.addEventListener("click", close);
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    save.textContent = "Saving…";
+    try {
+      await opts.onSave(ta.value.trim());
+      close();
+    } catch (e) {
+      save.disabled = false;
+      save.textContent = "Save & tell Vira";
+      toast("Save failed: " + e.message);
+    }
+  });
+  row.appendChild(discard);
+  row.appendChild(keep);
+  row.appendChild(save);
+  box.appendChild(row);
+  scrim.appendChild(box);
+  scrim.addEventListener("click", (e) => { if (e.target === scrim) close(); });
+  document.body.appendChild(scrim);
+  document.addEventListener("keydown", esc, true);
+  ta.focus();
+}
+
+// The journal entry a card save files lands asynchronously; surface what Vira
+// actually did with it rather than leaving the toast at "saved".
+function watchCardNote(id) {
+  startPoll(async (h) => {
+    const j = await api("/api/brief/journal");
+    const e = (j.entries || []).find((x) => x.id === id);
+    if (!e || e.status === "pending") return;
+    h.stop();
+    const acts = (e.result && e.result.actions) || [];
+    const un = (e.result && e.result.unapplied) || [];
+    if (acts.length) toast("Vira filed it: " + acts[0],
+                           [{ label: "Journal", run: () => openApp("journal") }]);
+    else if (un.length) toast("Vira noted one thing that needs a session",
+                              [{ label: "Journal", run: () => openApp("journal") }]);
+  }, 2500, 180000);
+}
+
 // ---------- person panel ----------
+let personCard = null;     // the open profile's card controller, for the guard
+
+// Asked before the profile closes with unsaved edits. Returning true means
+// "I am handling this" — the focus stack leaves the panel open and the dialog
+// decides what happens next.
+function cardGuard(proceed) {
+  if (!personCard || !personCard.dirty()) return false;
+  personCard.promptSave(proceed);
+  return true;
+}
+
 async function openPerson(pid) {
   const panel = $("#person-panel");
   panel.classList.add("open");
-  enterFocus(panel, () => panel.classList.remove("open"));
+  personCard = null;
+  enterFocus(panel, () => {
+    personCard = null;
+    panel.classList.remove("open");
+  }, cardGuard);
   const body = $("#person-body");
   body.innerHTML = "";
   body.appendChild(el("div", "spin", "Loading…"));
@@ -698,15 +1207,29 @@ async function openPerson(pid) {
   cols.appendChild(colB);
   body.appendChild(cols);
 
-  const hero = el("div", "p-hero");
-  hero.appendChild(avatarNode(pid, p.name, true, d.has_photo));
-  const hmeta = el("div");
-  hmeta.appendChild(el("div", "p-hero-name", p.name));
-  const subBits = [prof?.relationship_class || m.relationship, m.company, m.title]
-    .filter(Boolean);
-  hmeta.appendChild(el("div", "p-hero-sub", subBits.join(" · ")));
-  hero.appendChild(hmeta);
-  colA.appendChild(hero);
+  // The contact card IS the top pane — name, pronouns, relationship, title,
+  // company, every email and phone with its rank, and the owner's own fields.
+  // It replaces the old read-only hero caption and the separate Channels
+  // chip pile, which said less between them than this says on one card.
+  // the address an email draft goes to: the one the owner marked primary,
+  // never just whichever the registry happened to list first
+  let personEmail = cardPrimary(d.card, "email");
+  const card = makeContactCard(pid, d.card, {
+    hasPhoto: d.has_photo,
+    onDirty: (isDirty) => panel.classList.toggle("card-dirty", isDirty),
+    onSaved: (res) => {
+      const name = (res.card.fields.find((f) => f.key === "display_name")
+                    || {}).value;
+      if (name) {
+        $("#person-title").textContent = name;
+        panel.dataset.pname = name;
+      }
+      personEmail = cardPrimary(res.card, "email");
+      loadPeople().catch(() => {});   // a rename shows in the list too
+    },
+  });
+  personCard = card;
+  colA.appendChild(card.node);
 
   // conversation column first in code so hooks can draft into the compose box
   const tSec = el("div", "p-section");
@@ -781,6 +1304,10 @@ async function openPerson(pid) {
   composeBar.appendChild(chanSel);
   composeBar.appendChild(composeSend);
   tSec.appendChild(composeBar);
+  // Tell Vira heads the right-hand column, level with the contact card, and
+  // the thread sits directly under it: the two things you DO on this page —
+  // tell it something, read what was said — lead the column together.
+  colB.appendChild(tellSection(pid, p.name));
   colB.appendChild(tSec);
 
   const draftFromHook = async (hookText, detail) => {
@@ -805,10 +1332,10 @@ async function openPerson(pid) {
   const sugSec = el("div", "p-section");
   sugSec.appendChild(el("h4", null, "Suggested replies"));
   const bar = el("div", "suggest-bar");
-  const personEmail = (p.handles?.emails || [])[0] || null;
   const mkBtn = (label, channel) => {
     const b = el("button", "btn small", label);
-    b.addEventListener("click", () => runSuggest(pid, channel, sugOut, bar, personEmail));
+    b.addEventListener("click",
+      () => runSuggest(pid, channel, sugOut, bar, personEmail));
     return b;
   };
   bar.appendChild(mkBtn("iMessage", "imessage"));
@@ -833,7 +1360,6 @@ async function openPerson(pid) {
 
   colA.appendChild(loopsSection(pid, prof?.open_loops));
   colA.appendChild(hooksSection(pid, prof?.hooks, draftFromHook));
-  colA.appendChild(tellSection(pid, p.name));
 
   // Group — the Visual Network grouping, editable from the profile (lazy;
   // the section only appears once the network graph exists)
@@ -902,19 +1428,9 @@ async function openPerson(pid) {
     colA.appendChild(vs);
   }).catch(() => {});
 
-  // channels sit ABOVE the thread so the thread and its shared media are
-  // adjacent (the media section re-scopes to whichever thread is shown)
-  const ch = el("div", "p-section");
-  ch.appendChild(el("h4", null, "Channels"));
-  const row = el("div", "p-chip-row");
-  (p.handles?.emails || []).forEach((e) => {
-    const c = el("div", "chip"); c.append("email "); c.appendChild(el("b", null, e)); row.appendChild(c);
-  });
-  (p.handles?.phones10 || []).forEach((n) => {
-    const c = el("div", "chip"); c.append("phone "); c.appendChild(el("b", null, n)); row.appendChild(c);
-  });
-  ch.appendChild(row);
-  colB.insertBefore(ch, tSec);
+  // Channels used to sit here as an unranked chip pile. It is the contact
+  // card's handle list now (ranked, labeled, editable), so the thread leads
+  // this column and stays adjacent to its Shared section.
 
   // shared media (links / photos / documents), like the Messages info panel
   const shared = mediaSection(pid);
@@ -7418,23 +7934,31 @@ function relightFocus() {
   if (isDesktop) focusWin(top);
 }
 
-function enterFocus(panel, close) {
+// `guard` is optional: called with a `proceed` callback just before the panel
+// would close, and returning true means "I am handling this" — the panel
+// stays open and the guard decides what happens next. The unsaved-changes
+// prompt on the contact card rides this, so every dismissal path (the back
+// button, Escape, a backdrop click) asks the same question.
+function enterFocus(panel, close, guard) {
   const i = focusStack.findIndex((f) => f.panel === panel);
   if (i >= 0) focusStack.splice(i, 1);   // re-open: move to top, don't dup
-  focusStack.push({ panel, close });
+  focusStack.push({ panel, close, guard });
   relightFocus();
 }
 
-function exitFocus(panel) {
-  let entry;
+function exitFocus(panel, force) {
+  let i;
   if (panel) {
-    const i = focusStack.findIndex((f) => f.panel === panel);
+    i = focusStack.findIndex((f) => f.panel === panel);
     if (i < 0) return;
-    entry = focusStack.splice(i, 1)[0];
   } else {
-    entry = focusStack.pop();   // no arg → dismiss the top (Escape / backdrop)
+    i = focusStack.length - 1;   // no arg → dismiss the top (Escape / backdrop)
+    if (i < 0) return;
   }
-  if (!entry) return;
+  const entry = focusStack[i];
+  if (!force && entry.guard
+      && entry.guard(() => exitFocus(entry.panel, true))) return;
+  focusStack.splice(i, 1);
   entry.close();
   relightFocus();
 }
