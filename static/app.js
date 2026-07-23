@@ -2427,6 +2427,15 @@ async function runSuggest(pid, channel, out, bar, personEmail) {
   }
 }
 
+// A small labeled-field header for the loop/hook edit forms: an uppercase
+// term plus a plain-language hint of what the field is for.
+function editLabel(term, hint) {
+  const d = el("div", "edit-label");
+  d.appendChild(el("b", null, term));
+  if (hint) d.appendChild(el("span", null, hint));
+  return d;
+}
+
 // ---------- open loops: live-editable, saved back to the CRM ----------
 function loopsSection(pid, initialLoops) {
   const sec = el("div", "p-section");
@@ -2443,30 +2452,18 @@ function loopsSection(pid, initialLoops) {
     render();
   };
 
-  const seg = (options, current) => {
-    const s = el("div", "seg mini");
-    options.forEach(([v, label]) => {
-      const b = el("button", "seg-btn" + (current === v ? " on" : ""), label);
-      b.dataset.v = v;
-      b.addEventListener("click", () =>
-        s.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b)));
-      s.appendChild(b);
-    });
-    return s;
-  };
-  const segValue = (s) => s.querySelector(".seg-btn.on")?.dataset.v;
-
+  // The edit form is purely for fixing the wording of a loop you're about to
+  // use, or deleting it — never for saying something new about it. Closing a
+  // loop with a reason is a right-click -> Tell Vira note instead, which saves
+  // the reasoning and keeps a regenerated loop from duplicating a closed one.
+  // So there are no owed-by / open-closed toggles here, just the text.
   const editForm = (loop, idx) => {
     // idx === null means a new loop is being added
     const form = el("div", "hook-edit");
+    form.appendChild(editLabel("Loop", "what's owed or still open"));
     const what = el("textarea", "hook-input");
     what.rows = 2;
-    what.placeholder = "The loop — what's owed or pending";
     what.value = loop.what || loop.text || "";
-    const owedSeg = seg([["me", "You owe"], ["them", "They owe"]],
-      loop.owed_by === "them" ? "them" : "me");
-    const statusSeg = seg([["open", "Open"], ["closed", "Closed"]],
-      (loop.status || "open") === "closed" ? "closed" : "open");
     const row = el("div", "row-end");
     const cancel = el("button", "btn small", "Cancel");
     cancel.addEventListener("click", render);
@@ -2484,13 +2481,13 @@ function loopsSection(pid, initialLoops) {
     ok.addEventListener("click", async () => {
       const w = what.value.trim();
       if (!w) { what.focus(); return; }
-      const status = segValue(statusSeg) || "open";
-      const updated = { ...loop, what: w, owed_by: segValue(owedSeg) || "me", status };
+      // Preserve owed_by / status / closed_on already on the loop — this form
+      // no longer edits them. New hand-added loops start as "you owe", open.
+      const updated = { ...loop, what: w };
       delete updated.text;
       const today = new Date().toISOString().slice(0, 10);
-      if (status === "closed" && !updated.closed_on) updated.closed_on = today;
-      if (status === "open") delete updated.closed_on;
       if (idx === null) {
+        updated.owed_by = updated.owed_by || "me";
         updated.since = updated.since || today;
         loops.push(updated);
       } else {
@@ -2509,8 +2506,6 @@ function loopsSection(pid, initialLoops) {
     });
     row.appendChild(ok);
     form.appendChild(what);
-    form.appendChild(owedSeg);
-    form.appendChild(statusSeg);
     form.appendChild(row);
     return form;
   };
@@ -2573,11 +2568,9 @@ function hooksSection(pid, initialHooks, draftFromHook) {
     const form = el("div", "hook-edit");
     const angle = el("textarea", "hook-input");
     angle.rows = 2;
-    angle.placeholder = "Hook — the angle to open with";
     angle.value = hook.angle || hook.text || "";
     const detail = el("textarea", "hook-input");
     detail.rows = 3;
-    detail.placeholder = "Detail / grounding (optional) — informs the drafted message";
     detail.value = hook.detail || "";
     const row = el("div", "row-end");
     const cancel = el("button", "btn small", "Cancel");
@@ -2616,7 +2609,9 @@ function hooksSection(pid, initialHooks, draftFromHook) {
       }
     });
     row.appendChild(ok);
+    form.appendChild(editLabel("Hook", "the topic or angle to open with"));
     form.appendChild(angle);
+    form.appendChild(editLabel("Detail", "grounding that shapes the draft — optional"));
     form.appendChild(detail);
     form.appendChild(row);
     return form;
@@ -8105,16 +8100,30 @@ function bindMediaOpen(node, url) {
 const WIN_TITLES = Object.fromEntries(WINDOWS.map((w) => [w.id, w.title]));
 
 function ctxDescribe(target) {
-  const ctx = { component: "Vira", person: null, snippet: "" };
-  const sel = String(window.getSelection() || "").trim();
-  ctx.snippet = (sel || (target.textContent || ""))
-    .trim().replace(/\s+/g, " ").slice(0, 200);
+  const ctx = { component: "Vira", person: null, snippet: "", target: null };
+  const sel = String(window.getSelection() || "").trim().replace(/\s+/g, " ");
   const pp = target.closest("#person-panel");
   const fwin = target.closest(".fwin");
   const view = target.closest(".view");
   if (pp) {
     ctx.component = pp.dataset.pname ? "Profile: " + pp.dataset.pname : "Profile";
     if (pp.dataset.pid) ctx.person = { pid: pp.dataset.pid, name: pp.dataset.pname };
+    // Fidelity ladder for "Tell Vira about this…": the exact card under the
+    // cursor (a hook / an open loop) wins; else the section it sits in; else
+    // the person (the profile's own Tell Vira). `menu` is the phrase shown in
+    // the label; `note` is how the attached context names the thing.
+    const loopEl = target.closest(".loop");
+    const secEl = target.closest(".p-section");
+    if (loopEl) {
+      const isHook = loopEl.classList.contains("hook");
+      const text = (loopEl.querySelector(".hook-text")?.textContent || "").trim();
+      ctx.target = { menu: isHook ? "this hook" : "this open loop",
+                     note: isHook ? "Conversation hook" : "Open loop", text };
+    } else if (secEl) {
+      const title = (secEl.querySelector("h4")?.textContent || "").trim();
+      if (title) ctx.target = { menu: "the " + title.toLowerCase() + " section",
+                                note: title + " section", text: "" };
+    }
   } else if (target.closest("#viewer-panel")) {
     ctx.component = "Media viewer";
   } else if (target.closest("#job-panel")) {
@@ -8130,13 +8139,20 @@ function ctxDescribe(target) {
   const card = target.closest(".feed-item");
   if (!ctx.person && card?.dataset.pid)
     ctx.person = { pid: card.dataset.pid, name: card.dataset.pname || "" };
+  // snippet: a text selection wins; else the clicked card's own line; else
+  // (person-level) the clicked element's text. A section carries no snippet —
+  // its note already names it.
+  if (sel) ctx.snippet = sel.slice(0, 200);
+  else if (ctx.target) ctx.snippet = (ctx.target.text || "").slice(0, 200);
+  else ctx.snippet = (target.textContent || "").trim().replace(/\s+/g, " ").slice(0, 200);
   return ctx;
 }
 
 function ctxIdeaComposer(x, y, ctx) {
   const where = ctx.component + (ctx.person ? " · " + ctx.person.name : "");
   ctxCompose(x, y, {
-    title: "New idea — " + where,
+    title: ctx.target ? "New idea about " + ctx.target.menu + " — " + ctx.component
+      : "New idea — " + where,
     placeholder: "What should change here?",
     submit: "Add idea",
     note: ctx.snippet
@@ -8145,7 +8161,8 @@ function ctxIdeaComposer(x, y, ctx) {
       : "Context attached: " + where,
     onSubmit: async (text) => {
       const bits = [ctx.component];
-      if (ctx.person) bits.push(ctx.person.name);
+      if (ctx.target) bits.push(ctx.target.note);
+      else if (ctx.person) bits.push(ctx.person.name);
       if (ctx.snippet) bits.push("\"" + ctx.snippet.slice(0, 120) + "\"");
       const it = await post("/api/ideas",
         { text: text + " [context: " + bits.join(" · ") + "]", source: "right-click" });
@@ -8163,19 +8180,28 @@ function ctxIdeaComposer(x, y, ctx) {
 // the Journal's export prompt.
 function ctxTellVira(x, y, ctx) {
   const first = ctx.person ? (ctx.person.name || "").split(" ")[0] : "";
-  const where = ctx.component + (ctx.person ? " · " + ctx.person.name : "");
+  // What the note is about, most specific first: the clicked card/section,
+  // else the person, else the component. `subject` phrases the title; `about`
+  // names it in the reassurance line under the box.
+  const subject = ctx.target ? ctx.target.menu : (first || null);
+  const about = ctx.target ? ctx.target.note
+    : ctx.person ? ctx.person.name : ctx.component;
   ctxCompose(x, y, {
-    title: (first ? "Tell Vira about " + first : "Tell Vira") + " — " + ctx.component,
-    placeholder: "What do you know? “this isn’t an overlap because…”, "
-      + "“merge this contact with…”, “I paid Mark back”. "
-      + "Saved, integrated, remembered.",
+    title: (subject ? "Tell Vira about " + subject : "Tell Vira") + " — " + ctx.component,
+    placeholder: ctx.target
+      ? "What do you know about " + ctx.target.menu + "? "
+        + "“this is done — we settled it on the phone”, “reword this to…”, "
+        + "“ignore this one”. Saved, integrated, remembered."
+      : "What do you know? “this isn’t an overlap because…”, "
+        + "“merge this contact with…”, “I paid Mark back”. "
+        + "Saved, integrated, remembered.",
     submit: "Save",
-    note: ctx.snippet
-      ? "Context attached: \"" + ctx.snippet.slice(0, 90)
-        + (ctx.snippet.length > 90 ? "…" : "") + "\""
-      : "Context attached: " + where,
+    note: "Filed against " + about
+      + (ctx.snippet ? ": “" + ctx.snippet.slice(0, 90)
+         + (ctx.snippet.length > 90 ? "…" : "") + "”" : ""),
     onSubmit: async (text) => {
       const bits = [ctx.component];
+      if (ctx.target) bits.push(ctx.target.note);
       if (ctx.snippet) bits.push("\"" + ctx.snippet.slice(0, 160) + "\"");
       const { entry } = await post("/api/brief/note", {
         text,
@@ -8281,13 +8307,15 @@ document.addEventListener("contextmenu", (e) => {
     items.push({ label: "Open profile", run: () => openPerson(card.dataset.pid) });
 
   items.push({
-    label: ctx.person
-      ? "Tell Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
+    label: ctx.target ? "Tell Vira about " + ctx.target.menu + "…"
+      : ctx.person ? "Tell Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
       : "Tell Vira…",
     run: () => ctxTellVira(e.clientX, e.clientY, ctx),
   });
-  items.push({ label: "New idea about this…",
-               run: () => ctxIdeaComposer(e.clientX, e.clientY, ctx) });
+  items.push({
+    label: "New idea about " + (ctx.target ? ctx.target.menu : "this") + "…",
+    run: () => ctxIdeaComposer(e.clientX, e.clientY, ctx),
+  });
   items.push({
     label: ctx.person
       ? "Ask Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
