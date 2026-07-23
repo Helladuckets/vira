@@ -45,34 +45,34 @@ def best_handle(pid):
     """Pick the handle the owner actually texts this person on.
 
     The contact card outranks everything: a number the owner marked PRIMARY is
-    an explicit instruction, and one marked FORMER is an explicit instruction
+    an explicit instruction, and one they ARCHIVED is an explicit instruction
     too — "out of date, keep it on file, stop using it". Without that second
     check the mark would be decoration, because the recent-thread signal below
-    would happily keep texting a number the owner had just retired.
+    would happily keep texting a number the owner had just archived.
 
     Otherwise: the handle from the most recent direct-thread message (where
     the conversation actually is), then the first known handle that has not
-    been retired.
+    been archived.
     """
     from . import contactcard
     pinned = contactcard.primary_handle(pid, "phone")
     if pinned:
         return "+1" + pinned if len(pinned) == 10 and pinned.isdigit() else pinned
-    former = contactcard.retired_handles(pid)
+    gone = contactcard.archived_handles(pid)
     msgs = imessage.thread_for_person(pid, limit=5)
     for m in reversed(msgs):
         h = m.get("handle")
-        if h and crm.norm_digits(h) not in former and h.lower() not in former:
+        if h and crm.norm_digits(h) not in gone and h.lower() not in gone:
             return h
     p = crm._load()["by_id"].get(pid)
     if not p:
         return None
     handles = p.get("handles", {})
     for im in handles.get("imessage", []):
-        if crm.norm_digits(im) not in former and im.lower() not in former:
+        if crm.norm_digits(im) not in gone and im.lower() not in gone:
             return im
     for ph in handles.get("phones10", []):
-        if ph not in former:
+        if ph not in gone:
             return "+1" + ph
     return None
 
