@@ -21,6 +21,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                briefstate, changelog,
                circuits,
                companion,
+               contactcard,
                crmindex,
                data as crm,
                designstudio,
@@ -150,7 +151,38 @@ def api_person(pid: str):
     if not detail:
         raise HTTPException(404, "unknown person")
     detail["has_photo"] = photos.photo_path(pid) is not None
+    # the contact card rides the first load — the profile's top pane must
+    # never paint a derived name and then flicker to the owner's own
+    detail["card"] = contactcard.compose(pid, detail)
     return detail
+
+
+class CardReq(BaseModel):
+    """An edited contact card. Only what changed needs to be sent; the
+    server diffs against the current card to build the change list."""
+    fields: dict = {}
+    custom: list | None = None
+    handles: dict = {}          # handle key -> {rank?, label?}
+    added: list = []            # [{kind: email|phone, value: ...}]
+    note: str | None = None     # the owner's own words, filed alongside
+
+
+@app.get("/api/person/{pid}/card")
+def api_card(pid: str):
+    card = contactcard.compose(pid)
+    if not card:
+        raise HTTPException(404, "unknown person")
+    return card
+
+
+@app.post("/api/person/{pid}/card")
+def api_card_save(pid: str, req: CardReq):
+    try:
+        return contactcard.save(pid, req.model_dump())
+    except KeyError:
+        raise HTTPException(404, "unknown person")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/person/{pid}/thread")
