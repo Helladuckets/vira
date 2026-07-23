@@ -238,8 +238,22 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 
 /* confetti overlay (desktop success moments) */
 .confetti { position: fixed; inset: 0; z-index: 1300; pointer-events: none; }
-.feed-name { font-weight: 500; font-size: 15px; }
+/* min-width:0 is load-bearing: a flex item defaults to min-width:auto, so an
+   unbreakable name (verizon_updates_ybbid5lo_agent@rbm.goog) refused to shrink
+   below its min-content width and shoved .feed-right — the timestamp — past
+   the right edge of the phone. Truncating the NAME is what keeps the time
+   visible; clipping an ancestor would have hidden the time instead. */
+.feed-name {
+  font-weight: 500; font-size: 15px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .feed-name.unknown { color: var(--text-dim); font-weight: 500; }
+/* the triage card nests a .biz-chip INSIDE the name, which an ellipsis would
+   eat — so there the long handle breaks over two lines instead of truncating.
+   min-width:0 still applies, so the row is just as safe from overflow. */
+.triage-row .feed-name {
+  white-space: normal; overflow: visible; overflow-wrap: anywhere;
+}
 .feed-time { font-size: 11.5px; color: var(--text-faint); flex: none; }
 .feed-text {
   margin-top: 3px; font-size: 14px; color: var(--text-dim);
@@ -1751,6 +1765,13 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 .brief-row.click { cursor: pointer; }
 .brief-row.click:hover, .brief-row.click:active { background: var(--hover-wash); }
+/* On a phone the fixed pieces — 62px time, the tag, and up to three text
+   buttons — outweigh the row, and .brief-sub was the only item that could
+   shrink, so it collapsed to ZERO width and the actions still overhung the
+   screen. Wrapping lets .brief-acts drop to its own line (margin-left:auto
+   keeps it right-aligned) and gives the preview text its width back. Only
+   rows that genuinely don't fit wrap; a lone × dismiss still rides line one. */
+@media (max-width: 1099px) { .brief-row { flex-wrap: wrap; } }
 .brief-time {
   flex: 0 0 62px; text-align: right; color: var(--text-faint);
   font-size: 12px; font-variant-numeric: tabular-nums;
