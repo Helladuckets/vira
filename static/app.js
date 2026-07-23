@@ -2726,17 +2726,28 @@ let projectsCache = [];
 let ideaSort = localStorage.getItem("vira-idea-sort") || "grouped";
 let ideaProject = localStorage.getItem("vira-idea-project") || "";  // "" = all
 let ideaAddProject = localStorage.getItem("vira-idea-add-project") || "";
+// Done/dropped fold under a toggle in the grouped view; collapsed by default
+// so the queue leads with active work.
+let ideaShowParked = localStorage.getItem("vira-idea-show-parked") === "1";
 const ADD_PROJECT = "__add_project__";   // sentinel option value
 const IDEA_STATUSES = [["proposed", "Proposed"],
                        ["open", "Open"], ["on-hold", "On-hold"],
                        ["done", "Done"], ["dropped", "Dropped"]];
-const IDEA_SORTS = [["grouped", "Grouped (active first)"],
-                    ["status", "Status (open first)"],
-                    ["updated", "Recently updated"],
-                    ["newest", "Newest"], ["oldest", "Oldest"],
+// Each sort names the axis it keys on. "grouped" (default) buckets by status
+// with subheaders; the rest are flat. "Last updated" keys on the last-touched
+// stamp (edits, status flips, note stamps); the two "Date added" orderings key
+// on creation time — a deliberately different axis, spelled out so they don't
+// read as duplicates of "Last updated".
+const IDEA_SORTS = [["grouped", "Status (grouped)"],
+                    ["updated", "Last updated"],
+                    ["newest", "Date added (new→old)"],
+                    ["oldest", "Date added (old→new)"],
                     ["az", "A–Z"]];
-const IDEA_STATUS_ORDER = { proposed: -1, open: 0, "on-hold": 1,
-                            done: 2, dropped: 3 };
+// A saved sort that no longer exists (the retired flat "status") falls back to
+// the grouped default instead of leaving the dropdown on a dead value.
+if (!IDEA_SORTS.some(([v]) => v === ideaSort)) ideaSort = "grouped";
+// Shared timestamp parse for the flat sorts and the within-bucket ordering.
+const ideaTs = (s) => Date.parse(s || "") || 0;
 
 async function loadIdeas() {
   const { items, projects } = await api("/api/ideas");
@@ -2976,18 +2987,13 @@ function editIdea(box, it) {
 // so renderIdeas falls back to the active-first grouped layout.
 function sortedIdeas(source) {
   const items = (source || ideasCache).slice();
-  const ts = (s) => Date.parse(s || "") || 0;
   switch (ideaSort) {
-    case "status":
-      return items.sort((a, b) =>
-        (IDEA_STATUS_ORDER[a.status] - IDEA_STATUS_ORDER[b.status]) ||
-        (ts(b.updated) - ts(a.updated)));
     case "updated":
-      return items.sort((a, b) => ts(b.updated) - ts(a.updated));
+      return items.sort((a, b) => ideaTs(b.updated) - ideaTs(a.updated));
     case "newest":
-      return items.sort((a, b) => ts(b.created) - ts(a.created));
+      return items.sort((a, b) => ideaTs(b.created) - ideaTs(a.created));
     case "oldest":
-      return items.sort((a, b) => ts(a.created) - ts(b.created));
+      return items.sort((a, b) => ideaTs(a.created) - ideaTs(b.created));
     case "az":
       return items.sort((a, b) => (a.text || "").localeCompare(b.text || ""));
     default:
@@ -3020,9 +3026,12 @@ function renderIdeas() {
     flat.forEach((it) => list.appendChild(ideaRow(it)));
     return;
   }
-  const proposed = scoped.filter((i) => i.status === "proposed");
-  const active = scoped.filter((i) => i.status === "open" || i.status === "on-hold");
-  const parked = scoped.filter((i) => i.status === "done" || i.status === "dropped");
+  const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
+  const proposed = scoped.filter((i) => i.status === "proposed").sort(byUpdated);
+  const active = scoped
+    .filter((i) => i.status === "open" || i.status === "on-hold").sort(byUpdated);
+  const parked = scoped
+    .filter((i) => i.status === "done" || i.status === "dropped").sort(byUpdated);
   if (proposed.length) {
     list.appendChild(el("div", "ideas-sub proposed",
       `Proposed by Vira — awaiting your call (${proposed.length})`));
@@ -3030,8 +3039,24 @@ function renderIdeas() {
   }
   active.forEach((it) => list.appendChild(ideaRow(it)));
   if (parked.length) {
-    list.appendChild(el("div", "ideas-sub", `Done / dropped (${parked.length})`));
-    parked.forEach((it) => list.appendChild(ideaRow(it)));
+    // Fold done/dropped behind a click-to-expand subheader (collapsed by
+    // default) so the active work leads. The choice persists across sessions.
+    const head = el("div", "ideas-sub ideas-toggle" + (ideaShowParked ? " open" : ""),
+      `Done / dropped (${parked.length})`);
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", ideaShowParked ? "true" : "false");
+    const toggle = () => {
+      ideaShowParked = !ideaShowParked;
+      localStorage.setItem("vira-idea-show-parked", ideaShowParked ? "1" : "0");
+      renderIdeas();
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+    list.appendChild(head);
+    if (ideaShowParked) parked.forEach((it) => list.appendChild(ideaRow(it)));
   }
 }
 
