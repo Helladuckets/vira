@@ -2427,6 +2427,15 @@ async function runSuggest(pid, channel, out, bar, personEmail) {
   }
 }
 
+// A small labeled-field header for the loop/hook edit forms: an uppercase
+// term plus a plain-language hint of what the field is for.
+function editLabel(term, hint) {
+  const d = el("div", "edit-label");
+  d.appendChild(el("b", null, term));
+  if (hint) d.appendChild(el("span", null, hint));
+  return d;
+}
+
 // ---------- open loops: live-editable, saved back to the CRM ----------
 function loopsSection(pid, initialLoops) {
   const sec = el("div", "p-section");
@@ -2443,30 +2452,18 @@ function loopsSection(pid, initialLoops) {
     render();
   };
 
-  const seg = (options, current) => {
-    const s = el("div", "seg mini");
-    options.forEach(([v, label]) => {
-      const b = el("button", "seg-btn" + (current === v ? " on" : ""), label);
-      b.dataset.v = v;
-      b.addEventListener("click", () =>
-        s.querySelectorAll(".seg-btn").forEach((x) => x.classList.toggle("on", x === b)));
-      s.appendChild(b);
-    });
-    return s;
-  };
-  const segValue = (s) => s.querySelector(".seg-btn.on")?.dataset.v;
-
+  // The edit form is purely for fixing the wording of a loop you're about to
+  // use, or deleting it — never for saying something new about it. Closing a
+  // loop with a reason is a right-click -> Tell Vira note instead, which saves
+  // the reasoning and keeps a regenerated loop from duplicating a closed one.
+  // So there are no owed-by / open-closed toggles here, just the text.
   const editForm = (loop, idx) => {
     // idx === null means a new loop is being added
     const form = el("div", "hook-edit");
+    form.appendChild(editLabel("Loop", "what's owed or still open"));
     const what = el("textarea", "hook-input");
     what.rows = 2;
-    what.placeholder = "The loop — what's owed or pending";
     what.value = loop.what || loop.text || "";
-    const owedSeg = seg([["me", "You owe"], ["them", "They owe"]],
-      loop.owed_by === "them" ? "them" : "me");
-    const statusSeg = seg([["open", "Open"], ["closed", "Closed"]],
-      (loop.status || "open") === "closed" ? "closed" : "open");
     const row = el("div", "row-end");
     const cancel = el("button", "btn small", "Cancel");
     cancel.addEventListener("click", render);
@@ -2484,13 +2481,13 @@ function loopsSection(pid, initialLoops) {
     ok.addEventListener("click", async () => {
       const w = what.value.trim();
       if (!w) { what.focus(); return; }
-      const status = segValue(statusSeg) || "open";
-      const updated = { ...loop, what: w, owed_by: segValue(owedSeg) || "me", status };
+      // Preserve owed_by / status / closed_on already on the loop — this form
+      // no longer edits them. New hand-added loops start as "you owe", open.
+      const updated = { ...loop, what: w };
       delete updated.text;
       const today = new Date().toISOString().slice(0, 10);
-      if (status === "closed" && !updated.closed_on) updated.closed_on = today;
-      if (status === "open") delete updated.closed_on;
       if (idx === null) {
+        updated.owed_by = updated.owed_by || "me";
         updated.since = updated.since || today;
         loops.push(updated);
       } else {
@@ -2509,8 +2506,6 @@ function loopsSection(pid, initialLoops) {
     });
     row.appendChild(ok);
     form.appendChild(what);
-    form.appendChild(owedSeg);
-    form.appendChild(statusSeg);
     form.appendChild(row);
     return form;
   };
@@ -2573,11 +2568,9 @@ function hooksSection(pid, initialHooks, draftFromHook) {
     const form = el("div", "hook-edit");
     const angle = el("textarea", "hook-input");
     angle.rows = 2;
-    angle.placeholder = "Hook — the angle to open with";
     angle.value = hook.angle || hook.text || "";
     const detail = el("textarea", "hook-input");
     detail.rows = 3;
-    detail.placeholder = "Detail / grounding (optional) — informs the drafted message";
     detail.value = hook.detail || "";
     const row = el("div", "row-end");
     const cancel = el("button", "btn small", "Cancel");
@@ -2616,7 +2609,9 @@ function hooksSection(pid, initialHooks, draftFromHook) {
       }
     });
     row.appendChild(ok);
+    form.appendChild(editLabel("Hook", "the topic or angle to open with"));
     form.appendChild(angle);
+    form.appendChild(editLabel("Detail", "grounding that shapes the draft — optional"));
     form.appendChild(detail);
     form.appendChild(row);
     return form;
