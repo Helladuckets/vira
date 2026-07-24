@@ -8641,6 +8641,17 @@ function makeTitleEditable(titleEl, jidRef) {
 // minW/minH may be numbers or getters — a layout being tuned has almost no
 // floor, so a tile can be made genuinely small and the whole arrangement can
 // scale down to a narrower screen without hitting a clamp.
+// Was this press on an element's own scrollbar rather than its content? A
+// scrollbar click targets the scrolling element itself, at an offset past its
+// content box — so a parked tile can still be scrolled by dragging its bar
+// even though every other press on it is claimed.
+function inScrollbar(e) {
+  const t = e.target;
+  if (!(t instanceof Element)) return false;
+  return (t.scrollHeight > t.clientHeight && e.offsetX > t.clientWidth)
+      || (t.scrollWidth > t.clientWidth && e.offsetY > t.clientHeight);
+}
+
 function makeResizable(node, onEnd, minW = 340, minH = 240) {
   const minOf = (v) => (typeof v === "function" ? v() : v);
   ["n", "e", "s", "w", "ne", "nw", "se", "sw"].forEach((d) => {
@@ -8747,16 +8758,31 @@ function buildWindow(spec, st, ci) {
   win.dataset.wid = spec.id;
   win.addEventListener("pointerdown", () => focusWin(win));
   // A parked tile stays LIVE — hover states work and its body scrolls — but
-  // ANY click on it grows it, including a click that would otherwise hit a
-  // button inside. That needs the CAPTURE phase: capture runs root→target, so
-  // stopping here is what keeps the click from ever reaching the control under
-  // the cursor. (A wheel/scrollbar scroll is not a click, so scrolling a
-  // parked module is untouched.) The same click picks the module being staged
-  // during the grow pass in edit mode.
+  // it is NOT operable: any press on it grows it instead of reaching whatever
+  // is under the cursor.
+  //
+  // Claiming `click` alone is not enough, which is what let a press through:
+  // plenty of behaviour happens on the press, not the click — an input takes
+  // focus, a drag or a text selection starts, and any pointerdown/mousedown
+  // handler inside runs. So the whole press is claimed in the CAPTURE phase
+  // (capture runs root→target, so stopping at the window is what keeps the
+  // event from ever reaching the control). Deliberately still allowed:
+  // hovering (no pointer button involved), wheel scrolling, dragging the
+  // body's own scrollbar, and RIGHT-click, which must reach the context menu
+  // that carries "Remove from this layout".
+  const parkedNow = () => win.classList.contains("fwin-locked");
+  const passThrough = (e) =>
+    e.button !== 0                                  // right/middle: let it be
+    || e.target.closest(".fwin-bar button")         // title-bar controls
+    || inScrollbar(e);                              // the body's scrollbar
+  ["pointerdown", "mousedown", "dblclick"].forEach((type) =>
+    win.addEventListener(type, (e) => {
+      if (!parkedNow() || passThrough(e)) return;
+      e.preventDefault();                           // no focus, no selection
+      e.stopPropagation();
+    }, true));
   win.addEventListener("click", (e) => {
-    const parked = win.classList.contains("fwin-locked");
-    if (!parked) return;
-    if (e.target.closest(".fwin-bar button")) return;   // title-bar controls
+    if (!parkedNow() || passThrough(e)) return;
     e.preventDefault();
     e.stopPropagation();
     if (editing) {
