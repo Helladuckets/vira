@@ -6438,7 +6438,7 @@ function armSkinApply(foot, s) {
   foot.textContent = "";
   foot.classList.add("confirm");
   foot.appendChild(el("span", "skin-confirm-q", "Restyle Vira and reload?"));
-  const yes = el("button", "skin-apply", "Apply");
+  const yes = el("button", "skin-apply", "Confirm");
   yes.addEventListener("click", () => doApplySkin(s));
   const no = el("button", "skin-cancel", "Cancel");
   no.addEventListener("click", () => loadDesignSkins());   // re-render restores the button
