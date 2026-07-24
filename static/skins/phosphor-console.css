@@ -1,0 +1,101 @@
+/* PHOSPHOR CONSOLE_A001 — the glass layer.
+   Compiled from the Phosphor Console_A001 genre manifest.
+
+   The skin's HUE lives in style.css :root (the token block the skins picker
+   rewrites, so the Design Studio can tune it afterward) — and the glass here
+   reads those SAME tokens for anything hue-bearing, so a studio hue retune
+   flows through the tube instead of leaving a second colour behind. This file
+   carries what tokens cannot: one fixed pitch, capitals in the chrome, square
+   double-struck frames, and the tube itself — scanlines, vignette, bloom.
+   It is linked after style.css as /skin-active.css, so it wins on ties.
+
+   Covenants: one hue · no fills · no shadows · no perspective ·
+   capitals in chrome · double-struck frames · glass physics present. */
+
+/* ---- type: procedural telemetry, one fixed pitch ---------------------- */
+body, input, textarea, select, button, .brand, .topbar-sub {
+  font-family: var(--mono) !important;
+  letter-spacing: 0.01em;
+}
+
+/* ---- voice: capitals in the chrome; running prose is exempt ----------- */
+/* the genre's tracking ladder — titles wide, tabs/labels tighter. */
+.brand, .topbar-sub, .section-head h2, .fwin-title, .win-title, .dock-label,
+.fchip, .chip, .seg button, .kicker, .lp-name, .nd-row, .setup-step,
+.term-title, .job-title, th, .tab, .mdock-app, .card-kicker {
+  text-transform: uppercase;
+}
+.brand, .section-head h2, .fwin-title, .win-title, .term-title {
+  letter-spacing: 0.26em;                        /* titles */
+}
+.topbar-sub, .fchip, .chip, .seg button, .kicker, .lp-name, .dock-label,
+.nd-row, .setup-step, .job-title, th, .tab, .mdock-app, .card-kicker {
+  letter-spacing: 0.18em;                         /* tabs and labels */
+}
+/* prose the genre leaves alone: message bodies, notes, editable fields,
+   paragraphs, previews, dossier text. */
+.msg, .msg *, .bubble, .bubble *, textarea, input, p, .prose, .prose *,
+.note, .hook-text, .loop-text, .brief-sub, .feed-preview, .ccard-hval,
+.term-line, .idea-text, .p-section p {
+  text-transform: none !important;
+  letter-spacing: normal;
+}
+
+/* ---- bloom: hierarchy is luminance; the brightest text glows hardest --- */
+/* hue-bearing values read the skin's own tokens, so a Design-Studio hue
+   retune flows into the tube instead of leaving a second colour behind. */
+body { text-shadow: 0 0 1px var(--accent-veil); }
+.brand, h1, h2, h3, .fwin-title, .win-title, .section-head h2,
+.kpi-n, .stat-n, .count-up {
+  text-shadow: 0 0 6px var(--accent-glow), 0 0 1px var(--text-head);
+}
+
+/* ---- geometry: square, double-struck, void-filled --------------------- */
+/* corners squared globally (a few components hardcode their own radius). */
+.card, .fwin, .sheet, .panel, .term-window, .brief-card, .feed-item,
+.chip, .fchip, .seg, .seg button, .btn, button, input, textarea, select,
+.avatar, .tile, .skin-card, .swatch {
+  border-radius: 0 !important;
+}
+/* the console's window idiom: a void surface, an ember stroke, and a second
+   struck line inside it. No fills, no drop shadow — occlusion only. */
+.fwin, .card, .sheet, .term-window, .brief-card, .setup-card, .p-section {
+  background: var(--bg) !important;
+  border: 1px solid var(--accent-line) !important;
+  box-shadow: inset 0 0 0 2px var(--bg), inset 0 0 0 3px var(--line) !important;
+}
+/* notched title bars — the double-struck border, split at the caption. */
+.fwin-titlebar, .win-titlebar, .section-head, .term-titlebar, .sheet-head {
+  border-bottom: 1px solid var(--line) !important;
+  box-shadow: inset 0 -3px 0 -2px var(--accent-line);
+}
+
+/* ---- the tube: scanlines + vignette + a slow mains flicker ------------- */
+/* one fixed overlay over the whole app, inert to the pointer. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0) 0, rgba(0, 0, 0, 0) 2px,
+      rgba(0, 0, 0, 0.16) 3px, rgba(0, 0, 0, 0) 4px),
+    radial-gradient(130% 100% at 50% 45%,
+      rgba(0, 0, 0, 0) 52%, rgba(3, 1, 0, 0.55) 100%);
+  mix-blend-mode: multiply;
+  animation: pc-flicker 7.3s steps(48) infinite;
+}
+@keyframes pc-flicker {
+  0%, 100% { opacity: 0.92; }
+  47% { opacity: 1; }
+  48% { opacity: 0.96; }
+  49% { opacity: 1; }
+}
+
+/* the genre switches all motion off under reduced-motion, full text shown. */
+@media (prefers-reduced-motion: reduce) {
+  body::after { animation: none; opacity: 0.94; }
+}

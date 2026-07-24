@@ -40,6 +40,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                resolver,
                routines,
                search as msearch, send, sendpref, session, settings,
+               skins,
                subs_visuals,
                subscriptions, suggest, triage, uistate, update, vault,
                whatsapp)
@@ -2133,5 +2134,11 @@ _design_root = designstudio.root()
 if _design_root.is_dir():
     app.mount("/design", StaticFiles(directory=_design_root, html=True),
               name="design")
+
+# ---------- Skins (genre-compiled jumping-off points the studio can wear) --
+# GET /api/skins lists them; POST /api/skins/{id}/apply rewrites style.css
+# :root + skin-active.css, then commits (unless passive). The picker sits at
+# the top of the Design Studio module.
+app.include_router(skins.router)
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

@@ -6344,6 +6344,7 @@ function viewLoad(id) {
   if (id === "design") {
     const f = $("#design-frame");          // load the studio on first open
     if (f && !f.getAttribute("src")) f.src = "/design/studio.html";
+    loadDesignSkins().catch(() => {});     // the skins picker above the frame
   }
   if (id === "reader") loadReader().catch(() => {});
   if (id === "subsviz") loadSubsViz().catch(() => {});
@@ -6387,6 +6388,77 @@ function openApp(id) {
   viewLoad(id);
   window.scrollTo(0, 0);
   mdockRefresh();   // the access bar lights whichever of its five is up
+}
+
+// ----- Design Studio: the skins picker -----
+// A skin is a genre-compiled jumping-off point. Picking one rewrites the
+// app's :root tokens + swaps the glass layer server-side, then reloads Vira
+// wearing it — after which the studio below can tune it. New skins ship as
+// tracked data (static/skins/), so the list grows over the update channel.
+
+async function loadDesignSkins() {
+  const row = $("#skins-row");
+  if (!row) return;
+  let data;
+  try { data = await api("/api/skins"); } catch { return; }
+  row.innerHTML = "";
+  (data.skins || []).forEach((s) => row.appendChild(skinCard(s, data.active)));
+}
+
+function skinCard(s, activeId) {
+  const active = s.id === activeId;
+  const card = el("div", "skin-card" + (active ? " active" : ""));
+  const sw = el("div", "skin-swatch");
+  (s.swatch || []).slice(0, 6).forEach((c) => {
+    const chip = el("span", "swatch-chip");
+    chip.style.background = c;
+    sw.appendChild(chip);
+  });
+  card.appendChild(sw);
+  card.appendChild(el("div", "skin-name", s.name));
+  const meta = [s.genre, s.register].filter(Boolean).join(" · ");
+  if (meta) card.appendChild(el("div", "skin-meta", meta));
+  if (s.tagline) card.appendChild(el("div", "skin-tag", s.tagline));
+  const foot = el("div", "skin-foot");
+  if (active) {
+    foot.appendChild(el("span", "skin-badge", "Active"));
+  } else {
+    const b = el("button", "skin-apply", "Apply");
+    b.addEventListener("click", () => applySkin(s));
+    foot.appendChild(b);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+// Applying is a deliberate, reload-triggering change (it rewrites the
+// stylesheet and, on the live server, commits + pushes it to the repo), so
+// it is confirm-gated through the toast and the consequence is named.
+function applySkin(s) {
+  toast("Apply the " + s.name + " skin? It restyles Vira and reloads — on " +
+        "the live server it also commits the change to the repo.",
+        [["Apply", () => doApplySkin(s)], ["Cancel", () => {}]]);
+}
+
+async function doApplySkin(s) {
+  try {
+    toast("Applying " + s.name + "…");
+    const r = await post("/api/skins/" + encodeURIComponent(s.id) + "/apply", {});
+    // a failed commit on a live instance leaves the skin on disk but not in
+    // the repo — surface it instead of a silent reload that hides the gap.
+    const gitFailed = r && (r.git_error ||
+      (!r.passive && (r.changed || []).length && !r.committed));
+    if (gitFailed) {
+      toast("Applied to this machine, but saving to the repo failed: " +
+            (r.git_error || "not committed") + ".",
+            [["Reload anyway", () => location.reload()]]);
+      return;
+    }
+    // reload to pick up the rewritten style.css + skin-active.css
+    setTimeout(() => location.reload(), 550);
+  } catch (e) {
+    toast("Couldn't apply the skin: " + ((e && e.message) || e));
+  }
 }
 
 // ----- vault note focus panel (Brain citation chips + person-page rows) -----
