@@ -38,3 +38,6 @@ run-taurid.sh
 
 # WhatsApp sidecar: pinned via package-lock.json; the tree itself never commits
 bridge/whatsapp/node_modules/
+
+# Session retrospectives: project-local working docs — never on the public repo
+retros/

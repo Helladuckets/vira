@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Genre Studio — Vira</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/skin-active.css">
+<style>
+/* The instrument. Layout only — every colour reads a Vira token, so the
+   studio itself wears whatever skin is applied. */
+body{padding:0;overflow:hidden}
+.gs{display:grid;grid-template-columns:270px 1fr 330px;height:100dvh}
+.gs-col{overflow:auto;padding:16px}
+.gs-col+.gs-col{border-left:1px solid var(--line)}
+.gs-left{background:var(--bg-raised)}
+.gs-right{background:var(--bg-card)}
+.gs-top{display:flex;align-items:baseline;gap:10px;margin-bottom:14px}
+.gs-kick{font-family:var(--mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--accent-bright)}
+h3.gs-h{font-size:13px;color:var(--text-head);font-weight:600}
+.gs-lbl{font-family:var(--mono);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-faint);margin:0 0 8px}
+.gs-hint{font-size:11.5px;color:var(--text-dim);line-height:1.5}
+.gs-sec{border-top:1px solid var(--line);padding:14px 0 4px;margin-top:12px}
+.gs-sec:first-child{border-top:0;margin-top:0;padding-top:0}
+
+/* references + gain faders */
+.drop{border:1px dashed var(--accent-line);border-radius:var(--radius);padding:14px;
+  text-align:center;cursor:pointer;background:var(--accent-soft);margin-bottom:12px}
+.drop.over{background:var(--accent-veil)}
+.ref{display:flex;gap:9px;align-items:flex-start;margin-bottom:11px}
+.ref img{width:56px;height:40px;object-fit:cover;border:1px solid var(--line);border-radius:var(--radius);flex:none}
+.ref-b{flex:1;min-width:0}
+.ref-n{font-family:var(--mono);font-size:10px;color:var(--text);white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.ref-m{font-family:var(--mono);font-size:9px;color:var(--text-faint);margin-top:1px}
+.fader{width:100%;margin-top:5px;-webkit-appearance:none;appearance:none;height:3px;
+  background:var(--line);border-radius:3px;outline:none}
+.fader::-webkit-slider-thumb{-webkit-appearance:none;width:13px;height:13px;border-radius:50%;
+  background:var(--accent-bright);cursor:pointer}
+.ref-x{background:none;border:0;color:var(--text-faint);cursor:pointer;font-size:13px;padding:0 2px}
+
+/* knobs */
+.knob{margin-bottom:13px}
+.knob-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.knob-n{font-size:11.5px;color:var(--text-dim)}
+.knob-v{font-family:var(--mono);font-size:10px;color:var(--accent-bright)}
+.knob-help{font-size:10.5px;color:var(--text-faint);line-height:1.45;margin-top:3px}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin-top:4px}
+.seg button{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--text-dim);background:none;border:0;padding:4px 8px;cursor:pointer}
+.seg button.on{background:var(--accent-soft);color:var(--accent-bright)}
+
+/* the matrix */
+.mx{border-collapse:separate;border-spacing:0;width:100%}
+.mx th,.mx td{border-bottom:1px solid var(--line);padding:6px 7px;vertical-align:top;text-align:left}
+.mx thead th{position:sticky;top:0;background:var(--bg);z-index:3}
+.mx .rowh{width:118px;font-family:var(--mono);font-size:10px;color:var(--text-dim);
+  background:var(--bg);position:sticky;left:0;z-index:2;white-space:nowrap}
+.mx .res{background:var(--bg-raised);border-left:1px solid var(--accent-line);width:180px}
+.colh{display:flex;flex-direction:column;gap:3px;min-width:120px}
+.colh img{width:70px;height:48px;object-fit:cover;border:1px solid var(--line);border-radius:var(--radius)}
+.colh .cn{font-family:var(--mono);font-size:9px;color:var(--accent-bright);
+  max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.colh .cg{font-family:var(--mono);font-size:8px;color:var(--text-faint)}
+.band td{background:var(--bg-raised);padding:6px 8px}
+.band .gs-lbl{margin:0;color:var(--accent-bright)}
+.band .bn{font-size:10.5px;color:var(--text-faint);margin-left:9px;font-family:var(--sans)}
+.arity{font-family:var(--mono);font-size:8px;color:var(--text-faint);border:1px solid var(--line);
+  border-radius:2px;padding:0 3px;margin-left:4px}
+.cellv{display:flex;flex-wrap:wrap;gap:3px}
+/* opt-in pills: OUT is hollow and dashed, IN is filled with a check. The two
+   states must be tellable at a glance — that is the whole point. */
+.pl{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;
+  color:var(--text-faint);background:none;border:1px dashed var(--line);border-radius:999px;
+  padding:3px 8px;cursor:pointer;user-select:none}
+.pl:hover{border-color:var(--accent-line);color:var(--text)}
+.pl.on{background:var(--accent-soft);border:1px solid var(--accent-bright);color:var(--accent-bright)}
+.pl.on::before{content:"✓";font-size:8.5px;margin-right:1px}
+.pl i{width:11px;height:11px;border-radius:2px;border:1px solid rgba(0,0,0,.35);display:block}
+.pl.na{opacity:.35;font-style:italic;cursor:default;border-style:solid}
+.resv.auto{opacity:.55}
+.tag.auto{color:var(--text-faint);font-style:italic}
+/* the combined column head: generated reference + the button */
+.comb{display:flex;flex-direction:column;gap:6px;min-width:190px;max-width:230px}
+.comb-img{width:100%;border:1px solid var(--accent-line);border-radius:var(--radius);
+  cursor:pointer;display:block}
+.comb-empty{border:1px dashed var(--line);border-radius:var(--radius);padding:16px 8px;
+  font-family:var(--mono);font-size:9px;color:var(--text-faint);text-align:center}
+.comb-btn{width:100%;text-align:center}
+.gen-hist{display:flex;gap:3px;flex-wrap:wrap}
+.gen-hist img{width:32px;height:24px;object-fit:cover;border:1px solid var(--line);
+  border-radius:2px;cursor:pointer;display:block}
+.comb-ptoggle{font-family:var(--mono);font-size:9px;color:var(--text-faint);cursor:pointer}
+.comb-ptoggle:hover{color:var(--accent-bright)}
+.comb-prompt{width:100%;min-height:96px;background:var(--bg-card);border:1px solid var(--line);
+  border-radius:var(--radius);color:var(--text);font-family:var(--mono);font-size:9.5px;
+  padding:6px;resize:vertical}
+.ref-pal{display:flex;height:9px;margin-top:5px;border:1px solid var(--line);
+  border-radius:2px;overflow:hidden}
+.ref-pal i{flex:1;display:block}
+.resv{font-family:var(--mono);font-size:10.5px;color:var(--accent-bright);cursor:pointer;
+  display:flex;align-items:center;gap:5px;flex-wrap:wrap;line-height:1.5}
+.resv:hover{text-decoration:underline dotted}
+.tag{font-family:var(--mono);font-size:8.5px;letter-spacing:.04em;display:block;margin-top:3px}
+.tag.ok{color:var(--green)}.tag.warn{color:var(--oxidized)}.tag.bad{color:var(--red)}
+.tag.edit{color:var(--steel)}
+.dimrow{opacity:.42}
+
+/* right rail */
+.coh-bar{display:flex;gap:2px;margin:7px 0 5px}
+.coh-bar i{flex:1;height:5px;border-radius:2px;background:var(--line);display:block}
+.coh-bar i.on{background:var(--accent)}
+.coh-bar i.warn{background:var(--oxidized)}
+.prev{border:1px solid var(--line);border-radius:var(--radius);padding:13px;margin-top:9px}
+.cl{border:1px solid var(--line);border-radius:var(--radius);padding:9px 11px;margin-top:8px}
+.cl-h{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--accent-bright);margin-bottom:4px}
+.cl-m{font-size:11px;color:var(--text-dim);line-height:1.45}
+.btn2{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--accent-contrast);background:var(--accent);border:0;border-radius:var(--radius);
+  padding:8px 14px;cursor:pointer}
+.btn2.ghost{background:none;color:var(--text-dim);border:1px solid var(--line)}
+.btn2.sm{padding:5px 10px;font-size:9px}
+.btn2:disabled{opacity:.4;cursor:default}
+.pop{position:fixed;z-index:400;background:var(--bg-modal);border:1px solid var(--accent-line);
+  border-radius:var(--radius);padding:9px;box-shadow:0 18px 50px rgba(0,0,0,.6);min-width:180px}
+.pop .pr{font-family:var(--mono);font-size:10px;color:var(--text-dim);padding:5px 7px;
+  cursor:pointer;border-radius:2px;display:flex;align-items:center;gap:6px}
+.pop .pr:hover{background:var(--accent-soft);color:var(--accent-bright)}
+.pop input{width:100%;background:var(--bg-card);border:1px solid var(--line);color:var(--text);
+  font-family:var(--mono);font-size:11px;padding:6px 8px;border-radius:2px}
+.empty{padding:40px 20px;text-align:center;color:var(--text-faint);font-size:12.5px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="gs">
+
+  <!-- ============ LEFT: references + knobs ============ -->
+  <div class="gs-col gs-left">
+    <div class="gs-top"><span class="gs-kick">Genre</span>
+      <h3 class="gs-h" id="pname" contenteditable="true">Untitled genre</h3></div>
+
+    <div class="gs-sec">
+      <div class="gs-lbl">References <span id="refcount"></span></div>
+      <div class="drop" id="drop">
+        <div class="gs-hint">Drop images here<br><span style="color:var(--text-faint)">or click to choose</span></div>
+        <input type="file" id="file" accept="image/*" multiple hidden>
+      </div>
+      <div id="refs"></div>
+      <div class="gs-hint" id="visionline" style="margin-top:8px"></div>
+      <button class="btn2 ghost sm" id="enrich" style="margin-top:8px">Run vision pass</button>
+    </div>
+
+    <div class="gs-sec">
+      <div class="gs-lbl">Knobs</div>
+      <div id="knobs"></div>
+    </div>
+  </div>
+
+  <!-- ============ CENTER: the matrix ============ -->
+  <div class="gs-col">
+    <div class="gs-top"><span class="gs-kick">Matrix</span>
+      <h3 class="gs-h">What the references agree on</h3>
+      <span class="gs-hint" style="margin-left:auto" id="mxnote"></span></div>
+    <div id="mx"></div>
+  </div>
+
+  <!-- ============ RIGHT: coherence, preview, ship ============ -->
+  <div class="gs-col gs-right">
+    <div class="gs-sec">
+      <div class="gs-lbl">Apply — the skin</div>
+      <div class="gs-hint">The genre in the combined column is the product; wearing
+        it in Vira is one application of it. Coherence below scores only the rows
+        a skin consumes.</div>
+      <div id="coh" style="margin-top:8px"></div>
+    </div>
+    <div class="gs-sec">
+      <div class="gs-lbl">Skin preview</div>
+      <div class="gs-hint">Vira components wearing the genre's grammar.</div>
+      <div class="prev" id="prev"></div>
+    </div>
+    <div class="gs-sec" id="clsec" style="display:none">
+      <div class="gs-lbl">Sub-genres in this set</div>
+      <div id="clusters"></div>
+    </div>
+    <div class="gs-sec">
+      <button class="btn2" id="install">Install as a skin</button>
+      <div class="gs-hint" id="installnote" style="margin-top:7px">
+        Writes the patch out as a real skin so it joins the picker in the Design Studio.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=(s,r)=>(r||document).querySelector(s);
+const el=(t,c,x)=>{const n=document.createElement(t);if(c)n.className=c;if(x!=null)n.textContent=x;return n;};
+const api=async(p,o)=>{const r=await fetch(p,o);if(!r.ok)throw new Error((await r.text()).slice(0,200));return r.json();};
+const post=(p,b)=>api(p,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(b||{})});
+
+let GID=new URLSearchParams(location.search).get("g")||"";
+let S=null;                                   // last state
+let popEl=null;
+
+async function boot(){
+  if(!GID){ const p=await post("/api/genre",{name:"Untitled genre"}); GID=p.id;
+    history.replaceState({},"","?g="+GID); }
+  await refresh();
+}
+async function refresh(){ S=await api("/api/genre/"+GID); render(); }
+async function patch(body){ S=await post("/api/genre/"+GID+"/patch",body); render(); }
+
+/* ---------------- left: references ---------------- */
+function renderRefs(){
+  const host=$("#refs"); host.innerHTML="";
+  const refs=S.patch.refs||[];
+  $("#refcount").textContent=`${refs.length} / ${S.max_refs}`;
+  refs.forEach(r=>{
+    const row=el("div","ref");
+    const img=document.createElement("img");
+    img.src=`/api/genre/${GID}/reference/${r.id}/image`; img.alt="";
+    row.appendChild(img);
+    const b=el("div","ref-b");
+    b.appendChild(el("div","ref-n",r.name||r.id));
+    const gain=Math.round((r.weight??1)*100);
+    b.appendChild(el("div","ref-m",`gain ${gain}%  ·  rung ${r.rung||1}`));
+    const f=document.createElement("input");
+    f.type="range";f.min=0;f.max=100;f.value=gain;f.className="fader";
+    f.addEventListener("input",()=>{b.querySelector(".ref-m").textContent=
+      `gain ${f.value}%  ·  rung ${r.rung||1}`;});
+    f.addEventListener("change",()=>patch({weights:{[r.id]:f.value/100}}));
+    b.appendChild(f);
+    // the extracted material, visible at the source: every swatch this
+    // reference brings to the table, named hueprint-style on hover
+    if((r.colors||[]).length){
+      const strip=el("div","ref-pal");
+      r.colors.forEach(c=>{const i=el("i");i.style.background=c.hex;
+        i.title=c.name+" · "+c.hex;strip.appendChild(i);});
+      b.appendChild(strip);
+    }
+    row.appendChild(b);
+    const x=el("button","ref-x","✕");
+    x.addEventListener("click",async()=>{S=await api(
+      `/api/genre/${GID}/reference/${r.id}`,{method:"DELETE"});render();});
+    row.appendChild(x);
+    host.appendChild(row);
+  });
+  $("#visionline").textContent = S.vision
+    ? "Vision pass available — adds type, depth, frame and prose rows."
+    : "Vision unavailable: " + (S.vision_why || "no model connected") +
+      ". The deterministic rows still work.";
+  $("#enrich").disabled = !S.vision || !refs.length;
+}
+
+/* ---------------- left: knobs ---------------- */
+function renderKnobs(){
+  const host=$("#knobs"); host.innerHTML="";
+  S.knob_defs.forEach(k=>{
+    const cur=S.knobs[k.key];
+    const w=el("div","knob");
+    const h=el("div","knob-h");
+    h.appendChild(el("span","knob-n",k.label));
+    h.appendChild(el("span","knob-v",String(cur)));
+    w.appendChild(h);
+    if(k.kind==="range"){
+      const f=document.createElement("input");
+      f.type="range";f.min=k.min;f.max=k.max;f.value=cur;f.className="fader";
+      f.addEventListener("input",()=>{h.querySelector(".knob-v").textContent=f.value;});
+      f.addEventListener("change",()=>patch({knobs:{[k.key]:Number(f.value)}}));
+      w.appendChild(f);
+    }else{
+      const seg=el("div","seg");
+      k.options.forEach(o=>{
+        const b=el("button",cur===o?"on":"",o);
+        b.addEventListener("click",()=>patch({knobs:{[k.key]:o}}));
+        seg.appendChild(b);
+      });
+      w.appendChild(seg);
+    }
+    w.appendChild(el("div","knob-help",k.help));
+    host.appendChild(w);
+  });
+}
+
+/* ---------------- center: the matrix ---------------- */
+function valPill(spec,v,on,onclick,tip){
+  const p=el("span","pl"+(on?" on":""));
+  if(spec.kind==="color"){ const i=el("i");i.style.background=v;p.appendChild(i);
+    p.appendChild(el("span",null,v)); }
+  else p.appendChild(el("span",null,String(v).slice(0,42)));
+  if(onclick){
+    p.title=(tip?tip+" — ":"")+(on?"in the genre · click to remove":"click to add to the genre");
+    p.addEventListener("click",onclick);
+  } else p.classList.add("na");
+  return p;
+}
+function renderMatrix(){
+  const host=$("#mx"); host.innerHTML="";
+  const refs=S.patch.refs||[];
+  if(!refs.length){
+    host.appendChild(el("div","empty",
+      "Drop reference images on the left. Every image becomes a column of material — "+
+      "click the values you want and they join the genre."));
+    $("#mxnote").textContent=""; return;
+  }
+  $("#mxnote").textContent="click a value to opt it IN — an unclicked row falls back to a labelled auto proposal";
+  const t=el("table","mx");
+  const thead=el("thead"), hr=el("tr");
+  hr.appendChild(el("th","rowh"));
+  refs.forEach(r=>{
+    const th=el("th"); const c=el("div","colh");
+    const img=document.createElement("img");
+    img.src=`/api/genre/${GID}/reference/${r.id}/image`; img.alt="";
+    c.appendChild(img);
+    c.appendChild(el("div","cn",r.name||r.id));
+    c.appendChild(el("div","cg",`gain ${Math.round((r.weight??1)*100)}%`));
+    th.appendChild(c); hr.appendChild(th);
+  });
+  const rth=el("th","res"); rth.appendChild(combinedHead());
+  hr.appendChild(rth); thead.appendChild(hr); t.appendChild(thead);
+
+  const tb=el("tbody");
+  S.groups.forEach(g=>{
+    const rowsIn=S.aspects.filter(a=>a.group===g.key);
+    if(!rowsIn.length) return;
+    const band=el("tr","band"); const bt=el("td");
+    bt.colSpan=refs.length+2;
+    bt.appendChild(el("span","gs-lbl",g.label));
+    if(g.key==="content") bt.appendChild(el("span","bn",
+      "what the images depict — real genre material; a skin ignores it"));
+    if(g.key==="rendering") bt.appendChild(el("span","bn",
+      "how they are made — the generator's swappable slots; filled by the vision pass"));
+    band.appendChild(bt); tb.appendChild(band);
+
+    rowsIn.forEach(spec=>{
+      const row=S.rows[spec.key]; if(!row) return;
+      const tr=el("tr");
+      const rh=el("td","rowh");
+      rh.appendChild(el("span",null,spec.label));
+      rh.appendChild(el("span","arity",spec.arity==="one"?"one":"multi"));
+      tr.appendChild(rh);
+
+      refs.forEach(r=>{
+        const td=el("td");
+        const box=el("div","cellv");
+        // OPT-IN: a cell OFFERS values; none are taken until clicked. Colour
+        // rows offer the reference's extracted material (every swatch, named
+        // hueprint-style); other rows offer what analysis detected. The same
+        // swatch set appears in every colour row because assigning a colour
+        // to a role is the owner's act, not a property of the image.
+        const selList=((S.patch.sel||{})[r.id]||{})[spec.key];
+        const chosen=Array.isArray(selList)?selList:[];
+        let offers=[];
+        if(spec.kind==="color"){
+          offers=(r.colors||[]).map(c=>({v:c.hex,tip:c.name}));
+        }else{
+          const raw=(r.aspects||{})[spec.key];
+          offers=(raw==null?[]:(Array.isArray(raw)?raw:[raw])).map(v=>({v:v,tip:null}));
+        }
+        if(!offers.length) box.appendChild(valPill(spec,"—",false,null,null));
+        offers.forEach(o=>{
+          const on=chosen.includes(o.v);
+          box.appendChild(valPill(spec,o.v,on,()=>{
+            const next=on?chosen.filter(x=>x!==o.v):chosen.concat([o.v]);
+            patch({sel:{[r.id]:{[spec.key]:next}}});
+          },o.tip));
+        });
+        td.appendChild(box); tr.appendChild(td);
+      });
+
+      tr.appendChild(resolvedCell(spec,row));
+      tb.appendChild(tr);
+    });
+  });
+  t.appendChild(tb); host.appendChild(t);
+}
+
+function resolvedCell(spec,row){
+  const td=el("td","res");
+  const v=row.resolved;
+  const box=el("div","resv");
+  if(v==null||(Array.isArray(v)&&!v.length)){
+    box.appendChild(el("span",null,row.conflict?"unresolved":"—"));
+  }else if(spec.kind==="color"){
+    (Array.isArray(v)?v:[v]).forEach(c=>{const i=el("i");i.style.width="14px";
+      i.style.height="14px";i.style.borderRadius="2px";i.style.display="block";
+      i.style.border="1px solid rgba(0,0,0,.35)";i.style.background=c;box.appendChild(i);});
+    if(!Array.isArray(v)) box.appendChild(el("span",null,v));
+  }else{
+    box.appendChild(el("span",null,(Array.isArray(v)?v.join(" · "):String(v)).slice(0,60)));
+  }
+  box.addEventListener("click",e=>openResolvePop(e,spec,row));
+  td.appendChild(box);
+
+  const denom=row.denominator||0;
+  const has=row.candidates.length>0;
+  if(row.source==="edited") td.appendChild(tag("edit","✎ edited by hand"));
+  else if(row.source==="picked") td.appendChild(tag("edit","✎ picked"));
+  else if(row.source==="auto"&&has){
+    // an unclicked row: the value shown is a PROPOSAL, and looks like one
+    box.classList.add("auto");
+    td.appendChild(tag("auto","auto — click values on the left to choose"));
+    if(row.conflict) td.appendChild(tag("warn",`⚠ ${row.candidates.length} candidates disagree`));
+  }else if(row.source==="selected"){
+    if(row.conflict&&row.candidates.length>1)
+      td.appendChild(tag("warn",`⚠ your selections disagree — ${row.candidates.length} answers`));
+    else td.appendChild(tag("ok",`✓ yours — from ${row.agreement||row.contributors.length} reference${(row.agreement||row.contributors.length)===1?"":"s"}`));
+  }
+  if(row.abstained.length&&row.source==="selected")
+    td.appendChild(tag("warn",`${row.abstained.length} offer nothing here`));
+  if(!spec.transfers&&has)
+    td.appendChild(tag("auto","genre-only — the skin ignores this row"));
+  return td;
+}
+function tag(k,x){return el("span","tag "+k,x);}
+
+/* ---- the COMBINED column head: the genre made visible. The latest
+   generated reference, the button that renders a new take (regenerate for
+   as long as the dials keep moving — every take is kept), and the prompt:
+   auto-composed from the matrix, or your own words typed over it. */
+function combinedHead(){
+  const w=el("div","comb");
+  w.appendChild(el("span","gs-lbl","→ combined"));
+  const gens=S.patch.generations||[];
+  const last=gens[gens.length-1];
+  if(last){
+    const img=document.createElement("img");
+    img.className="comb-img";
+    img.src=`/api/genre/${GID}/generation/${last.id}/image`;
+    img.title="the latest generated reference — click to open full size";
+    img.addEventListener("click",()=>window.open(img.src,"_blank","noopener"));
+    w.appendChild(img);
+  }else{
+    w.appendChild(el("div","comb-empty","no reference generated yet"));
+  }
+  const b=el("button","btn2 sm comb-btn",gens.length?"Regenerate":"Generate reference");
+  b.id="gen-btn";
+  if(!(S.generate||{}).ok){ b.disabled=true; b.title=(S.generate||{}).reason||""; }
+  b.addEventListener("click",doGenerate);
+  w.appendChild(b);
+  if(gens.length>1){
+    const hist=el("div","gen-hist");
+    gens.slice(0,-1).slice(-6).forEach(g=>{
+      const t=document.createElement("img");
+      t.src=`/api/genre/${GID}/generation/${g.id}/image`;
+      t.title="earlier take — click to open";
+      t.addEventListener("click",()=>window.open(t.src,"_blank","noopener"));
+      hist.appendChild(t);
+    });
+    w.appendChild(hist);
+  }
+  const pt=el("div","comb-ptoggle","prompt ▾");
+  const pbox=document.createElement("textarea");
+  pbox.className="comb-prompt";
+  pbox.placeholder=(S.gen_prompt_auto||"").slice(0,800);
+  pbox.value=S.patch.gen_prompt||"";
+  pbox.title="auto-composed from the matrix — type here to use your own words instead";
+  pbox.style.display="none";
+  pt.addEventListener("click",()=>{
+    pbox.style.display=pbox.style.display==="none"?"block":"none";});
+  pbox.addEventListener("change",()=>patch({gen_prompt:pbox.value}));
+  w.appendChild(pt); w.appendChild(pbox);
+  return w;
+}
+async function doGenerate(){
+  const b=$("#gen-btn"); if(!b||b.disabled)return;
+  b.disabled=true; b.textContent="Generating…";
+  try{ const out=await post(`/api/genre/${GID}/generate`,{});
+    S=out.state; render(); }
+  catch(e){ b.disabled=false; b.textContent="Regenerate";
+    alert("Generation failed: "+e.message); }
+}
+
+/* the resolved column is an INPUT: pick a candidate, type a value, or clear */
+function openResolvePop(e,spec,row){
+  closePop();
+  const p=el("div","pop");
+  p.appendChild(el("div","gs-lbl","Set "+spec.label));
+  row.candidates.slice(0,6).forEach(c=>{
+    const r=el("div","pr");
+    if(spec.kind==="color"){const i=el("i");i.style.width="12px";i.style.height="12px";
+      i.style.background=c.value;i.style.borderRadius="2px";i.style.display="block";r.appendChild(i);}
+    r.appendChild(el("span",null,`${c.value}  ·  ${Math.round(c.share*100)}%`));
+    r.addEventListener("click",()=>{closePop();patch({picks:{[spec.key]:c.value}});});
+    p.appendChild(r);
+  });
+  const inp=document.createElement("input");
+  inp.placeholder = spec.kind==="color" ? "#rrggbb"
+    : spec.options ? spec.options.join(" / ")
+    : "type a value";
+  inp.addEventListener("keydown",ev=>{
+    if(ev.key!=="Enter")return;
+    const val=inp.value.trim(); if(!val)return;
+    closePop();
+    patch({overrides:{[spec.key]: spec.arity==="multi"? val.split("·").map(s=>s.trim()) : val}});
+  });
+  p.appendChild(inp);
+  const clr=el("div","pr","↺ back to computed");
+  clr.addEventListener("click",()=>{closePop();
+    patch({picks:{[spec.key]:null},overrides:{[spec.key]:null}});});
+  p.appendChild(clr);
+  document.body.appendChild(p);
+  const rect=e.currentTarget.getBoundingClientRect();
+  p.style.left=Math.min(window.innerWidth-p.offsetWidth-12,rect.left)+"px";
+  p.style.top=Math.min(window.innerHeight-p.offsetHeight-12,rect.bottom+6)+"px";
+  popEl=p;
+  setTimeout(()=>document.addEventListener("pointerdown",outside),0);
+}
+function outside(e){ if(popEl&&!popEl.contains(e.target)) closePop(); }
+function closePop(){ if(popEl){popEl.remove();popEl=null;
+  document.removeEventListener("pointerdown",outside);} }
+
+/* ---------------- right: coherence, preview, clusters ---------------- */
+function renderRight(){
+  const c=S.coherence, host=$("#coh"); host.innerHTML="";
+  const n=Math.round((c.score||0)*8);
+  const bar=el("div","coh-bar");
+  for(let i=0;i<8;i++){const i2=el("i");
+    if(i<n) i2.className=c.score>=0.6?"on":"warn"; bar.appendChild(i2);}
+  host.appendChild(bar);
+  host.appendChild(el("div","gs-hint",
+    `${c.label} — ${Math.round((c.score||0)*100)}% across ${c.rows_scored} rows that transfer`));
+  // evidence is reported separately from agreement on purpose: a row one
+  // reference answers is not proof the set agrees, it is proof of nothing.
+  const ev=Math.round((c.evidence||0)*100);
+  const evline=el("div","gs-hint",`evidence ${ev}% — how many references actually had an opinion`);
+  if(ev<70) evline.style.color="var(--oxidized)";
+  host.appendChild(evline);
+  if(c.thin&&c.thin.length){
+    const t=el("div","gs-hint",
+      `thin rows: ${c.thin.join(", ")}` + (S.vision?" — run the vision pass":
+        " — connect a model to read these"));
+    t.style.color="var(--oxidized)"; host.appendChild(t);
+  }
+  if(c.conflicts&&c.conflicts.length)
+    host.appendChild(el("div","gs-hint",
+      `${c.conflicts.length} conflicting row${c.conflicts.length>1?"s":""}: ${c.conflicts.join(", ")}`));
+
+  // live preview — the compiled tokens applied to a few real components
+  const pv=$("#prev");
+  pv.innerHTML="";
+  const st=Object.entries(S.tokens||{}).map(([k,v])=>`${k}:${v}`).join(";");
+  pv.setAttribute("style",st+";border:1px solid var(--line)");
+  const m=S.manifest||{};
+  const h=el("div",null,m.genre||"Untitled");
+  h.style.cssText="font-size:15px;color:var(--text-head);margin-bottom:3px";
+  pv.appendChild(h);
+  const k=el("div",null,"GENRE · DRAFT");
+  k.style.cssText="font-family:var(--mono);font-size:8.5px;letter-spacing:.2em;color:var(--accent-bright);margin-bottom:9px";
+  pv.appendChild(k);
+  const card=el("div",null);
+  card.style.cssText="border:1px solid var(--line);border-radius:var(--radius);padding:9px;margin-bottom:8px;background:var(--bg-card)";
+  const t1=el("div",null,"Reply to Morgan");
+  t1.style.cssText="color:var(--text-head);font-weight:600;font-size:12px";
+  const t2=el("div",null,"unanswered 2 days · they owe you the deck");
+  t2.style.cssText="color:var(--text-dim);font-size:11px;margin-top:2px";
+  card.appendChild(t1);card.appendChild(t2);pv.appendChild(card);
+  const btn=el("span",null,"Primary action");
+  btn.style.cssText="display:inline-block;font-family:var(--mono);font-size:9px;letter-spacing:.1em;"+
+    "text-transform:uppercase;background:var(--accent);color:var(--accent-contrast);"+
+    "border-radius:var(--radius);padding:6px 12px";
+  pv.appendChild(btn);
+
+  const cs=S.clusters||[];
+  $("#clsec").style.display = cs.length>1 ? "" : "none";
+  const ch=$("#clusters"); ch.innerHTML="";
+  cs.forEach(cl=>{
+    const d=el("div","cl");
+    d.appendChild(el("div","cl-h",cl.names.join(" + ")));
+    d.appendChild(el("div","cl-m",
+      `${cl.coherence.label} · ${Math.round(cl.coherence.score*100)}%`));
+    ch.appendChild(d);
+  });
+}
+
+function render(){ renderRefs(); renderKnobs(); renderMatrix(); renderRight();
+  $("#pname").textContent=S.patch.name||"Untitled genre"; }
+
+/* ---------------- uploads ---------------- */
+async function addFiles(list){
+  for(const f of Array.from(list).slice(0,S.max_refs)){
+    if(!f.type.startsWith("image/")) continue;
+    const url=await new Promise(res=>{const r=new FileReader();
+      r.onload=()=>res(r.result);r.readAsDataURL(f);});
+    try{ const out=await post(`/api/genre/${GID}/reference`,{data_url:url,name:f.name});
+      S=out.state; render(); }
+    catch(e){ alert("Could not add "+f.name+": "+e.message); }
+  }
+}
+const drop=$("#drop");
+drop.addEventListener("click",()=>$("#file").click());
+$("#file").addEventListener("change",e=>addFiles(e.target.files));
+["dragenter","dragover"].forEach(k=>drop.addEventListener(k,e=>{
+  e.preventDefault();drop.classList.add("over");}));
+["dragleave","drop"].forEach(k=>drop.addEventListener(k,e=>{
+  e.preventDefault();drop.classList.remove("over");}));
+drop.addEventListener("drop",e=>addFiles(e.dataTransfer.files));
+
+$("#pname").addEventListener("blur",()=>patch({name:$("#pname").textContent.trim()}));
+$("#enrich").addEventListener("click",async()=>{
+  const b=$("#enrich"); b.disabled=true; b.textContent="Reading images…";
+  await post(`/api/genre/${GID}/enrich-all`);
+  let n=0; const t=setInterval(async()=>{
+    await refresh(); n++;
+    if(n>20||(S.patch.refs||[]).every(r=>r.rung===2)){clearInterval(t);
+      b.textContent="Run vision pass"; b.disabled=!S.vision;}
+  },2500);
+});
+$("#install").addEventListener("click",async()=>{
+  const b=$("#install"); b.disabled=true;
+  try{ const out=await post(`/api/genre/${GID}/install`);
+    $("#installnote").textContent=`Installed as "${out.name}". Open the Design Studio to apply it.`;
+  }catch(e){ $("#installnote").textContent="Could not install: "+e.message; }
+  b.disabled=false;
+});
+
+boot().catch(e=>{document.body.innerHTML=
+  '<div class="empty">Could not open the studio: '+e.message+"</div>";});
+</script>
+</body>
+</html>
