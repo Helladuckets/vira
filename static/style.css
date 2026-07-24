@@ -1838,6 +1838,14 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
     outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
     outline-offset: 2px;
   }
+  /* Each pass shows a module the way it will ACTUALLY look in that state. A
+     parked tile has no close button at runtime, so the park pass hides it too
+     — otherwise you tune the tile while looking at a control it will not have
+     (and one stray click removes the module instead of moving it). Zoom and
+     the resize handles stay: those are what you are there to set. The grow
+     pass keeps the close button on the card being staged, because a grown
+     card really does have one. */
+  body.layout-editing:not(.layout-edit-grow) .fwin-close { display: none; }
   .layout-editbar {
     position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
     z-index: 3800; display: flex; align-items: center; gap: 16px;
