@@ -6344,6 +6344,7 @@ function viewLoad(id) {
   if (id === "design") {
     const f = $("#design-frame");          // load the studio on first open
     if (f && !f.getAttribute("src")) f.src = "/design/studio.html";
+    loadDesignSkins().catch(() => {});     // the skins picker above the frame
   }
   if (id === "reader") loadReader().catch(() => {});
   if (id === "subsviz") loadSubsViz().catch(() => {});
@@ -6387,6 +6388,75 @@ function openApp(id) {
   viewLoad(id);
   window.scrollTo(0, 0);
   mdockRefresh();   // the access bar lights whichever of its five is up
+}
+
+// ----- Design Studio: the skins picker -----
+// A skin is a genre-compiled jumping-off point. Picking one rewrites the
+// app's :root tokens + swaps the glass layer server-side, then reloads Vira
+// wearing it — after which the studio below can tune it. New skins ship as
+// tracked data (static/skins/), so the list grows over the update channel.
+
+async function loadDesignSkins() {
+  const row = $("#skins-row");
+  if (!row) return;
+  let data;
+  try { data = await api("/api/skins"); } catch { return; }
+  row.innerHTML = "";
+  (data.skins || []).forEach((s) => row.appendChild(skinCard(s, data.active)));
+}
+
+function skinCard(s, activeId) {
+  const active = s.id === activeId;
+  const card = el("div", "skin-card" + (active ? " active" : ""));
+  const sw = el("div", "skin-swatch");
+  (s.swatch || []).slice(0, 6).forEach((c) => {
+    const chip = el("span", "swatch-chip");
+    chip.style.background = c;
+    sw.appendChild(chip);
+  });
+  card.appendChild(sw);
+  card.appendChild(el("div", "skin-name", s.name));
+  const meta = [s.genre, s.register].filter(Boolean).join(" · ");
+  if (meta) card.appendChild(el("div", "skin-meta", meta));
+  if (s.tagline) card.appendChild(el("div", "skin-tag", s.tagline));
+  const foot = el("div", "skin-foot");
+  if (active) {
+    foot.appendChild(el("span", "skin-badge", "Active"));
+  } else {
+    const b = el("button", "skin-apply", "Apply");
+    b.addEventListener("click", () => armSkinApply(foot, s));
+    foot.appendChild(b);
+  }
+  card.appendChild(foot);
+  return card;
+}
+
+// Applying restyles Vira and reloads, so it takes a second, deliberate click.
+// The confirm is INLINE on the card — anchored to the button you clicked, not
+// a toast at the bottom of the screen.
+function armSkinApply(foot, s) {
+  foot.textContent = "";
+  foot.classList.add("confirm");
+  foot.appendChild(el("span", "skin-confirm-q", "Restyle Vira and reload?"));
+  const yes = el("button", "skin-apply", "Confirm");
+  yes.addEventListener("click", () => doApplySkin(s));
+  const no = el("button", "skin-cancel", "Cancel");
+  no.addEventListener("click", () => loadDesignSkins());   // re-render restores the button
+  foot.appendChild(yes);
+  foot.appendChild(no);
+}
+
+// A skin is a local look: apply just rewrites this machine's stylesheet, then
+// the app reloads wearing it. Nothing is committed or pushed anywhere.
+async function doApplySkin(s) {
+  try {
+    toast("Applying " + s.name + "…");
+    await post("/api/skins/" + encodeURIComponent(s.id) + "/apply", {});
+    // reload to pick up the rewritten style.css + skin-active.css
+    setTimeout(() => location.reload(), 450);
+  } catch (e) {
+    toast("Couldn't apply the skin: " + ((e && e.message) || e));
+  }
 }
 
 // ----- vault note focus panel (Brain citation chips + person-page rows) -----

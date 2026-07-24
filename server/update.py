@@ -113,8 +113,14 @@ def apply():
     dirty = [l for l in _git("status", "--porcelain").stdout.splitlines()
              if l and not l.startswith("??")]
     if dirty:
-        raise ValueError(f"{len(dirty)} tracked files modified locally — "
-                         "commit or stash them, then update")
+        # an applied skin modifies exactly these two tracked files; name the
+        # one-click fix (reset to Taurid) instead of a generic stash nudge.
+        skin_files = {"static/style.css", "static/skin-active.css"}
+        only_skin = all(l[3:].strip() in skin_files for l in dirty)
+        hint = (" — a Design Studio skin is applied; apply the Taurid skin to "
+                "restore the stock files, then update"
+                if only_skin else " — commit or stash them, then update")
+        raise ValueError(f"{len(dirty)} tracked files modified locally{hint}")
     pull = _git("pull", "--ff-only", timeout=90)
     if pull.returncode != 0:
         raise ValueError("git pull failed: "

@@ -17,6 +17,9 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="stylesheet" href="/style.css">
+<!-- the glass layer of the currently applied skin (empty for the default
+     Taurid skin); the skins picker in the Design Studio overwrites it -->
+<link rel="stylesheet" href="/skin-active.css">
 </head>
 <body>
 <!-- Left nav drawer (mobile): swipe in from the left edge, or tap the brand.
@@ -388,6 +391,16 @@
       <a class="fchip sm newtab" id="design-fulltab" href="/design/studio.html"
          target="_blank" rel="noopener"
          style="margin-left:auto; text-decoration:none">Open full tab</a>
+    </div>
+    <!-- Skins: genre-compiled jumping-off points. Pick one up here and Vira
+         reloads wearing it; then tune it in the studio below. New skins ship
+         as tracked data (static/skins/) and arrive over the update channel. -->
+    <div class="skins-strip" id="skins-strip">
+      <div class="skins-head">
+        <span class="skins-kicker">Skins</span>
+        <span class="skins-sub">a genre to wear — pick one, then tune it in the studio below</span>
+      </div>
+      <div class="skins-row" id="skins-row"></div>
     </div>
     <iframe class="design-frame" id="design-frame" title="Design Studio —
             the design-foundation specimen book with live token editing"

@@ -2716,6 +2716,67 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 #win-design .fwin-body { display: flex; flex-direction: column; overflow: hidden; }
 #win-design #view-design { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 #win-design .design-frame { flex: 1; height: auto; min-height: 260px; }
+/* the skins strip sits above the studio frame and never grows into it */
+#win-design .skins-strip { flex: none; }
+
+/* ---------- the skins picker (top of the Design Studio module) ---------- */
+/* every value reads a token, so the picker wears whatever skin is applied */
+.skins-strip {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-card); padding: 12px 14px; margin: 0 0 12px;
+}
+.skins-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 11px; }
+.skins-kicker {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.18em;
+  text-transform: uppercase; color: var(--accent-bright);
+}
+.skins-sub { font-size: 12px; color: var(--text-dim); }
+.skins-row {
+  display: flex; gap: 12px; overflow-x: auto; padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.skin-card {
+  flex: 0 0 216px; min-width: 216px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg); padding: 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.skin-card.active {
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+.skin-swatch {
+  display: flex; height: 28px; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.swatch-chip { flex: 1 1 auto; }
+.skin-name { font-size: 14px; font-weight: 600; color: var(--text-head); }
+.skin-meta {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.12em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.skin-tag { font-size: 12px; color: var(--text-dim); line-height: 1.35; }
+.skin-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+.skin-foot.confirm { flex-wrap: wrap; }
+.skin-confirm-q { flex-basis: 100%; font-size: 12px; color: var(--text-dim); }
+.skin-apply {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--accent-contrast);
+  background: var(--accent); border: 0; border-radius: var(--radius);
+  padding: 6px 15px; cursor: pointer;
+}
+.skin-apply:hover { background: var(--accent-bright); }
+.skin-cancel {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-dim);
+  background: none; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 6px 12px; cursor: pointer;
+}
+.skin-cancel:hover { color: var(--text); border-color: var(--accent-line); }
+.skin-badge {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
+  text-transform: uppercase; color: var(--accent-bright);
+  border: 1px solid var(--accent-line); border-radius: var(--radius); padding: 5px 12px;
+}
 
 /* ---------- reader (launcher window for personal reading-room pages) ---------- */
 .reader-pages { display: flex; gap: 6px; flex-wrap: wrap; margin-left: 10px; }
