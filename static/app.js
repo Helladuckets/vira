@@ -10626,6 +10626,11 @@ const growRects = {};          // id -> {x,y,w,h}: this layout's saved GROWN rec
 // home to its tile — the reported bug.
 const slotZoom = {};           // id -> zoom while PARKED
 const growZoom = {};           // id -> zoom while GROWN
+// Scroll belongs to the state for the same reason zoom does: a parked tile is
+// a small window onto a long list, and WHICH part of it you want showing is
+// part of arranging the layout, not an accident of where you last scrolled.
+const slotScroll = {};         // id -> scrollTop while PARKED
+const growScroll = {};         // id -> scrollTop while GROWN
 let stageComputed = false;     // parks came from computeSlots (reflow on resize)
 let stageBase = null;          // the saved layout behind the stage (re-scaling)
 
@@ -10644,6 +10649,8 @@ let editGrows = {};            // draft per-module grown rects
 let editParks = {};            // parked rects held while tuning the grow pass
 let editParkZoom = {};         // draft zoom per module while PARKED
 let editGrowZoom = {};         // draft zoom per module while GROWN
+let editParkScroll = {};       // draft scrollTop per module while PARKED
+let editGrowScroll = {};       // draft scrollTop per module while GROWN
 let editTarget = null;         // the one module shown grown during the grow pass
 
 function layoutState() {
@@ -10694,6 +10701,31 @@ function persistZoom(id, z) {
 // paint a window's content zoom without it counting as an edit
 function applyWinZoom(id, z) { winState[id]?.el?._zoom?.set(z || 1); }
 
+const winBody = (id) => winState[id]?.el?.querySelector(".fwin-body");
+function readWinScroll(id) { return Math.round(winBody(id)?.scrollTop || 0); }
+
+// Restoring scroll has to outlast the content arriving: a view often loads (or
+// re-renders) after the layout is applied, which resets scrollTop to 0. So set
+// it now and again once the content has had a chance to land, and stop early
+// if the owner scrolls in the meantime rather than yanking the view back.
+function applyWinScroll(id, s) {
+  const body = winBody(id);
+  if (!body) return;
+  const target = s || 0;
+  body.scrollTop = target;
+  if (!target) return;
+  let tries = 0;
+  const settle = () => {
+    if (++tries > 6) return;
+    if (Math.abs(body.scrollTop - target) > 2) {
+      if (body.scrollTop !== 0 && tries > 1) return;   // the owner has scrolled
+      body.scrollTop = target;
+    }
+    setTimeout(settle, 120);
+  };
+  setTimeout(settle, 60);
+}
+
 // ---- named saved layouts: snapshots of the current window arrangement the
 // owner captures from the layout menu (new name) or overwrites in place.
 // A snapshot is per-window {x,y,w,h,open} — the PARKED rect — plus an optional
@@ -10736,9 +10768,10 @@ function winRect(node) {
 // `parks` overrides the live rect for a window — REQUIRED when the grow pass
 // is on screen, because then the live rects are grow staging, not parks (and
 // reading them back mid-animation would silently save the wrong geometry).
-function captureLayout(grows, parks, zooms) {
+function captureLayout(grows, parks, zooms, scrolls) {
   const wins = {};
   const pz = (zooms && zooms.park) || {}, gz = (zooms && zooms.grow) || {};
+  const ps = (scrolls && scrolls.park) || {}, gs = (scrolls && scrolls.grow) || {};
   Object.keys(winState).forEach((id) => {
     const w = winState[id];
     if (w.open) {
@@ -10747,10 +10780,12 @@ function captureLayout(grows, parks, zooms) {
       wins[id] = { open: false };
     }
     if (pz[id] && pz[id] !== 1) wins[id].z = pz[id];
+    if (ps[id]) wins[id].s = ps[id];
     const g = grows && grows[id];
     if (g) {
       wins[id].grow = roundRect(g);
       if (gz[id] && gz[id] !== 1) wins[id].grow.z = gz[id];
+      if (gs[id]) wins[id].grow.s = gs[id];
     }
   });
   return wins;
@@ -10771,6 +10806,15 @@ function layoutZooms(l) {
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
     if (w.z) park[id] = w.z;
     if (w.grow?.z) grow[id] = w.grow.z;
+  });
+  return { park, grow };
+}
+
+function layoutScrolls(l) {
+  const park = {}, grow = {};
+  Object.entries(l?.wins || {}).forEach(([id, w]) => {
+    if (w.s) park[id] = w.s;
+    if (w.grow?.s) grow[id] = w.grow.s;
   });
   return { park, grow };
 }
@@ -10814,13 +10858,16 @@ function layoutRects(l) {
   const s = layoutScale(l);
   const parks = {}, grows = {};
   const zooms = { park: {}, grow: {} };
+  const scrolls = { park: {}, grow: {} };
   Object.entries(l.wins || {}).forEach(([id, snap]) => {
     if (snap.open) parks[id] = scaleRect(roundRect(snap), s);
     if (snap.grow) grows[id] = scaleRect(roundRect(snap.grow), s);
     if (snap.z) zooms.park[id] = snap.z;
     if (snap.grow?.z) zooms.grow[id] = snap.grow.z;
+    if (snap.s) scrolls.park[id] = snap.s;
+    if (snap.grow?.s) scrolls.grow[id] = snap.grow.s;
   });
-  return { parks, grows, zooms };
+  return { parks, grows, zooms, scrolls };
 }
 
 // What is on screen right now, expressed as parks + grows. While a stage
@@ -10838,23 +10885,38 @@ function currentArrangement() {
   // PARK — the reported "I got the opposite result".
   if (editing) {
     captureEditTarget();
+    // Scroll fires no change event, so unlike zoom it has to be READ at
+    // capture time — in the park pass the tiles on screen are the parked
+    // state, so that is where their scroll positions come from.
+    const pScroll = { ...editParkScroll };
+    if (editPass === "park") {
+      Object.keys(winState).forEach((id) => {
+        if (winState[id].open) pScroll[id] = readWinScroll(id);
+      });
+    }
     return { stage: editStage,
              grows: editStage ? { ...editGrows } : undefined,
              parks: editPass === "grow" ? { ...editParks } : undefined,
-             zooms: { park: { ...editParkZoom }, grow: { ...editGrowZoom } } };
+             zooms: { park: { ...editParkZoom }, grow: { ...editGrowZoom } },
+             scrolls: { park: pScroll, grow: { ...editGrowScroll } } };
   }
   if (layoutMode !== "stage") return {};
   const parks = { ...slotRects };
   const grows = { ...growRects };
   const zooms = { park: { ...slotZoom }, grow: { ...growZoom } };
+  const scrolls = { park: { ...slotScroll }, grow: { ...growScroll } };
+  Object.keys(slotRects).forEach((id) => {
+    if (winState[id]?.open && !grown.has(id)) scrolls.park[id] = readWinScroll(id);
+  });
   grownOrder.forEach((id) => {
     if (winState[id]?.open) {
       grows[id] = roundRect(winRect(winState[id].el));
       const z = winState[id].el._zoom?.get();
       if (z) zooms.grow[id] = z;
+      scrolls.grow[id] = readWinScroll(id);
     }
   });
-  return { parks, grows, zooms };
+  return { parks, grows, zooms, scrolls };
 }
 
 function saveNewLayout(name, opts) {
@@ -10863,7 +10925,7 @@ function saveNewLayout(name, opts) {
   const cur = currentArrangement();
   const o = { stage: layoutMode === "stage", ...cur, ...(opts || {}) };
   list.push({ id, name, stage: o.stage !== false, vw: innerWidth, vh: innerHeight,
-              wins: captureLayout(o.grows, o.parks, o.zooms) });
+              wins: captureLayout(o.grows, o.parks, o.zooms, o.scrolls) });
   persistSavedLayouts(list);
   return id;
 }
@@ -10875,7 +10937,8 @@ function overwriteLayout(id, opts) {
   const cur = currentArrangement();
   const o = { ...cur, ...(opts || {}) };
   it.wins = captureLayout(o.grows || layoutGrows(it), o.parks,
-                          o.zooms || layoutZooms(it));
+                          o.zooms || layoutZooms(it),
+                          o.scrolls || layoutScrolls(it));
   it.vw = innerWidth;
   it.vh = innerHeight;
   if (o.stage !== undefined) it.stage = o.stage;
@@ -10910,7 +10973,7 @@ function applySavedLayout(id, animate) {
     winState[wid].el.classList.remove("fwin-locked", "fwin-grown");
   });
   const stage = layoutIsStage(it);
-  const { parks, grows, zooms } = layoutRects(it);   // scaled to this viewport
+  const { parks, grows, zooms, scrolls } = layoutRects(it);  // scaled to this viewport
   Object.keys(winState).forEach((wid) => {
     const w = winState[wid];
     const snap = it.wins[wid];
@@ -10919,6 +10982,7 @@ function applySavedLayout(id, animate) {
       if (!w.open) openWindow(wid); else viewLoad(wid);
       setWinRect(w.el, parks[wid], animate);
       applyWinZoom(wid, stage ? zooms.park[wid] : (zooms.park[wid] ?? w.el._zoom?.get()));
+      if (stage) applyWinScroll(wid, scrolls.park[wid]);
       // a stage layout is a template laid OVER the desk — never write it back
       if (!stage) saveWinState(wid, parks[wid]);
     } else if (w.open) {
@@ -10927,7 +10991,7 @@ function applySavedLayout(id, animate) {
   });
   activeLayout = "saved:" + id;
   if (stage) {
-    enterStage({ parks, grows, zooms, base: it, computed: false, animate });
+    enterStage({ parks, grows, zooms, scrolls, base: it, computed: false, animate });
     return;
   }
   updateLayoutBtn();
@@ -10965,6 +11029,7 @@ function startLayoutEdit(kind, savedId) {
                  grown: grownOrder.slice(), wins: captureLayout(),
                  parks: { ...slotRects }, grows: { ...growRects },
                  zooms: { park: { ...slotZoom }, grow: { ...growZoom } },
+                 scrolls: { park: { ...slotScroll }, grow: { ...growScroll } },
                  computed: stageComputed };
   editing = true;
   editPass = "park";
@@ -10981,6 +11046,9 @@ function startLayoutEdit(kind, savedId) {
   const zs = saved ? layoutZooms(saved) : { park: {}, grow: {} };
   editParkZoom = zs.park;
   editGrowZoom = zs.grow;
+  const ss = saved ? layoutScrolls(saved) : { park: {}, grow: {} };
+  editParkScroll = ss.park;
+  editGrowScroll = ss.grow;
   layoutMode = "freeform";
   stageComputed = false;
   document.body.classList.remove("layout-stage");
@@ -11011,6 +11079,8 @@ function discardEdit() {
   editParks = {};
   editParkZoom = {};
   editGrowZoom = {};
+  editParkScroll = {};
+  editGrowScroll = {};
   Object.keys(winState).forEach((id) =>
     winState[id].el.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning"));
   document.body.classList.remove("layout-editing", "layout-edit-grow");
@@ -11032,6 +11102,7 @@ function setEditPass(pass) {
       editParks[id] = roundRect(winRect(winState[id].el));
       const z = winState[id].el._zoom?.get();     // and its PARKED zoom
       if (z && z !== 1) editParkZoom[id] = z; else delete editParkZoom[id];
+      editParkScroll[id] = readWinScroll(id);     // and where it is scrolled to
     });
     editPass = "grow";
     editTarget = null;
@@ -11048,6 +11119,7 @@ function setEditPass(pass) {
       if (editParks[id] && winState[id].open) {
         setWinRect(node, editParks[id], true);
         applyWinZoom(id, editParkZoom[id]);
+        applyWinScroll(id, editParkScroll[id]);
       }
     });
   }
@@ -11068,6 +11140,7 @@ function lockEditParks(animate) {
       node.classList.remove("fwin-grown", "fwin-tuning");
       if (editParks[id]) setWinRect(node, editParks[id], animate);
       applyWinZoom(id, editParkZoom[id]);
+      applyWinScroll(id, editParkScroll[id]);
     }
   });
 }
@@ -11079,6 +11152,7 @@ function captureEditTarget() {
   editGrows[editTarget] = roundRect(winRect(winState[editTarget].el));
   const z = winState[editTarget].el._zoom?.get();
   if (z && z !== 1) editGrowZoom[editTarget] = z; else delete editGrowZoom[editTarget];
+  editGrowScroll[editTarget] = readWinScroll(editTarget);
 }
 
 // switch which module's grown position is being staged
@@ -11090,6 +11164,7 @@ function editGrowTarget(id) {
   const node = winState[id].el;
   setWinRect(node, editGrows[id] || stageRect(0), true);
   applyWinZoom(id, editGrowZoom[id]);      // show it at its GROWN zoom
+  applyWinScroll(id, editGrowScroll[id]);
   focusWin(node);
   showEditBar();
 }
@@ -11133,7 +11208,7 @@ function cancelEdit() {
     grownOrder = (ret.grown || []).filter((id) => winState[id]?.open);
     grownOrder.forEach((id) => grown.add(id));
     enterStage({ parks: ret.parks, grows: ret.grows, zooms: ret.zooms,
-                 computed: ret.computed, animate: true });
+                 scrolls: ret.scrolls, computed: ret.computed, animate: true });
     return;
   }
   layoutMode = "freeform";
@@ -11259,6 +11334,7 @@ function applyStage(animate, reflow) {
       node.classList.remove("fwin-grown");
       setWinRect(node, slotRects[id], animate);
       applyWinZoom(id, slotZoom[id]);              // its PARKED zoom
+      applyWinScroll(id, slotScroll[id]);          // showing the PARKED part
     } else {
       // a visitor: no park, so it is never locked into the frame
       node.classList.remove("fwin-locked", "fwin-grown");
@@ -11268,6 +11344,7 @@ function applyStage(animate, reflow) {
     if (!winState[id]?.open) return;
     setWinRect(winState[id].el, growTarget(id, k), animate);
     applyWinZoom(id, growZoom[id]);                // its GROWN zoom
+    applyWinScroll(id, growScroll[id]);
   });
 }
 
@@ -11277,24 +11354,36 @@ function growTile(id) {
   grown.add(id);
   grownOrder.push(id);
   const node = winState[id].el;
+  slotScroll[id] = readWinScroll(id);       // remember where the tile was showing
   node.classList.remove("fwin-locked");
   node.classList.add("fwin-grown");
   setWinRect(node, growTarget(id, grownOrder.length - 1), true);
-  applyWinZoom(id, growZoom[id]);          // open at its GROWN zoom
+  applyWinZoom(id, growZoom[id]);           // open at its GROWN zoom
+  applyWinScroll(id, growScroll[id]);
   focusWin(node);
   saveLayout();
 }
 
+// Sending a card home REMEMBERS where you had it, for this session: if you
+// move or resize an open card and close it, it comes back where you put it —
+// the ordinary expectation for a window. It is session-live only, so
+// re-applying the layout (or a reload) resets it to the saved staging; hitting
+// Save is what makes it the layout's own grow position.
 function retreatTile(id) {
   if (!grown.has(id)) return;
   grown.delete(id);
   grownOrder = grownOrder.filter((x) => x !== id);
   const node = winState[id].el;
+  growRects[id] = roundRect(winRect(node));
+  const gz = node._zoom?.get();
+  if (gz && gz !== 1) growZoom[id] = gz; else delete growZoom[id];
+  growScroll[id] = readWinScroll(id);
   node.classList.remove("fwin-grown");
   node.classList.add("fwin-locked");
   if (slotRects[id]) setWinRect(node, slotRects[id], true);
   else applyStage(true, stageComputed);
   applyWinZoom(id, slotZoom[id]);          // back to its PARKED zoom
+  applyWinScroll(id, slotScroll[id]);
   saveLayout();
 }
 
@@ -11325,13 +11414,17 @@ function enterStage(opts) {
   // rects; re-scaling the already-scaled ones would compound every resize
   stageBase = o.base || null;
   document.body.classList.add("layout-stage");
-  [slotRects, growRects, slotZoom, growZoom].forEach((m) =>
+  [slotRects, growRects, slotZoom, growZoom, slotScroll, growScroll].forEach((m) =>
     Object.keys(m).forEach((k) => delete m[k]));
   if (o.parks) Object.assign(slotRects, o.parks);
   if (o.grows) Object.assign(growRects, o.grows);
   if (o.zooms) {
     Object.assign(slotZoom, o.zooms.park || {});
     Object.assign(growZoom, o.zooms.grow || {});
+  }
+  if (o.scrolls) {
+    Object.assign(slotScroll, o.scrolls.park || {});
+    Object.assign(growScroll, o.scrolls.grow || {});
   }
   applyStage(o.animate, stageComputed || !o.parks);
   updateLayoutBtn();
@@ -11759,9 +11852,9 @@ window.addEventListener("resize", () => {
     if (!stageBase) return;
     // re-scale from the ORIGINAL saved rects (never the on-screen ones, which
     // are already scaled — that would compound on every resize)
-    const { parks, grows, zooms } = layoutRects(stageBase);
+    const { parks, grows, zooms } = layoutRects(stageBase);   // scroll unchanged
     [slotRects, growRects, slotZoom, growZoom].forEach((m) =>
-      Object.keys(m).forEach((k) => delete m[k]));
+      Object.keys(m).forEach((k) => delete m[k]));   // scroll is unaffected by scale
     Object.assign(slotRects, parks);
     Object.assign(growRects, grows);
     Object.assign(slotZoom, zooms.park);
@@ -11790,8 +11883,9 @@ function initLayout() {
     if (saved && layoutIsStage(saved)) {
       // re-arm the saved stage: parks and grow staging come off the snapshot,
       // scaled to whatever viewport this window happens to be at now
-      const { parks, grows, zooms } = layoutRects(saved);
-      enterStage({ parks, grows, zooms, base: saved, computed: false, animate: false });
+      const { parks, grows, zooms, scrolls } = layoutRects(saved);
+      enterStage({ parks, grows, zooms, scrolls, base: saved,
+                   computed: false, animate: false });
     } else {
       // a stage with no layout behind it (the old computed ring): rebuild it
       enterStage({ computed: true, animate: false });
