@@ -2979,7 +2979,12 @@ function editIdea(box, it) {
 }
 
 // Flat sort for the non-grouped orderings; returns null for "grouped"
-// so renderIdeas falls back to the active-first grouped layout.
+// so renderIdeas falls back to the active-first grouped layout. Sorts
+// anything carrying text/created/updated — renderIdeas feeds it the
+// MERGED queue (idea wrappers + journal "needs a session" notes), so
+// every sort governs the whole queue, not just the ideas underneath a
+// pinned lane (the owner's 2026-07-24 correction: a sort that skips
+// part of the list is not a sort).
 function sortedIdeas(source) {
   const items = (source || ideasCache).slice();
   switch (ideaSort) {
@@ -3006,37 +3011,47 @@ function renderIdeas() {
   const list = $("#ideas-list");
   if (!list) return;
   list.innerHTML = "";
-  if (!ideasCache.length) {
-    list.appendChild(el("div", "empty left", "No ideas yet — add one above."));
-    return;
-  }
+  // Journal "needs a session" notes are queue items like any other — they
+  // sort WITH the ideas under whatever ordering is active, instead of
+  // squatting above the list in their own pinned lane.
+  const notes = queueNotes();
   const scoped = filteredIdeas();
-  if (!scoped.length) {
-    list.appendChild(el("div", "empty left",
-      "No ideas for " + ideaProject + " yet — add one above."));
+  if (!scoped.length && !notes.length) {
+    list.appendChild(el("div", "empty left", ideasCache.length
+      ? "No ideas for " + ideaProject + " yet — add one above."
+      : "No ideas yet — add one above."));
     return;
   }
   const isParked = (i) => i.status === "done" || i.status === "dropped";
-  const flat = sortedIdeas(scoped);
+  const wrap = (i) => ({ kind: "idea", it: i, text: i.text || "",
+                         created: i.created, updated: i.updated });
+  const merged = scoped.map(wrap).concat(notes);
+  const isParkedW = (w) => w.kind === "idea" && isParked(w.it);
+  const node = (w) => w.kind === "note"
+    ? queueNoteRow(w.e, w.u) : ideaRow(w.it);
+  const flat = sortedIdeas(merged);
   if (flat) {
     // Completed items fold here too (collapsed by default), so the queue
     // leads with active work in EVERY sort — not just the grouped default.
-    flat.filter((i) => !isParked(i)).forEach((it) =>
-      list.appendChild(ideaRow(it)));
-    appendParkedFold(list, flat.filter(isParked));
+    flat.filter((w) => !isParkedW(w)).forEach((w) =>
+      list.appendChild(node(w)));
+    appendParkedFold(list, flat.filter(isParkedW).map((w) => w.it));
     return;
   }
   const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
   const proposed = scoped.filter((i) => i.status === "proposed").sort(byUpdated);
-  const active = scoped
-    .filter((i) => i.status === "open" || i.status === "on-hold").sort(byUpdated);
+  // Notes ride the active stream by recency: they are owner-mandated work
+  // in flight, so they earn their spot by their note's date — never a
+  // pinned block.
+  const active = merged.filter((w) => w.kind === "note"
+    || w.it.status === "open" || w.it.status === "on-hold").sort(byUpdated);
   const parked = scoped.filter(isParked).sort(byUpdated);
   if (proposed.length) {
     list.appendChild(el("div", "ideas-sub proposed",
       `Proposed by Vira — awaiting your call (${proposed.length})`));
     proposed.forEach((it) => list.appendChild(ideaRow(it)));
   }
-  active.forEach((it) => list.appendChild(ideaRow(it)));
+  active.forEach((w) => list.appendChild(node(w)));
   appendParkedFold(list, parked);
 }
 
@@ -3177,12 +3192,14 @@ function initIdeas() {
   inp.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
 }
 
-// ----- the Queue's journal lane: notes that need a session -----
+// ----- journal notes that need a session, in the Queue -----
 // Journal entries whose instructions couldn't be applied as loops or facts
-// (the amber "needs a session" lines) surface beside the idea backlog —
-// same data the Journal window shows, with copy/export/done actions
-// attached. Fetch is cached so the project filter can re-render the lane
-// without another round-trip; renderQueueLane() draws from that cache.
+// (the amber "needs a session" lines) surface IN the idea backlog — each
+// unresolved instruction is a sortable queue row (rendered by renderIdeas
+// via queueNotes), with copy/done actions attached. #work-journal-lane
+// holds only a slim strip: the count plus the bulk Clear all / Export
+// actions. Fetch is cached so the project filter can re-render without
+// another round-trip.
 let journalLaneCache = null;
 
 async function loadQueueLane() {
@@ -3190,28 +3207,42 @@ async function loadQueueLane() {
     journalLaneCache = (await api("/api/brief/journal?limit=200")).entries || [];
   } catch { journalLaneCache = []; }
   renderQueueLane();
+  renderIdeas();   // the notes render inside the sorted list
 }
 
+// Unresolved instructions as sortable queue items. Journal notes are
+// Vira-scoped and carry no project, so a specific non-Vira project filter
+// hides them ("" / "Vira" both show). A note sorts by its entry's created
+// stamp on both date axes (it has no separate updated stamp) and by its
+// instruction text in A–Z — the row shows the instruction as its main
+// text for the same reason: what you read is what it sorted on.
+function queueNotes() {
+  if (ideaProject && ideaProject !== "Vira") return [];
+  const out = [];
+  (journalLaneCache || []).forEach((e) =>
+    (e.result?.unapplied || []).forEach((u) => {
+      if (!u.resolved) out.push({ kind: "note", e, u,
+        text: u.instruction || "", created: e.created, updated: e.created });
+    }));
+  return out;
+}
+
+// The strip above the list: just the count and the bulk actions. The note
+// CARDS live in the sorted list itself (renderIdeas), so this never pins
+// content above the queue — it is one line, or nothing.
 function renderQueueLane() {
   const lane = $("#work-journal-lane");
   if (!lane) return;
   lane.innerHTML = "";
-  // Journal notes are Vira-scoped and carry no project, so a specific
-  // non-Vira project filter would only bury the real items — hide the lane
-  // there. "All projects" ("") and "Vira" both show it.
-  if (ideaProject && ideaProject !== "Vira") return;
-  const rows = [];
-  (journalLaneCache || []).forEach((e) =>
-    (e.result?.unapplied || []).forEach((u) => {
-      if (!u.resolved) rows.push({ e, u });   // resolved = done, off the queue
-    }));
+  const rows = queueNotes();
   if (!rows.length) return;
   const head = el("div", "work-subhead");
   head.appendChild(el("span", "jobs-sub",
-    "Needs a session — told to Vira (" + rows.length + ")"));
+    "Told to Vira — " + rows.length + " need"
+    + (rows.length === 1 ? "s" : "") + " a session"));
   const clr = el("button", "fchip sm", "Clear all");
   clr.style.marginLeft = "auto";
-  clr.title = "Mark every instruction below done and remove it from the queue";
+  clr.title = "Mark every journal instruction done and remove it from the queue";
   clr.addEventListener("click", () => clearAllQueueNotes(rows.length));
   head.appendChild(clr);
   const ex = el("button", "fchip sm", "Export all as prompt");
@@ -3220,36 +3251,40 @@ function renderQueueLane() {
   ex.addEventListener("click", exportJournalPrompt);
   head.appendChild(ex);
   lane.appendChild(head);
-  rows.forEach(({ e, u }) => {
-    const row = el("div", "card q-note");
-    row.appendChild(el("span", "badge", "journal"));
-    const main = el("div", "link-main");
-    const line = el("div", "jn-unap", "needs a session — " + u.instruction);
-    if (u.area) line.appendChild(el("span", "jn-unap-area", u.area));
-    main.appendChild(line);
-    const note = (e.text || "").replace(/\s+/g, " ");
-    main.appendChild(el("div", "link-sub", fmtTime(e.created)
-      + (note ? " · “" + note.slice(0, 90)
-        + (note.length > 90 ? "…" : "") + "”" : "")));
-    row.appendChild(main);
-    const acts = el("div", "q-note-acts");
-    const cp = el("button", "fchip sm", "copy as prompt");
-    cp.title = "Copy this one instruction (with its note) for a session";
-    cp.addEventListener("click", () => copyText(
-      "From a journal note (" + (e.created || "").slice(0, 10) + "):\n"
-      + '"""' + (e.text || "") + '"""\n'
-      + (e.context ? "[seen at: " + e.context + "]\n" : "")
-      + "\nInstruction: " + u.instruction,
-    ).then(() => toast("Instruction copied")));
-    acts.appendChild(cp);
-    const done = el("button", "fchip sm", "done");
-    done.title = "Mark this instruction done — removes it from the queue, "
-      + "keeps it in the Journal as complete";
-    done.addEventListener("click", () => resolveQueueNote(e, u, done));
-    acts.appendChild(done);
-    row.appendChild(acts);
-    lane.appendChild(row);
-  });
+}
+
+// One journal instruction as a queue row. The main text is the instruction
+// itself (the "journal" badge + amber tone carry the kind), so the A–Z
+// sort reads true against the idea rows beside it.
+function queueNoteRow(e, u) {
+  const row = el("div", "card q-note");
+  row.appendChild(el("span", "badge", "journal"));
+  const main = el("div", "link-main");
+  const line = el("div", "jn-unap", u.instruction);
+  if (u.area) line.appendChild(el("span", "jn-unap-area", u.area));
+  main.appendChild(line);
+  const note = (e.text || "").replace(/\s+/g, " ");
+  main.appendChild(el("div", "link-sub", fmtTime(e.created)
+    + (note ? " · “" + note.slice(0, 90)
+      + (note.length > 90 ? "…" : "") + "”" : "")));
+  row.appendChild(main);
+  const acts = el("div", "q-note-acts");
+  const cp = el("button", "fchip sm", "copy as prompt");
+  cp.title = "Copy this one instruction (with its note) for a session";
+  cp.addEventListener("click", () => copyText(
+    "From a journal note (" + (e.created || "").slice(0, 10) + "):\n"
+    + '"""' + (e.text || "") + '"""\n'
+    + (e.context ? "[seen at: " + e.context + "]\n" : "")
+    + "\nInstruction: " + u.instruction,
+  ).then(() => toast("Instruction copied")));
+  acts.appendChild(cp);
+  const done = el("button", "fchip sm", "done");
+  done.title = "Mark this instruction done — removes it from the queue, "
+    + "keeps it in the Journal as complete";
+  done.addEventListener("click", () => resolveQueueNote(e, u, done));
+  acts.appendChild(done);
+  row.appendChild(acts);
+  return row;
 }
 
 // Mark one "needs a session" instruction done: stamp it resolved in the
@@ -3262,6 +3297,7 @@ async function resolveQueueNote(e, u, btn) {
                { entry_id: e.id, instruction: u.instruction });
     u.resolved = new Date().toISOString();
     renderQueueLane();
+    renderIdeas();
     if ($("#journal-list")) loadJournal().catch(() => {});
     toast("Marked done");
   } catch (err) {
@@ -3282,6 +3318,7 @@ async function clearAllQueueNotes(n) {
         if (!u.resolved) u.resolved = new Date().toISOString();
       }));
     renderQueueLane();
+    renderIdeas();
     if ($("#journal-list")) loadJournal().catch(() => {});
     toast(`Cleared ${n}`);
   } catch (err) { toast("Clear failed: " + err.message); }
