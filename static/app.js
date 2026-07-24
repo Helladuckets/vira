@@ -8485,6 +8485,8 @@ function makeDraggable(node, bar, onEnd) {
   bar.style.touchAction = "none";
   bar.addEventListener("pointerdown", (e) => {
     if (e.target.closest("button")) return;
+    // a pinned perimeter tile is click-to-grow, not draggable
+    if (node.classList.contains("fwin-locked")) return;
     focusWin(node);
     const rect = node.getBoundingClientRect();
     node.style.left = rect.left + "px";
@@ -8666,10 +8668,18 @@ function buildWindow(spec, st, ci) {
   win.appendChild(body);
   addZoomControls(bar, () => body, st.z,
     (z) => saveWinState(spec.id, { z }));
+  win.dataset.wid = spec.id;
   win.addEventListener("pointerdown", () => focusWin(win));
+  // a pinned tile in Perimeter mode grows into the stage on click; a real
+  // drag/resize or button press is not a grow (persistGeom is a no-op while
+  // a template owns the layout, so this never touches the freeform desk)
+  win.addEventListener("click", (e) => {
+    if (layoutMode === "perimeter" && !e.target.closest("button")
+        && !grown.has(spec.id)) growTile(spec.id);
+  });
   makeDraggable(win, bar, (r) =>
-    saveWinState(spec.id, { x: Math.round(r.left), y: Math.round(r.top) }));
-  makeResizable(win, (r) => saveWinState(spec.id, {
+    persistGeom(spec.id, { x: Math.round(r.left), y: Math.round(r.top) }));
+  makeResizable(win, (r) => persistGeom(spec.id, {
     x: Math.round(r.left), y: Math.round(r.top),
     w: Math.round(r.width), h: Math.round(r.height),
   }));
@@ -8699,6 +8709,15 @@ function openWindow(id) {
     requestAnimationFrame(() => st.el.classList.add("open"));
     saveWinState(id, { open: true });
   }
+  // In Perimeter mode, opening a module (dock, palette, deep link) means
+  // "bring it to the stage": reflow so the newcomer earns an edge slot, then
+  // grow it. growTile focuses it too.
+  if (layoutMode === "perimeter") {
+    applyPerimeter(true);
+    growTile(id);
+    dockRefresh();
+    return;
+  }
   focusWin(st.el);
   dockRefresh();
 }
@@ -8706,6 +8725,9 @@ function openWindow(id) {
 function closeWindow(id) {
   const st = winState[id];
   if (!st || !st.open) return;
+  // In Perimeter mode the red button on a grown card retreats it to its edge
+  // slot rather than hiding the module — closing a stage card sends it home.
+  if (layoutMode === "perimeter" && grown.has(id)) { retreatTile(id); return; }
   st.open = false;
   st.el.classList.remove("open");
   setTimeout(() => { if (!st.open) st.el.style.display = "none"; }, 220);
@@ -9804,6 +9826,10 @@ function paletteMatches(q) {
     { label: "Brain — Find · Notes", kind: "find",
       run: () => { setFindTab("notes"); openWindow("find"); } },
     { label: "Settings", kind: "sheet", run: () => $("#settings-btn").click() },
+    { label: "Layout: Perimeter — Stage", kind: "layout",
+      run: () => setLayout("perimeter") },
+    { label: "Layout: Freeform", kind: "layout",
+      run: () => setLayout("freeform") },
     { label: "Close all windows", kind: "desktop",
       run: () => WINDOWS.forEach((w) => closeWindow(w.id)) },
     { label: "Confetti", kind: "why not",
@@ -10453,6 +10479,262 @@ async function readerProbe() {
   renderMobileDock();
 }
 
+// ==================== Layout templates ====================
+// A switchable arrangement laid over the freeform floating desktop.
+//   Freeform  — the default; every window stays where the owner dragged it.
+//   Perimeter — the open modules shrink to tiles pinned around the screen
+//               edge and the centre becomes a stage: click a tile to grow it
+//               into a large card, grow several at once, close a grown card
+//               to send it home to its edge slot.
+// The owner's freeform geometry (vira-desktop) is NEVER written while a
+// template is active, so switching back restores the desk exactly. Only the
+// active template + which cards are grown persist (vira-layout, synced).
+const LAYOUTS = { freeform: "Freeform", perimeter: "Perimeter — Stage" };
+let layoutMode = "freeform";
+const grown = new Set();       // ids currently grown onto the stage
+let grownOrder = [];           // grow order — drives the cascade placement
+const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
+
+function layoutState() {
+  const s = lsGet("vira-layout", null);
+  if (s && typeof s === "object" && LAYOUTS[s.mode]) return s;
+  return { mode: "freeform", grown: [] };
+}
+function saveLayout() {
+  uiPush("vira-layout",
+         lsSet("vira-layout", { mode: layoutMode, grown: grownOrder.slice() }));
+}
+
+// Geometry writes are the FREEFORM arrangement — suppress them while a
+// template owns the layout, so a drag/resize on the stage can't corrupt the
+// desk the owner returns to.
+function persistGeom(id, patch) {
+  if (layoutMode === "freeform") saveWinState(id, patch);
+}
+
+// windows that belong in the frame: every open, set-up window in dock order.
+// The command palette is not a window; the Launchpad is, so it tiles too
+// (otherwise an open launcher floats over the stage it's meant to clear).
+function framedWindows() {
+  return dockOrder().filter((id) => id !== "palette"
+    && winState[id]?.open && !fdDormant(id));
+}
+
+// set a window's rect, optionally animating the geometry (fwin-move adds the
+// left/top/width/height transition the base .fwin rule deliberately omits, so
+// dragging stays instant); reduced motion skips the animation entirely
+function setWinRect(node, r, animate) {
+  if (animate && !REDUCED_MOTION) {
+    node.classList.add("fwin-move");
+    clearTimeout(node._moveT);
+    node._moveT = setTimeout(() => node.classList.remove("fwin-move"), 440);
+  }
+  node.style.left = Math.round(r.x) + "px";
+  node.style.top = Math.round(r.y) + "px";
+  node.style.width = Math.round(r.w) + "px";
+  node.style.height = Math.round(r.h) + "px";
+  node.style.right = "auto";
+  node.style.bottom = "auto";
+}
+
+// spread the tiles evenly around a rectangular ring, balancing the four edges
+// (horizontal edges hold more) so the frame reads as a frame, not two bands
+function distributeEdges(n, perRow, perCol) {
+  const e = { top: 0, right: 0, bottom: 0, left: 0 };
+  const caps = [["top", perRow], ["bottom", perRow],
+                ["right", perCol], ["left", perCol]];
+  let placed = 0, guard = 0;
+  while (placed < n && guard++ < 999) {
+    let any = false;
+    for (const [k, c] of caps) {
+      if (placed >= n) break;
+      if (e[k] < c) { e[k]++; placed++; any = true; }
+    }
+    if (!any) break;
+  }
+  return e;
+}
+
+// compute an edge slot for each id (clockwise: top L→R, right T→B, bottom
+// R→L, left B→T), shrinking the tile until the ring holds them all
+function computeSlots(ids) {
+  const G = 14, TOP = 52, DOCK = 92;         // gutters: below the topbar, above the dock
+  const L = G, Rt = innerWidth - G;
+  const top = TOP, bot = innerHeight - DOCK;
+  const usableW = Rt - L, usableH = bot - top;
+  const gap = 12;
+  const n = ids.length;
+  let tw = 250, th = 166, perRow = 1, perCol = 0, edges = { top: 0, right: 0, bottom: 0, left: 0 };
+  const recompute = () => {
+    perRow = Math.max(1, Math.floor((usableW + gap) / (tw + gap)));
+    const innerH = usableH - 2 * th - 2 * gap;      // vertical span between top & bottom rows
+    perCol = innerH >= th ? Math.floor((innerH + gap) / (th + gap)) : 0;
+    edges = distributeEdges(n, perRow, perCol);
+  };
+  recompute();
+  while (edges.top + edges.right + edges.bottom + edges.left < n && tw > 150) {
+    tw -= 10; th = Math.round(tw * 0.66); recompute();
+  }
+  const innerTop = top + th + gap, innerBot = bot - th - gap;
+  const pos = (k, a, b, size) =>
+    k <= 0 ? [] :
+    k === 1 ? [(a + b - size) / 2] :
+    Array.from({ length: k }, (_, j) => a + j * ((b - a) - size) / (k - 1));
+  const out = {};
+  let i = 0;
+  pos(edges.top, L, Rt, tw).forEach((x) => { out[ids[i++]] = { x, y: top, w: tw, h: th }; });
+  pos(edges.right, innerTop, innerBot, th).forEach((y) => { out[ids[i++]] = { x: Rt - tw, y, w: tw, h: th }; });
+  pos(edges.bottom, L, Rt, tw).reverse().forEach((x) => { out[ids[i++]] = { x, y: bot - th, w: tw, h: th }; });
+  pos(edges.left, innerTop, innerBot, th).reverse().forEach((y) => { out[ids[i++]] = { x: L, y, w: tw, h: th }; });
+  return out;
+}
+
+// a grown card's target: a large card near centre, cascaded by grow order so
+// several stay individually reachable; the owner can then drag it anywhere
+function stageRect(k) {
+  const G = 14, TOP = 52;
+  const w = Math.min(760, innerWidth - 2 * G - 40);
+  const h = Math.min(700, innerHeight - TOP - 60);
+  const baseX = Math.round((innerWidth - w) / 2) - 140;
+  const baseY = TOP + 10;
+  const x = Math.max(G, Math.min(baseX + k * 52, innerWidth - w - G));
+  const y = Math.max(TOP, Math.min(baseY + k * 38, innerHeight - h - 24));
+  return { x, y, w, h };
+}
+
+// (re)apply the perimeter arrangement to every framed window
+function applyPerimeter(animate) {
+  const ids = framedWindows();
+  const slots = computeSlots(ids);
+  Object.keys(slotRects).forEach((k) => delete slotRects[k]);
+  Object.assign(slotRects, slots);
+  ids.forEach((id) => {
+    const node = winState[id].el;
+    if (grown.has(id)) {
+      node.classList.remove("fwin-locked");
+      node.classList.add("fwin-grown");
+    } else {
+      node.classList.add("fwin-locked");
+      node.classList.remove("fwin-grown");
+      if (slots[id]) setWinRect(node, slots[id], animate);
+    }
+  });
+  grownOrder.forEach((id, k) => {
+    if (winState[id]?.open) setWinRect(winState[id].el, stageRect(k), animate);
+  });
+}
+
+function growTile(id) {
+  if (layoutMode !== "perimeter" || !winState[id]) return;
+  if (grown.has(id)) { focusWin(winState[id].el); return; }
+  grown.add(id);
+  grownOrder.push(id);
+  const node = winState[id].el;
+  node.classList.remove("fwin-locked");
+  node.classList.add("fwin-grown");
+  setWinRect(node, stageRect(grownOrder.length - 1), true);
+  focusWin(node);
+  saveLayout();
+}
+
+function retreatTile(id) {
+  if (!grown.has(id)) return;
+  grown.delete(id);
+  grownOrder = grownOrder.filter((x) => x !== id);
+  const node = winState[id].el;
+  node.classList.remove("fwin-grown");
+  node.classList.add("fwin-locked");
+  if (slotRects[id]) setWinRect(node, slotRects[id], true);
+  else applyPerimeter(true);
+  saveLayout();
+}
+
+// the freeform rect a window returns to — mirrors buildWindow's placement so
+// a window that never got a saved position still lands somewhere sensible
+function freeformRect(id, st) {
+  const spec = WINDOWS.find((w) => w.id === id) || {};
+  const w = Math.min(st.w ?? spec.w ?? 440, innerWidth - 24);
+  const h = Math.min(st.h ?? 660, innerHeight - 120);
+  const ci = Math.max(0, WINDOWS.findIndex((x) => x.id === id));
+  const defX = { feed: 24, people: 482, work: innerWidth - w - 28,
+                 brief: Math.max(24, Math.round((innerWidth - w) / 2)) }[id];
+  const x = st.x ?? defX ?? (140 + ci * 32);
+  const y = st.y ?? (64 + (defX === undefined ? ci * 32 : 0));
+  return { x: Math.max(0, Math.min(x, innerWidth - 140)),
+           y: Math.max(44, Math.min(y, innerHeight - 140)), w, h };
+}
+
+function enterPerimeter(animate) {
+  layoutMode = "perimeter";
+  document.body.classList.add("layout-perimeter");
+  applyPerimeter(animate);
+  updateLayoutBtn();
+  saveLayout();
+}
+
+function exitToFreeform(animate) {
+  layoutMode = "freeform";
+  document.body.classList.remove("layout-perimeter");
+  grown.clear();
+  grownOrder = [];
+  const store = desktopStore();
+  Object.keys(winState).forEach((id) => {
+    const node = winState[id].el;
+    node.classList.remove("fwin-locked", "fwin-grown");
+    setWinRect(node, freeformRect(id, store[id] || {}), animate);
+  });
+  updateLayoutBtn();
+  saveLayout();
+}
+
+function setLayout(mode) {
+  if (!LAYOUTS[mode] || mode === layoutMode) return;
+  if (mode === "perimeter") enterPerimeter(true);
+  else exitToFreeform(true);
+}
+
+function updateLayoutBtn() {
+  const b = $("#layout-btn");
+  if (b) b.classList.toggle("on", layoutMode === "perimeter");
+}
+
+function openLayoutMenu(x, y) {
+  const mark = (m) => LAYOUTS[m] + (m === layoutMode ? " · current" : "");
+  showContextMenu(x, y, [
+    { head: "Layout template" },
+    { label: mark("freeform"), run: () => setLayout("freeform") },
+    { label: mark("perimeter"), run: () => setLayout("perimeter") },
+  ]);
+}
+
+// recompute the frame when the viewport changes (crossing the 1100px desktop
+// boundary reloads the page separately, so this only handles same-mode resize)
+let layoutResizeT = null;
+window.addEventListener("resize", () => {
+  if (layoutMode !== "perimeter") return;
+  clearTimeout(layoutResizeT);
+  layoutResizeT = setTimeout(() => applyPerimeter(false), 120);
+});
+
+// wire the topbar button + restore the saved template; called from initDesktop
+function initLayout() {
+  const btn = $("#layout-btn");
+  if (btn) {
+    btn.hidden = false;
+    btn.addEventListener("click", () => {
+      const r = btn.getBoundingClientRect();
+      openLayoutMenu(r.left, r.bottom + 6);
+    });
+  }
+  const ls = layoutState();
+  updateLayoutBtn();
+  if (ls.mode === "perimeter") {
+    grownOrder = (ls.grown || []).filter((id) => winState[id]?.open);
+    grownOrder.forEach((id) => grown.add(id));
+    enterPerimeter(false);          // no animation on first paint
+  }
+}
+
 function initDesktop() {
   document.body.classList.add("desktop");
   initConstellation();
@@ -10510,6 +10792,7 @@ function initDesktop() {
         && (e.target === document.body
             || e.target === document.documentElement)) exitFocus();
   });
+  initLayout();
 }
 
 // ---------- server-synced UI state (window layout, dock order) ----------
@@ -10521,7 +10804,7 @@ function initDesktop() {
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
 const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
-                      "vira-mobile-dock", "vira-setup-opened"];
+                      "vira-mobile-dock", "vira-setup-opened", "vira-layout"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 
