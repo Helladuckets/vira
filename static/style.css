@@ -155,6 +155,22 @@ body {
 @media (prefers-reduced-motion: reduce) {
   #layout-btn.editing { animation: none; }
 }
+/* a list of mutually exclusive choices; the selected row is ticked AND
+   described, so which one is active is never a matter of interpretation */
+.ch-row {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%;
+  text-align: left; background: none; border: none; cursor: pointer;
+  padding: 8px 9px; border-radius: 2px; color: var(--text); font: inherit;
+}
+.ch-row:hover { background: var(--accent-soft); }
+.ch-mark {
+  flex: none; width: 14px; color: var(--accent); font-size: 12px; line-height: 1.35;
+}
+.ch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ch-label { font-size: 13px; }
+.ch-row.on .ch-label { color: var(--accent); font-weight: 600; }
+.ch-desc { font-size: 11px; color: var(--text-faint); line-height: 1.35; }
+
 /* a menu row that opens a secondary (edit) menu on right-click */
 .ctx-item.has-sub { position: relative; padding-right: 24px; }
 .ctx-item.has-sub::after {
@@ -1794,23 +1810,23 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
                 height .38s cubic-bezier(.22, .61, .36, 1),
                 opacity .18s ease, transform .18s ease, filter .3s ease;
   }
-  /* a pinned edge tile: the whole surface is a button that grows it. Its
-     content is inert and its title-bar controls hide so nothing competes
-     with the click; a hover cue names the gesture. */
+  /* A parked tile stays LIVE: its body still scrolls and its content still
+     shows hover states — only the click is claimed (in the capture phase, in
+     app.js) to grow it. So the cue is a small corner badge, NOT a full-surface
+     scrim: a scrim would hide the very hover states that are meant to stay
+     readable. Title-bar controls hide so nothing competes with the click. */
   .fwin-locked { cursor: pointer; }
   .fwin-locked .fwin-bar { cursor: pointer; }
   .fwin-locked .fwin-close,
   .fwin-locked .fwin-zoomgrp,
   .fwin-locked .rz { display: none; }
-  .fwin-locked .fwin-body { pointer-events: none; }
   .fwin-locked:hover { border-color: var(--accent); }
   .fwin-locked::after {
-    content: "open"; position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--mono); font-size: 11px; letter-spacing: .2em;
-    text-transform: uppercase; color: var(--accent);
-    background: rgba(0, 0, 0, .32); opacity: 0;
-    transition: opacity .15s ease; pointer-events: none;
+    content: "open"; position: absolute; right: 0; top: 0;
+    padding: 3px 7px; border-bottom-left-radius: 3px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--bg); background: var(--accent);
+    opacity: 0; transition: opacity .15s ease; pointer-events: none; z-index: 7;
   }
   .fwin-locked:hover::after { opacity: 1; }
   .fwin-grown { box-shadow: 0 32px 92px rgba(0, 0, 0, .62); }
@@ -1830,7 +1846,12 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
     box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
     max-width: calc(100vw - 24px);
   }
-  .le-label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* the name identifies what you are editing — it holds its width and the
+     hint (the most expendable text on the bar) is what gives way instead */
+  .le-label {
+    display: flex; flex-direction: column; gap: 1px;
+    flex: 0 1 auto; min-width: 120px;
+  }
   .le-kicker {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em;
     text-transform: uppercase; color: var(--accent);
@@ -1841,7 +1862,34 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   }
   .le-hint {
     font-size: 11px; color: var(--text-faint); white-space: nowrap;
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   }
+  .le-link {
+    background: none; border: none; padding: 0; font: inherit;
+    color: var(--accent); cursor: pointer; text-decoration: underline;
+  }
+  /* A picker, not a toggle: the kicker names the setting and the value names
+     what it is set to, so the control can never be read as the opposite of
+     what is active (the failure mode of a two-state pill). */
+  .le-picker {
+    display: flex; align-items: baseline; gap: 7px; flex: none; cursor: pointer;
+    padding: 4px 9px; border-radius: 2px; background: var(--bg-card);
+    border: 1px solid var(--line); white-space: nowrap;
+  }
+  .le-picker:hover { border-color: var(--accent); }
+  .le-pkicker {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .le-pvalue { font-size: 12px; color: var(--text); font-weight: 600; }
+  .le-pcaret { font-size: 9px; color: var(--text-faint); }
+  .le-picker:hover .le-pvalue, .le-picker:hover .le-pcaret { color: var(--accent); }
+  /* the module whose grown position is being staged */
+  body.layout-edit-grow .fwin-tuning {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  /* in the grow pass the parked tiles are the picker — name the gesture */
+  body.layout-edit-grow .fwin-locked::after { content: "stage this"; }
   .le-acts { display: flex; gap: 8px; flex: none; }
   .le-btn {
     font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
