@@ -303,6 +303,40 @@ class TestJournal(JournalBase):
         self.assertIn("Momo", ex["prompt"])          # note text + context ride along
         self.assertIn("written from", ex["prompt"])
 
+    def _entry_with_unapplied(self, instrs):
+        entry = journal.add("owner note", integrate=False)
+        journal._update_entry(entry["id"], status="noted", result={
+            "summary": "s", "actions": [],
+            "unapplied": [{"instruction": i, "area": "other"} for i in instrs]})
+        return entry["id"]
+
+    def test_resolve_unapplied_drops_one_from_export(self):
+        eid = self._entry_with_unapplied(["do X first", "do Y second"])
+        self.assertEqual(journal.export_prompt()["count"], 2)
+        self.assertTrue(journal.resolve_unapplied(eid, "do X first"))
+        ex = journal.export_prompt()
+        self.assertEqual(ex["count"], 1)                 # resolved one is gone
+        self.assertNotIn("do X first", ex["prompt"])
+        self.assertIn("do Y second", ex["prompt"])
+        # the resolved instruction stays on the entry, stamped, as the record
+        u = journal.recent()[0]["result"]["unapplied"]
+        done = [x for x in u if x["instruction"] == "do X first"][0]
+        self.assertTrue(done["resolved"])
+
+    def test_resolve_unapplied_missing_or_twice_returns_false(self):
+        eid = self._entry_with_unapplied(["only one"])
+        self.assertFalse(journal.resolve_unapplied(eid, "no such text"))
+        self.assertFalse(journal.resolve_unapplied("note_missing", "only one"))
+        self.assertTrue(journal.resolve_unapplied(eid, "only one"))
+        self.assertFalse(journal.resolve_unapplied(eid, "only one"))  # already done
+
+    def test_resolve_all_unapplied_clears_the_queue(self):
+        self._entry_with_unapplied(["a", "b"])
+        self._entry_with_unapplied(["c"])
+        self.assertEqual(journal.resolve_all_unapplied(), 3)
+        self.assertEqual(journal.export_prompt()["count"], 0)
+        self.assertEqual(journal.resolve_all_unapplied(), 0)  # nothing left to do
+
 
 class TestJournalPidVerification(JournalBase):
     """The 2026-07-16 incident class: a note naming an entity (an automated
