@@ -6424,38 +6424,36 @@ function skinCard(s, activeId) {
     foot.appendChild(el("span", "skin-badge", "Active"));
   } else {
     const b = el("button", "skin-apply", "Apply");
-    b.addEventListener("click", () => applySkin(s));
+    b.addEventListener("click", () => armSkinApply(foot, s));
     foot.appendChild(b);
   }
   card.appendChild(foot);
   return card;
 }
 
-// Applying is a deliberate, reload-triggering change (it rewrites the
-// stylesheet and, on the live server, commits + pushes it to the repo), so
-// it is confirm-gated through the toast and the consequence is named.
-function applySkin(s) {
-  toast("Apply the " + s.name + " skin? It restyles Vira and reloads — on " +
-        "the live server it also commits the change to the repo.",
-        [["Apply", () => doApplySkin(s)], ["Cancel", () => {}]]);
+// Applying restyles Vira and reloads, so it takes a second, deliberate click.
+// The confirm is INLINE on the card — anchored to the button you clicked, not
+// a toast at the bottom of the screen.
+function armSkinApply(foot, s) {
+  foot.textContent = "";
+  foot.classList.add("confirm");
+  foot.appendChild(el("span", "skin-confirm-q", "Restyle Vira and reload?"));
+  const yes = el("button", "skin-apply", "Apply");
+  yes.addEventListener("click", () => doApplySkin(s));
+  const no = el("button", "skin-cancel", "Cancel");
+  no.addEventListener("click", () => loadDesignSkins());   // re-render restores the button
+  foot.appendChild(yes);
+  foot.appendChild(no);
 }
 
+// A skin is a local look: apply just rewrites this machine's stylesheet, then
+// the app reloads wearing it. Nothing is committed or pushed anywhere.
 async function doApplySkin(s) {
   try {
     toast("Applying " + s.name + "…");
-    const r = await post("/api/skins/" + encodeURIComponent(s.id) + "/apply", {});
-    // a failed commit on a live instance leaves the skin on disk but not in
-    // the repo — surface it instead of a silent reload that hides the gap.
-    const gitFailed = r && (r.git_error ||
-      (!r.passive && (r.changed || []).length && !r.committed));
-    if (gitFailed) {
-      toast("Applied to this machine, but saving to the repo failed: " +
-            (r.git_error || "not committed") + ".",
-            [["Reload anyway", () => location.reload()]]);
-      return;
-    }
+    await post("/api/skins/" + encodeURIComponent(s.id) + "/apply", {});
     // reload to pick up the rewritten style.css + skin-active.css
-    setTimeout(() => location.reload(), 550);
+    setTimeout(() => location.reload(), 450);
   } catch (e) {
     toast("Couldn't apply the skin: " + ((e && e.message) || e));
   }

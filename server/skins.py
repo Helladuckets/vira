@@ -3,19 +3,24 @@
 A skin is a complete ``:root`` token set (the colour soul — editable
 afterward by the Design Studio's token editor, which reads that same block)
 plus an optional glass layer (geometry, type, the tube — things tokens
-cannot carry). Applying a skin rewrites ``static/style.css``'s ``:root`` in
-place, values only, comments preserved (the same conservative line rewrite
-the studio uses), swaps ``static/skin-active.css`` for the skin's extras,
-records the choice, and commits + pushes in this checkout so the update
-channel carries it. On a passive test instance the disk write still happens
-(so the skin is visible on the stage) but git is skipped — a test copy must
-never push.
+cannot carry). Applying a skin is a LOCAL, no-git action: it rewrites
+``static/style.css``'s ``:root`` in place (values only, comments preserved —
+the same conservative line rewrite the studio uses), swaps
+``static/skin-active.css`` for the skin's extras, records the choice, and the
+app reloads wearing it. Nothing is committed or pushed — a skin is a personal
+look on this machine, not a change to the shared repo. (This is why it works
+the same on every download: a downloaded copy points at a public repo it
+can't push to.) If the owner wants a skin to become the shipped default, that
+is a deliberate git commit, not a side effect of a click.
+
+Because a skin leaves the tracked stylesheet modified, the in-app updater
+will decline to fast-forward until the skin is reset — applying the Taurid
+floor restores the pristine files (see update.py, which names this).
 
 Skins ship as tracked data under ``static/skins/<id>.json`` (+ optional
-``<id>.css``), so a new skin is added by dropping files in and pushed out
-over the update channel. The Taurid Capital skin is the FLOOR: every apply
-merges the target skin's overrides over it, so applying is idempotent and
-applying Taurid resets Vira to stock.
+``<id>.css``), so a new skin is added by dropping files in. The Taurid
+Capital skin is the FLOOR: every apply merges the target skin's overrides
+over it, so applying is idempotent and applying Taurid resets Vira to stock.
 
 The picker lives at the top of the Design Studio module: pick a skin up top,
 tweak it in the studio below.
@@ -23,13 +28,12 @@ tweak it in the studio below.
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from . import designstudio, jsonstore, settings
+from . import designstudio, jsonstore
 
 router = APIRouter(prefix="/api/skins")
 
@@ -196,9 +200,8 @@ def _write_text_atomic(path: Path, text: str) -> None:
 
 def apply_skin(skin_id: str) -> dict:
     """Rewrite :root to this skin (floor + overrides), swap the glass layer,
-    record the choice, and — unless the instance is passive or a sandbox —
-    commit + push. The disk write always happens, so the change is visible on
-    reload even on a test copy; only the git step is suppressed."""
+    record the choice. A LOCAL action — no git; the app reloads wearing it.
+    Writes are atomic so a hard kill can never leave a truncated stylesheet."""
     skin = load_manifest(skin_id)
     floor = load_manifest(FLOOR_ID)
     merged = dict(floor["tokens"])
@@ -225,22 +228,10 @@ def apply_skin(skin_id: str) -> dict:
 
     jsonstore.write_atomic(STATE, {"id": skin_id})
 
-    # git is skipped anywhere this is not the canonical live checkout: a
-    # passive test instance AND a sandbox (VIRA_SANDBOX, non-passive, cloned
-    # from the PUBLIC repo) must never commit or push. The disk write above
-    # already happened, so the skin is still visible on either stage.
-    skip_git = bool(os.environ.get("VIRA_PASSIVE")) or settings.sandboxed()
-    out = {"ok": True, "active": skin_id, "changed": changed,
-           "committed": False, "sha": None, "pushed": False, "passive": skip_git}
-    if changed and not skip_git:
-        try:
-            git = designstudio.commit_and_push(
-                APP_ROOT, changed,
-                f"design: apply {skin.get('name', skin_id)} skin (via Skins)")
-            out.update(git)
-        except Exception as e:                    # disk write already succeeded
-            out["git_error"] = str(e)
-    return out
+    # No git: a skin is a personal, local look. It takes effect on the reload
+    # the client triggers next. Persisting a skin as the shipped default is a
+    # deliberate commit the owner makes, never a side effect of applying one.
+    return {"ok": True, "active": skin_id, "changed": changed}
 
 
 # ---------------------------------------------------------------- routes

@@ -2755,7 +2755,9 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   text-transform: uppercase; color: var(--text-faint);
 }
 .skin-tag { font-size: 12px; color: var(--text-dim); line-height: 1.35; }
-.skin-foot { margin-top: auto; display: flex; align-items: center; }
+.skin-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; }
+.skin-foot.confirm { flex-wrap: wrap; }
+.skin-confirm-q { flex-basis: 100%; font-size: 12px; color: var(--text-dim); }
 .skin-apply {
   font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
   text-transform: uppercase; color: var(--accent-contrast);
@@ -2763,6 +2765,13 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   padding: 6px 15px; cursor: pointer;
 }
 .skin-apply:hover { background: var(--accent-bright); }
+.skin-cancel {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-dim);
+  background: none; border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 6px 12px; cursor: pointer;
+}
+.skin-cancel:hover { color: var(--text); border-color: var(--accent-line); }
 .skin-badge {
   font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--accent-bright);

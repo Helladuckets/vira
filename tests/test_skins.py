@@ -123,7 +123,6 @@ class ApplyTests(unittest.TestCase):
         self.tmp = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
         self.tree = _Tree(self.tmp)
         self.enterContext(self.tree.patches())
-        self.enterContext(mock.patch.dict("os.environ", {"VIRA_PASSIVE": "1"}))
 
     def _style(self):
         return skins.STYLE_CSS.read_text()
@@ -132,8 +131,7 @@ class ApplyTests(unittest.TestCase):
         out = skins.apply_skin("phosphor-console")
         self.assertTrue(out["ok"])
         self.assertEqual(out["active"], "phosphor-console")
-        self.assertTrue(out["passive"])
-        self.assertFalse(out["committed"])              # passive skips git
+        self.assertNotIn("committed", out)              # apply is local, no git
         self.assertIn("static/style.css", out["changed"])
         self.assertIn("static/skin-active.css", out["changed"])
         self.assertIn("--bg: #030100;", self._style())
@@ -167,23 +165,22 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("phosphor-console", ids)
 
 
-class GitGateTests(unittest.TestCase):
-    """A sandbox (VIRA_SANDBOX, non-passive, cloned from the public repo) must
-    also skip commit+push — not just a VIRA_PASSIVE test instance."""
+class NoGitTests(unittest.TestCase):
+    """Applying a skin is local only — it must never invoke git, so a
+    downloaded copy (whose origin is a repo it can't push to) is never asked
+    to commit or push."""
     def setUp(self):
         self.tmp = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
         self.tree = _Tree(self.tmp)
         self.enterContext(self.tree.patches())
-        # only VIRA_SANDBOX set (no VIRA_PASSIVE); mock.patch.dict does not
-        # add VIRA_PASSIVE, and the test runner has neither.
-        self.enterContext(mock.patch.dict("os.environ", {"VIRA_SANDBOX": "1"}))
 
-    def test_sandbox_writes_files_but_skips_git(self):
-        out = skins.apply_skin("phosphor-console")
-        self.assertTrue(out["passive"])                  # git skipped
-        self.assertFalse(out["committed"])
-        self.assertNotIn("git_error", out)               # never even tried
-        self.assertIn("static/style.css", out["changed"])  # disk write still happened
+    def test_apply_never_touches_git(self):
+        with mock.patch.object(skins.designstudio, "commit_and_push") as spy:
+            out = skins.apply_skin("phosphor-console")
+        spy.assert_not_called()
+        self.assertNotIn("committed", out)
+        self.assertNotIn("pushed", out)
+        self.assertIn("static/style.css", out["changed"])  # local write happened
         self.assertIn("--bg: #030100;", skins.STYLE_CSS.read_text())
 
 
@@ -192,7 +189,6 @@ class RouteTests(unittest.TestCase):
         self.tmp = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
         self.tree = _Tree(self.tmp)
         self.enterContext(self.tree.patches())
-        self.enterContext(mock.patch.dict("os.environ", {"VIRA_PASSIVE": "1"}))
         app = FastAPI()
         app.include_router(skins.router)
         self.client = TestClient(app)

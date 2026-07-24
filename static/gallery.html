@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vira — component gallery</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<!-- The gallery wears Vira's OWN stylesheet + the active skin's glass, so it
+     is a true mirror of the app. Open it as the "Gallery" canvas in the
+     Design Studio: every component below reads the same tokens, so a token
+     edit updates all of them at once — adjust globally, see it everywhere. -->
+<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/skin-active.css">
+<style>
+  /* Gallery scaffold only — layout, not brand. Colours read Vira tokens so
+     the scaffold itself wears whatever skin is applied. */
+  body { padding: 0 0 80px; }
+  .gal-top {
+    position: sticky; top: 0; z-index: 5;
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 14px 24px; background: var(--bg-topbar);
+    backdrop-filter: blur(14px); border-bottom: 1px solid var(--line);
+  }
+  .gal-brand {
+    font-family: "SF Pro Display", -apple-system, sans-serif;
+    font-weight: 500; letter-spacing: 0.35em; font-size: 15px; color: var(--accent);
+  }
+  .gal-top-sub { flex: 1; font-size: 12px; color: var(--text-faint); }
+  .gal-wrap { max-width: 1120px; margin: 0 auto; padding: 8px 24px; }
+  .gal-sec { padding: 30px 0 8px; border-top: 1px solid var(--line); margin-top: 26px; }
+  .gal-sec:first-of-type { border-top: 0; margin-top: 8px; }
+  .gal-sec > h2 {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.18em;
+    text-transform: uppercase; color: var(--accent-bright); margin-bottom: 4px;
+  }
+  .gal-sec > .gal-note { font-size: 12px; color: var(--text-dim); margin-bottom: 18px; }
+  .gal-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-bottom: 14px; }
+  .gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; }
+  .gal-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
+               text-transform: uppercase; color: var(--text-faint); margin: 0 0 6px; }
+  /* palette swatch */
+  .gal-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+  .gal-sw { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .gal-sw-chip { height: 46px; }
+  .gal-sw-cap { padding: 6px 8px; font-family: var(--mono); font-size: 10px; color: var(--text-dim); }
+  .gal-static { position: static !important; }
+</style>
+</head>
+<body>
+
+<header class="gal-top">
+  <span class="gal-brand">VIRA</span>
+  <span class="gal-top-sub">component gallery — every component in the current skin</span>
+</header>
+
+<div class="gal-wrap">
+
+  <!-- ============ TYPE ============ -->
+  <section class="gal-sec">
+    <h2>Type</h2>
+    <div class="gal-note">The type scale and the mono kicker voice.</div>
+    <h1 style="font-size:30px;color:var(--text-head);margin-bottom:8px">One system, many voices</h1>
+    <h2 style="font-size:20px;color:var(--text-head);margin-bottom:8px">Section heading</h2>
+    <h3 style="font-size:15px;color:var(--text-head);margin-bottom:10px">Subsection heading</h3>
+    <p style="color:var(--text);max-width:60ch;line-height:1.5;margin-bottom:8px">
+      Running prose sits in the body colour and stays sentence case even under a skin
+      whose chrome is uppercase — a message, a note, a dossier line reads like writing,
+      not like a label.</p>
+    <p style="color:var(--text-dim);max-width:60ch;line-height:1.5;margin-bottom:12px">
+      Dimmed prose for secondary detail, timestamps, and captions.</p>
+    <span class="kicker" style="font-family:var(--mono);letter-spacing:0.18em;text-transform:uppercase;color:var(--accent-bright);font-size:11px">KICKER · MONO VOICE</span>
+  </section>
+
+  <!-- ============ PALETTE ============ -->
+  <section class="gal-sec">
+    <h2>Palette</h2>
+    <div class="gal-note">The semantic tokens every component reads. Edit one and everything below moves.</div>
+    <div class="gal-swatches">
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--bg)"></div><div class="gal-sw-cap">--bg</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--bg-card)"></div><div class="gal-sw-cap">--bg-card</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--bg-raised)"></div><div class="gal-sw-cap">--bg-raised</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--line)"></div><div class="gal-sw-cap">--line</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--accent)"></div><div class="gal-sw-cap">--accent</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--accent-bright)"></div><div class="gal-sw-cap">--accent-bright</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--text)"></div><div class="gal-sw-cap">--text</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--text-head)"></div><div class="gal-sw-cap">--text-head</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--oxidized)"></div><div class="gal-sw-cap">--oxidized</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--steel)"></div><div class="gal-sw-cap">--steel</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--green)"></div><div class="gal-sw-cap">--green</div></div>
+      <div class="gal-sw"><div class="gal-sw-chip" style="background:var(--red)"></div><div class="gal-sw-cap">--red</div></div>
+    </div>
+  </section>
+
+  <!-- ============ BUTTONS & CONTROLS ============ -->
+  <section class="gal-sec">
+    <h2>Buttons &amp; controls</h2>
+    <div class="gal-note">Primary action, filter chips, segmented toggles.</div>
+    <div class="gal-row">
+      <button class="btn">Primary action</button>
+      <button class="fchip">Filter</button>
+      <button class="fchip on">Selected</button>
+      <a class="fchip sm" href="#" onclick="return false">Small chip</a>
+    </div>
+    <div class="gal-row">
+      <div class="seg">
+        <button class="on">Queue</button>
+        <button>Dispatch</button>
+        <button>Live</button>
+        <button>Record</button>
+      </div>
+    </div>
+    <div class="gal-row">
+      <span class="chip"><b>12</b> open loops</span>
+      <span class="chip"><b>3</b> going quiet</span>
+    </div>
+  </section>
+
+  <!-- ============ AVATARS & STATUS ============ -->
+  <section class="gal-sec">
+    <h2>Avatars &amp; status</h2>
+    <div class="gal-note">Letter tiles, unread and live dots, tags in each voice.</div>
+    <div class="gal-row">
+      <div class="avatar">RV</div>
+      <div class="avatar">AL</div>
+      <div class="avatar unknown">?</div>
+      <span class="unread-dot" style="position:static;display:inline-block"></span>
+      <span style="color:var(--text-dim);font-size:12px">unread</span>
+    </div>
+    <div class="gal-row">
+      <span class="brief-tag">family</span>
+      <span class="brief-tag" style="color:var(--steel);border-color:var(--steel-line)">work</span>
+      <span class="brief-tag" style="color:var(--oxidized);border-color:var(--amber-line)">renewal</span>
+      <span class="scored" style="border:1px solid var(--amber-line);color:var(--oxidized);border-radius:999px;padding:2px 9px;font-family:var(--mono);font-size:12px">85</span>
+    </div>
+  </section>
+
+  <!-- ============ FEED CARD ============ -->
+  <section class="gal-sec">
+    <h2>Feed card</h2>
+    <div class="gal-note">The incoming-message card, unread and read.</div>
+    <div class="gal-grid">
+      <div class="feed-swipe">
+        <div class="card feed-item unread">
+          <div class="feed-av"><div class="avatar">RV</div><span class="unread-dot"></span></div>
+          <div class="feed-main">
+            <div class="feed-top">
+              <div class="feed-name">Robin Vale</div>
+              <div class="feed-right"><div class="feed-time">10:40 AM</div></div>
+            </div>
+            <div class="feed-text">Can you grab milk on the way home? And the thing for Saturday.</div>
+            <div class="feed-group">WhatsApp · Classroom 8</div>
+          </div>
+        </div>
+      </div>
+      <div class="feed-swipe">
+        <div class="card feed-item">
+          <div class="feed-av"><div class="avatar unknown">?</div></div>
+          <div class="feed-main">
+            <div class="feed-top">
+              <div class="feed-name unknown">+1 (415) 555-0142</div>
+              <div class="feed-right"><div class="feed-time">Yesterday</div></div>
+            </div>
+            <div class="feed-text">Your appointment is confirmed for Thursday at 2pm.</div>
+            <div class="feed-group">iMessage</div>
+            <button class="feed-add">add to crm</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WINDOW CHROME ============ -->
+  <section class="gal-sec">
+    <h2>Window chrome</h2>
+    <div class="gal-note">A floating window — title bar, body, a section head and cards inside.</div>
+    <div class="fwin gal-static" style="width:420px;max-width:100%">
+      <div class="fwin-bar">
+        <button class="fwin-close"></button>
+        <div class="fwin-title">Daily Brief</div>
+      </div>
+      <div class="fwin-body" style="padding:14px">
+        <div class="section-head"><h2>Waiting on you</h2></div>
+        <div class="card" style="padding:12px;margin-top:10px">
+          <div style="color:var(--text-head);font-weight:600;margin-bottom:4px">Reply to Morgan</div>
+          <div style="color:var(--text-dim);font-size:13px">unanswered 2 days · they owe you the deck</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ DOSSIER: HOOKS & LOOPS ============ -->
+  <section class="gal-sec">
+    <h2>Dossier — hooks &amp; loops</h2>
+    <div class="gal-note">Conversation hooks and open loops from a person page.</div>
+    <div class="gal-grid">
+      <div class="hook">
+        <div class="hook-text">Ask how the Lisbon move went — they were nervous about the schools.</div>
+      </div>
+      <div class="loop">
+        <div class="loop-text">You owe them the intro you promised.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FORMS ============ -->
+  <section class="gal-sec">
+    <h2>Forms</h2>
+    <div class="gal-note">Inputs, a text area, and a compose bar.</div>
+    <div class="gal-row" style="max-width:420px;flex-direction:column;align-items:stretch">
+      <input type="text" placeholder="Search people, messages, notes…"
+             style="width:100%;padding:9px 12px;background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);color:var(--text);font-family:inherit">
+      <textarea placeholder="Tell Vira something…" rows="3"
+             style="width:100%;padding:9px 12px;background:var(--bg-card);border:1px solid var(--line);border-radius:var(--radius);color:var(--text);font-family:inherit;resize:vertical"></textarea>
+      <div class="gal-row" style="margin:0">
+        <button class="btn">Send</button>
+        <button class="skin-cancel">Cancel</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TERMINAL ============ -->
+  <section class="gal-sec">
+    <h2>Agent terminal</h2>
+    <div class="gal-note">A live agent session — the Claude-branded terminal.</div>
+    <div class="fwin term-window gal-static" style="width:560px;max-width:100%">
+      <div class="fwin-bar">
+        <button class="fwin-close"></button>
+        <div class="fwin-title">plan — tidy the loops</div>
+      </div>
+      <div class="fwin-body">
+        <div class="term-scroll" style="padding:14px">
+          <div class="term-screen">
+            <div class="term-line term-you">Plan: tidy the open loops on the person page.</div>
+            <div class="term-line term-sys">Reading the backlog and recent threads…</div>
+            <div class="term-line term-tool">Read server/skins.py</div>
+            <div class="term-line term-text">Two loops are already resolved; I'll close them and leave a note.</div>
+            <div class="term-line term-note">Done. <span class="term-cursor"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+</body>
+</html>
