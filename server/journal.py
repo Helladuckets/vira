@@ -593,6 +593,8 @@ def export_prompt():
     items = []
     for e in reversed(_load()["entries"]):
         for u in (e.get("result") or {}).get("unapplied") or []:
+            if u.get("resolved"):
+                continue  # marked done by the owner — off the active handoff
             items.append((e, u))
     if not items:
         return {"prompt": "", "count": 0}
@@ -607,3 +609,46 @@ def export_prompt():
                      f'"{e["text"]}"{where}\n   -> {instr} '
                      f'(area: {u["area"]})')
     return {"prompt": "\n".join(lines), "count": len(items)}
+
+
+# ---------- resolving unapplied instructions ----------
+# An unapplied instruction is a "needs a session" item Vira could not apply
+# automatically — it rides the Queue lane until the owner hands it to a
+# full-access session and does the work. There is no automatic loop back
+# from a copy-out session, so the owner marks it done here: the instruction
+# is stamped resolved (kept on the entry, so the Journal window still
+# chronicles it as complete) and drops off the Queue lane and the export.
+# Instructions carry no id, so a single one is addressed by entry id + its
+# exact text — the same key-by-content the loop actions use for open loops.
+
+def resolve_unapplied(entry_id, instruction):
+    """Mark one unapplied instruction resolved. Returns True if a matching
+    open instruction was found and stamped, False otherwise."""
+    with locked(STORE):
+        s = _load()
+        for e in s["entries"]:
+            if e["id"] != entry_id:
+                continue
+            for u in (e.get("result") or {}).get("unapplied") or []:
+                if u.get("instruction") == instruction and not u.get("resolved"):
+                    u["resolved"] = _now()
+                    _save(s)
+                    return True
+            return False
+    return False
+
+
+def resolve_all_unapplied():
+    """Mark every still-open unapplied instruction resolved. Returns the
+    count stamped."""
+    with locked(STORE):
+        s = _load()
+        n = 0
+        for e in s["entries"]:
+            for u in (e.get("result") or {}).get("unapplied") or []:
+                if not u.get("resolved"):
+                    u["resolved"] = _now()
+                    n += 1
+        if n:
+            _save(s)
+        return n

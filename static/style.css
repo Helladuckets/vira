@@ -494,7 +494,11 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .q-note .badge { flex: none; margin-top: 2px; }
 .q-note .link-main { flex: 1; min-width: 0; }
 .q-note .jn-unap { margin-top: 0; }
-.q-note .fchip { flex: none; }
+.q-note-acts { flex: none; display: flex; flex-direction: column; gap: 6px; }
+.q-note-acts .fchip { flex: none; }
+/* a resolved "needs a session" line, kept in the Journal as complete */
+.jn-unap.resolved { text-decoration: line-through; opacity: .5; }
+.jn-unap.resolved .jn-unap-area { text-decoration: none; }
 .dispatch-ctl {
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 8px; margin: 0 0 12px;

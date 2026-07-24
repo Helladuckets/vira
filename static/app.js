@@ -3016,43 +3016,54 @@ function renderIdeas() {
       "No ideas for " + ideaProject + " yet — add one above."));
     return;
   }
+  const isParked = (i) => i.status === "done" || i.status === "dropped";
   const flat = sortedIdeas(scoped);
   if (flat) {
-    flat.forEach((it) => list.appendChild(ideaRow(it)));
+    // Completed items fold here too (collapsed by default), so the queue
+    // leads with active work in EVERY sort — not just the grouped default.
+    flat.filter((i) => !isParked(i)).forEach((it) =>
+      list.appendChild(ideaRow(it)));
+    appendParkedFold(list, flat.filter(isParked));
     return;
   }
   const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
   const proposed = scoped.filter((i) => i.status === "proposed").sort(byUpdated);
   const active = scoped
     .filter((i) => i.status === "open" || i.status === "on-hold").sort(byUpdated);
-  const parked = scoped
-    .filter((i) => i.status === "done" || i.status === "dropped").sort(byUpdated);
+  const parked = scoped.filter(isParked).sort(byUpdated);
   if (proposed.length) {
     list.appendChild(el("div", "ideas-sub proposed",
       `Proposed by Vira — awaiting your call (${proposed.length})`));
     proposed.forEach((it) => list.appendChild(ideaRow(it)));
   }
   active.forEach((it) => list.appendChild(ideaRow(it)));
-  if (parked.length) {
-    // Fold done/dropped behind a click-to-expand subheader (collapsed by
-    // default) so the active work leads. The choice persists across sessions.
-    const head = el("div", "ideas-sub ideas-toggle" + (ideaShowParked ? " open" : ""),
-      `Done / dropped (${parked.length})`);
-    head.setAttribute("role", "button");
-    head.tabIndex = 0;
-    head.setAttribute("aria-expanded", ideaShowParked ? "true" : "false");
-    const toggle = () => {
-      ideaShowParked = !ideaShowParked;
-      localStorage.setItem("vira-idea-show-parked", ideaShowParked ? "1" : "0");
-      renderIdeas();
-    };
-    head.addEventListener("click", toggle);
-    head.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
-    });
-    list.appendChild(head);
-    if (ideaShowParked) parked.forEach((it) => list.appendChild(ideaRow(it)));
-  }
+  appendParkedFold(list, parked);
+}
+
+// Fold done/dropped behind a click-to-expand "Done / dropped (N)" subheader,
+// collapsed by default so active work leads and completed items never crowd
+// the queue — one click reveals them (to reopen a mis-marked one). Completed
+// work is chronicled long-term in the Record tab; this fold is only the
+// in-queue escape hatch. Shared by the grouped and flat sort paths so they
+// can't drift. Choice persists across sessions.
+function appendParkedFold(list, parked) {
+  if (!parked.length) return;
+  const head = el("div", "ideas-sub ideas-toggle" + (ideaShowParked ? " open" : ""),
+    `Done / dropped (${parked.length})`);
+  head.setAttribute("role", "button");
+  head.tabIndex = 0;
+  head.setAttribute("aria-expanded", ideaShowParked ? "true" : "false");
+  const toggle = () => {
+    ideaShowParked = !ideaShowParked;
+    localStorage.setItem("vira-idea-show-parked", ideaShowParked ? "1" : "0");
+    renderIdeas();
+  };
+  head.addEventListener("click", toggle);
+  head.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  list.appendChild(head);
+  if (ideaShowParked) parked.forEach((it) => list.appendChild(ideaRow(it)));
 }
 
 // ----- change log (read-only, derived from session retros + resolved ideas
@@ -3125,6 +3136,7 @@ function initIdeas() {
       localStorage.setItem("vira-idea-project", ideaProject);
       renderProjectControls();   // keep the add-bar default in sync
       renderIdeas();
+      renderQueueLane();         // the lane hides under a non-Vira project
     });
   }
 
@@ -3168,23 +3180,41 @@ function initIdeas() {
 // ----- the Queue's journal lane: notes that need a session -----
 // Journal entries whose instructions couldn't be applied as loops or facts
 // (the amber "needs a session" lines) surface beside the idea backlog —
-// same data the Journal window shows, with copy/export actions attached.
+// same data the Journal window shows, with copy/export/done actions
+// attached. Fetch is cached so the project filter can re-render the lane
+// without another round-trip; renderQueueLane() draws from that cache.
+let journalLaneCache = null;
+
 async function loadQueueLane() {
+  try {
+    journalLaneCache = (await api("/api/brief/journal?limit=200")).entries || [];
+  } catch { journalLaneCache = []; }
+  renderQueueLane();
+}
+
+function renderQueueLane() {
   const lane = $("#work-journal-lane");
   if (!lane) return;
-  let entries = [];
-  try { entries = (await api("/api/brief/journal?limit=200")).entries || []; }
-  catch { lane.innerHTML = ""; return; }
-  const rows = [];
-  entries.forEach((e) => (e.result?.unapplied || []).forEach((u) =>
-    rows.push({ e, u })));
   lane.innerHTML = "";
+  // Journal notes are Vira-scoped and carry no project, so a specific
+  // non-Vira project filter would only bury the real items — hide the lane
+  // there. "All projects" ("") and "Vira" both show it.
+  if (ideaProject && ideaProject !== "Vira") return;
+  const rows = [];
+  (journalLaneCache || []).forEach((e) =>
+    (e.result?.unapplied || []).forEach((u) => {
+      if (!u.resolved) rows.push({ e, u });   // resolved = done, off the queue
+    }));
   if (!rows.length) return;
   const head = el("div", "work-subhead");
   head.appendChild(el("span", "jobs-sub",
     "Needs a session — told to Vira (" + rows.length + ")"));
+  const clr = el("button", "fchip sm", "Clear all");
+  clr.style.marginLeft = "auto";
+  clr.title = "Mark every instruction below done and remove it from the queue";
+  clr.addEventListener("click", () => clearAllQueueNotes(rows.length));
+  head.appendChild(clr);
   const ex = el("button", "fchip sm", "Export all as prompt");
-  ex.style.marginLeft = "auto";
   ex.title = "Copy every instruction Vira couldn't apply as one prompt "
     + "for a full-access session";
   ex.addEventListener("click", exportJournalPrompt);
@@ -3202,6 +3232,7 @@ async function loadQueueLane() {
       + (note ? " · “" + note.slice(0, 90)
         + (note.length > 90 ? "…" : "") + "”" : "")));
     row.appendChild(main);
+    const acts = el("div", "q-note-acts");
     const cp = el("button", "fchip sm", "copy as prompt");
     cp.title = "Copy this one instruction (with its note) for a session";
     cp.addEventListener("click", () => copyText(
@@ -3210,9 +3241,50 @@ async function loadQueueLane() {
       + (e.context ? "[seen at: " + e.context + "]\n" : "")
       + "\nInstruction: " + u.instruction,
     ).then(() => toast("Instruction copied")));
-    row.appendChild(cp);
+    acts.appendChild(cp);
+    const done = el("button", "fchip sm", "done");
+    done.title = "Mark this instruction done — removes it from the queue, "
+      + "keeps it in the Journal as complete";
+    done.addEventListener("click", () => resolveQueueNote(e, u, done));
+    acts.appendChild(done);
+    row.appendChild(acts);
     lane.appendChild(row);
   });
+}
+
+// Mark one "needs a session" instruction done: stamp it resolved in the
+// cache (so the lane re-renders without it), persist server-side, and
+// refresh the Journal window if it is open.
+async function resolveQueueNote(e, u, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    await post("/api/brief/journal/resolve",
+               { entry_id: e.id, instruction: u.instruction });
+    u.resolved = new Date().toISOString();
+    renderQueueLane();
+    if ($("#journal-list")) loadJournal().catch(() => {});
+    toast("Marked done");
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    toast("Couldn't mark done: " + err.message);
+  }
+}
+
+// Clear the whole lane at once (confirm-gated, mirroring the brief's loop
+// sweep). Everything stays in the Journal window as complete.
+async function clearAllQueueNotes(n) {
+  if (!confirm(`Mark all ${n} instruction${n === 1 ? "" : "s"} done? They `
+               + "leave the queue but stay in the Journal as complete.")) return;
+  try {
+    await post("/api/brief/journal/resolve-all", {});
+    (journalLaneCache || []).forEach((e) =>
+      (e.result?.unapplied || []).forEach((u) => {
+        if (!u.resolved) u.resolved = new Date().toISOString();
+      }));
+    renderQueueLane();
+    if ($("#journal-list")) loadJournal().catch(() => {});
+    toast(`Cleared ${n}`);
+  } catch (err) { toast("Clear failed: " + err.message); }
 }
 
 // ----- run an idea as a headless Vira job (Plan / Implement) -----
@@ -4737,9 +4809,13 @@ function journalNode(e) {
     d.appendChild(el("div", "jn-sum", res.summary));
   (res.actions || []).forEach((a) => d.appendChild(el("div", "jn-act", a)));
   // what Vira could NOT apply — encoded as instructions the journal's
-  // "Export as prompt" hands to a full-access session
+  // "Export as prompt" hands to a full-access session. Once the owner marks
+  // one done in the Queue it stays here, struck through, as the completed
+  // record.
   (res.unapplied || []).forEach((u) => {
-    const line = el("div", "jn-unap", "needs a session — " + u.instruction);
+    const done = !!u.resolved;
+    const line = el("div", "jn-unap" + (done ? " resolved" : ""),
+      (done ? "done — " : "needs a session — ") + u.instruction);
     if (u.area) line.appendChild(el("span", "jn-unap-area", u.area));
     d.appendChild(line);
   });
@@ -4752,7 +4828,8 @@ function renderJournalList(entries) {
   const exBtn = $("#journal-export");
   if (exBtn) {
     const n = (entries || []).reduce(
-      (s, e) => s + ((e.result?.unapplied || []).length), 0);
+      (s, e) => s + (e.result?.unapplied || [])
+        .filter((u) => !u.resolved).length, 0);
     exBtn.hidden = !n;
     exBtn.textContent = "Export " + n + " as prompt";
   }

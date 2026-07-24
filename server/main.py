@@ -962,6 +962,27 @@ def api_brief_journal(limit: int = 12):
     return {"entries": journal.recent(limit)}
 
 
+class JournalResolveReq(BaseModel):
+    entry_id: str
+    instruction: str
+
+
+@app.post("/api/brief/journal/resolve")
+def api_brief_journal_resolve(req: JournalResolveReq):
+    """Mark one 'needs a session' instruction done — it drops off the Queue
+    lane and the export, staying on its journal entry as a completed record."""
+    ok = journal.resolve_unapplied(req.entry_id, req.instruction)
+    if not ok:
+        raise HTTPException(404, "instruction not found or already resolved")
+    return {"resolved": True}
+
+
+@app.post("/api/brief/journal/resolve-all")
+def api_brief_journal_resolve_all():
+    """Clear every open 'needs a session' instruction at once."""
+    return {"count": journal.resolve_all_unapplied()}
+
+
 @app.get("/api/person/{pid}/groups")
 def api_groups(pid: str):
     groups = imessage.groups_for_person(pid)
