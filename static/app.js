@@ -8678,12 +8678,17 @@ function buildWindow(spec, st, ci) {
     (z) => saveWinState(spec.id, { z }));
   win.dataset.wid = spec.id;
   win.addEventListener("pointerdown", () => focusWin(win));
-  // a pinned tile in Perimeter mode grows into the stage on click; a real
-  // drag/resize or button press is not a grow (persistGeom is a no-op while
-  // a template owns the layout, so this never touches the freeform desk)
+  // a parked tile in a stage layout grows on click; a real drag/resize or
+  // button press is not a grow (persistGeom is a no-op while a template owns
+  // the layout, so this never touches the freeform desk). While tuning the
+  // grow pass in edit mode the same click picks which module you are staging.
   win.addEventListener("click", (e) => {
-    if (layoutMode === "perimeter" && !e.target.closest("button")
-        && !grown.has(spec.id)) growTile(spec.id);
+    if (e.target.closest("button")) return;
+    if (editing) {
+      if (editPass === "grow" && editTarget !== spec.id) editGrowTarget(spec.id);
+      return;
+    }
+    if (layoutMode === "stage" && !grown.has(spec.id)) growTile(spec.id);
   });
   makeDraggable(win, bar, (r) =>
     persistGeom(spec.id, { x: Math.round(r.left), y: Math.round(r.top) }));
@@ -8717,11 +8722,14 @@ function openWindow(id) {
     requestAnimationFrame(() => st.el.classList.add("open"));
     saveWinState(id, { open: true });
   }
-  // In Perimeter mode, opening a module (dock, palette, deep link) means
-  // "bring it to the stage": reflow so the newcomer earns an edge slot, then
-  // grow it. growTile focuses it too.
-  if (layoutMode === "perimeter") {
-    applyPerimeter(true);
+  // In a stage layout, opening a module (dock, palette, deep link) means
+  // "bring it to the stage": make sure it has a park to retreat to, then grow
+  // it. growTile focuses it too. Only the COMPUTED ring reflows — a saved
+  // layout's parks are the owner's staging and must not be recomputed, so a
+  // newcomer simply parks where it already sits.
+  if (layoutMode === "stage") {
+    if (stageComputed) applyStage(true, true);
+    else if (!slotRects[id]) slotRects[id] = winRect(st.el);
     growTile(id);
     dockRefresh();
     return;
@@ -8733,9 +8741,9 @@ function openWindow(id) {
 function closeWindow(id) {
   const st = winState[id];
   if (!st || !st.open) return;
-  // In Perimeter mode the red button on a grown card retreats it to its edge
-  // slot rather than hiding the module — closing a stage card sends it home.
-  if (layoutMode === "perimeter" && grown.has(id)) { retreatTile(id); return; }
+  // In a stage layout the red button on a grown card retreats it to its park
+  // rather than hiding the module — closing a stage card sends it home.
+  if (layoutMode === "stage" && grown.has(id)) { retreatTile(id); return; }
   st.open = false;
   st.el.classList.remove("open");
   setTimeout(() => { if (!st.open) st.el.style.display = "none"; }, 220);
@@ -9834,13 +9842,16 @@ function paletteMatches(q) {
     { label: "Brain — Find · Notes", kind: "find",
       run: () => { setFindTab("notes"); openWindow("find"); } },
     { label: "Settings", kind: "sheet", run: () => $("#settings-btn").click() },
-    { label: "Layout: Perimeter — Stage", kind: "layout",
-      run: () => setLayout("perimeter") },
     { label: "Layout: Freeform", kind: "layout",
       run: () => setLayout("freeform") },
     ...savedLayouts().map((l) => ({
       label: "Layout: " + l.name, kind: "layout",
       run: () => applySavedLayout(l.id, true) })),
+    ...savedLayouts().map((l) => ({
+      label: "Edit layout: " + l.name, kind: "layout",
+      run: () => startLayoutEdit("saved", l.id) })),
+    { label: "New perimeter layout…", kind: "layout",
+      run: () => startLayoutEdit("perimeter") },
     { label: "Save current layout…", kind: "layout",
       run: () => openSaveLayoutPopup(Math.round(innerWidth / 2) - 130, 84) },
     { label: "Close all windows", kind: "desktop",
@@ -10502,12 +10513,21 @@ async function readerProbe() {
 // The owner's freeform geometry (vira-desktop) is NEVER written while a
 // template is active, so switching back restores the desk exactly. Only the
 // active template + which cards are grown persist (vira-layout, synced).
-const LAYOUTS = { freeform: "Freeform", perimeter: "Perimeter — Stage" };
-let layoutMode = "freeform";   // the active BEHAVIOUR: freeform desk or the ring
-let activeLayout = "freeform"; // menu "· current" label: freeform | perimeter | saved:<id>
+// STAGE is the behaviour Perimeter introduced, now available to ANY layout:
+// modules park at fixed rects, are click-to-grow, and a grown card retreats to
+// its park on close. A layout carries `stage: true` to opt in; `stage: false`
+// is a plain placement (windows just sit where they were put, fully live).
+// The computed ring is no longer a template you apply — it is the GENERATOR
+// that mints a new stage layout ("New perimeter layout…" → edit → name it).
+const LAYOUTS = { freeform: "Freeform" };
+const MODES = { freeform: 1, stage: 1 };  // valid layoutMode values (stored)
+let layoutMode = "freeform";   // the active BEHAVIOUR: freeform desk or a stage
+let activeLayout = "freeform"; // menu "· current" label: freeform | saved:<id>
 const grown = new Set();       // ids currently grown onto the stage
 let grownOrder = [];           // grow order — drives the cascade placement
-const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
+const slotRects = {};          // id -> {x,y,w,h}: the PARKED rect per window
+const growRects = {};          // id -> {x,y,w,h}: this layout's saved GROWN rect
+let stageComputed = false;     // parks came from computeSlots (reflow on resize)
 
 // ---- edit mode: a live arranging session over the real windows. Entered by
 // right-clicking a layout in the menu → "Edit layout". Windows unlock (freely
@@ -10518,10 +10538,19 @@ const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
 let editing = false;
 let editSession = null;        // { kind: "perimeter"|"saved", savedId, name }
 let editReturn = null;         // { mode, active, grown, wins } — restored on Cancel
+let editPass = "park";         // "park" (arrange the tiles) | "grow" (where they open)
+let editStage = false;         // draft of the layout's click-to-grow toggle
+let editGrows = {};            // draft per-module grown rects
+let editParks = {};            // parked rects held while tuning the grow pass
+let editTarget = null;         // the one module shown grown during the grow pass
 
 function layoutState() {
   const s = lsGet("vira-layout", null);
-  if (s && typeof s === "object" && LAYOUTS[s.mode]) return s;
+  if (s && typeof s === "object") {
+    // stored before stage generalized: "perimeter" was the only stage mode
+    const mode = s.mode === "perimeter" ? "stage" : s.mode;
+    if (MODES[mode]) return { ...s, mode };
+  }
   return { mode: "freeform", grown: [], active: "freeform" };
 }
 function saveLayout() {
@@ -10544,9 +10573,11 @@ function persistGeom(id, patch) {
 }
 
 // ---- named saved layouts: snapshots of the current window arrangement the
-// owner captures from the layout menu (new name) or overwrites in place. A
-// snapshot is per-window {x,y,w,h,open}; applying it loads that arrangement
-// back into the freeform desk. Stored + synced under vira-layouts. ----
+// owner captures from the layout menu (new name) or overwrites in place.
+// A snapshot is per-window {x,y,w,h,open} — the PARKED rect — plus an optional
+// `grow` rect saying where that module opens to when it is clicked. The layout
+// itself carries `stage`: true = parked, click-to-grow; false = plain
+// placement. Stored + synced under vira-layouts. ----
 function savedLayouts() {
   const s = lsGet("vira-layouts", []);
   return Array.isArray(s) ? s : [];
@@ -10556,36 +10587,74 @@ function persistSavedLayouts(list) {
 }
 function newLayoutId() { return "ly_" + Math.random().toString(36).slice(2, 10); }
 
+// A layout saved before the stage flag existed came out of the perimeter/tune
+// flow, so click-to-grow is what it was always meant to do — treat a missing
+// flag as stage. The toggle in edit mode turns any layout into plain placement.
+function layoutIsStage(l) { return l ? l.stage !== false : false; }
+
+const roundRect = (r) => ({ x: Math.round(r.x ?? r.left), y: Math.round(r.y ?? r.top),
+                            w: Math.round(r.w ?? r.width), h: Math.round(r.h ?? r.height) });
+
+// Where a window is MEANT to be. Read the inline geometry, not
+// getBoundingClientRect: .fwin-move animates left/top/width/height, so a
+// measured rect during those ~380ms is a frame of the animation, and capturing
+// it would save an arrangement the owner never arranged. The inline styles are
+// written synchronously by setWinRect and by the drag/resize handlers, so they
+// are the intent. Falls back to measuring if a window has no inline geometry.
+function winRect(node) {
+  const n = parseFloat(node.style.left), t = parseFloat(node.style.top);
+  const w = parseFloat(node.style.width), h = parseFloat(node.style.height);
+  if ([n, t, w, h].every((v) => Number.isFinite(v))) return { x: n, y: t, w, h };
+  return roundRect(node.getBoundingClientRect());
+}
+
 // what's on screen right now: open windows at their live rects; closed ones
-// just record that they were closed (closed windows have no meaningful rect)
-function captureLayout() {
+// just record that they were closed (closed windows have no meaningful rect).
+// `grows` supplies the per-module grown rects to carry onto the snapshot.
+// `parks` overrides the live rect for a window — REQUIRED when the grow pass
+// is on screen, because then the live rects are grow staging, not parks (and
+// reading them back mid-animation would silently save the wrong geometry).
+function captureLayout(grows, parks) {
   const wins = {};
   Object.keys(winState).forEach((id) => {
     const w = winState[id];
     if (w.open) {
-      const r = w.el.getBoundingClientRect();
-      wins[id] = { x: Math.round(r.left), y: Math.round(r.top),
-                   w: Math.round(r.width), h: Math.round(r.height), open: true };
+      wins[id] = { ...roundRect((parks && parks[id]) || winRect(w.el)), open: true };
     } else {
       wins[id] = { open: false };
     }
+    const g = grows && grows[id];
+    if (g) wins[id].grow = roundRect(g);
   });
   return wins;
 }
 
-function saveNewLayout(name) {
+// the grown rects already on a saved layout — so a plain "save current layout"
+// over an existing one keeps the grow staging instead of wiping it
+function layoutGrows(l) {
+  const out = {};
+  Object.entries(l?.wins || {}).forEach(([id, w]) => { if (w.grow) out[id] = w.grow; });
+  return out;
+}
+
+function saveNewLayout(name, opts) {
   const list = savedLayouts();
   const id = newLayoutId();
-  list.push({ id, name, wins: captureLayout() });
+  const o = opts || {};
+  list.push({ id, name, stage: o.stage !== false,
+              wins: captureLayout(o.grows, o.parks) });
   persistSavedLayouts(list);
   return id;
 }
 
-function overwriteLayout(id) {
+function overwriteLayout(id, opts) {
   const list = savedLayouts();
   const it = list.find((l) => l.id === id);
   if (!it) return;
-  it.wins = captureLayout();
+  const o = opts || {};
+  it.wins = captureLayout(o.grows || layoutGrows(it), o.parks);
+  if (o.stage !== undefined) it.stage = o.stage;
+  else if (it.stage === undefined) it.stage = true;
   persistSavedLayouts(list);
 }
 
@@ -10598,31 +10667,47 @@ function deleteLayout(id) {
   }
 }
 
-// load a saved arrangement into the freeform desk: leave any template, then
-// open/close and place each captured window (and persist, so it sticks and
-// survives a reload). Windows absent from the snapshot are left untouched.
+// Apply a saved layout. A PLAIN PLACEMENT layout loads into the freeform desk
+// (windows land where they were saved and stay live, geometry persisted so it
+// survives a reload). A STAGE layout instead parks every module at its saved
+// rect and locks it click-to-grow — the freeform desk is left untouched, since
+// a stage arrangement is a template, not the desk. Windows absent from the
+// snapshot are left where they are.
 function applySavedLayout(id, animate) {
   const it = savedLayouts().find((l) => l.id === id);
   if (!it) return;
   if (editing) discardEdit();
   layoutMode = "freeform";
-  document.body.classList.remove("layout-perimeter");
+  document.body.classList.remove("layout-stage");
   grown.clear();
   grownOrder = [];
   Object.keys(winState).forEach((wid) => {
+    winState[wid].el.classList.remove("fwin-locked", "fwin-grown");
+  });
+  const stage = layoutIsStage(it);
+  Object.keys(winState).forEach((wid) => {
     const w = winState[wid];
-    w.el.classList.remove("fwin-locked", "fwin-grown");
     const snap = it.wins[wid];
     if (!snap) return;
     if (snap.open) {
       if (!w.open) openWindow(wid); else viewLoad(wid);
       setWinRect(w.el, snap, animate);
-      saveWinState(wid, { x: snap.x, y: snap.y, w: snap.w, h: snap.h });
+      // a stage layout is a template laid OVER the desk — never write it back
+      if (!stage) saveWinState(wid, { x: snap.x, y: snap.y, w: snap.w, h: snap.h });
     } else if (w.open) {
       closeWindow(wid);
     }
   });
   activeLayout = "saved:" + id;
+  if (stage) {
+    const parks = {}, grows = {};
+    Object.entries(it.wins).forEach(([wid, snap]) => {
+      if (snap.open) parks[wid] = { x: snap.x, y: snap.y, w: snap.w, h: snap.h };
+      if (snap.grow) grows[wid] = snap.grow;
+    });
+    enterStage({ parks, grows, computed: false, animate });
+    return;
+  }
   updateLayoutBtn();
   saveLayout();
 }
@@ -10646,22 +10731,33 @@ function placeArrangement(wins, animate) {
 }
 
 // ---- edit mode ----
-// Start editing a layout: unlock every window, drop any template visuals, and
-// place the starting arrangement (a fresh Perimeter ring, or a saved layout's
-// snapshot). editReturn captures the pre-edit picture so Cancel can restore it.
+// Start editing a layout: unlock every window, drop any stage visuals, and
+// place the starting arrangement (a fresh computed ring, or a saved layout's
+// snapshot). editReturn captures the pre-edit picture — parks and grow staging
+// included — so Cancel can restore it exactly.
 function startLayoutEdit(kind, savedId) {
   if (editing) discardEdit();
+  const saved = kind === "saved"
+    ? savedLayouts().find((l) => l.id === savedId) : null;
   editReturn = { mode: layoutMode, active: activeLayout,
-                 grown: grownOrder.slice(), wins: captureLayout() };
+                 grown: grownOrder.slice(), wins: captureLayout(),
+                 parks: { ...slotRects }, grows: { ...growRects },
+                 computed: stageComputed };
   editing = true;
+  editPass = "park";
+  editTarget = null;
+  editParks = {};
   editSession = {
     kind, savedId: savedId || null,
-    name: kind === "saved"
-      ? (savedLayouts().find((l) => l.id === savedId)?.name || "layout")
-      : "Perimeter",
+    name: saved ? saved.name : "New perimeter layout",
   };
+  // a saved layout brings its own toggle + grow staging; a fresh ring starts
+  // as a stage layout (that is what the generator is for) with no staging yet
+  editStage = saved ? layoutIsStage(saved) : true;
+  editGrows = saved ? layoutGrows(saved) : {};
   layoutMode = "freeform";
-  document.body.classList.remove("layout-perimeter");
+  stageComputed = false;
+  document.body.classList.remove("layout-stage");
   grown.clear();
   grownOrder = [];
   Object.keys(winState).forEach((id) =>
@@ -10670,59 +10766,141 @@ function startLayoutEdit(kind, savedId) {
     const ids = framedWindows();
     const slots = computeSlots(ids);
     ids.forEach((id) => { if (slots[id]) setWinRect(winState[id].el, slots[id], true); });
-  } else if (kind === "saved") {
-    placeArrangement(savedLayouts().find((l) => l.id === savedId)?.wins, true);
+  } else if (saved) {
+    placeArrangement(saved.wins, true);
   }
   document.body.classList.add("layout-editing");
   showEditBar();
   updateLayoutBtn();
 }
 
-// leave the edit session (no restore) — used before applying a fresh template
+// leave the edit session (no restore) — used before applying a fresh layout
 function discardEdit() {
   editing = false;
   editSession = null;
   editReturn = null;
-  document.body.classList.remove("layout-editing");
+  editTarget = null;
+  editPass = "park";
+  editGrows = {};
+  editParks = {};
+  Object.keys(winState).forEach((id) =>
+    winState[id].el.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning"));
+  document.body.classList.remove("layout-editing", "layout-edit-grow");
   hideEditBar();
   updateLayoutBtn();
 }
 
+// ---- the two edit passes ----
+// PARK: every window unlocked, arrange where the modules sit at rest.
+// GROW: the parks are held and re-shown locked; clicking one grows it so you
+// can place where THAT module opens to. The gesture is deliberately the same
+// one the layout will have at runtime, so staging is just doing it once.
+function setEditPass(pass) {
+  if (!editing || pass === editPass) return;
+  if (pass === "grow") {
+    editParks = {};                       // hold the arrangement being edited
+    Object.keys(winState).forEach((id) => {
+      if (winState[id].open) editParks[id] = roundRect(winRect(winState[id].el));
+    });
+    editPass = "grow";
+    editTarget = null;
+    document.body.classList.add("layout-edit-grow");
+    lockEditParks(false);
+  } else {
+    captureEditTarget();                  // keep the rect being tuned
+    editPass = "park";
+    editTarget = null;
+    document.body.classList.remove("layout-edit-grow");
+    Object.keys(winState).forEach((id) => {
+      const node = winState[id].el;
+      node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
+      if (editParks[id] && winState[id].open) setWinRect(node, editParks[id], true);
+    });
+  }
+  showEditBar();
+}
+
+// park every window (locked, click-to-grow) except the one being tuned
+function lockEditParks(animate) {
+  Object.keys(winState).forEach((id) => {
+    const w = winState[id];
+    if (!w.open) return;
+    const node = w.el;
+    if (id === editTarget) {
+      node.classList.remove("fwin-locked");
+      node.classList.add("fwin-grown", "fwin-tuning");
+    } else {
+      node.classList.add("fwin-locked");
+      node.classList.remove("fwin-grown", "fwin-tuning");
+      if (editParks[id]) setWinRect(node, editParks[id], animate);
+    }
+  });
+}
+
+// record where the module currently being staged was left
+function captureEditTarget() {
+  if (editPass !== "grow" || !editTarget || !winState[editTarget]?.open) return;
+  editGrows[editTarget] = roundRect(winRect(winState[editTarget].el));
+}
+
+// switch which module's grown position is being staged
+function editGrowTarget(id) {
+  if (!editing || editPass !== "grow" || !winState[id]?.open) return;
+  captureEditTarget();
+  editTarget = id;
+  lockEditParks(true);
+  const node = winState[id].el;
+  setWinRect(node, editGrows[id] || stageRect(0), true);
+  focusWin(node);
+  showEditBar();
+}
+
+// drop a staged grow rect — that module falls back to the cascade default
+function clearEditGrow() {
+  if (!editTarget) return;
+  delete editGrows[editTarget];
+  setWinRect(winState[editTarget].el, stageRect(0), true);
+  showEditBar();
+}
+
 // Save the tuned arrangement. asNew → a new named layout (the only path for a
-// tuned Perimeter, since Perimeter itself is computed); otherwise overwrite the
-// saved layout being edited. Either way the snapshot is captured from the live
-// rects; applySavedLayout then makes it the current layout and persists it.
+// tuned ring, since the ring generator has no layout of its own to overwrite);
+// otherwise overwrite the saved layout being edited. The PARKED rects are the
+// snapshot: while the grow pass is on screen the live rects are grow staging,
+// so the parks held when that pass opened are passed in explicitly rather than
+// animated back and re-read (a read mid-transition saves the wrong geometry).
 function commitEdit(asNew, name) {
   const sess = editSession;
-  let id;
-  if (asNew) {
-    if (!name) return;
-    id = saveNewLayout(name);
-  } else {
-    id = sess.savedId;
-    overwriteLayout(id);
-  }
+  if (asNew && !name) return;
+  captureEditTarget();                       // the module still being staged
+  const inGrow = editPass === "grow";
+  const opts = { stage: editStage,
+                 grows: editStage ? editGrows : undefined,
+                 parks: inGrow ? editParks : undefined };
+  const id = asNew ? saveNewLayout(name, opts)
+                   : (overwriteLayout(sess.savedId, opts), sess.savedId);
   discardEdit();
   applySavedLayout(id, false);
   toast((asNew ? "Saved layout: " : "Updated layout: ") + (name || sess.name));
 }
 
-// Cancel: restore the exact pre-edit picture and re-arm the template that was
-// active before editing began.
+// Cancel: restore the exact pre-edit picture and re-arm the layout that was
+// active before editing began (parks, grow staging and grown cards included).
 function cancelEdit() {
   const ret = editReturn;
   discardEdit();
   if (!ret) return;
   placeArrangement(ret.wins, true);
-  layoutMode = ret.mode === "perimeter" ? "perimeter" : "freeform";
   activeLayout = typeof ret.active === "string" ? ret.active : "freeform";
-  if (ret.mode === "perimeter") {
+  if (ret.mode === "stage") {
     grown.clear();
     grownOrder = (ret.grown || []).filter((id) => winState[id]?.open);
     grownOrder.forEach((id) => grown.add(id));
-    document.body.classList.add("layout-perimeter");
-    applyPerimeter(true);
+    enterStage({ parks: ret.parks, grows: ret.grows,
+                 computed: ret.computed, animate: true });
+    return;
   }
+  layoutMode = "freeform";
   updateLayoutBtn();
   saveLayout();
 }
@@ -10817,12 +10995,21 @@ function stageRect(k) {
   return { x, y, w, h };
 }
 
-// (re)apply the perimeter arrangement to every framed window
-function applyPerimeter(animate) {
+// where a module grows to: its layout's staged rect if the owner set one,
+// else the cascaded default card (several stay individually reachable)
+function growTarget(id, k) { return growRects[id] || stageRect(k); }
+
+// (re)apply the stage arrangement: every framed window is parked and locked
+// except the grown ones, which sit at their staged (or cascaded) rect.
+// `reflow` recomputes the parks from the ring generator — only ever true for
+// the computed perimeter, since a saved layout's parks are absolute.
+function applyStage(animate, reflow) {
   const ids = framedWindows();
-  const slots = computeSlots(ids);
-  Object.keys(slotRects).forEach((k) => delete slotRects[k]);
-  Object.assign(slotRects, slots);
+  if (reflow) {
+    const slots = computeSlots(ids);
+    Object.keys(slotRects).forEach((k) => delete slotRects[k]);
+    Object.assign(slotRects, slots);
+  }
   ids.forEach((id) => {
     const node = winState[id].el;
     if (grown.has(id)) {
@@ -10831,23 +11018,23 @@ function applyPerimeter(animate) {
     } else {
       node.classList.add("fwin-locked");
       node.classList.remove("fwin-grown");
-      if (slots[id]) setWinRect(node, slots[id], animate);
+      if (slotRects[id]) setWinRect(node, slotRects[id], animate);
     }
   });
   grownOrder.forEach((id, k) => {
-    if (winState[id]?.open) setWinRect(winState[id].el, stageRect(k), animate);
+    if (winState[id]?.open) setWinRect(winState[id].el, growTarget(id, k), animate);
   });
 }
 
 function growTile(id) {
-  if (layoutMode !== "perimeter" || !winState[id]) return;
+  if (layoutMode !== "stage" || !winState[id]) return;
   if (grown.has(id)) { focusWin(winState[id].el); return; }
   grown.add(id);
   grownOrder.push(id);
   const node = winState[id].el;
   node.classList.remove("fwin-locked");
   node.classList.add("fwin-grown");
-  setWinRect(node, stageRect(grownOrder.length - 1), true);
+  setWinRect(node, growTarget(id, grownOrder.length - 1), true);
   focusWin(node);
   saveLayout();
 }
@@ -10860,7 +11047,7 @@ function retreatTile(id) {
   node.classList.remove("fwin-grown");
   node.classList.add("fwin-locked");
   if (slotRects[id]) setWinRect(node, slotRects[id], true);
-  else applyPerimeter(true);
+  else applyStage(true, stageComputed);
   saveLayout();
 }
 
@@ -10879,11 +11066,20 @@ function freeformRect(id, st) {
            y: Math.max(44, Math.min(y, innerHeight - 140)), w, h };
 }
 
-function enterPerimeter(animate) {
-  layoutMode = "perimeter";
-  activeLayout = "perimeter";
-  document.body.classList.add("layout-perimeter");
-  applyPerimeter(animate);
+// Turn the desk into a stage: `parks` is id → parked rect (omit to compute the
+// ring), `grows` is id → staged grown rect (omit for the cascade default).
+// activeLayout is set by the caller — a stage can be a saved layout or the
+// computed ring, and the "· current" marker names which.
+function enterStage(opts) {
+  const o = opts || {};
+  layoutMode = "stage";
+  stageComputed = !!o.computed;
+  document.body.classList.add("layout-stage");
+  Object.keys(slotRects).forEach((k) => delete slotRects[k]);
+  Object.keys(growRects).forEach((k) => delete growRects[k]);
+  if (o.parks) Object.assign(slotRects, o.parks);
+  if (o.grows) Object.assign(growRects, o.grows);
+  applyStage(o.animate, stageComputed || !o.parks);
   updateLayoutBtn();
   saveLayout();
 }
@@ -10891,7 +11087,8 @@ function enterPerimeter(animate) {
 function exitToFreeform(animate) {
   layoutMode = "freeform";
   activeLayout = "freeform";
-  document.body.classList.remove("layout-perimeter");
+  stageComputed = false;
+  document.body.classList.remove("layout-stage");
   grown.clear();
   grownOrder = [];
   const store = desktopStore();
@@ -10907,8 +11104,7 @@ function exitToFreeform(animate) {
 function setLayout(mode) {
   if (!LAYOUTS[mode]) return;
   if (editing) discardEdit();
-  if (mode === "perimeter") { if (layoutMode !== "perimeter") enterPerimeter(true); }
-  else exitToFreeform(true);
+  exitToFreeform(true);
 }
 
 function updateLayoutBtn() {
@@ -10919,27 +11115,23 @@ function updateLayoutBtn() {
 }
 
 // Left-click an entry APPLIES that layout; right-click opens its edit menu
-// (the "Right-click to edit" affordance). Freeform offers save-as-new;
-// Perimeter offers tune-and-save-new (it is computed, so it can't be
-// overwritten); a saved layout offers edit / rename / delete.
+// (the "Right-click to edit" affordance). The computed ring is no longer a
+// template you apply — the owner's own saved stage layouts replaced it — so it
+// lives below as the GENERATOR that mints one ("New perimeter layout…").
 function openLayoutMenu(x, y) {
   const mark = (key, label) => label + (key === activeLayout ? " · current" : "");
   const items = [
-    { head: "Layout template" },
+    { head: "Layout" },
     { label: mark("freeform", "Freeform"), run: () => setLayout("freeform"),
       onContext: (mx, my) => showContextMenu(mx, my, [
         { head: "Freeform" },
         { label: "Save current as new layout…",
           run: () => openSaveLayoutPopup(mx, my) },
       ]) },
-    { label: mark("perimeter", "Perimeter — Stage"), run: () => setLayout("perimeter"),
-      onContext: (mx, my) => showContextMenu(mx, my, [
-        { head: "Perimeter — Stage" },
-        { label: "Edit & tune…", run: () => startLayoutEdit("perimeter") },
-      ]) },
   ];
   savedLayouts().forEach((l) => items.push(
-    { label: mark("saved:" + l.id, l.name), run: () => applySavedLayout(l.id, true),
+    { label: mark("saved:" + l.id, l.name) + (layoutIsStage(l) ? "  ·  stage" : ""),
+      run: () => applySavedLayout(l.id, true),
       onContext: (mx, my) => showContextMenu(mx, my, [
         { head: l.name },
         { label: "Edit layout", run: () => startLayoutEdit("saved", l.id) },
@@ -10949,18 +11141,19 @@ function openLayoutMenu(x, y) {
           run: () => { deleteLayout(l.id); toast("Deleted layout: " + l.name); } },
       ]) }));
   items.push({ sep: true });
+  items.push({ label: "New perimeter layout…",
+               run: () => startLayoutEdit("perimeter") });
   items.push({ label: "Save current layout…", run: () => {
     const r = $("#layout-btn").getBoundingClientRect();
     openSaveLayoutPopup(r.left, r.bottom + 6);
   } });
-  if (savedLayouts().length || LAYOUTS.perimeter)
-    items.push({ head: "Right-click a layout to edit it" });
+  items.push({ head: "Right-click a layout to edit it" });
   showContextMenu(x, y, items);
 }
 
-// the floating bar shown while editing: names the target, hints the gesture,
-// and carries Save / Save-as-new / Cancel. A saved layout can overwrite; a
-// tuned Perimeter can only be saved as a new named layout.
+// the floating bar shown while editing: names the target, carries the
+// click-to-grow toggle, the Parked/Grows pass switch, and Save / Cancel.
+// A saved layout can overwrite; a tuned ring can only be saved as new.
 function showEditBar() {
   hideEditBar();
   if (!editSession) return;
@@ -10969,11 +11162,52 @@ function showEditBar() {
   bar.id = "layout-editbar";
   const label = el("div", "le-label");
   label.appendChild(el("span", "le-kicker", "Editing layout"));
-  label.appendChild(el("span", "le-name",
-    isSaved ? editSession.name : "Perimeter · save as new"));
+  label.appendChild(el("span", "le-name", editSession.name));
   bar.appendChild(label);
-  bar.appendChild(el("div", "le-hint",
-    "Drag a title bar to move · drag an edge to resize"));
+
+  // the toggle: is this a parked, click-to-grow layout, or plain placement?
+  const tog = el("button", "le-toggle" + (editStage ? " on" : ""));
+  tog.appendChild(el("span", "le-dot"));
+  tog.appendChild(el("span", "le-toglabel",
+    editStage ? "Click a tile to grow it" : "Plain placement"));
+  tog.title = editStage
+    ? "Modules park here and open on click. Click to make it a plain placement."
+    : "Modules just sit here, fully live. Click to make them click-to-grow.";
+  tog.addEventListener("click", () => {
+    if (!editStage && editPass === "grow") setEditPass("park");
+    editStage = !editStage;
+    showEditBar();
+  });
+  bar.appendChild(tog);
+
+  // the two passes — only a stage layout has a grow position to stage
+  if (editStage) {
+    const seg = el("div", "le-seg");
+    [["park", "Parked"], ["grow", "Grows to"]].forEach(([k, txt]) => {
+      const b = el("button", "le-segbtn" + (editPass === k ? " on" : ""), txt);
+      b.addEventListener("click", () => setEditPass(k));
+      seg.appendChild(b);
+    });
+    bar.appendChild(seg);
+  }
+
+  const hint = el("div", "le-hint");
+  if (editStage && editPass === "grow") {
+    hint.textContent = editTarget
+      ? "Placing " + (WIN_TITLES[editTarget] || editTarget)
+        + " — drag it where it should open"
+      : "Click a module to stage where it opens to";
+    if (editTarget) {
+      const reset = el("button", "le-link", "use default");
+      reset.addEventListener("click", clearEditGrow);
+      hint.appendChild(document.createTextNode(" · "));
+      hint.appendChild(reset);
+    }
+  } else {
+    hint.textContent = "Drag a title bar to move · drag an edge to resize";
+  }
+  bar.appendChild(hint);
+
   const acts = el("div", "le-acts");
   const cancel = el("button", "le-btn", "Cancel");
   cancel.addEventListener("click", cancelEdit);
@@ -11109,16 +11343,18 @@ function openSaveLayoutPopup(x, y) {
   requestAnimationFrame(() => input.focus());
 }
 
-// recompute the frame when the viewport changes (crossing the 1100px desktop
-// boundary reloads the page separately, so this only handles same-mode resize)
+// Recompute the frame when the viewport changes (crossing the 1100px desktop
+// boundary reloads the page separately, so this only handles same-mode resize).
+// ONLY the computed ring reflows — a saved layout's parks are the owner's own
+// staging, and silently re-packing them would throw the arrangement away.
 let layoutResizeT = null;
 window.addEventListener("resize", () => {
-  if (layoutMode !== "perimeter") return;
+  if (layoutMode !== "stage" || !stageComputed) return;
   clearTimeout(layoutResizeT);
-  layoutResizeT = setTimeout(() => applyPerimeter(false), 120);
+  layoutResizeT = setTimeout(() => applyStage(false, true), 120);
 });
 
-// wire the topbar button + restore the saved template; called from initDesktop
+// wire the topbar button + restore the active layout; called from initDesktop
 function initLayout() {
   const btn = $("#layout-btn");
   if (btn) {
@@ -11129,16 +11365,29 @@ function initLayout() {
     });
   }
   const ls = layoutState();
-  if (ls.mode === "perimeter") {
+  activeLayout = typeof ls.active === "string" ? ls.active : "freeform";
+  if (ls.mode === "stage") {
     grownOrder = (ls.grown || []).filter((id) => winState[id]?.open);
     grownOrder.forEach((id) => grown.add(id));
-    enterPerimeter(false);          // no animation on first paint
-  } else {
-    // Freeform: the desk (vira-desktop) already reflects the last-applied
-    // arrangement — a loaded saved layout wrote its geometry there — so
-    // nothing to re-apply; just restore the menu's "· current" marker.
-    activeLayout = typeof ls.active === "string" ? ls.active : "freeform";
+    const saved = activeLayout.startsWith("saved:")
+      ? savedLayouts().find((l) => l.id === activeLayout.slice(6)) : null;
+    if (saved && layoutIsStage(saved)) {
+      // re-arm the saved stage: parks and grow staging come off the snapshot,
+      // and the windows are already where the last paint left them
+      const parks = {}, grows = {};
+      Object.entries(saved.wins).forEach(([wid, snap]) => {
+        if (snap.open) parks[wid] = { x: snap.x, y: snap.y, w: snap.w, h: snap.h };
+        if (snap.grow) grows[wid] = snap.grow;
+      });
+      enterStage({ parks, grows, computed: false, animate: false });
+    } else {
+      // a stage with no layout behind it (the old computed ring): rebuild it
+      enterStage({ computed: true, animate: false });
+    }
   }
+  // Freeform: the desk (vira-desktop) already reflects the last-applied
+  // arrangement — a loaded plain layout wrote its geometry there — so there is
+  // nothing to re-apply; the "· current" marker is restored above.
   updateLayoutBtn();
 }
 
