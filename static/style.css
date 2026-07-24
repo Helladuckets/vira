@@ -147,8 +147,21 @@ body {
   cursor: pointer; padding: 6px 8px;
 }
 .icon-btn:active { color: var(--accent); }
-/* the layout-template button lights while a non-default template is active */
+/* the layout-template button lights while a non-default template is active;
+   it pulses while a layout is being edited */
 #layout-btn.on { color: var(--accent); }
+#layout-btn.editing { color: var(--accent); animation: layout-edit-pulse 1.4s ease-in-out infinite; }
+@keyframes layout-edit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@media (prefers-reduced-motion: reduce) {
+  #layout-btn.editing { animation: none; }
+}
+/* a menu row that opens a secondary (edit) menu on right-click */
+.ctx-item.has-sub { position: relative; padding-right: 24px; }
+.ctx-item.has-sub::after {
+  content: "›"; position: absolute; right: 10px; top: 50%;
+  transform: translateY(-50%); color: var(--text-faint); font-size: 14px;
+}
+.ctx-item.has-sub:hover::after { color: var(--accent); }
 
 /* "save current layout" form inside the layout menu's popup */
 .ly-input {
@@ -1802,6 +1815,45 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   .fwin-locked:hover::after { opacity: 1; }
   .fwin-grown { box-shadow: 0 32px 92px rgba(0, 0, 0, .62); }
   @media (prefers-reduced-motion: reduce) { .fwin-move { transition: none; } }
+
+  /* ---- layout edit mode: every window is freely arrangeable; an outline
+     signals that, and a top bar carries Save / Cancel ---- */
+  body.layout-editing .fwin {
+    outline: 1px dashed color-mix(in srgb, var(--accent) 55%, transparent);
+    outline-offset: 2px;
+  }
+  .layout-editbar {
+    position: fixed; top: 58px; left: 50%; transform: translateX(-50%);
+    z-index: 3800; display: flex; align-items: center; gap: 16px;
+    padding: 9px 12px 9px 16px; border-radius: 8px;
+    background: var(--bg-titlebar); border: 1px solid var(--accent);
+    box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
+    max-width: calc(100vw - 24px);
+  }
+  .le-label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .le-kicker {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  .le-name {
+    font-size: 13px; color: var(--text); font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .le-hint {
+    font-size: 11px; color: var(--text-faint); white-space: nowrap;
+  }
+  .le-acts { display: flex; gap: 8px; flex: none; }
+  .le-btn {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em;
+    text-transform: uppercase; cursor: pointer; padding: 5px 11px;
+    border-radius: 2px; background: var(--bg-card);
+    border: 1px solid var(--line); color: var(--text-dim);
+  }
+  .le-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .le-btn.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--bg);
+  }
+  @media (max-width: 720px) { .le-hint { display: none; } }
   .fwin-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 9px 12px; border-bottom: 1px solid var(--line);
