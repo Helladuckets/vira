@@ -12,7 +12,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from . import genrestudio as gs
+from . import genregen, genrestudio as gs
 
 router = APIRouter(prefix="/api/genre")
 
@@ -26,6 +26,10 @@ class RefReq(BaseModel):
     name: str = ""
 
 
+class GenReq(BaseModel):
+    aspect: str = "4:3"
+
+
 class PatchReq(BaseModel):
     name: str | None = None
     knobs: dict | None = None
@@ -33,6 +37,7 @@ class PatchReq(BaseModel):
     picks: dict | None = None
     overrides: dict | None = None
     weights: dict[str, float] | None = None      # {ref_id: gain}
+    gen_prompt: str | None = None                # owner's words; "" = auto
 
 
 @router.get("")
@@ -93,6 +98,8 @@ def patch(gid: str, req: PatchReq):
             for r in p.get("refs") or []:
                 if r["id"] in req.weights:
                     r["weight"] = max(0.0, min(1.0, float(req.weights[r["id"]])))
+        if req.gen_prompt is not None:
+            p["gen_prompt"] = req.gen_prompt[:4000]
     try:
         update_patch_or_404(gid, fn)
         return gs.state(gid)
@@ -172,6 +179,41 @@ def enrich_all(gid: str):
                 continue
     threading.Thread(target=work, daemon=True).start()
     return {"ok": True, "queued": len(ids)}
+
+
+@router.post("/{gid}/generate")
+def generate_image(gid: str, req: GenReq):
+    """The combined column's button: compose the recipe into a prompt (or use
+    the owner's own words) and render a NEW reference image. Synchronous — the
+    UI holds a busy state; the take lands in the patch's generation history."""
+    try:
+        patch = gs.load_patch(gid)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "no such genre patch")
+    prompt = genregen.compose_prompt(patch)
+    try:
+        png = genregen.generate(prompt, aspect=req.aspect)
+    except RuntimeError as e:
+        raise HTTPException(502, str(e))
+    entry = gs.record_generation(gid, prompt, png)
+    return {"ok": True, "generation": entry, "prompt": prompt,
+            "state": gs.state(gid)}
+
+
+@router.get("/{gid}/generation/{genid}/image")
+def generation_image(gid: str, genid: str):
+    try:
+        patch = gs.load_patch(gid)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(404, "no such genre patch")
+    entry = next((g for g in patch.get("generations") or []
+                  if g.get("id") == genid), None)
+    if not entry:
+        raise HTTPException(404, "no such generation")
+    path = Path(gs._patch_dir(gid)) / entry["file"]
+    if not path.is_file():
+        raise HTTPException(404, "image missing")
+    return FileResponse(path)
 
 
 @router.post("/{gid}/install")

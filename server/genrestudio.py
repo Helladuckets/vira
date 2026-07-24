@@ -103,7 +103,22 @@ ASPECTS = [
      "arity": "multi", "kind": "text", "transfers": True},
     {"key": "covenants", "group": "covenant", "label": "never",
      "arity": "multi", "kind": "text", "transfers": True},
-    # -- content: describes the picture, never reaches the skin ----------
+    # -- rendering: how the image is MADE — genre material, vision-filled;
+    # a skin ignores these (transfers False) but the Generate button reads
+    # them as its swappable slots (the City X Axis prompt-recipe shape)
+    {"key": "medium", "group": "rendering", "label": "medium",
+     "arity": "one", "kind": "text", "transfers": False},
+    {"key": "style", "group": "rendering", "label": "style",
+     "arity": "multi", "kind": "text", "transfers": False},
+    {"key": "lighting", "group": "rendering", "label": "lighting",
+     "arity": "multi", "kind": "text", "transfers": False},
+    {"key": "mood", "group": "rendering", "label": "mood",
+     "arity": "multi", "kind": "text", "transfers": False},
+    {"key": "era", "group": "rendering", "label": "era",
+     "arity": "one", "kind": "text", "transfers": False},
+    # -- content: what the image DEPICTS. Real genre material — the owner can
+    # take "this image's subject" as deliberately as a palette piece (City X
+    # Axis is a genre DEFINED by its shared subject) — but a skin ignores it.
     {"key": "subject", "group": "content", "label": "subject",
      "arity": "one", "kind": "text", "transfers": False},
     {"key": "vantage", "group": "content", "label": "vantage",
@@ -113,9 +128,9 @@ ASPECTS = [
 ]
 BY_KEY = {a["key"]: a for a in ASPECTS}
 GROUPS = [
-    ("palette", "Palette"), ("grammar", "Grammar"), ("type", "Type"),
-    ("glass", "Glass"), ("prose", "Prose"), ("covenant", "Covenants"),
-    ("content", "Describes the picture"),
+    ("palette", "Palette"), ("rendering", "Rendering"), ("content", "Content"),
+    ("grammar", "Grammar"), ("type", "Type"), ("glass", "Glass"),
+    ("prose", "Prose"), ("covenant", "Covenants"),
 ]
 
 # ---------------------------------------------------------------- knobs
@@ -483,13 +498,20 @@ def _role_ramp(palette: list) -> list:
 
 # ---------------------------------------------------------------- rung 2
 
-VISION_PROMPT = """You are reading a reference image so it can be turned into a
-UI SKIN — a way of drawing an interface, not a description of a picture.
-
-Answer ONLY about the visual GRAMMAR. Do not describe the subject matter.
+VISION_PROMPT = """You are decomposing a reference image for a GENRE MAKER —
+a tool that composes a new visual genre out of pieces of several references:
+this one's palette, that one's subject, another's prose. Report BOTH what the
+image depicts and how it is made; the owner chooses which pieces transfer.
 
 Return JSON, no prose around it:
 {
+  "subject": "two or three words — what is depicted",
+  "vantage": "the viewpoint, a few words (street level, isometric, portrait)",
+  "medium": "how it is made, a few words (ink line drawing, pixel art, photograph)",
+  "style": ["up to 3 short style words (cyberpunk, constructivist, minimalist)"],
+  "lighting": ["up to 3 short lighting words (neon night, daylight, monochrome)"],
+  "mood": ["up to 3 short mood words"],
+  "era": "a period feel if one is unmistakable (1970s soviet print)",
   "corners": "square" | "rounded" | "pill",
   "type_family": "mono" | "sans" | "serif",
   "chrome_case": "sentence" | "upper",
@@ -497,7 +519,7 @@ Return JSON, no prose around it:
   "glass": [any of "grain","scanlines","vignette","bloom","flicker"],
   "thesis": "one sentence naming how hierarchy is carried in this image",
   "covenants": ["at most 2 rules this image implies must NEVER happen"],
-  "subject": "two or three words — what is depicted (this is EXCLUDED from the skin)"
+  "text_in_image": "verbatim visible text, if any"
 }
 Every field is optional: omit anything the image gives you no evidence for.
 Omitting is better than guessing — an abstention is a real answer here."""
@@ -1150,9 +1172,27 @@ def enrich_reference(gid: str, rid: str) -> dict:
     return {"ok": True, "aspects": out["aspects"]}
 
 
+def record_generation(gid: str, prompt: str, png: bytes) -> dict:
+    """Store one generated reference beside the patch and remember it. The
+    history is kept — regeneration is the point of the button, and comparing
+    takes keeps the good takes."""
+    genid = "g" + uuid.uuid4().hex[:8]
+    path = _patch_dir(gid) / f"gen-{genid}.png"
+    path.write_bytes(png)
+    entry = {"id": genid, "file": path.name, "prompt": prompt[:2000],
+             "when": time.time()}
+
+    def fn(p):
+        p.setdefault("generations", []).append(entry)
+    update_patch(gid, fn)
+    return entry
+
+
 def state(gid: str) -> dict:
     """Everything the Pro surface renders: the patch, the resolved matrix, the
-    knob definitions, the aspect table, clusters, and the compiled preview."""
+    knob definitions, the aspect table, clusters, the composed generation
+    prompt, and the skin-application preview."""
+    from . import genregen
     patch = load_patch(gid)
     res = resolve(patch)
     skin = compile_skin(patch)
@@ -1164,6 +1204,8 @@ def state(gid: str) -> dict:
         "clusters": cluster(patch),
         "manifest": skin["manifest"], "tokens": skin["tokens"], "glass": skin["glass"],
         "vision": vision_available(), "vision_why": vision_status()["reason"],
+        "generate": genregen.status(),
+        "gen_prompt_auto": genregen.compose_prompt(dict(patch, gen_prompt="")),
         "max_refs": MAX_REFS,
     }
 

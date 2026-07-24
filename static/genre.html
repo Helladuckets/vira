@@ -81,6 +81,21 @@ h3.gs-h{font-size:13px;color:var(--text-head);font-weight:600}
 .pl.na{opacity:.35;font-style:italic;cursor:default;border-style:solid}
 .resv.auto{opacity:.55}
 .tag.auto{color:var(--text-faint);font-style:italic}
+/* the combined column head: generated reference + the button */
+.comb{display:flex;flex-direction:column;gap:6px;min-width:190px;max-width:230px}
+.comb-img{width:100%;border:1px solid var(--accent-line);border-radius:var(--radius);
+  cursor:pointer;display:block}
+.comb-empty{border:1px dashed var(--line);border-radius:var(--radius);padding:16px 8px;
+  font-family:var(--mono);font-size:9px;color:var(--text-faint);text-align:center}
+.comb-btn{width:100%;text-align:center}
+.gen-hist{display:flex;gap:3px;flex-wrap:wrap}
+.gen-hist img{width:32px;height:24px;object-fit:cover;border:1px solid var(--line);
+  border-radius:2px;cursor:pointer;display:block}
+.comb-ptoggle{font-family:var(--mono);font-size:9px;color:var(--text-faint);cursor:pointer}
+.comb-ptoggle:hover{color:var(--accent-bright)}
+.comb-prompt{width:100%;min-height:96px;background:var(--bg-card);border:1px solid var(--line);
+  border-radius:var(--radius);color:var(--text);font-family:var(--mono);font-size:9.5px;
+  padding:6px;resize:vertical}
 .ref-pal{display:flex;height:9px;margin-top:5px;border:1px solid var(--line);
   border-radius:2px;overflow:hidden}
 .ref-pal i{flex:1;display:block}
@@ -154,12 +169,15 @@ h3.gs-h{font-size:13px;color:var(--text-head);font-weight:600}
   <!-- ============ RIGHT: coherence, preview, ship ============ -->
   <div class="gs-col gs-right">
     <div class="gs-sec">
-      <div class="gs-lbl">Coherence</div>
-      <div id="coh"></div>
+      <div class="gs-lbl">Apply — the skin</div>
+      <div class="gs-hint">The genre in the combined column is the product; wearing
+        it in Vira is one application of it. Coherence below scores only the rows
+        a skin consumes.</div>
+      <div id="coh" style="margin-top:8px"></div>
     </div>
     <div class="gs-sec">
-      <div class="gs-lbl">Live preview</div>
-      <div class="gs-hint">The skin as it stands. Every dial redraws this.</div>
+      <div class="gs-lbl">Skin preview</div>
+      <div class="gs-hint">Vira components wearing the genre's grammar.</div>
       <div class="prev" id="prev"></div>
     </div>
     <div class="gs-sec" id="clsec" style="display:none">
@@ -299,7 +317,7 @@ function renderMatrix(){
     c.appendChild(el("div","cg",`gain ${Math.round((r.weight??1)*100)}%`));
     th.appendChild(c); hr.appendChild(th);
   });
-  const rth=el("th","res"); rth.appendChild(el("span","gs-lbl","→ the skin"));
+  const rth=el("th","res"); rth.appendChild(combinedHead());
   hr.appendChild(rth); thead.appendChild(hr); t.appendChild(thead);
 
   const tb=el("tbody");
@@ -310,12 +328,14 @@ function renderMatrix(){
     bt.colSpan=refs.length+2;
     bt.appendChild(el("span","gs-lbl",g.label));
     if(g.key==="content") bt.appendChild(el("span","bn",
-      "content, not grammar — never reaches the skin"));
+      "what the images depict — real genre material; a skin ignores it"));
+    if(g.key==="rendering") bt.appendChild(el("span","bn",
+      "how they are made — the generator's swappable slots; filled by the vision pass"));
     band.appendChild(bt); tb.appendChild(band);
 
     rowsIn.forEach(spec=>{
       const row=S.rows[spec.key]; if(!row) return;
-      const tr=el("tr", spec.transfers?"":"dimrow");
+      const tr=el("tr");
       const rh=el("td","rowh");
       rh.appendChild(el("span",null,spec.label));
       rh.appendChild(el("span","arity",spec.arity==="one"?"one":"multi"));
@@ -360,8 +380,6 @@ function resolvedCell(spec,row){
   const td=el("td","res");
   const v=row.resolved;
   const box=el("div","resv");
-  if(!spec.transfers){ box.style.color="var(--text-faint)";
-    box.appendChild(el("span",null,"— excluded —")); td.appendChild(box); return td; }
   if(v==null||(Array.isArray(v)&&!v.length)){
     box.appendChild(el("span",null,row.conflict?"unresolved":"—"));
   }else if(spec.kind==="color"){
@@ -391,9 +409,68 @@ function resolvedCell(spec,row){
   }
   if(row.abstained.length&&row.source==="selected")
     td.appendChild(tag("warn",`${row.abstained.length} offer nothing here`));
+  if(!spec.transfers&&has)
+    td.appendChild(tag("auto","genre-only — the skin ignores this row"));
   return td;
 }
 function tag(k,x){return el("span","tag "+k,x);}
+
+/* ---- the COMBINED column head: the genre made visible. The latest
+   generated reference, the button that renders a new take (regenerate for
+   as long as the dials keep moving — every take is kept), and the prompt:
+   auto-composed from the matrix, or your own words typed over it. */
+function combinedHead(){
+  const w=el("div","comb");
+  w.appendChild(el("span","gs-lbl","→ combined"));
+  const gens=S.patch.generations||[];
+  const last=gens[gens.length-1];
+  if(last){
+    const img=document.createElement("img");
+    img.className="comb-img";
+    img.src=`/api/genre/${GID}/generation/${last.id}/image`;
+    img.title="the latest generated reference — click to open full size";
+    img.addEventListener("click",()=>window.open(img.src,"_blank","noopener"));
+    w.appendChild(img);
+  }else{
+    w.appendChild(el("div","comb-empty","no reference generated yet"));
+  }
+  const b=el("button","btn2 sm comb-btn",gens.length?"Regenerate":"Generate reference");
+  b.id="gen-btn";
+  if(!(S.generate||{}).ok){ b.disabled=true; b.title=(S.generate||{}).reason||""; }
+  b.addEventListener("click",doGenerate);
+  w.appendChild(b);
+  if(gens.length>1){
+    const hist=el("div","gen-hist");
+    gens.slice(0,-1).slice(-6).forEach(g=>{
+      const t=document.createElement("img");
+      t.src=`/api/genre/${GID}/generation/${g.id}/image`;
+      t.title="earlier take — click to open";
+      t.addEventListener("click",()=>window.open(t.src,"_blank","noopener"));
+      hist.appendChild(t);
+    });
+    w.appendChild(hist);
+  }
+  const pt=el("div","comb-ptoggle","prompt ▾");
+  const pbox=document.createElement("textarea");
+  pbox.className="comb-prompt";
+  pbox.placeholder=(S.gen_prompt_auto||"").slice(0,800);
+  pbox.value=S.patch.gen_prompt||"";
+  pbox.title="auto-composed from the matrix — type here to use your own words instead";
+  pbox.style.display="none";
+  pt.addEventListener("click",()=>{
+    pbox.style.display=pbox.style.display==="none"?"block":"none";});
+  pbox.addEventListener("change",()=>patch({gen_prompt:pbox.value}));
+  w.appendChild(pt); w.appendChild(pbox);
+  return w;
+}
+async function doGenerate(){
+  const b=$("#gen-btn"); if(!b||b.disabled)return;
+  b.disabled=true; b.textContent="Generating…";
+  try{ const out=await post(`/api/genre/${GID}/generate`,{});
+    S=out.state; render(); }
+  catch(e){ b.disabled=false; b.textContent="Regenerate";
+    alert("Generation failed: "+e.message); }
+}
 
 /* the resolved column is an INPUT: pick a candidate, type a value, or clear */
 function openResolvePop(e,spec,row){
