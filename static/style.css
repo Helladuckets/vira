@@ -147,6 +147,34 @@ body {
   cursor: pointer; padding: 6px 8px;
 }
 .icon-btn:active { color: var(--accent); }
+/* the layout-template button lights while a non-default template is active */
+#layout-btn.on { color: var(--accent); }
+
+/* "save current layout" form inside the layout menu's popup */
+.ly-input {
+  width: 100%; box-sizing: border-box; margin-top: 8px;
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: 2px;
+  color: var(--text); font-size: 13px; padding: 7px 9px;
+}
+.ly-input:focus { outline: none; border-color: var(--accent); }
+.ly-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }
+.ly-sep {
+  margin-top: 13px; font-size: 10.5px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: 0.1em;
+}
+.ly-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.ly-name {
+  flex: 1; font-size: 13px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ly-btn {
+  flex: none; font-family: var(--mono); font-size: 11px; letter-spacing: 0.06em;
+  text-transform: uppercase; cursor: pointer; padding: 4px 9px; border-radius: 2px;
+  background: var(--bg-card); border: 1px solid var(--line); color: var(--text-dim);
+}
+.ly-btn:hover { border-color: var(--accent); color: var(--accent); }
+.ly-btn.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+.ly-btn.danger:hover { border-color: var(--red); color: var(--red); }
 
 /* ---------- layout ---------- */
 main { max-width: 720px; margin: 0 auto; padding: 0 var(--pad); }
@@ -1742,6 +1770,38 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
     overflow: hidden;
   }
   .fwin.open { opacity: 1; transform: scale(1); }
+
+  /* ---- layout templates: Perimeter arranges the modules around a stage ----
+     .fwin-move adds the geometry transition the base rule omits (so plain
+     dragging stays instant); it is toggled on only for programmatic moves. */
+  .fwin-move {
+    transition: left .38s cubic-bezier(.22, .61, .36, 1),
+                top .38s cubic-bezier(.22, .61, .36, 1),
+                width .38s cubic-bezier(.22, .61, .36, 1),
+                height .38s cubic-bezier(.22, .61, .36, 1),
+                opacity .18s ease, transform .18s ease, filter .3s ease;
+  }
+  /* a pinned edge tile: the whole surface is a button that grows it. Its
+     content is inert and its title-bar controls hide so nothing competes
+     with the click; a hover cue names the gesture. */
+  .fwin-locked { cursor: pointer; }
+  .fwin-locked .fwin-bar { cursor: pointer; }
+  .fwin-locked .fwin-close,
+  .fwin-locked .fwin-zoomgrp,
+  .fwin-locked .rz { display: none; }
+  .fwin-locked .fwin-body { pointer-events: none; }
+  .fwin-locked:hover { border-color: var(--accent); }
+  .fwin-locked::after {
+    content: "open"; position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .2em;
+    text-transform: uppercase; color: var(--accent);
+    background: rgba(0, 0, 0, .32); opacity: 0;
+    transition: opacity .15s ease; pointer-events: none;
+  }
+  .fwin-locked:hover::after { opacity: 1; }
+  .fwin-grown { box-shadow: 0 32px 92px rgba(0, 0, 0, .62); }
+  @media (prefers-reduced-motion: reduce) { .fwin-move { transition: none; } }
   .fwin-bar {
     display: flex; align-items: center; gap: 10px;
     padding: 9px 12px; border-bottom: 1px solid var(--line);

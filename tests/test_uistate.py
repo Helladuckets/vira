@@ -52,6 +52,27 @@ class UiStateTests(unittest.TestCase):
         uistate.save({"vira-dock-order": "[]"})
         self.assertEqual(uistate.load()["keys"]["vira-dock-hidden"], hidden)
 
+    def test_layout_key_persists(self):
+        # the active layout template ({mode, grown, active}) syncs like the
+        # rest of the arrangement, so a fresh origin comes up wearing it
+        layout = json.dumps({"mode": "perimeter", "grown": ["brief", "work"],
+                             "active": "perimeter"})
+        out = uistate.save({"vira-layout": layout})
+        self.assertEqual(out["keys"]["vira-layout"], layout)
+        self.assertEqual(uistate.load()["keys"]["vira-layout"], layout)
+        uistate.save({"vira-dock-order": "[]"})
+        self.assertEqual(uistate.load()["keys"]["vira-layout"], layout)
+
+    def test_saved_layouts_key_persists(self):
+        # the owner's named saved layouts (window-arrangement snapshots) ride
+        # the same store, so they follow to any origin
+        layouts = json.dumps([{"id": "ly_a", "name": "Reading",
+                               "wins": {"brief": {"x": 10, "y": 20, "w": 400,
+                                                  "h": 500, "open": True}}}])
+        out = uistate.save({"vira-layouts": layouts})
+        self.assertEqual(out["keys"]["vira-layouts"], layouts)
+        self.assertEqual(uistate.load()["keys"]["vira-layouts"], layouts)
+
     def test_mobile_dock_key_persists(self):
         # the phone's five-app bar rides the same store as the desktop dock,
         # so a new origin (Tailscale name, test port) comes up with the

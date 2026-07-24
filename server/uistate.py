@@ -35,7 +35,14 @@ KEYS = ("vira-desktop", "vira-dock-order", "vira-dock-hidden",
         "vira-mobile-dock",
         # which setup steps have already opened their module,
         # so a reload never re-opens what the owner closed
-        "vira-setup-opened")
+        "vira-setup-opened",
+        # the active desktop layout template ({mode, grown, active}) —
+        # Perimeter arranges the modules around a central stage; carried to
+        # any origin like the rest of the arrangement
+        "vira-layout",
+        # the owner's named saved layouts (snapshots of the window
+        # arrangement), captured from the layout menu
+        "vira-layouts")
 MAX_VALUE_BYTES = 262144  # a runaway client never bloats the store
 
 _lock = threading.Lock()
