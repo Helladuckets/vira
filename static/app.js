@@ -8176,7 +8176,10 @@ function placeCtxPop(node, x, y) {
   }, 0);
 }
 
-// items: {label, run} | {head: "..."} | {sep: true}; falsy entries skipped
+// items: {label, run, onContext?} | {head: "..."} | {sep: true}; falsy skipped.
+// onContext(x, y) fires on a right-click of the row — used to open a secondary
+// menu (e.g. right-click a layout entry to edit it) without dismissing on the
+// left-click path.
 function showContextMenu(x, y, items) {
   closeCtxPops();
   const menu = el("div", "ctx-menu");
@@ -8184,7 +8187,12 @@ function showContextMenu(x, y, items) {
     if (it.sep) { menu.appendChild(el("div", "ctx-sep")); return; }
     if (it.head) { menu.appendChild(el("div", "ctx-head", it.head)); return; }
     const b = el("button", "ctx-item", it.label);
+    if (it.onContext) b.classList.add("has-sub");
     b.addEventListener("click", () => { menu.remove(); it.run(); });
+    if (it.onContext) b.addEventListener("contextmenu", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      menu.remove(); it.onContext(e.clientX, e.clientY);
+    });
     menu.appendChild(b);
   });
   placeCtxPop(menu, x, y);
@@ -10501,6 +10509,16 @@ const grown = new Set();       // ids currently grown onto the stage
 let grownOrder = [];           // grow order — drives the cascade placement
 const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
 
+// ---- edit mode: a live arranging session over the real windows. Entered by
+// right-clicking a layout in the menu → "Edit layout". Windows unlock (freely
+// drag/resize, no grow-on-click), geometry writes to the freeform desk are
+// suppressed, and a top bar offers Save / Cancel. Cancel restores the exact
+// pre-edit picture (captured in editReturn); the desk (vira-desktop) is never
+// touched, so an aborted edit leaves the freeform desktop pristine. ----
+let editing = false;
+let editSession = null;        // { kind: "perimeter"|"saved", savedId, name }
+let editReturn = null;         // { mode, active, grown, wins } — restored on Cancel
+
 function layoutState() {
   const s = lsGet("vira-layout", null);
   if (s && typeof s === "object" && LAYOUTS[s.mode]) return s;
@@ -10516,7 +10534,7 @@ function saveLayout() {
 // desk the owner returns to. Editing the desk by hand also diverges from a
 // loaded saved layout, so the "· current" marker drops back to Freeform.
 function persistGeom(id, patch) {
-  if (layoutMode !== "freeform") return;
+  if (editing || layoutMode !== "freeform") return;
   saveWinState(id, patch);
   if (activeLayout.startsWith("saved:")) {
     activeLayout = "freeform";
@@ -10586,6 +10604,7 @@ function deleteLayout(id) {
 function applySavedLayout(id, animate) {
   const it = savedLayouts().find((l) => l.id === id);
   if (!it) return;
+  if (editing) discardEdit();
   layoutMode = "freeform";
   document.body.classList.remove("layout-perimeter");
   grown.clear();
@@ -10604,6 +10623,106 @@ function applySavedLayout(id, animate) {
     }
   });
   activeLayout = "saved:" + id;
+  updateLayoutBtn();
+  saveLayout();
+}
+
+// place an arrangement snapshot ({id: {x,y,w,h,open}}) onto the live windows
+// WITHOUT persisting to the freeform desk — the workhorse behind entering and
+// cancelling an edit. Opens/closes windows to match, then sets each rect.
+function placeArrangement(wins, animate) {
+  if (!wins) return;
+  Object.keys(winState).forEach((id) => {
+    const st = winState[id];
+    const snap = wins[id];
+    if (!snap) return;
+    if (snap.open) {
+      if (!st.open) openWindow(id); else viewLoad(id);
+      setWinRect(st.el, snap, animate);
+    } else if (st.open) {
+      closeWindow(id);
+    }
+  });
+}
+
+// ---- edit mode ----
+// Start editing a layout: unlock every window, drop any template visuals, and
+// place the starting arrangement (a fresh Perimeter ring, or a saved layout's
+// snapshot). editReturn captures the pre-edit picture so Cancel can restore it.
+function startLayoutEdit(kind, savedId) {
+  if (editing) discardEdit();
+  editReturn = { mode: layoutMode, active: activeLayout,
+                 grown: grownOrder.slice(), wins: captureLayout() };
+  editing = true;
+  editSession = {
+    kind, savedId: savedId || null,
+    name: kind === "saved"
+      ? (savedLayouts().find((l) => l.id === savedId)?.name || "layout")
+      : "Perimeter",
+  };
+  layoutMode = "freeform";
+  document.body.classList.remove("layout-perimeter");
+  grown.clear();
+  grownOrder = [];
+  Object.keys(winState).forEach((id) =>
+    winState[id].el.classList.remove("fwin-locked", "fwin-grown"));
+  if (kind === "perimeter") {
+    const ids = framedWindows();
+    const slots = computeSlots(ids);
+    ids.forEach((id) => { if (slots[id]) setWinRect(winState[id].el, slots[id], true); });
+  } else if (kind === "saved") {
+    placeArrangement(savedLayouts().find((l) => l.id === savedId)?.wins, true);
+  }
+  document.body.classList.add("layout-editing");
+  showEditBar();
+  updateLayoutBtn();
+}
+
+// leave the edit session (no restore) — used before applying a fresh template
+function discardEdit() {
+  editing = false;
+  editSession = null;
+  editReturn = null;
+  document.body.classList.remove("layout-editing");
+  hideEditBar();
+  updateLayoutBtn();
+}
+
+// Save the tuned arrangement. asNew → a new named layout (the only path for a
+// tuned Perimeter, since Perimeter itself is computed); otherwise overwrite the
+// saved layout being edited. Either way the snapshot is captured from the live
+// rects; applySavedLayout then makes it the current layout and persists it.
+function commitEdit(asNew, name) {
+  const sess = editSession;
+  let id;
+  if (asNew) {
+    if (!name) return;
+    id = saveNewLayout(name);
+  } else {
+    id = sess.savedId;
+    overwriteLayout(id);
+  }
+  discardEdit();
+  applySavedLayout(id, false);
+  toast((asNew ? "Saved layout: " : "Updated layout: ") + (name || sess.name));
+}
+
+// Cancel: restore the exact pre-edit picture and re-arm the template that was
+// active before editing began.
+function cancelEdit() {
+  const ret = editReturn;
+  discardEdit();
+  if (!ret) return;
+  placeArrangement(ret.wins, true);
+  layoutMode = ret.mode === "perimeter" ? "perimeter" : "freeform";
+  activeLayout = typeof ret.active === "string" ? ret.active : "freeform";
+  if (ret.mode === "perimeter") {
+    grown.clear();
+    grownOrder = (ret.grown || []).filter((id) => winState[id]?.open);
+    grownOrder.forEach((id) => grown.add(id));
+    document.body.classList.add("layout-perimeter");
+    applyPerimeter(true);
+  }
   updateLayoutBtn();
   saveLayout();
 }
@@ -10787,30 +10906,154 @@ function exitToFreeform(animate) {
 
 function setLayout(mode) {
   if (!LAYOUTS[mode]) return;
+  if (editing) discardEdit();
   if (mode === "perimeter") { if (layoutMode !== "perimeter") enterPerimeter(true); }
   else exitToFreeform(true);
 }
 
 function updateLayoutBtn() {
   const b = $("#layout-btn");
-  if (b) b.classList.toggle("on", activeLayout !== "freeform");
+  if (!b) return;
+  b.classList.toggle("on", editing || activeLayout !== "freeform");
+  b.classList.toggle("editing", editing);
 }
 
+// Left-click an entry APPLIES that layout; right-click opens its edit menu
+// (the "Right-click to edit" affordance). Freeform offers save-as-new;
+// Perimeter offers tune-and-save-new (it is computed, so it can't be
+// overwritten); a saved layout offers edit / rename / delete.
 function openLayoutMenu(x, y) {
   const mark = (key, label) => label + (key === activeLayout ? " · current" : "");
   const items = [
     { head: "Layout template" },
-    { label: mark("freeform", "Freeform"), run: () => setLayout("freeform") },
-    { label: mark("perimeter", "Perimeter — Stage"), run: () => setLayout("perimeter") },
+    { label: mark("freeform", "Freeform"), run: () => setLayout("freeform"),
+      onContext: (mx, my) => showContextMenu(mx, my, [
+        { head: "Freeform" },
+        { label: "Save current as new layout…",
+          run: () => openSaveLayoutPopup(mx, my) },
+      ]) },
+    { label: mark("perimeter", "Perimeter — Stage"), run: () => setLayout("perimeter"),
+      onContext: (mx, my) => showContextMenu(mx, my, [
+        { head: "Perimeter — Stage" },
+        { label: "Edit & tune…", run: () => startLayoutEdit("perimeter") },
+      ]) },
   ];
   savedLayouts().forEach((l) => items.push(
-    { label: mark("saved:" + l.id, l.name), run: () => applySavedLayout(l.id, true) }));
+    { label: mark("saved:" + l.id, l.name), run: () => applySavedLayout(l.id, true),
+      onContext: (mx, my) => showContextMenu(mx, my, [
+        { head: l.name },
+        { label: "Edit layout", run: () => startLayoutEdit("saved", l.id) },
+        { label: "Rename…", run: () => promptRenameLayout(l.id, mx, my) },
+        { sep: true },
+        { label: "Delete",
+          run: () => { deleteLayout(l.id); toast("Deleted layout: " + l.name); } },
+      ]) }));
   items.push({ sep: true });
   items.push({ label: "Save current layout…", run: () => {
     const r = $("#layout-btn").getBoundingClientRect();
     openSaveLayoutPopup(r.left, r.bottom + 6);
   } });
+  if (savedLayouts().length || LAYOUTS.perimeter)
+    items.push({ head: "Right-click a layout to edit it" });
   showContextMenu(x, y, items);
+}
+
+// the floating bar shown while editing: names the target, hints the gesture,
+// and carries Save / Save-as-new / Cancel. A saved layout can overwrite; a
+// tuned Perimeter can only be saved as a new named layout.
+function showEditBar() {
+  hideEditBar();
+  if (!editSession) return;
+  const isSaved = editSession.kind === "saved";
+  const bar = el("div", "layout-editbar");
+  bar.id = "layout-editbar";
+  const label = el("div", "le-label");
+  label.appendChild(el("span", "le-kicker", "Editing layout"));
+  label.appendChild(el("span", "le-name",
+    isSaved ? editSession.name : "Perimeter · save as new"));
+  bar.appendChild(label);
+  bar.appendChild(el("div", "le-hint",
+    "Drag a title bar to move · drag an edge to resize"));
+  const acts = el("div", "le-acts");
+  const cancel = el("button", "le-btn", "Cancel");
+  cancel.addEventListener("click", cancelEdit);
+  acts.appendChild(cancel);
+  const askName = (btn) => {
+    const r = btn.getBoundingClientRect();
+    layoutNamePopup({
+      title: "Save as new layout", cta: "Save",
+      value: isSaved ? editSession.name + " copy" : "",
+      x: r.left, y: r.bottom + 6, onName: (n) => commitEdit(true, n),
+    });
+  };
+  if (isSaved) {
+    const asNew = el("button", "le-btn", "Save as new…");
+    asNew.addEventListener("click", () => askName(asNew));
+    acts.appendChild(asNew);
+    const save = el("button", "le-btn primary", "Save");
+    save.addEventListener("click", () => commitEdit(false));
+    acts.appendChild(save);
+  } else {
+    const save = el("button", "le-btn primary", "Save as new…");
+    save.addEventListener("click", () => askName(save));
+    acts.appendChild(save);
+  }
+  bar.appendChild(acts);
+  document.body.appendChild(bar);
+}
+function hideEditBar() { const b = $("#layout-editbar"); if (b) b.remove(); }
+
+// shared name-entry popup for save-as-new and rename (Enter commits, Escape
+// dismisses); openSaveLayoutPopup stays separate — it also lists overwrite/
+// delete rows for the whole saved set.
+function layoutNamePopup(opts) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop");
+  pop.appendChild(el("div", "ctx-head", opts.title));
+  const input = el("input", "ly-input");
+  input.type = "text";
+  input.placeholder = opts.placeholder || "Layout name";
+  input.autocomplete = "off";
+  if (opts.value) input.value = opts.value;
+  pop.appendChild(input);
+  const go = () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    pop.remove();
+    opts.onName(name);
+  };
+  const actions = el("div", "ly-actions");
+  const cancel = el("button", "ly-btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  const save = el("button", "ly-btn primary", opts.cta || "Save");
+  save.addEventListener("click", go);
+  actions.appendChild(cancel);
+  actions.appendChild(save);
+  pop.appendChild(actions);
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); go(); }
+    else if (e.key === "Escape") { e.preventDefault(); pop.remove(); }
+  });
+  placeCtxPop(pop, opts.x, opts.y);
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+
+function promptRenameLayout(id, x, y) {
+  const it = savedLayouts().find((l) => l.id === id);
+  if (!it) return;
+  layoutNamePopup({
+    title: "Rename layout", cta: "Rename", value: it.name, x, y,
+    onName: (name) => {
+      const list = savedLayouts();
+      const t = list.find((l) => l.id === id);
+      if (!t) return;
+      t.name = name;
+      persistSavedLayouts(list);
+      if (activeLayout === "saved:" + id) updateLayoutBtn();
+      toast("Renamed layout: " + name);
+    },
+  });
 }
 
 // the "save current layout" form: name a new layout, or overwrite/delete an
