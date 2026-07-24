@@ -213,8 +213,9 @@ function renderRefs(){
     host.appendChild(row);
   });
   $("#visionline").textContent = S.vision
-    ? "Vision pass available — adds type, frame and prose rows."
-    : "No vision backend connected. Deterministic rows still work.";
+    ? "Vision pass available — adds type, depth, frame and prose rows."
+    : "Vision unavailable: " + (S.vision_why || "no model connected") +
+      ". The deterministic rows still work.";
   $("#enrich").disabled = !S.vision || !refs.length;
 }
 

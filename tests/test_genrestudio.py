@@ -110,6 +110,8 @@ class AnalyzeTests(unittest.TestCase):
                                       (240, 240, 235), "line"))
         self.assertGreaterEqual(out["measured"]["flatness"], gs.FLAT_MIN)
         self.assertEqual(out["aspects"]["fills"], "none")
+        # depth is a judgement about the drawing system, not a pixel statistic
+        self.assertNotIn("depth", out["aspects"])
 
     def test_unreadable_file_degrades_with_a_reason(self):
         bad = self.tmp / "x.png"

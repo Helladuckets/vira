@@ -310,7 +310,15 @@ def analyze_image(path: Path) -> dict:
         # line-only art leaves most of the frame as ground and still has edges
         a["fills"] = "none" if (ink < 0.34 and edges > 0.02) else "filled"
         a["density"] = "sparse" if ink < 0.3 else ("dense" if ink > 0.62 else "medium")
-        a["depth"] = "flat" if edges > 0.12 else "shadow"
+    # NO `depth` FROM RUNG 1, EVER. It used to read `edges > 0.12 -> flat`,
+    # which is not merely inverted but measuring the wrong quantity: edge
+    # density is DETAIL, and detail says nothing about whether a design
+    # language casts shadows. A busy photograph is dense with edges and full of
+    # depth; a flat-design mock of three big rectangles has almost none and is
+    # maximally flat — so the rule reads backwards on exactly the realistic
+    # cases. Depth is a judgement about the drawing system, not a statistic of
+    # the pixels, so it abstains here and is answered by the vision pass or by
+    # the owner. Abstaining is the same discipline as the flatness gate above.
     glass = []
     if grain > 0.045:
         glass.append("grain")
@@ -348,15 +356,41 @@ Every field is optional: omit anything the image gives you no evidence for.
 Omitting is better than guessing — an abstention is a real answer here."""
 
 
-def vision_available() -> bool:
-    """Rung 2 needs a model that can see. Reported honestly rather than
-    discovered as a failure mid-run."""
+def vision_status() -> dict:
+    """Can rung 2 actually SEE an image right now? Reported before it is
+    needed rather than discovered as a silent empty result.
+
+    Two conditions, and the second is the subtle one:
+
+    * the active provider is connected (`connected` is a per-PROVIDER flag in
+      models.options()["providers"], not a top-level one — reading the wrong
+      level is why this returned False on a signed-in machine); and
+    * the effective backend is the CLI. `suggest._call_api` sends a plain text
+      string as the message content, with no image block, so on the API path
+      the model is handed a file path it cannot open and answers about nothing.
+      `_call_cli` pipes the prompt to `claude --print`, which opens the path
+      with its own file tools — verified end to end against a real reference.
+    """
     try:
-        from . import models
+        from . import models, settings as st
         opts = models.options()
-        return bool(opts.get("connected"))
-    except Exception:
-        return False
+        active = opts.get("active")
+        row = next((p for p in opts.get("providers") or []
+                    if p.get("id") == active), None)
+        if not row or not row.get("connected"):
+            return {"ok": False, "reason": "no model is connected"}
+        cfg = st.get("ai_backend") if hasattr(st, "get") else None
+        if cfg == "api" and row.get("has_key"):
+            return {"ok": False,
+                    "reason": "the API backend cannot send images — switch to "
+                              "the CLI backend in Setup to read references"}
+        return {"ok": True, "reason": ""}
+    except Exception as e:
+        return {"ok": False, "reason": str(e)[:120]}
+
+
+def vision_available() -> bool:
+    return bool(vision_status()["ok"])
 
 
 def analyze_vision(path: Path) -> dict:
@@ -965,7 +999,7 @@ def state(gid: str) -> dict:
         "knob_defs": KNOBS,
         "clusters": cluster(patch),
         "manifest": skin["manifest"], "tokens": skin["tokens"], "glass": skin["glass"],
-        "vision": vision_available(),
+        "vision": vision_available(), "vision_why": vision_status()["reason"],
         "max_refs": MAX_REFS,
     }
 
