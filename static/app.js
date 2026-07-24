@@ -8451,6 +8451,30 @@ document.addEventListener("contextmenu", (e) => {
     return;
   }
 
+  // A module in a stage layout: grow / send home, and — the only way to take
+  // one OUT of a layout — remove it. A parked tile has no close button (the
+  // whole surface is the grow gesture), and closing a grown card sends it
+  // home, so without this a layout could be added to but never pruned.
+  const fwin = t.closest(".fwin");
+  const fid = fwin?.dataset.wid;
+  if (fid && (layoutMode === "stage" || editing) && fid !== "palette") {
+    // while editing, "in the layout" simply means open — commitEdit captures
+    // every open window and records the closed ones as closed
+    const member = editing ? !!winState[fid]?.open : !!slotRects[fid];
+    if (!editing && layoutMode === "stage") {
+      if (grown.has(fid)) {
+        if (member) items.push({ label: "Send home", run: () => retreatTile(fid) });
+      } else {
+        items.push({ label: "Open", run: () => growTile(fid) });
+      }
+    }
+    if (member) items.push({ label: "Remove from this layout",
+                             run: () => removeFromLayout(fid) });
+    else items.push({ label: "Add to this layout",
+                      run: () => addToLayout(fid) });
+    items.push({ sep: true });
+  }
+
   // dock icons: open / remove from the dock (Launchpad + palette stay put;
   // add-back lives in the Launchpad grid)
   const dockBtn = t.closest(".dock-item");
@@ -11231,6 +11255,68 @@ function setLayout(mode) {
   if (!LAYOUTS[mode]) return;
   if (editing) discardEdit();
   exitToFreeform(true);
+}
+
+// ---- adding to / removing from a layout ----
+// The only way to prune a stage layout. A parked tile has no close button (its
+// whole surface is the grow gesture) and closing a grown card sends it home,
+// so before this a layout could be added to but never trimmed — the owner had
+// to drop to Freeform, close the module, and re-save.
+//
+// Both persist by re-capturing the WHOLE arrangement rather than surgically
+// editing one entry: the on-screen rects are scaled to this viewport while the
+// snapshot is in its own coordinate space, so writing a single screen rect
+// into it would mix the two. Re-capturing keeps one coordinate space.
+function persistLayoutEdit() {
+  const cur = currentSavedLayout();
+  if (!cur) return null;
+  overwriteLayout(cur.id);
+  stageBase = savedLayouts().find((l) => l.id === cur.id) || null;
+  saveLayout();
+  return cur;
+}
+
+function removeFromLayout(id) {
+  const name = WIN_TITLES[id] || id;
+  if (editing) {
+    delete editParks[id];
+    delete editGrows[id];
+    if (editTarget === id) editTarget = null;
+    closeWindow(id);
+    showEditBar();
+    toast(name + " removed — save the layout to keep it");
+    return;
+  }
+  if (layoutMode !== "stage") return;
+  delete slotRects[id];                 // no park left, so closeWindow really closes
+  delete growRects[id];
+  grown.delete(id);
+  grownOrder = grownOrder.filter((x) => x !== id);
+  closeWindow(id);
+  const cur = persistLayoutEdit();
+  toast(name + " removed from " + (cur ? cur.name : "the layout"));
+}
+
+function addToLayout(id) {
+  const st = winState[id];
+  if (!st) return;
+  const name = WIN_TITLES[id] || id;
+  if (editing) {
+    if (!st.open) openWindow(id);
+    if (editPass === "grow") editParks[id] = roundRect(winRect(st.el));
+    showEditBar();
+    toast(name + " added — save the layout to keep it");
+    return;
+  }
+  if (layoutMode !== "stage") return;
+  if (!st.open) openWindow(id);
+  // it parks where it currently sits, so the owner sees where it landed
+  slotRects[id] = roundRect(winRect(st.el));
+  grown.delete(id);
+  grownOrder = grownOrder.filter((x) => x !== id);
+  applyStage(true, false);
+  const cur = persistLayoutEdit();
+  toast(name + " added to " + (cur ? cur.name : "the layout"));
 }
 
 // "Close all modules" — what that MEANS depends on the layout. In a stage,
