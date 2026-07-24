@@ -8420,6 +8420,37 @@ document.addEventListener("contextmenu", (e) => {
          ? " · " + ctx.person.name : ""),
   }];
 
+  // The DESKTOP itself (right-click on empty space): layout switching and
+  // clearing the desk, without going up to the topbar.
+  if (isDesktop && !t.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad")) {
+    items.push({ label: layoutMode === "stage"
+                   ? "Close all modules  ·  send them home"
+                   : "Close all modules",
+                 run: closeAllModules });
+    const cur = currentSavedLayout();
+    if (cur) items.push({ label: "Save  ·  " + cur.name,
+                          run: () => confirmSaveLayout(cur.id) });
+    items.push({ label: "Save as…", run: () => openSaveAsPopup(e.clientX, e.clientY) });
+    items.push({ sep: true });
+    items.push({ head: "Layout" });
+    items.push({ label: "Freeform" + (activeLayout === "freeform" ? " · current" : ""),
+                 run: () => setLayout("freeform") });
+    savedLayouts().forEach((l) => items.push({
+      label: l.name + (activeLayout === "saved:" + l.id ? " · current" : ""),
+      run: () => applySavedLayout(l.id, true),
+      onContext: (mx, my) => showContextMenu(mx, my, [
+        { head: l.name },
+        { label: "Edit layout", run: () => startLayoutEdit("saved", l.id) },
+        { label: "Rename…", run: () => promptRenameLayout(l.id, mx, my) },
+        { sep: true },
+        { label: "Delete",
+          run: () => { deleteLayout(l.id); toast("Deleted layout: " + l.name); } },
+      ]),
+    }));
+    showContextMenu(e.clientX, e.clientY, items);
+    return;
+  }
+
   // dock icons: open / remove from the dock (Launchpad + palette stay put;
   // add-back lives in the Launchpad grid)
   const dockBtn = t.closest(".dock-item");
@@ -8582,7 +8613,11 @@ function makeTitleEditable(titleEl, jidRef) {
 }
 
 // Mac-style edge/corner resizing via Pointer Events + pointer capture
+// minW/minH may be numbers or getters — a layout being tuned has almost no
+// floor, so a tile can be made genuinely small and the whole arrangement can
+// scale down to a narrower screen without hitting a clamp.
 function makeResizable(node, onEnd, minW = 340, minH = 240) {
+  const minOf = (v) => (typeof v === "function" ? v() : v);
   ["n", "e", "s", "w", "ne", "nw", "se", "sw"].forEach((d) => {
     const grip = el("div", "rz rz-" + d);
     grip.addEventListener("pointerdown", (e) => {
@@ -8599,15 +8634,16 @@ function makeResizable(node, onEnd, minW = 340, minH = 240) {
       grip.setPointerCapture(e.pointerId);
       const move = (ev) => {
         const dx = ev.clientX - sx, dy = ev.clientY - sy;
+        const mw = minOf(minW), mh = minOf(minH);
         let L = rect.left, T = rect.top, W = rect.width, H = rect.height;
-        if (d.includes("e")) W = Math.max(minW, rect.width + dx);
-        if (d.includes("s")) H = Math.max(minH, rect.height + dy);
+        if (d.includes("e")) W = Math.max(mw, rect.width + dx);
+        if (d.includes("s")) H = Math.max(mh, rect.height + dy);
         if (d.includes("w")) {
-          W = Math.max(minW, rect.width - dx);
+          W = Math.max(mw, rect.width - dx);
           L = rect.right - W;
         }
         if (d.includes("n")) {
-          H = Math.max(minH, rect.height - dy);
+          H = Math.max(mh, rect.height - dy);
           T = rect.bottom - H;
           if (T < 44) { T = 44; H = rect.bottom - 44; } // keep under the menu bar
         }
@@ -8678,24 +8714,33 @@ function buildWindow(spec, st, ci) {
     (z) => saveWinState(spec.id, { z }));
   win.dataset.wid = spec.id;
   win.addEventListener("pointerdown", () => focusWin(win));
-  // a parked tile in a stage layout grows on click; a real drag/resize or
-  // button press is not a grow (persistGeom is a no-op while a template owns
-  // the layout, so this never touches the freeform desk). While tuning the
-  // grow pass in edit mode the same click picks which module you are staging.
+  // A parked tile stays LIVE — hover states work and its body scrolls — but
+  // ANY click on it grows it, including a click that would otherwise hit a
+  // button inside. That needs the CAPTURE phase: capture runs root→target, so
+  // stopping here is what keeps the click from ever reaching the control under
+  // the cursor. (A wheel/scrollbar scroll is not a click, so scrolling a
+  // parked module is untouched.) The same click picks the module being staged
+  // during the grow pass in edit mode.
   win.addEventListener("click", (e) => {
-    if (e.target.closest("button")) return;
+    const parked = win.classList.contains("fwin-locked");
+    if (!parked) return;
+    if (e.target.closest(".fwin-bar button")) return;   // title-bar controls
+    e.preventDefault();
+    e.stopPropagation();
     if (editing) {
       if (editPass === "grow" && editTarget !== spec.id) editGrowTarget(spec.id);
-      return;
+    } else if (layoutMode === "stage" && !grown.has(spec.id)) {
+      growTile(spec.id);
     }
-    if (layoutMode === "stage" && !grown.has(spec.id)) growTile(spec.id);
-  });
+  }, true);
   makeDraggable(win, bar, (r) =>
     persistGeom(spec.id, { x: Math.round(r.left), y: Math.round(r.top) }));
+  // while a layout is being tuned the floor drops to almost nothing, so a tile
+  // can be made small on purpose; normal desktop use keeps the usable minimum
   makeResizable(win, (r) => persistGeom(spec.id, {
     x: Math.round(r.left), y: Math.round(r.top),
     w: Math.round(r.width), h: Math.round(r.height),
-  }));
+  }), () => (editing ? 90 : 340), () => (editing ? 64 : 240));
   document.body.appendChild(win);
 
   const w = Math.min(st.w ?? spec.w ?? 440, innerWidth - 24);
@@ -8727,9 +8772,15 @@ function openWindow(id) {
   // it. growTile focuses it too. Only the COMPUTED ring reflows — a saved
   // layout's parks are the owner's staging and must not be recomputed, so a
   // newcomer simply parks where it already sits.
+  // In a stage layout, opening a module means "bring it to the stage".
+  // A MEMBER (one the layout parks) grows and can retreat to its park.
+  // A NON-MEMBER — something deliberately left out of the layout — has no
+  // park to go home to, so it opens centred as a visitor and closing it
+  // really closes it (see closeWindow). It used to inherit its stale freeform
+  // rect, which is why left-out modules appeared at a random spot off to the
+  // side and then refused to go away.
   if (layoutMode === "stage") {
     if (stageComputed) applyStage(true, true);
-    else if (!slotRects[id]) slotRects[id] = winRect(st.el);
     growTile(id);
     dockRefresh();
     return;
@@ -8742,8 +8793,13 @@ function closeWindow(id) {
   const st = winState[id];
   if (!st || !st.open) return;
   // In a stage layout the red button on a grown card retreats it to its park
-  // rather than hiding the module — closing a stage card sends it home.
-  if (layoutMode === "stage" && grown.has(id)) { retreatTile(id); return; }
+  // rather than hiding the module — closing a stage card sends it home. A
+  // visitor (not part of this layout) has no park, so it just closes.
+  if (layoutMode === "stage" && grown.has(id) && slotRects[id]) {
+    retreatTile(id);
+    return;
+  }
+  if (layoutMode === "stage") { grown.delete(id); grownOrder = grownOrder.filter((x) => x !== id); }
   st.open = false;
   st.el.classList.remove("open");
   setTimeout(() => { if (!st.open) st.el.style.display = "none"; }, 220);
@@ -9852,8 +9908,13 @@ function paletteMatches(q) {
       run: () => startLayoutEdit("saved", l.id) })),
     { label: "New perimeter layout…", kind: "layout",
       run: () => startLayoutEdit("perimeter") },
-    { label: "Save current layout…", kind: "layout",
-      run: () => openSaveLayoutPopup(Math.round(innerWidth / 2) - 130, 84) },
+    { label: "Save layout", kind: "layout",
+      run: () => { const c = currentSavedLayout();
+                   if (c) confirmSaveLayout(c.id);
+                   else openSaveAsPopup(Math.round(innerWidth / 2) - 130, 84); } },
+    { label: "Save layout as…", kind: "layout",
+      run: () => openSaveAsPopup(Math.round(innerWidth / 2) - 130, 84) },
+    { label: "Close all modules", kind: "desktop", run: closeAllModules },
     { label: "Close all windows", kind: "desktop",
       run: () => WINDOWS.forEach((w) => closeWindow(w.id)) },
     { label: "Confetti", kind: "why not",
@@ -10528,6 +10589,7 @@ let grownOrder = [];           // grow order — drives the cascade placement
 const slotRects = {};          // id -> {x,y,w,h}: the PARKED rect per window
 const growRects = {};          // id -> {x,y,w,h}: this layout's saved GROWN rect
 let stageComputed = false;     // parks came from computeSlots (reflow on resize)
+let stageBase = null;          // the saved layout behind the stage (re-scaling)
 
 // ---- edit mode: a live arranging session over the real windows. Entered by
 // right-clicking a layout in the menu → "Edit layout". Windows unlock (freely
@@ -10637,11 +10699,73 @@ function layoutGrows(l) {
   return out;
 }
 
+// ---- viewport scaling ----
+// A layout records the viewport it was arranged on (vw/vh). Applied on a
+// different screen it SCALES proportionally rather than keeping absolute
+// pixels — otherwise an arrangement made on a wide monitor puts half its
+// modules past the right edge of a laptop. Windows shrink to fit instead of
+// falling off, which is why the resize floor drops during editing.
+// The reference frame is the viewport the layout was arranged on — but never
+// smaller than the arrangement's own extent. That single max() covers both
+// awkward cases without a special path: a layout saved before vw/vh existed
+// has no recorded viewport at all, and a layout captured on a wide monitor can
+// legitimately hold modules past its own right edge. Either way the extent is
+// what has to fit, so the whole arrangement scales down to the screen instead
+// of spilling off it. Axes scale independently on purpose: that is what keeps
+// an edge-docked module docked to that edge, which is the point of a frame.
+function layoutScale(l) {
+  let refW = (l && l.vw) || 0, refH = (l && l.vh) || 0;
+  Object.values((l && l.wins) || {}).forEach((s) => {
+    if (!s.open) return;
+    refW = Math.max(refW, (s.x || 0) + (s.w || 0));
+    refH = Math.max(refH, (s.y || 0) + (s.h || 0));
+    if (s.grow) {
+      refW = Math.max(refW, (s.grow.x || 0) + (s.grow.w || 0));
+      refH = Math.max(refH, (s.grow.y || 0) + (s.grow.h || 0));
+    }
+  });
+  if (!refW || !refH) return { sx: 1, sy: 1 };
+  return { sx: innerWidth / refW, sy: innerHeight / refH };
+}
+function scaleRect(r, s) {
+  if (!r) return r;
+  return { x: Math.round(r.x * s.sx), y: Math.round(r.y * s.sy),
+           w: Math.round(r.w * s.sx), h: Math.round(r.h * s.sy) };
+}
+
+// a layout's parks + grows, scaled to the CURRENT viewport
+function layoutRects(l) {
+  const s = layoutScale(l);
+  const parks = {}, grows = {};
+  Object.entries(l.wins || {}).forEach(([id, snap]) => {
+    if (snap.open) parks[id] = scaleRect(roundRect(snap), s);
+    if (snap.grow) grows[id] = scaleRect(roundRect(snap.grow), s);
+  });
+  return { parks, grows };
+}
+
+// What is on screen right now, expressed as parks + grows. While a stage
+// layout is live the LIVE rect of a grown card is NOT its park — its park is
+// the slot it retreats to, and its live rect is where the owner wants it to
+// OPEN. Reading the screen naively (the bug: "save wasn't working") overwrote
+// each grown module's park with its grown rect, so the layout degraded a
+// little every time it was saved after being used.
+function currentArrangement() {
+  if (layoutMode !== "stage") return {};
+  const parks = { ...slotRects };
+  const grows = { ...growRects };
+  grownOrder.forEach((id) => {
+    if (winState[id]?.open) grows[id] = roundRect(winRect(winState[id].el));
+  });
+  return { parks, grows };
+}
+
 function saveNewLayout(name, opts) {
   const list = savedLayouts();
   const id = newLayoutId();
-  const o = opts || {};
-  list.push({ id, name, stage: o.stage !== false,
+  const cur = currentArrangement();
+  const o = { stage: layoutMode === "stage", ...cur, ...(opts || {}) };
+  list.push({ id, name, stage: o.stage !== false, vw: innerWidth, vh: innerHeight,
               wins: captureLayout(o.grows, o.parks) });
   persistSavedLayouts(list);
   return id;
@@ -10651,8 +10775,11 @@ function overwriteLayout(id, opts) {
   const list = savedLayouts();
   const it = list.find((l) => l.id === id);
   if (!it) return;
-  const o = opts || {};
+  const cur = currentArrangement();
+  const o = { ...cur, ...(opts || {}) };
   it.wins = captureLayout(o.grows || layoutGrows(it), o.parks);
+  it.vw = innerWidth;
+  it.vh = innerHeight;
   if (o.stage !== undefined) it.stage = o.stage;
   else if (it.stage === undefined) it.stage = true;
   persistSavedLayouts(list);
@@ -10685,29 +10812,22 @@ function applySavedLayout(id, animate) {
     winState[wid].el.classList.remove("fwin-locked", "fwin-grown");
   });
   const stage = layoutIsStage(it);
+  const { parks, grows } = layoutRects(it);       // scaled to this viewport
   Object.keys(winState).forEach((wid) => {
     const w = winState[wid];
     const snap = it.wins[wid];
     if (!snap) return;
     if (snap.open) {
       if (!w.open) openWindow(wid); else viewLoad(wid);
-      setWinRect(w.el, snap, animate);
+      setWinRect(w.el, parks[wid], animate);
       // a stage layout is a template laid OVER the desk — never write it back
-      if (!stage) saveWinState(wid, { x: snap.x, y: snap.y, w: snap.w, h: snap.h });
+      if (!stage) saveWinState(wid, parks[wid]);
     } else if (w.open) {
       closeWindow(wid);
     }
   });
   activeLayout = "saved:" + id;
-  if (stage) {
-    const parks = {}, grows = {};
-    Object.entries(it.wins).forEach(([wid, snap]) => {
-      if (snap.open) parks[wid] = { x: snap.x, y: snap.y, w: snap.w, h: snap.h };
-      if (snap.grow) grows[wid] = snap.grow;
-    });
-    enterStage({ parks, grows, computed: false, animate });
-    return;
-  }
+  if (stage) { enterStage({ parks, grows, base: it, computed: false, animate }); return; }
   updateLayoutBtn();
   saveLayout();
 }
@@ -11015,10 +11135,13 @@ function applyStage(animate, reflow) {
     if (grown.has(id)) {
       node.classList.remove("fwin-locked");
       node.classList.add("fwin-grown");
-    } else {
+    } else if (slotRects[id]) {                    // a member of this layout
       node.classList.add("fwin-locked");
       node.classList.remove("fwin-grown");
-      if (slotRects[id]) setWinRect(node, slotRects[id], animate);
+      setWinRect(node, slotRects[id], animate);
+    } else {
+      // a visitor: no park, so it is never locked into the frame
+      node.classList.remove("fwin-locked", "fwin-grown");
     }
   });
   grownOrder.forEach((id, k) => {
@@ -11074,6 +11197,9 @@ function enterStage(opts) {
   const o = opts || {};
   layoutMode = "stage";
   stageComputed = !!o.computed;
+  // hold the SAVED layout so a viewport change re-scales from the original
+  // rects; re-scaling the already-scaled ones would compound every resize
+  stageBase = o.base || null;
   document.body.classList.add("layout-stage");
   Object.keys(slotRects).forEach((k) => delete slotRects[k]);
   Object.keys(growRects).forEach((k) => delete growRects[k]);
@@ -11107,6 +11233,26 @@ function setLayout(mode) {
   exitToFreeform(true);
 }
 
+// "Close all modules" — what that MEANS depends on the layout. In a stage,
+// clearing the desk is sending every grown card home to its park (the frame is
+// the resting state, so closing them all is a retreat, not a teardown); a
+// visitor with no park really closes. In freeform there is nothing to retreat
+// to, so it clears the desk outright.
+function closeAllModules() {
+  if (layoutMode === "stage") {
+    const wasGrown = grownOrder.slice();
+    wasGrown.forEach((id) => {
+      if (slotRects[id]) retreatTile(id);
+      else closeWindow(id);
+    });
+    toast(wasGrown.length ? "Modules sent home" : "Nothing open on the stage");
+    return;
+  }
+  const open = WINDOWS.filter((w) => winState[w.id]?.open);
+  open.forEach((w) => closeWindow(w.id));
+  toast(open.length ? "Closed " + open.length + " modules" : "Nothing open");
+}
+
 function updateLayoutBtn() {
   const b = $("#layout-btn");
   if (!b) return;
@@ -11126,7 +11272,7 @@ function openLayoutMenu(x, y) {
       onContext: (mx, my) => showContextMenu(mx, my, [
         { head: "Freeform" },
         { label: "Save current as new layout…",
-          run: () => openSaveLayoutPopup(mx, my) },
+          run: () => openSaveAsPopup(mx, my) },
       ]) },
   ];
   savedLayouts().forEach((l) => items.push(
@@ -11143,12 +11289,27 @@ function openLayoutMenu(x, y) {
   items.push({ sep: true });
   items.push({ label: "New perimeter layout…",
                run: () => startLayoutEdit("perimeter") });
-  items.push({ label: "Save current layout…", run: () => {
+  // Save and Save as are separate actions: Save overwrites the layout you are
+  // on (confirm only), Save as names a new one (name entry only).
+  const cur = currentSavedLayout();
+  const atBtn = () => {
     const r = $("#layout-btn").getBoundingClientRect();
-    openSaveLayoutPopup(r.left, r.bottom + 6);
+    return { x: r.left, y: r.bottom + 6 };
+  };
+  if (cur) items.push({ label: "Save  ·  " + cur.name,
+                        run: () => confirmSaveLayout(cur.id) });
+  items.push({ label: "Save as…", run: () => {
+    const p = atBtn();
+    openSaveAsPopup(p.x, p.y);
   } });
   items.push({ head: "Right-click a layout to edit it" });
   showContextMenu(x, y, items);
+}
+
+// the saved layout currently applied, if any
+function currentSavedLayout() {
+  if (!activeLayout.startsWith("saved:")) return null;
+  return savedLayouts().find((l) => l.id === activeLayout.slice(6)) || null;
 }
 
 // the floating bar shown while editing: names the target, carries the
@@ -11238,8 +11399,8 @@ function showEditBar() {
 function hideEditBar() { const b = $("#layout-editbar"); if (b) b.remove(); }
 
 // shared name-entry popup for save-as-new and rename (Enter commits, Escape
-// dismisses); openSaveLayoutPopup stays separate — it also lists overwrite/
-// delete rows for the whole saved set.
+// dismisses). openSaveAsPopup and confirmSaveLayout below are the two
+// separate save actions built on top of it.
 function layoutNamePopup(opts) {
   closeCtxPops();
   const pop = el("div", "ctx-pop");
@@ -11290,57 +11451,44 @@ function promptRenameLayout(id, x, y) {
   });
 }
 
-// the "save current layout" form: name a new layout, or overwrite/delete an
-// existing one. Saving is a side action — it snapshots the arrangement and
-// does not change which template is "current".
-function openSaveLayoutPopup(x, y) {
+// "Save as…" — ONE thing: name a new layout. The overwrite and delete rows
+// that used to share this popup are their own actions now (Save in the menu,
+// Delete on a layout's right-click), so neither form asks two questions.
+function openSaveAsPopup(x, y) {
+  layoutNamePopup({
+    title: "Save as new layout", cta: "Save", x, y,
+    onName: (name) => {
+      const id = saveNewLayout(name);
+      applySavedLayout(id, false);       // the layout you just made is the one you are on
+      toast("Saved layout: " + name);
+    },
+  });
+}
+
+// "Save" — overwrite the layout you are on, confirm or cancel, nothing else
+function confirmSaveLayout(id) {
+  const it = savedLayouts().find((l) => l.id === id);
+  if (!it) return;
   closeCtxPops();
   const pop = el("div", "ctx-pop");
-  pop.appendChild(el("div", "ctx-head", "Save current layout"));
-  const input = el("input", "ly-input");
-  input.type = "text";
-  input.placeholder = "New layout name";
-  input.autocomplete = "off";
-  pop.appendChild(input);
-  const doNew = () => {
-    const name = input.value.trim();
-    if (!name) { input.focus(); return; }
-    saveNewLayout(name);
-    pop.remove();
-    toast("Saved layout: " + name);
-  };
+  pop.appendChild(el("div", "ctx-head", "Save layout"));
+  pop.appendChild(el("div", "ctx-note",
+    "Overwrite “" + it.name + "” with the current arrangement?"));
   const actions = el("div", "ly-actions");
   const cancel = el("button", "ly-btn", "Cancel");
   cancel.addEventListener("click", () => pop.remove());
-  const save = el("button", "ly-btn primary", "Save new");
-  save.addEventListener("click", doNew);
+  const save = el("button", "ly-btn primary", "Save");
+  save.addEventListener("click", () => {
+    overwriteLayout(id);
+    pop.remove();
+    toast("Updated layout: " + it.name);
+  });
   actions.appendChild(cancel);
   actions.appendChild(save);
   pop.appendChild(actions);
-  input.addEventListener("keydown", (e) => {
-    e.stopPropagation();
-    if (e.key === "Enter") { e.preventDefault(); doNew(); }
-    else if (e.key === "Escape") { e.preventDefault(); pop.remove(); }
-  });
-  const saved = savedLayouts();
-  if (saved.length) {
-    pop.appendChild(el("div", "ly-sep", "or overwrite"));
-    saved.forEach((l) => {
-      const row = el("div", "ly-row");
-      row.appendChild(el("span", "ly-name", l.name));
-      const ow = el("button", "ly-btn", "Overwrite");
-      ow.addEventListener("click", () => {
-        overwriteLayout(l.id); pop.remove(); toast("Updated layout: " + l.name);
-      });
-      const del = el("button", "ly-btn danger", "Delete");
-      del.addEventListener("click", () => { deleteLayout(l.id); row.remove(); });
-      row.appendChild(ow);
-      row.appendChild(del);
-      pop.appendChild(row);
-    });
-  }
-  placeCtxPop(pop, x, y);
-  requestAnimationFrame(() => input.focus());
+  const r = $("#layout-btn").getBoundingClientRect();
+  placeCtxPop(pop, r.left, r.bottom + 6);
+  requestAnimationFrame(() => save.focus());
 }
 
 // Recompute the frame when the viewport changes (crossing the 1100px desktop
@@ -11349,9 +11497,20 @@ function openSaveLayoutPopup(x, y) {
 // staging, and silently re-packing them would throw the arrangement away.
 let layoutResizeT = null;
 window.addEventListener("resize", () => {
-  if (layoutMode !== "stage" || !stageComputed) return;
+  if (editing || layoutMode !== "stage") return;
   clearTimeout(layoutResizeT);
-  layoutResizeT = setTimeout(() => applyStage(false, true), 120);
+  layoutResizeT = setTimeout(() => {
+    if (stageComputed) { applyStage(false, true); return; }
+    if (!stageBase) return;
+    // re-scale from the ORIGINAL saved rects (never the on-screen ones, which
+    // are already scaled — that would compound on every resize)
+    const { parks, grows } = layoutRects(stageBase);
+    Object.keys(slotRects).forEach((k) => delete slotRects[k]);
+    Object.keys(growRects).forEach((k) => delete growRects[k]);
+    Object.assign(slotRects, parks);
+    Object.assign(growRects, grows);
+    applyStage(false, false);
+  }, 120);
 });
 
 // wire the topbar button + restore the active layout; called from initDesktop
@@ -11373,13 +11532,9 @@ function initLayout() {
       ? savedLayouts().find((l) => l.id === activeLayout.slice(6)) : null;
     if (saved && layoutIsStage(saved)) {
       // re-arm the saved stage: parks and grow staging come off the snapshot,
-      // and the windows are already where the last paint left them
-      const parks = {}, grows = {};
-      Object.entries(saved.wins).forEach(([wid, snap]) => {
-        if (snap.open) parks[wid] = { x: snap.x, y: snap.y, w: snap.w, h: snap.h };
-        if (snap.grow) grows[wid] = snap.grow;
-      });
-      enterStage({ parks, grows, computed: false, animate: false });
+      // scaled to whatever viewport this window happens to be at now
+      const { parks, grows } = layoutRects(saved);
+      enterStage({ parks, grows, base: saved, computed: false, animate: false });
     } else {
       // a stage with no layout behind it (the old computed ring): rebuild it
       enterStage({ computed: true, animate: false });

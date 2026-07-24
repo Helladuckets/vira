@@ -1794,23 +1794,23 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
                 height .38s cubic-bezier(.22, .61, .36, 1),
                 opacity .18s ease, transform .18s ease, filter .3s ease;
   }
-  /* a pinned edge tile: the whole surface is a button that grows it. Its
-     content is inert and its title-bar controls hide so nothing competes
-     with the click; a hover cue names the gesture. */
+  /* A parked tile stays LIVE: its body still scrolls and its content still
+     shows hover states — only the click is claimed (in the capture phase, in
+     app.js) to grow it. So the cue is a small corner badge, NOT a full-surface
+     scrim: a scrim would hide the very hover states that are meant to stay
+     readable. Title-bar controls hide so nothing competes with the click. */
   .fwin-locked { cursor: pointer; }
   .fwin-locked .fwin-bar { cursor: pointer; }
   .fwin-locked .fwin-close,
   .fwin-locked .fwin-zoomgrp,
   .fwin-locked .rz { display: none; }
-  .fwin-locked .fwin-body { pointer-events: none; }
   .fwin-locked:hover { border-color: var(--accent); }
   .fwin-locked::after {
-    content: "open"; position: absolute; inset: 0;
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--mono); font-size: 11px; letter-spacing: .2em;
-    text-transform: uppercase; color: var(--accent);
-    background: rgba(0, 0, 0, .32); opacity: 0;
-    transition: opacity .15s ease; pointer-events: none;
+    content: "open"; position: absolute; right: 0; top: 0;
+    padding: 3px 7px; border-bottom-left-radius: 3px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--bg); background: var(--accent);
+    opacity: 0; transition: opacity .15s ease; pointer-events: none; z-index: 7;
   }
   .fwin-locked:hover::after { opacity: 1; }
   .fwin-grown { box-shadow: 0 32px 92px rgba(0, 0, 0, .62); }
