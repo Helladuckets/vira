@@ -84,6 +84,29 @@ class AnalyzeTests(unittest.TestCase):
         ramp = out["aspects"]["palette"]
         self.assertEqual(ramp, sorted(ramp, key=gs.luminance))
 
+    def test_extraction_yields_named_material_including_the_vivid_minority(self):
+        """The extraction is MATERIAL — named swatches the owner applies —
+        and it must keep the colours a person would actually name. Area-
+        weighted quantization averaged the vivid minority into mud (the
+        neon-noir reference came back as browns); the chromatic voices keep
+        it. Every swatch carries a hueprint-style name."""
+        out = gs.analyze_image(swatch(self.tmp / "v.png", (10, 14, 28), (255, 140, 40)))
+        colors = out["colors"]
+        self.assertTrue(colors)
+        self.assertTrue(all(c.get("name") for c in colors))
+        self.assertTrue(any(gs.saturation(c["hex"]) > 0.5 for c in colors),
+                        [c["hex"] for c in colors])
+        hexes = [c["hex"] for c in colors]
+        self.assertEqual(hexes, sorted(hexes, key=gs.luminance))  # dark -> light
+
+    def test_ramp_spans_dark_to_light_even_on_a_dark_image(self):
+        """quantile_kmeans seeds centroids across the luminance range, so a
+        dark-dominated image still yields a ramp with real spread — the
+        five-near-blacks failure cannot recur."""
+        out = gs.analyze_image(swatch(self.tmp / "d.png", (8, 10, 16), (240, 236, 228)))
+        ramp = out["aspects"]["palette"]
+        self.assertGreater(gs.luminance(ramp[-1]) - gs.luminance(ramp[0]), 0.3)
+
     def test_continuous_tone_abstains_on_coverage_rows(self):
         """A photograph's ink coverage says nothing about whether the artwork
         is filled or line-only — measured on the real City X Axis specimens,
@@ -176,14 +199,43 @@ class ResolveTests(unittest.TestCase):
         self.assertIn("bloom", low["resolved"])
         self.assertEqual(high["resolved"], ["grain"])     # only what they share
 
-    def test_deselecting_a_cell_removes_that_vote(self):
-        p = patch_of(ref("r1", {"corners": "square"}), ref("r2", {"corners": "square"}),
-                     ref("r3", {"corners": "rounded"}))
-        self.assertEqual(gs.resolve(p)["rows"]["corners"]["resolved"], "square")
-        off = dict(p, sel={"r1": {"corners": False}, "r2": {"corners": False}})
-        row = gs.resolve(off)["rows"]["corners"]
-        self.assertEqual(row["resolved"], "rounded")
-        self.assertIn("r1", row["abstained"])
+    def test_selection_is_opt_in_and_auto_is_labelled(self):
+        """The owner's correction: values are opted INTO the genre, never out.
+        With nothing clicked, a row still resolves — the instrument makes
+        sound the moment images drop — but the result is labelled `auto`, a
+        proposal, not a fact about the images."""
+        p = patch_of(ref("r1", {"corners": "square"}), ref("r2", {"corners": "rounded"}))
+        row = gs.resolve(p)["rows"]["corners"]
+        self.assertEqual(row["source"], "auto")
+
+    def test_one_opt_in_silences_the_auto_path(self):
+        # r2's detected value stops counting the moment ANY opt-in exists on
+        # the row: only what the owner clicked is in the genre
+        p = patch_of(ref("r1", {"corners": "square"}), ref("r2", {"corners": "rounded"}),
+                     sel={"r1": {"corners": ["square"]}})
+        row = gs.resolve(p)["rows"]["corners"]
+        self.assertEqual(row["source"], "selected")
+        self.assertEqual(row["resolved"], "square")
+        self.assertFalse(row["conflict"])
+        self.assertIn("r2", row["abstained"])
+
+    def test_color_opt_in_applies_material_to_a_role(self):
+        """Assigning a colour to a role is the owner's act. The image's
+        dominant colour (the auto proposal) must lose to an opted-in swatch —
+        this is the 'the image background is not the skin background' rule."""
+        p = patch_of(ref("r1", {"ground": "#26353e"}),
+                     sel={"r1": {"ground": ["#e68d4a"]}})
+        row = gs.resolve(p)["rows"]["ground"]
+        self.assertEqual(row["resolved"], "#e68d4a")
+        self.assertEqual(row["source"], "selected")
+
+    def test_legacy_false_sel_reads_as_no_opt_in(self):
+        # stores written before the opt-in flip carried {key: False}
+        p = patch_of(ref("r1", {"corners": "square"}),
+                     sel={"r1": {"corners": False}})
+        row = gs.resolve(p)["rows"]["corners"]
+        self.assertEqual(row["source"], "auto")
+        self.assertEqual(row["resolved"], "square")
 
     def test_pick_and_override_beat_the_engine(self):
         p = patch_of(ref("r1", {"corners": "square"}), ref("r2", {"corners": "square"}))

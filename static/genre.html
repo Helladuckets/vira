@@ -69,13 +69,21 @@ h3.gs-h{font-size:13px;color:var(--text-head);font-weight:600}
 .arity{font-family:var(--mono);font-size:8px;color:var(--text-faint);border:1px solid var(--line);
   border-radius:2px;padding:0 3px;margin-left:4px}
 .cellv{display:flex;flex-wrap:wrap;gap:3px}
+/* opt-in pills: OUT is hollow and dashed, IN is filled with a check. The two
+   states must be tellable at a glance — that is the whole point. */
 .pl{display:inline-flex;align-items:center;gap:4px;font-family:var(--mono);font-size:9.5px;
-  color:var(--text-faint);background:var(--bg-card);border:1px solid var(--line);border-radius:999px;
+  color:var(--text-faint);background:none;border:1px dashed var(--line);border-radius:999px;
   padding:3px 8px;cursor:pointer;user-select:none}
 .pl:hover{border-color:var(--accent-line);color:var(--text)}
-.pl.on{background:var(--accent-soft);border-color:var(--accent-line);color:var(--accent-bright)}
+.pl.on{background:var(--accent-soft);border:1px solid var(--accent-bright);color:var(--accent-bright)}
+.pl.on::before{content:"✓";font-size:8.5px;margin-right:1px}
 .pl i{width:11px;height:11px;border-radius:2px;border:1px solid rgba(0,0,0,.35);display:block}
-.pl.na{opacity:.35;font-style:italic;cursor:default}
+.pl.na{opacity:.35;font-style:italic;cursor:default;border-style:solid}
+.resv.auto{opacity:.55}
+.tag.auto{color:var(--text-faint);font-style:italic}
+.ref-pal{display:flex;height:9px;margin-top:5px;border:1px solid var(--line);
+  border-radius:2px;overflow:hidden}
+.ref-pal i{flex:1;display:block}
 .resv{font-family:var(--mono);font-size:10.5px;color:var(--accent-bright);cursor:pointer;
   display:flex;align-items:center;gap:5px;flex-wrap:wrap;line-height:1.5}
 .resv:hover{text-decoration:underline dotted}
@@ -205,6 +213,14 @@ function renderRefs(){
       `gain ${f.value}%  ·  rung ${r.rung||1}`;});
     f.addEventListener("change",()=>patch({weights:{[r.id]:f.value/100}}));
     b.appendChild(f);
+    // the extracted material, visible at the source: every swatch this
+    // reference brings to the table, named hueprint-style on hover
+    if((r.colors||[]).length){
+      const strip=el("div","ref-pal");
+      r.colors.forEach(c=>{const i=el("i");i.style.background=c.hex;
+        i.title=c.name+" · "+c.hex;strip.appendChild(i);});
+      b.appendChild(strip);
+    }
     row.appendChild(b);
     const x=el("button","ref-x","✕");
     x.addEventListener("click",async()=>{S=await api(
@@ -250,12 +266,15 @@ function renderKnobs(){
 }
 
 /* ---------------- center: the matrix ---------------- */
-function valPill(spec,v,on,onclick){
+function valPill(spec,v,on,onclick,tip){
   const p=el("span","pl"+(on?" on":""));
   if(spec.kind==="color"){ const i=el("i");i.style.background=v;p.appendChild(i);
     p.appendChild(el("span",null,v)); }
   else p.appendChild(el("span",null,String(v).slice(0,42)));
-  if(onclick) p.addEventListener("click",onclick); else p.classList.add("na");
+  if(onclick){
+    p.title=(tip?tip+" — ":"")+(on?"in the genre · click to remove":"click to add to the genre");
+    p.addEventListener("click",onclick);
+  } else p.classList.add("na");
   return p;
 }
 function renderMatrix(){
@@ -263,10 +282,11 @@ function renderMatrix(){
   const refs=S.patch.refs||[];
   if(!refs.length){
     host.appendChild(el("div","empty",
-      "Drop reference images on the left. Every image becomes a column; every aspect a row."));
+      "Drop reference images on the left. Every image becomes a column of material — "+
+      "click the values you want and they join the genre."));
     $("#mxnote").textContent=""; return;
   }
-  $("#mxnote").textContent="rows = aspects · columns = references · right column = the skin";
+  $("#mxnote").textContent="click a value to opt it IN — an unclicked row falls back to a labelled auto proposal";
   const t=el("table","mx");
   const thead=el("thead"), hr=el("tr");
   hr.appendChild(el("th","rowh"));
@@ -303,17 +323,29 @@ function renderMatrix(){
 
       refs.forEach(r=>{
         const td=el("td");
-        const raw=(r.aspects||{})[spec.key];
         const box=el("div","cellv");
-        if(raw==null||(Array.isArray(raw)&&!raw.length)){
-          box.appendChild(valPill(spec,"—",false,null));
+        // OPT-IN: a cell OFFERS values; none are taken until clicked. Colour
+        // rows offer the reference's extracted material (every swatch, named
+        // hueprint-style); other rows offer what analysis detected. The same
+        // swatch set appears in every colour row because assigning a colour
+        // to a role is the owner's act, not a property of the image.
+        const selList=((S.patch.sel||{})[r.id]||{})[spec.key];
+        const chosen=Array.isArray(selList)?selList:[];
+        let offers=[];
+        if(spec.kind==="color"){
+          offers=(r.colors||[]).map(c=>({v:c.hex,tip:c.name}));
         }else{
-          const off=((S.patch.sel||{})[r.id]||{})[spec.key]===false;
-          (Array.isArray(raw)?raw:[raw]).forEach(v=>{
-            box.appendChild(valPill(spec,v,!off,()=>patch(
-              {sel:{[r.id]:{[spec.key]:off}}})));
-          });
+          const raw=(r.aspects||{})[spec.key];
+          offers=(raw==null?[]:(Array.isArray(raw)?raw:[raw])).map(v=>({v:v,tip:null}));
         }
+        if(!offers.length) box.appendChild(valPill(spec,"—",false,null,null));
+        offers.forEach(o=>{
+          const on=chosen.includes(o.v);
+          box.appendChild(valPill(spec,o.v,on,()=>{
+            const next=on?chosen.filter(x=>x!==o.v):chosen.concat([o.v]);
+            patch({sel:{[r.id]:{[spec.key]:next}}});
+          },o.tip));
+        });
         td.appendChild(box); tr.appendChild(td);
       });
 
@@ -344,16 +376,21 @@ function resolvedCell(spec,row){
   td.appendChild(box);
 
   const denom=row.denominator||0;
+  const has=row.candidates.length>0;
   if(row.source==="edited") td.appendChild(tag("edit","✎ edited by hand"));
   else if(row.source==="picked") td.appendChild(tag("edit","✎ picked"));
-  else if(row.conflict&&row.candidates.length>1)
-    td.appendChild(tag("warn",`⚠ conflict — ${row.candidates.length} answers`));
-  else if(row.agreement&&denom&&row.agreement>=denom)
-    td.appendChild(tag("ok",`✓ unanimous ${row.agreement}/${denom}`));
-  else if(row.agreement)
-    td.appendChild(tag("ok",`✓ ${row.agreement} / ${denom}`));
-  if(row.abstained.length)
-    td.appendChild(tag("warn",`${row.abstained.length} abstained`));
+  else if(row.source==="auto"&&has){
+    // an unclicked row: the value shown is a PROPOSAL, and looks like one
+    box.classList.add("auto");
+    td.appendChild(tag("auto","auto — click values on the left to choose"));
+    if(row.conflict) td.appendChild(tag("warn",`⚠ ${row.candidates.length} candidates disagree`));
+  }else if(row.source==="selected"){
+    if(row.conflict&&row.candidates.length>1)
+      td.appendChild(tag("warn",`⚠ your selections disagree — ${row.candidates.length} answers`));
+    else td.appendChild(tag("ok",`✓ yours — from ${row.agreement||row.contributors.length} reference${(row.agreement||row.contributors.length)===1?"":"s"}`));
+  }
+  if(row.abstained.length&&row.source==="selected")
+    td.appendChild(tag("warn",`${row.abstained.length} offer nothing here`));
   return td;
 }
 function tag(k,x){return el("span","tag "+k,x);}

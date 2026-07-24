@@ -199,6 +199,115 @@ def mix(a: str, b: str, t: float) -> str:
 
 # ---------------------------------------------------------------- rung 1
 
+def color_name(h: str) -> str:
+    """A human name for a colour, ported from the hueprint lab tool so the
+    studio and hueprint name the same swatch the same way."""
+    r, g, b = (c / 255 for c in _rgb(h))
+    mx, mn = max(r, g, b), min(r, g, b)
+    l, d = (mx + mn) / 2, mx - mn
+    if not d:
+        hue, s = 0.0, 0.0
+    else:
+        s = d / (1 - abs(2 * l - 1)) if abs(2 * l - 1) != 1 else 0.0
+        hue = (60 * (((g - b) / d) % 6) if mx == r else
+               60 * ((b - r) / d + 2) if mx == g else
+               60 * ((r - g) / d + 4))
+        hue = hue + 360 if hue < 0 else hue
+    if s < 0.11:
+        return ("INK SHADOW" if l < 0.22 else "PAPER WHITE" if l > 0.82 else
+                "SILVER HUSH" if l > 0.55 else "SOFT GREY")
+    if l < 0.18:
+        return "MIDNIGHT INK"
+    if l > 0.86:
+        return ("APRICOT VEIL" if hue < 45 or hue > 340 else "PALE LINEN"
+                if hue < 80 else "MINT AIR" if hue < 200 else "CLOUD BLUE")
+    for lo, light, dark in (
+            (15, "WARM BLUSH", "IRON RED"), (38, "SUNWASHED", "RUSTED CLAY"),
+            (65, "GOLDEN HOUR", "OLD OCHRE"), (105, "WILD REED", "OLIVE GROVE"),
+            (155, "SOFT SAGE", "GROVE GREEN"), (190, "SERENE", "TIDAL TEAL"),
+            (225, "COASTAL AIR", "DEEP SKY"), (260, "BLUE HAZE", "INDIGO DUSK"),
+            (300, "LILAC VEIL", "VIOLET INK"), (345, "ROSE DUST", "PLUM VELVET")):
+        if hue < lo or (lo == 15 and hue >= 345):
+            return light if l > 0.65 else dark
+    return "FOUND COLOR"
+
+
+def quantile_kmeans(pixels: list, k: int = 5, iters: int = 12) -> list:
+    """k-means seeded at LUMINANCE QUANTILES — the hueprint lab tool's method,
+    lifted here because it fixes the failure that broke this module.
+
+    Median-cut (and k-means seeded any other way) on a dark-dominated image
+    returns dark bins: the six City X Axis references produced five
+    near-identical near-blacks, and everything downstream — the ramp, the
+    contrast, the coherence score — inherited that as if it were a fact about
+    the pictures. It was a fact about the algorithm. Seeding the centroids
+    across the luminance range instead GUARANTEES the ramp spans dark to
+    light, which is exactly what a set of five interface roles needs.
+
+    Returns [(hex, size)] ordered dark -> light."""
+    if not pixels:
+        return []
+    by_lum = sorted(pixels, key=lambda p: luminance(_hex(p)))
+    qs = [0.1, 0.36, 0.64, 0.9] if k == 4 else \
+         [i / (k - 1) * 0.8 + 0.1 for i in range(k)]
+    centers = [by_lum[min(len(by_lum) - 1, int((len(by_lum) - 1) * q))] for q in qs]
+    sizes = [0] * k
+    for _ in range(iters):
+        sums = [[0, 0, 0, 0] for _ in range(k)]
+        for px in pixels:
+            best, bd = 0, None
+            for i, c in enumerate(centers):
+                d = (px[0] - c[0]) ** 2 + (px[1] - c[1]) ** 2 + (px[2] - c[2]) ** 2
+                if bd is None or d < bd:
+                    bd, best = d, i
+            s = sums[best]
+            s[0] += px[0]; s[1] += px[1]; s[2] += px[2]; s[3] += 1
+        centers = [(s[0] // s[3], s[1] // s[3], s[2] // s[3]) if s[3] else centers[i]
+                   for i, s in enumerate(sums)]
+        sizes = [s[3] for s in sums]
+    out = [(_hex(c), n) for c, n in zip(centers, sizes)]
+    return sorted(out, key=lambda t: luminance(t[0]))
+
+
+def chromatic_voices(im, bins: int = 24, top: int = 4) -> list:
+    """The colours a PERSON would name in this image, which is not what
+    area-weighted quantization returns.
+
+    Median-cut picks a representative per partition by AVERAGING it, so a
+    vivid minority — neon windows, coloured hairlines — is blended with the
+    dark mass around it and comes back as mud. Measured on the neon-noir
+    reference, whose oranges and cyans are unmistakable to the eye: quantize
+    gave #785f45 and #ab9e71, muddy browns that appear nowhere in the picture.
+
+    So chroma is found on its own terms: keep only pixels with real
+    saturation, histogram them by HUE, and represent each hue peak with its
+    most SATURATED members (not its brightest — a coloured line on white paper
+    is vivid but dark). Returns [(share, hex)] strongest voice first, and an
+    empty list for a genuinely monochrome image, which is a true answer."""
+    px = im.tobytes()
+    n = len(px) // 3
+    buckets = {}
+    for i in range(0, n * 3, 3):
+        r, g, b = px[i], px[i + 1], px[i + 2]
+        h, s, v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+        if s < 0.33 or v < 0.16:
+            continue
+        buckets.setdefault(int(h * bins) % bins, []).append((s, v, (r, g, b)))
+    out = []
+    for members in buckets.values():
+        energy = sum(s * v for s, v, _ in members) / max(1, n)
+        # the exemplar is the s*v peak: pure saturation alone picks the
+        # DARKEST saturated pixels (neon-noir's voice came back #591707, an
+        # ember, when the image blazes #e68d4a), while brightness alone
+        # washes a coloured line on white paper out to the paper
+        members.sort(key=lambda m: -(m[0] * m[1]))
+        keep = members[:max(1, len(members) // 8)]
+        rep = tuple(sum(c[i] for _, _, c in keep) / len(keep) for i in range(3))
+        out.append((round(energy, 5), _hex(rep)))
+    out.sort(key=lambda t: -t[0])
+    return out[:top]
+
+
 def analyze_image(path: Path) -> dict:
     """DETERMINISTIC analysis — PIL only, no model, never raises.
 
@@ -211,41 +320,70 @@ def analyze_image(path: Path) -> dict:
         out["error"] = "Pillow is not installed — deterministic analysis unavailable"
         return out
     try:
-        im = Image.open(path)
-        im = im.convert("RGB")
-        im.thumbnail((320, 320))
+        im = Image.open(path).convert("RGB")
+        # NEAREST, never thumbnail(): the default resampler AVERAGES
+        # neighbouring pixels, and this corpus is full of small bright cells on
+        # dark fields (lit windows, hairlines). Averaging blends them into the
+        # background and the image's actual colours stop existing before any
+        # analysis runs. Sampling preserves them.
+        if max(im.size) > 260:
+            w = 260 if im.width >= im.height else max(1, int(260 * im.width / im.height))
+            h = max(1, int(w * im.height / im.width))
+            im = im.resize((w, h), Image.NEAREST)
     except Exception as e:                                   # unreadable/corrupt
         out["error"] = f"could not read the image: {e}"
         return out
 
-    # -- quantized palette, by share ------------------------------------
-    try:
-        q = im.quantize(colors=8, method=Image.Quantize.MEDIANCUT).convert("RGB")
-    except Exception:
-        q = im
-    counts = {}
-    for c, rgb in q.getcolors(maxcolors=1 << 16) or []:
-        counts[_hex(rgb)] = counts.get(_hex(rgb), 0) + c
-    total = sum(counts.values()) or 1
-    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    # -- the ramp: k-means seeded at luminance quantiles (see quantile_kmeans)
+    raw = im.tobytes()
+    pixels = [(raw[i], raw[i + 1], raw[i + 2]) for i in range(0, len(raw) - 2, 12)]
+    ramp = quantile_kmeans(pixels, k=5)
+    # centroids CONVERGE to the same colour on simple art (two-colour line
+    # work leaves three of five seeds nowhere to go); merge duplicates or the
+    # shares dict silently drops their mass
+    merged: dict = {}
+    for h, n in ramp:
+        merged[h] = merged.get(h, 0) + n
+    ramp = sorted(merged.items(), key=lambda t: luminance(t[0]))
+    total = sum(n for _, n in ramp) or 1
+    ranked = sorted(ramp, key=lambda t: -t[1])          # by area, for the ground
     shares = {h: n / total for h, n in ranked}
-    palette = [h for h, _ in ranked][:6]
+    palette = [h for h, _ in ramp]                      # already dark -> light
 
-    # -- ground = the dominant colour; accent = the mark that reads AGAINST it.
-    # Luminance separation is weighted hardest and gates the candidate list: on
-    # a dark photograph every quantized colour is dark and low-saturation, so a
-    # saturation-led pick returns another near-black and the compiled skin has
-    # no accent at all (caught on the real City X Axis specimens, which chose
-    # #03040f against a #26353e ground). Falling back to the most distant
-    # colour keeps a monochrome reference working.
+    # -- THE EXTRACTION IS MATERIAL, NOT A MANDATE (the hueprint model). ----
+    # This function's job is to get the colours OUT of the image: the
+    # luminance-quantile ramp plus the chromatic voices, deduped and named.
+    # It does NOT decide that the image's background is the skin's background
+    # — an early version did exactly that, and the owner's correction is the
+    # architecture: extraction is automatic; APPLYING a colour to a role is a
+    # human act in the matrix, or an auto-proposal labelled as such. The
+    # proposals computed below live behind the AUTO path of resolve() and
+    # never pre-select anything in the UI.
+    voices = chromatic_voices(im)
+    colors_out, seen_hex = [], []
+    for h, n in ramp:
+        if all(color_distance(h, s) > 8 for s in seen_hex):
+            seen_hex.append(h)
+            colors_out.append({"hex": h, "share": round(n / total, 3),
+                               "name": color_name(h)})
+    for energy, h in voices:
+        if all(color_distance(h, s) > 8 for s in seen_hex):
+            seen_hex.append(h)
+            colors_out.append({"hex": h, "share": round(energy, 3),
+                               "name": color_name(h), "voice": True})
+    colors_out.sort(key=lambda c: luminance(c["hex"]))
+    out["colors"] = colors_out[:8]
+
+    # auto proposals: dominant cluster as ground, loudest chromatic voice as
+    # accent (luminance extreme when the image is genuinely monochrome —
+    # inventing a colour for an ink drawing would be a lie).
     ground = ranked[0][0] if ranked else "#000000"
     ground_share = shares.get(ground, 0.0)
     gl = luminance(ground)
-    cands = [h for h, _ in ranked if abs(luminance(h) - gl) >= 0.08] or \
-            [h for h, _ in ranked if h != ground] or [ground]
-    accent = max(cands, key=lambda h: (abs(luminance(h) - gl) * 0.6
-                                       + saturation(h) * 0.25
-                                       + color_distance(h, ground) / 100 * 0.15))
+    accent = next((h for _, h in voices if color_distance(h, ground) > 18), None)
+    if accent is None:
+        accent = max((h for h, _ in ranked), key=lambda h: abs(luminance(h) - gl),
+                     default=ground)
 
     # -- saturation spread: is this one hue or many? --------------------
     hues = [colorsys.rgb_to_hls(*[c / 255 for c in _rgb(h)])[0]
@@ -281,16 +419,22 @@ def analyze_image(path: Path) -> dict:
     except Exception:
         pass
 
-    # -- flatness: how much of the frame the four commonest colours cover.
-    # THE GATE FOR EVERY COVERAGE HEURISTIC BELOW. Flat graphic art (a chart,
-    # a terminal, ASCII) sits high; a photograph or a painterly render sits
-    # ~0.55-0.62 no matter what it depicts. Measured on the real City X Axis
-    # specimens, `ink` was 0.66-0.84 for ALL six — line drawings and filled
-    # renders alike — so a fills/density guess from a continuous-tone image is
-    # noise wearing a confident face. Below the gate rung 1 ABSTAINS on those
-    # rows and lets the vision pass (or the owner) answer them. An abstention
-    # is a real answer here; a confident wrong one poisons the resolution.
-    flatness = round(sum(sorted(shares.values(), reverse=True)[:4]), 3)
+    # -- flatness: the share of the frame covered by the four commonest
+    # COARSE colours (5-bit channels), measured on the pixels directly — a
+    # property of the image, deliberately independent of how the ramp
+    # clustered. THE GATE FOR EVERY COVERAGE HEURISTIC BELOW. Flat graphic
+    # art (a chart, a terminal, ASCII) concentrates in a few coarse bins; a
+    # photograph or painterly render scatters across hundreds no matter what
+    # it depicts — and on those, `ink` read 0.66-0.84 for line drawings and
+    # filled renders ALIKE, so a fills/density guess there is noise wearing a
+    # confident face. Below the gate rung 1 ABSTAINS on those rows and lets
+    # the vision pass (or the owner) answer them.
+    coarse: dict = {}
+    for p in pixels:
+        kk = (p[0] >> 5, p[1] >> 5, p[2] >> 5)
+        coarse[kk] = coarse.get(kk, 0) + 1
+    top4 = sorted(coarse.values(), reverse=True)[:4]
+    flatness = round(sum(top4) / max(1, len(pixels)), 3)
 
     out["measured"] = {
         "ground_share": round(ground_share, 3), "ink": ink, "edges": edges,
@@ -300,8 +444,11 @@ def analyze_image(path: Path) -> dict:
         "palette_shares": {h: round(s, 3) for h, s in list(shares.items())[:8]},
     }
 
-    # -- derive aspect values from the measurements ---------------------
-    # Palette always survives: quantization is meaningful on any image.
+    # -- aspects = detected facts + the auto proposals -------------------
+    # The colour keys here are PROPOSALS consumed only by resolve()'s AUTO
+    # path (and labelled "auto" in the matrix); the UI shows out["colors"]
+    # as the selectable material instead. The enum keys below are facts
+    # about the image, still opt-in on the way into a genre.
     a = out["aspects"]
     a["ground"] = ground
     a["accent"] = accent
@@ -454,13 +601,21 @@ def _bin_key(spec: dict, value, tolerance: float, seen: list):
 
 
 def resolve(patch: dict) -> dict:
-    """THE ENGINE. Fold every reference's selected aspects into one answer per
-    row, honouring per-reference gain and the knob positions. Pure and
-    deterministic — same patch in, same manifest out.
+    """THE ENGINE. Fold the references into one answer per row, honouring
+    per-reference gain and the knob positions. Pure and deterministic — same
+    patch in, same manifest out.
 
-    Returns per-row: the resolved value, the agreement count, whether it is a
-    conflict, which references abstained, and every candidate with its weight
-    (so the UI can show the vote, not just the winner)."""
+    SELECTION IS OPT-IN (the owner's correction — "I want to opt into things,
+    not opt out of them"). ``sel[rid][key]`` is the list of values the owner
+    clicked INTO the genre from that reference's cell. If ANY reference has
+    opt-ins for a row, only opt-ins count and the row's source is
+    ``selected``. With none anywhere, the row falls back to the detected/auto
+    values so the instrument still makes sound the moment images drop — but
+    it says so: source ``auto``, a proposal, not a fact about the images.
+
+    Returns per-row: the resolved value, its source, the agreement count,
+    conflicts, abstentions, and every candidate with its weight (so the UI
+    shows the vote, not just the winner)."""
     knobs = dict(KNOB_DEFAULTS)
     knobs.update(patch.get("knobs") or {})
     tolerance = float(knobs["tolerance"]) / 100 * 60      # 0..60 distance units
@@ -470,19 +625,27 @@ def resolve(patch: dict) -> dict:
     picks = patch.get("picks") or {}
     overrides = patch.get("overrides") or {}
 
+    def opted(rid, key):
+        v = (sel.get(rid) or {}).get(key)
+        if isinstance(v, list):
+            return [x for x in v if isinstance(x, (str, int, float))] or None
+        if isinstance(v, str) and v:
+            return [v]
+        return None                    # legacy False / None / {} all mean: nothing
+
     rows = {}
     for spec in ASPECTS:
         key = spec["key"]
+        opted_any = any(opted(r.get("id"), key) for r in refs)
         bins, seen, abstained, contributors = {}, [], [], []
         for ref in refs:
             rid = ref.get("id")
             gain = float(ref.get("weight", 1.0) or 0.0)
-            vals = (ref.get("aspects") or {}).get(key)
+            if opted_any:
+                vals = opted(rid, key)
+            else:
+                vals = (ref.get("aspects") or {}).get(key)
             if vals is None or vals == [] or gain <= 0:
-                abstained.append(rid)
-                continue
-            # a cell is on unless explicitly switched off
-            if sel.get(rid, {}).get(key) is False:
                 abstained.append(rid)
                 continue
             contributors.append(rid)
@@ -505,7 +668,7 @@ def resolve(patch: dict) -> dict:
             "candidates": [dict(c, share=round(c["weight"] / total_gain, 3)) for c in cands],
             "abstained": abstained, "contributors": contributors,
             "conflict": False, "resolved": None, "agreement": 0,
-            "source": "computed",
+            "source": "selected" if opted_any else "auto",
         }
         denom = len(contributors) + (len(abstained) if knobs["abstain"] == "count" else 0)
         row["denominator"] = denom
@@ -952,6 +1115,7 @@ def add_reference(gid: str, data_url: str, name: str = "") -> dict:
     found = analyze_image(path)
     ref = {"id": rid, "file": path.name, "name": (name or path.name)[:120],
            "weight": 1.0, "aspects": found.get("aspects") or {},
+           "colors": found.get("colors") or [],   # the extracted material
            "measured": found.get("measured") or {}, "rung": 1,
            "error": found.get("error")}
 
