@@ -543,8 +543,10 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 
 /* ---------- Work window (Queue | Dispatch | Live | Record) ----------
    Layout only — every color reads the existing tokens. */
-.work-subhead { display: flex; align-items: center; gap: 8px; }
-.work-subhead .jobs-sub { margin: 14px 2px 8px; }
+.work-subhead { display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap; }   /* narrow widths wrap the buttons, not the label */
+.work-subhead .jobs-sub { margin: 14px 2px 8px;
+  min-width: 180px; }  /* floor: the buttons wrap before the label strangles */
 .work-subhead .fchip { align-self: end; }
 .idea-top .badge { flex: none; margin-top: 2px; }
 .q-note { display: flex; align-items: flex-start; gap: 10px; }
