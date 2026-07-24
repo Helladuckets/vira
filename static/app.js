@@ -9830,6 +9830,11 @@ function paletteMatches(q) {
       run: () => setLayout("perimeter") },
     { label: "Layout: Freeform", kind: "layout",
       run: () => setLayout("freeform") },
+    ...savedLayouts().map((l) => ({
+      label: "Layout: " + l.name, kind: "layout",
+      run: () => applySavedLayout(l.id, true) })),
+    { label: "Save current layout…", kind: "layout",
+      run: () => openSaveLayoutPopup(Math.round(innerWidth / 2) - 130, 84) },
     { label: "Close all windows", kind: "desktop",
       run: () => WINDOWS.forEach((w) => closeWindow(w.id)) },
     { label: "Confetti", kind: "why not",
@@ -10490,7 +10495,8 @@ async function readerProbe() {
 // template is active, so switching back restores the desk exactly. Only the
 // active template + which cards are grown persist (vira-layout, synced).
 const LAYOUTS = { freeform: "Freeform", perimeter: "Perimeter — Stage" };
-let layoutMode = "freeform";
+let layoutMode = "freeform";   // the active BEHAVIOUR: freeform desk or the ring
+let activeLayout = "freeform"; // menu "· current" label: freeform | perimeter | saved:<id>
 const grown = new Set();       // ids currently grown onto the stage
 let grownOrder = [];           // grow order — drives the cascade placement
 const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
@@ -10498,18 +10504,108 @@ const slotRects = {};          // id -> {x,y,w,h}: reserved edge slot per window
 function layoutState() {
   const s = lsGet("vira-layout", null);
   if (s && typeof s === "object" && LAYOUTS[s.mode]) return s;
-  return { mode: "freeform", grown: [] };
+  return { mode: "freeform", grown: [], active: "freeform" };
 }
 function saveLayout() {
-  uiPush("vira-layout",
-         lsSet("vira-layout", { mode: layoutMode, grown: grownOrder.slice() }));
+  uiPush("vira-layout", lsSet("vira-layout",
+    { mode: layoutMode, grown: grownOrder.slice(), active: activeLayout }));
 }
 
 // Geometry writes are the FREEFORM arrangement — suppress them while a
 // template owns the layout, so a drag/resize on the stage can't corrupt the
-// desk the owner returns to.
+// desk the owner returns to. Editing the desk by hand also diverges from a
+// loaded saved layout, so the "· current" marker drops back to Freeform.
 function persistGeom(id, patch) {
-  if (layoutMode === "freeform") saveWinState(id, patch);
+  if (layoutMode !== "freeform") return;
+  saveWinState(id, patch);
+  if (activeLayout.startsWith("saved:")) {
+    activeLayout = "freeform";
+    updateLayoutBtn();
+    saveLayout();
+  }
+}
+
+// ---- named saved layouts: snapshots of the current window arrangement the
+// owner captures from the layout menu (new name) or overwrites in place. A
+// snapshot is per-window {x,y,w,h,open}; applying it loads that arrangement
+// back into the freeform desk. Stored + synced under vira-layouts. ----
+function savedLayouts() {
+  const s = lsGet("vira-layouts", []);
+  return Array.isArray(s) ? s : [];
+}
+function persistSavedLayouts(list) {
+  uiPush("vira-layouts", lsSet("vira-layouts", list));
+}
+function newLayoutId() { return "ly_" + Math.random().toString(36).slice(2, 10); }
+
+// what's on screen right now: open windows at their live rects; closed ones
+// just record that they were closed (closed windows have no meaningful rect)
+function captureLayout() {
+  const wins = {};
+  Object.keys(winState).forEach((id) => {
+    const w = winState[id];
+    if (w.open) {
+      const r = w.el.getBoundingClientRect();
+      wins[id] = { x: Math.round(r.left), y: Math.round(r.top),
+                   w: Math.round(r.width), h: Math.round(r.height), open: true };
+    } else {
+      wins[id] = { open: false };
+    }
+  });
+  return wins;
+}
+
+function saveNewLayout(name) {
+  const list = savedLayouts();
+  const id = newLayoutId();
+  list.push({ id, name, wins: captureLayout() });
+  persistSavedLayouts(list);
+  return id;
+}
+
+function overwriteLayout(id) {
+  const list = savedLayouts();
+  const it = list.find((l) => l.id === id);
+  if (!it) return;
+  it.wins = captureLayout();
+  persistSavedLayouts(list);
+}
+
+function deleteLayout(id) {
+  persistSavedLayouts(savedLayouts().filter((l) => l.id !== id));
+  if (activeLayout === "saved:" + id) {
+    activeLayout = "freeform";
+    updateLayoutBtn();
+    saveLayout();
+  }
+}
+
+// load a saved arrangement into the freeform desk: leave any template, then
+// open/close and place each captured window (and persist, so it sticks and
+// survives a reload). Windows absent from the snapshot are left untouched.
+function applySavedLayout(id, animate) {
+  const it = savedLayouts().find((l) => l.id === id);
+  if (!it) return;
+  layoutMode = "freeform";
+  document.body.classList.remove("layout-perimeter");
+  grown.clear();
+  grownOrder = [];
+  Object.keys(winState).forEach((wid) => {
+    const w = winState[wid];
+    w.el.classList.remove("fwin-locked", "fwin-grown");
+    const snap = it.wins[wid];
+    if (!snap) return;
+    if (snap.open) {
+      if (!w.open) openWindow(wid); else viewLoad(wid);
+      setWinRect(w.el, snap, animate);
+      saveWinState(wid, { x: snap.x, y: snap.y, w: snap.w, h: snap.h });
+    } else if (w.open) {
+      closeWindow(wid);
+    }
+  });
+  activeLayout = "saved:" + id;
+  updateLayoutBtn();
+  saveLayout();
 }
 
 // windows that belong in the frame: every open, set-up window in dock order.
@@ -10666,6 +10762,7 @@ function freeformRect(id, st) {
 
 function enterPerimeter(animate) {
   layoutMode = "perimeter";
+  activeLayout = "perimeter";
   document.body.classList.add("layout-perimeter");
   applyPerimeter(animate);
   updateLayoutBtn();
@@ -10674,6 +10771,7 @@ function enterPerimeter(animate) {
 
 function exitToFreeform(animate) {
   layoutMode = "freeform";
+  activeLayout = "freeform";
   document.body.classList.remove("layout-perimeter");
   grown.clear();
   grownOrder = [];
@@ -10688,23 +10786,84 @@ function exitToFreeform(animate) {
 }
 
 function setLayout(mode) {
-  if (!LAYOUTS[mode] || mode === layoutMode) return;
-  if (mode === "perimeter") enterPerimeter(true);
+  if (!LAYOUTS[mode]) return;
+  if (mode === "perimeter") { if (layoutMode !== "perimeter") enterPerimeter(true); }
   else exitToFreeform(true);
 }
 
 function updateLayoutBtn() {
   const b = $("#layout-btn");
-  if (b) b.classList.toggle("on", layoutMode === "perimeter");
+  if (b) b.classList.toggle("on", activeLayout !== "freeform");
 }
 
 function openLayoutMenu(x, y) {
-  const mark = (m) => LAYOUTS[m] + (m === layoutMode ? " · current" : "");
-  showContextMenu(x, y, [
+  const mark = (key, label) => label + (key === activeLayout ? " · current" : "");
+  const items = [
     { head: "Layout template" },
-    { label: mark("freeform"), run: () => setLayout("freeform") },
-    { label: mark("perimeter"), run: () => setLayout("perimeter") },
-  ]);
+    { label: mark("freeform", "Freeform"), run: () => setLayout("freeform") },
+    { label: mark("perimeter", "Perimeter — Stage"), run: () => setLayout("perimeter") },
+  ];
+  savedLayouts().forEach((l) => items.push(
+    { label: mark("saved:" + l.id, l.name), run: () => applySavedLayout(l.id, true) }));
+  items.push({ sep: true });
+  items.push({ label: "Save current layout…", run: () => {
+    const r = $("#layout-btn").getBoundingClientRect();
+    openSaveLayoutPopup(r.left, r.bottom + 6);
+  } });
+  showContextMenu(x, y, items);
+}
+
+// the "save current layout" form: name a new layout, or overwrite/delete an
+// existing one. Saving is a side action — it snapshots the arrangement and
+// does not change which template is "current".
+function openSaveLayoutPopup(x, y) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop");
+  pop.appendChild(el("div", "ctx-head", "Save current layout"));
+  const input = el("input", "ly-input");
+  input.type = "text";
+  input.placeholder = "New layout name";
+  input.autocomplete = "off";
+  pop.appendChild(input);
+  const doNew = () => {
+    const name = input.value.trim();
+    if (!name) { input.focus(); return; }
+    saveNewLayout(name);
+    pop.remove();
+    toast("Saved layout: " + name);
+  };
+  const actions = el("div", "ly-actions");
+  const cancel = el("button", "ly-btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  const save = el("button", "ly-btn primary", "Save new");
+  save.addEventListener("click", doNew);
+  actions.appendChild(cancel);
+  actions.appendChild(save);
+  pop.appendChild(actions);
+  input.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); doNew(); }
+    else if (e.key === "Escape") { e.preventDefault(); pop.remove(); }
+  });
+  const saved = savedLayouts();
+  if (saved.length) {
+    pop.appendChild(el("div", "ly-sep", "or overwrite"));
+    saved.forEach((l) => {
+      const row = el("div", "ly-row");
+      row.appendChild(el("span", "ly-name", l.name));
+      const ow = el("button", "ly-btn", "Overwrite");
+      ow.addEventListener("click", () => {
+        overwriteLayout(l.id); pop.remove(); toast("Updated layout: " + l.name);
+      });
+      const del = el("button", "ly-btn danger", "Delete");
+      del.addEventListener("click", () => { deleteLayout(l.id); row.remove(); });
+      row.appendChild(ow);
+      row.appendChild(del);
+      pop.appendChild(row);
+    });
+  }
+  placeCtxPop(pop, x, y);
+  requestAnimationFrame(() => input.focus());
 }
 
 // recompute the frame when the viewport changes (crossing the 1100px desktop
@@ -10727,12 +10886,17 @@ function initLayout() {
     });
   }
   const ls = layoutState();
-  updateLayoutBtn();
   if (ls.mode === "perimeter") {
     grownOrder = (ls.grown || []).filter((id) => winState[id]?.open);
     grownOrder.forEach((id) => grown.add(id));
     enterPerimeter(false);          // no animation on first paint
+  } else {
+    // Freeform: the desk (vira-desktop) already reflects the last-applied
+    // arrangement — a loaded saved layout wrote its geometry there — so
+    // nothing to re-apply; just restore the menu's "· current" marker.
+    activeLayout = typeof ls.active === "string" ? ls.active : "freeform";
   }
+  updateLayoutBtn();
 }
 
 function initDesktop() {
@@ -10804,7 +10968,8 @@ function initDesktop() {
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
 const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
-                      "vira-mobile-dock", "vira-setup-opened", "vira-layout"];
+                      "vira-mobile-dock", "vira-setup-opened", "vira-layout",
+                      "vira-layouts"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 
