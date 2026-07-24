@@ -2944,6 +2944,13 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   padding: 6px 12px; cursor: pointer;
 }
 .skin-cancel:hover { color: var(--text); border-color: var(--accent-line); }
+/* the studio card that sits after the shipped skins */
+.skin-card.skin-new { border-style: dashed; }
+.skin-swatch.new {
+  display: grid; place-items: center;
+  background: var(--accent-soft); border-color: var(--accent-line);
+}
+.skin-plus { font-family: var(--mono); font-size: 17px; color: var(--accent-bright); }
 .skin-badge {
   font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em;
   text-transform: uppercase; color: var(--accent-bright);

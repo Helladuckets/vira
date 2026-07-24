@@ -40,6 +40,7 @@ from . import (actions, aihealth, applications, atlas, backup, brief,
                resolver,
                routines,
                search as msearch, send, sendpref, session, settings,
+               genreroutes,
                skins,
                subs_visuals,
                subscriptions, suggest, triage, uistate, update, vault,
@@ -2161,5 +2162,10 @@ if _design_root.is_dir():
 # :root + skin-active.css, then commits (unless passive). The picker sits at
 # the top of the Design Studio module.
 app.include_router(skins.router)
+
+# ---------- Genre Studio (build a skin from reference images) --------------
+# The instrument behind the picker: references -> aspects -> gain -> knobs ->
+# manifest -> skin, with every stage exposed. Engine in genrestudio.py.
+app.include_router(genreroutes.router)
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

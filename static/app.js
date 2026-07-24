@@ -6480,6 +6480,27 @@ async function loadDesignSkins() {
   try { data = await api("/api/skins"); } catch { return; }
   row.innerHTML = "";
   (data.skins || []).forEach((s) => row.appendChild(skinCard(s, data.active)));
+  row.appendChild(createGenreCard());
+}
+
+// The other half of the picker: skins you were shipped, and the studio that
+// makes new ones from reference images. It is its own full-width surface
+// (static/genre.html) — the matrix needs the room.
+function createGenreCard() {
+  const card = el("div", "skin-card skin-new");
+  const sw = el("div", "skin-swatch new");
+  sw.appendChild(el("span", "skin-plus", "+"));
+  card.appendChild(sw);
+  card.appendChild(el("div", "skin-name", "Create a genre"));
+  card.appendChild(el("div", "skin-meta", "genre studio"));
+  card.appendChild(el("div", "skin-tag",
+    "Drop reference images and tune a new skin out of what they share."));
+  const foot = el("div", "skin-foot");
+  const b = el("button", "skin-apply", "Open studio");
+  b.addEventListener("click", () => window.open("/genre.html", "_blank", "noopener"));
+  foot.appendChild(b);
+  card.appendChild(foot);
+  return card;
 }
 
 function skinCard(s, activeId) {
