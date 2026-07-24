@@ -155,6 +155,22 @@ body {
 @media (prefers-reduced-motion: reduce) {
   #layout-btn.editing { animation: none; }
 }
+/* a list of mutually exclusive choices; the selected row is ticked AND
+   described, so which one is active is never a matter of interpretation */
+.ch-row {
+  display: flex; align-items: flex-start; gap: 9px; width: 100%;
+  text-align: left; background: none; border: none; cursor: pointer;
+  padding: 8px 9px; border-radius: 2px; color: var(--text); font: inherit;
+}
+.ch-row:hover { background: var(--accent-soft); }
+.ch-mark {
+  flex: none; width: 14px; color: var(--accent); font-size: 12px; line-height: 1.35;
+}
+.ch-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ch-label { font-size: 13px; }
+.ch-row.on .ch-label { color: var(--accent); font-weight: 600; }
+.ch-desc { font-size: 11px; color: var(--text-faint); line-height: 1.35; }
+
 /* a menu row that opens a secondary (edit) menu on right-click */
 .ctx-item.has-sub { position: relative; padding-right: 24px; }
 .ctx-item.has-sub::after {
@@ -1830,7 +1846,12 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
     box-shadow: 0 14px 44px rgba(0, 0, 0, .5);
     max-width: calc(100vw - 24px);
   }
-  .le-label { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  /* the name identifies what you are editing — it holds its width and the
+     hint (the most expendable text on the bar) is what gives way instead */
+  .le-label {
+    display: flex; flex-direction: column; gap: 1px;
+    flex: 0 1 auto; min-width: 120px;
+  }
   .le-kicker {
     font-family: var(--mono); font-size: 9.5px; letter-spacing: .16em;
     text-transform: uppercase; color: var(--accent);
@@ -1841,37 +1862,28 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   }
   .le-hint {
     font-size: 11px; color: var(--text-faint); white-space: nowrap;
+    flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
   }
   .le-link {
     background: none; border: none; padding: 0; font: inherit;
     color: var(--accent); cursor: pointer; text-decoration: underline;
   }
-  /* is this a parked, click-to-grow layout, or a plain placement? */
-  .le-toggle {
-    display: flex; align-items: center; gap: 7px; flex: none; cursor: pointer;
-    padding: 5px 10px; border-radius: 2px; background: var(--bg-card);
-    border: 1px solid var(--line); color: var(--text-dim);
-    font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em;
-    text-transform: uppercase; white-space: nowrap;
+  /* A picker, not a toggle: the kicker names the setting and the value names
+     what it is set to, so the control can never be read as the opposite of
+     what is active (the failure mode of a two-state pill). */
+  .le-picker {
+    display: flex; align-items: baseline; gap: 7px; flex: none; cursor: pointer;
+    padding: 4px 9px; border-radius: 2px; background: var(--bg-card);
+    border: 1px solid var(--line); white-space: nowrap;
   }
-  .le-toggle .le-dot {
-    width: 8px; height: 8px; border-radius: 50%; flex: none;
-    background: var(--text-faint); transition: background .15s ease;
+  .le-picker:hover { border-color: var(--accent); }
+  .le-pkicker {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-faint);
   }
-  .le-toggle.on { border-color: var(--accent); color: var(--accent); }
-  .le-toggle.on .le-dot { background: var(--accent); }
-  /* the two passes: where modules park vs where they open to */
-  .le-seg {
-    display: flex; flex: none; border: 1px solid var(--line);
-    border-radius: 2px; overflow: hidden;
-  }
-  .le-segbtn {
-    font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em;
-    text-transform: uppercase; cursor: pointer; padding: 5px 10px;
-    background: var(--bg-card); border: none; color: var(--text-dim);
-  }
-  .le-segbtn + .le-segbtn { border-left: 1px solid var(--line); }
-  .le-segbtn.on { background: var(--accent); color: var(--bg); }
+  .le-pvalue { font-size: 12px; color: var(--text); font-weight: 600; }
+  .le-pcaret { font-size: 9px; color: var(--text-faint); }
+  .le-picker:hover .le-pvalue, .le-picker:hover .le-pcaret { color: var(--accent); }
   /* the module whose grown position is being staged */
   body.layout-edit-grow .fwin-tuning {
     outline: 2px solid var(--accent); outline-offset: 2px;

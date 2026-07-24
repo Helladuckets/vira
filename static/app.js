@@ -8423,6 +8423,7 @@ document.addEventListener("contextmenu", (e) => {
   // The DESKTOP itself (right-click on empty space): layout switching and
   // clearing the desk, without going up to the topbar.
   if (isDesktop && !t.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad")) {
+    if (editing) { showContextMenu(e.clientX, e.clientY, editMenuItems()); return; }
     items.push({ label: layoutMode === "stage"
                    ? "Close all modules  ·  send them home"
                    : "Close all modules",
@@ -10775,6 +10776,18 @@ function layoutRects(l) {
 // each grown module's park with its grown rect, so the layout degraded a
 // little every time it was saved after being used.
 function currentArrangement() {
+  // While EDITING, the screen means whatever the current pass means: in the
+  // grow pass the live rects are grow staging, and the parks are the ones held
+  // when that pass opened. Answering this in one place is what stops a save
+  // routed through some other button (the topbar menu, the desktop menu) from
+  // reading the screen naively and writing each module's GROW rect as its
+  // PARK — the reported "I got the opposite result".
+  if (editing) {
+    captureEditTarget();
+    return { stage: editStage,
+             grows: editStage ? { ...editGrows } : undefined,
+             parks: editPass === "grow" ? { ...editParks } : undefined };
+  }
   if (layoutMode !== "stage") return {};
   const parks = { ...slotRects };
   const grows = { ...growRects };
@@ -11016,13 +11029,10 @@ function clearEditGrow() {
 function commitEdit(asNew, name) {
   const sess = editSession;
   if (asNew && !name) return;
-  captureEditTarget();                       // the module still being staged
-  const inGrow = editPass === "grow";
-  const opts = { stage: editStage,
-                 grows: editStage ? editGrows : undefined,
-                 parks: inGrow ? editParks : undefined };
-  const id = asNew ? saveNewLayout(name, opts)
-                   : (overwriteLayout(sess.savedId, opts), sess.savedId);
+  // currentArrangement() is edit-aware, so it is the single source of truth
+  // for what the screen means — no second copy of the pass logic here
+  const id = asNew ? saveNewLayout(name)
+                   : (overwriteLayout(sess.savedId), sess.savedId);
   discardEdit();
   applySavedLayout(id, false);
   toast((asNew ? "Saved layout: " : "Updated layout: ") + (name || sess.name));
@@ -11351,6 +11361,9 @@ function updateLayoutBtn() {
 // template you apply — the owner's own saved stage layouts replaced it — so it
 // lives below as the GENERATOR that mints one ("New perimeter layout…").
 function openLayoutMenu(x, y) {
+  // While editing, the edit session owns saving — the ordinary Save would read
+  // the screen without knowing which pass is showing. Offer its actions here.
+  if (editing) { showContextMenu(x, y, editMenuItems()); return; }
   const mark = (key, label) => label + (key === activeLayout ? " · current" : "");
   const items = [
     { head: "Layout" },
@@ -11392,6 +11405,24 @@ function openLayoutMenu(x, y) {
   showContextMenu(x, y, items);
 }
 
+// the actions available while an edit is in flight — shared by the topbar
+// menu and the desktop right-click, so neither can save behind the edit's back
+function editMenuItems() {
+  const isSaved = editSession?.kind === "saved";
+  const items = [{ head: "Editing " + (editSession?.name || "layout") }];
+  if (isSaved) items.push({ label: "Save", run: () => commitEdit(false) });
+  items.push({ label: "Save as new…", run: () => {
+    const r = $("#layout-btn").getBoundingClientRect();
+    layoutNamePopup({ title: "Save as new layout", cta: "Save",
+                      value: isSaved ? editSession.name + " copy" : "",
+                      x: r.left, y: r.bottom + 6,
+                      onName: (n) => commitEdit(true, n) });
+  } });
+  items.push({ sep: true });
+  items.push({ label: "Cancel edit", run: cancelEdit });
+  return items;
+}
+
 // the saved layout currently applied, if any
 function currentSavedLayout() {
   if (!activeLayout.startsWith("saved:")) return null;
@@ -11412,30 +11443,41 @@ function showEditBar() {
   label.appendChild(el("span", "le-name", editSession.name));
   bar.appendChild(label);
 
-  // the toggle: is this a parked, click-to-grow layout, or plain placement?
-  const tog = el("button", "le-toggle" + (editStage ? " on" : ""));
-  tog.appendChild(el("span", "le-dot"));
-  tog.appendChild(el("span", "le-toglabel",
-    editStage ? "Click a tile to grow it" : "Plain placement"));
-  tog.title = editStage
-    ? "Modules park here and open on click. Click to make it a plain placement."
-    : "Modules just sit here, fully live. Click to make them click-to-grow.";
-  tog.addEventListener("click", () => {
-    if (!editStage && editPass === "grow") setEditPass("park");
-    editStage = !editStage;
-    showEditBar();
-  });
-  bar.appendChild(tog);
+  // TYPE and PLACING are pickers, not toggles. A two-state pill is ambiguous
+  // by construction — it shows one word and you cannot tell whether that is
+  // the state you are IN or the one you would switch TO. Each of these names
+  // its current value and opens a list where the selected row is ticked.
+  bar.appendChild(pickerBtn("Type", editStage ? "Stage" : "Plain", (bx, by) =>
+    choicePopup({
+      title: "Layout type", x: bx, y: by, value: editStage ? "stage" : "plain",
+      options: [
+        { value: "stage", label: "Stage",
+          desc: "Modules park in place. Click one to open it." },
+        { value: "plain", label: "Plain placement",
+          desc: "Modules just sit where you put them, fully live." },
+      ],
+      onPick: (v) => {
+        const wantStage = v === "stage";
+        if (!wantStage && editPass === "grow") setEditPass("park");
+        editStage = wantStage;
+        showEditBar();
+      },
+    })));
 
-  // the two passes — only a stage layout has a grow position to stage
+  // the two passes — only a stage layout has a grow position to place
   if (editStage) {
-    const seg = el("div", "le-seg");
-    [["park", "Parked"], ["grow", "Grows to"]].forEach(([k, txt]) => {
-      const b = el("button", "le-segbtn" + (editPass === k ? " on" : ""), txt);
-      b.addEventListener("click", () => setEditPass(k));
-      seg.appendChild(b);
-    });
-    bar.appendChild(seg);
+    bar.appendChild(pickerBtn("Placing",
+      editPass === "grow" ? "Grow positions" : "Parked positions", (bx, by) =>
+      choicePopup({
+        title: "What you are placing", x: bx, y: by, value: editPass,
+        options: [
+          { value: "park", label: "Parked positions",
+            desc: "Where each module rests when it is not open." },
+          { value: "grow", label: "Grow positions",
+            desc: "Where a module opens to when you click it." },
+        ],
+        onPick: (v) => { setEditPass(v); },
+      })));
   }
 
   const hint = el("div", "le-hint");
@@ -11483,6 +11525,39 @@ function showEditBar() {
   document.body.appendChild(bar);
 }
 function hideEditBar() { const b = $("#layout-editbar"); if (b) b.remove(); }
+
+// a labelled picker: "TYPE / Stage ▾" — the kicker says what the setting IS,
+// the value says what it is set TO, so neither can be read as the other
+function pickerBtn(kicker, value, onOpen) {
+  const b = el("button", "le-picker");
+  b.appendChild(el("span", "le-pkicker", kicker));
+  b.appendChild(el("span", "le-pvalue", value));
+  b.appendChild(el("span", "le-pcaret", "▾"));
+  b.addEventListener("click", () => {
+    const r = b.getBoundingClientRect();
+    onOpen(r.left, r.bottom + 6);
+  });
+  return b;
+}
+
+// a list of mutually exclusive choices, the selected one ticked and described
+function choicePopup(opts) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop");
+  pop.appendChild(el("div", "ctx-head", opts.title));
+  opts.options.forEach((o) => {
+    const on = o.value === opts.value;
+    const row = el("button", "ch-row" + (on ? " on" : ""));
+    row.appendChild(el("span", "ch-mark", on ? "✓" : ""));
+    const txt = el("span", "ch-text");
+    txt.appendChild(el("span", "ch-label", o.label));
+    txt.appendChild(el("span", "ch-desc", o.desc));
+    row.appendChild(txt);
+    row.addEventListener("click", () => { pop.remove(); opts.onPick(o.value); });
+    pop.appendChild(row);
+  });
+  placeCtxPop(pop, opts.x, opts.y);
+}
 
 // shared name-entry popup for save-as-new and rename (Enter commits, Escape
 // dismisses). openSaveAsPopup and confirmSaveLayout below are the two
