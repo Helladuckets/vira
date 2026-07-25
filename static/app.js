@@ -3992,6 +3992,60 @@ function permissionCard(sid, p) {
   return card;
 }
 
+// One card per pending QUESTION. Same stack, same server-authoritative
+// resolution as the permission card above — deliberately, because that path
+// is the one that demonstrably reaches the owner on a phone. A session used
+// to have no way to raise a decision: it wrote the question into its prose
+// and parked behind a free-text box, which is how runs ended up half-done
+// with nobody realising they were waiting (2026-07-25).
+function askCard(sid, p) {
+  const card = el("div", "perm-card ask-card");
+  const head = el("div", "perm-head");
+  head.appendChild(el("span", "perm-tool ask-tag", "question"));
+  card.appendChild(head);
+  card.appendChild(el("div", "ask-q", p.question || p.summary || ""));
+
+  const send = async (answer) => {
+    if (!answer) return;
+    card.classList.add("resolving");
+    try {
+      await post("/api/session/" + sid + "/answer",
+                 { req_id: p.req_id, answer });
+    } catch (e) {
+      card.classList.remove("resolving");
+      alert("Answer failed: " + e.message);
+    }
+  };
+
+  if ((p.options || []).length) {
+    const row = el("div", "perm-actions ask-options");
+    p.options.forEach((o, i) => {
+      // the first option is the agent's own recommendation by convention,
+      // so it carries the primary weight — but nothing is preselected
+      const b = el("button", "btn small " + (i ? "" : "primary"), o);
+      b.addEventListener("click", () => send(o));
+      row.appendChild(b);
+    });
+    card.appendChild(row);
+  }
+  // Free text stays available unless the agent closed the choice: a real
+  // decision often has an answer the agent did not think to offer.
+  if (p.allow_text !== false) {
+    const other = document.createElement("input");
+    other.type = "text";
+    other.className = "perm-reason";
+    other.placeholder = (p.options || []).length
+      ? "or answer in your own words — enter to send"
+      : "your answer — enter to send";
+    other.spellcheck = false;
+    other.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") send(other.value.trim());
+    });
+    card.appendChild(other);
+  }
+  return card;
+}
+
 // ---------- job terminals ----------
 // One JobTerm instance per open view of a job: the mobile slide-in panel
 // holds one, and on desktop EVERY job gets its own floating window (multi-
@@ -4035,14 +4089,19 @@ function createJobTerm(jid, refs) {
         r.title.textContent = j.title
           || (j.prompt || "").replace(/\s+/g, " ").slice(0, 90);
       const waiting = j.status === "running" && j.awaiting === "permission";
+      // Blocked mid-work on a DECISION only the owner can make. Named
+      // separately from a permission because it reads differently: nothing
+      // is being asked of the tooling, the work itself is at a fork.
+      const asking = j.status === "running" && j.awaiting === "ask";
       // Parked at a finished turn, holding open for the owner's answer —
       // the work is done, nothing is burning, but the session is still live.
       const replying = j.status === "running" && j.awaiting === "reply";
       const st = j.status === "running"
         ? (waiting ? "waiting on you"
+          : asking ? "waiting on your answer"
           : replying ? "waiting on your reply" : "working")
         : (j.status || "");
-      r.led.className = "term-dot " + (waiting || replying ? "wait"
+      r.led.className = "term-dot " + (waiting || asking || replying ? "wait"
         : j.status === "running" ? "run" : (j.status || ""));
       const modelLbl = ccModelLabel(j.model_used || j.model)
         || await defaultModelLabel();
@@ -4081,7 +4140,9 @@ function createJobTerm(jid, refs) {
       this.permKey = key;
       this.refs.pending.innerHTML = "";
       items.forEach((p) =>
-        this.refs.pending.appendChild(permissionCard(this.jid, p)));
+        this.refs.pending.appendChild(
+          p.kind === "ask" ? askCard(this.jid, p)
+                           : permissionCard(this.jid, p)));
     },
     composeState(j) {
       const live = !!j.live && j.status === "running";

@@ -102,6 +102,42 @@ class DetachedSnapshotTests(unittest.TestCase):
                          ["say", "permission", "interrupt", "close"])
         self.assertEqual(cmds[1]["scope"], "session")
 
+    def test_answer_appends_to_the_control_file(self):
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name, pending=[
+            {"req_id": "q1", "kind": "ask", "question": "Fold or keep?",
+             "options": ["Fold", "Keep"], "summary": "Fold or keep?",
+             "created": 1.0}])
+        reg.answer(h.id, "q1", "Fold")
+        _, cmds = jobfiles.read_control(h.dir, 0)
+        self.assertEqual(cmds[-1]["op"], "answer")
+        self.assertEqual(cmds[-1]["answer"], "Fold")
+
+    def test_answering_an_unknown_question_raises(self):
+        """A double-tap on a phone must not look like it worked."""
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name)
+        with self.assertRaises(KeyError):
+            reg.answer(h.id, "nope", "Fold")
+
+    def test_a_permission_card_is_not_answerable(self):
+        """The two card kinds resolve futures of different SHAPES, so
+        answering a permission card would hand the gate a string."""
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name, pending=[
+            {"req_id": "r1", "tool": "Bash", "summary": "s", "preview": "",
+             "created": 1.0}])
+        with self.assertRaises(KeyError):
+            reg.answer(h.id, "r1", "Fold")
+
+    def test_empty_answer_rejected(self):
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name, pending=[
+            {"req_id": "q1", "kind": "ask", "question": "q", "options": [],
+             "summary": "q", "created": 1.0}])
+        with self.assertRaises(ValueError):
+            reg.answer(h.id, "q1", "   ")
+
     def test_permission_unknown_request_raises(self):
         reg = make_registry()
         h = make_detached(reg, self.tmp.name)

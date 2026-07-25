@@ -1642,6 +1642,23 @@ async def api_session_permission(sid: str, req: PermissionReq):
     return {"resolved": True}
 
 
+class AnswerReq(BaseModel):
+    req_id: str
+    answer: str          # the option the owner clicked, or free text
+
+
+@app.post("/api/session/{sid}/answer")
+async def api_session_answer(sid: str, req: AnswerReq):
+    """Answer a decision card the session is blocked on."""
+    try:
+        session.sessions.answer(sid, req.req_id, req.answer)
+    except KeyError as e:
+        raise HTTPException(404, f"unknown session or question: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"answered": True}
+
+
 @app.post("/api/session/{sid}/interrupt")
 def api_session_interrupt(sid: str):
     try:

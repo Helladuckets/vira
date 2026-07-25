@@ -27,7 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import jobfiles, joblog, viratools
+from . import jobfiles, joblog, viratools, worktree
 from .session import (EDIT_TOOLS, OUTPUT_CAP, READ_ONLY_EXCLUDE,
                       _extract_plan_md, _finalize_plan, _mark_idea,
                       _plan_ref, _sdk_env, _tool_preview, _tool_summary)
@@ -133,6 +133,11 @@ class Runner:
                 fut.set_result((bool(cmd.get("allow")),
                                 cmd.get("scope") or "once",
                                 cmd.get("reason")))
+        elif op == "answer":
+            # the owner picked an option (or typed one) on a decision card
+            fut = self.futures.get(cmd.get("req_id"))
+            if fut is not None and not fut.done():
+                fut.set_result(str(cmd.get("answer") or "").strip())
         elif op == "interrupt":
             if self.awaiting_reply:
                 # The turn is already over — Stop here is the Finish button,
@@ -169,8 +174,18 @@ class Runner:
                 self.append(f"[vira] interrupt failed: {e}\n")
 
     def deny_pending(self, why):
-        for fut in list(self.futures.values()):
-            if not fut.done():
+        # Permission futures resolve to (allow, scope, reason); an ask future
+        # resolves to the answer STRING. Resolving one with the other's shape
+        # would hand the model a tuple as its answer, so the pending entry
+        # carries the kind and this reads it.
+        kinds = {p.get("req_id"): p.get("kind") for p in self.state["pending"]}
+        for req_id, fut in list(self.futures.items()):
+            if fut.done():
+                continue
+            if kinds.get(req_id) == "ask":
+                fut.set_result(f"The owner ended the session ({why}). "
+                               "Stop and report the open question.")
+            else:
                 fut.set_result((False, "once", why))
 
     async def heartbeat_loop(self):
@@ -220,6 +235,65 @@ class Runner:
             self.state["awaiting"] = None
             self.flush_state()
 
+    # ----- the owner channel: questions, not permissions -----
+
+    async def ask_owner(self, question, options, allow_text=True):
+        """Raise a DECISION card and block until the owner picks.
+
+        This exists because of a real asymmetry the owner hit on 2026-07-25:
+        a tool call the session could not make on its own produced a rich
+        clickable Approve/Deny card, while a QUESTION the session needed
+        answered produced only a line of prose above a free-text box. The
+        first is impossible to miss; the second is a paragraph in a
+        transcript on a phone. So the sessions that stopped to ask were the
+        ones that quietly never finished.
+
+        Same rails as the gate — a pending entry plus a future — so the card
+        is delivered by the machinery that already proved it reaches the
+        owner. Only `kind` differs, which is what the UI switches on.
+        """
+        q = (question or "").strip()
+        if not q:
+            return "No question was asked."
+        opts = [str(o).strip() for o in (options or []) if str(o).strip()][:6]
+        req_id = uuid.uuid4().hex[:8]
+        fut = asyncio.get_running_loop().create_future()
+        self.futures[req_id] = fut
+        self.state["pending"].append({
+            "req_id": req_id, "kind": "ask", "question": q,
+            "options": opts, "allow_text": bool(allow_text),
+            "summary": q, "created": time.time(),
+        })
+        self.state["awaiting"] = "ask"
+        self.append(f"[vira] question for you — {q}\n")
+        for o in opts:
+            self.append(f"    · {o}\n")
+        self.flush_state()
+        timeout = float(self.spec.get("ask_timeout") or 21600)
+        try:
+            answer = await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            answer = None
+        finally:
+            self.futures.pop(req_id, None)
+            self.state["pending"] = [p for p in self.state["pending"]
+                                     if p["req_id"] != req_id]
+            self.state["awaiting"] = ("permission" if self.state["pending"]
+                                      else None)
+            self.flush_state()
+        if answer is None:
+            self.append("[vira] no answer within the window — the session "
+                        "should stop and report the question\n")
+            # Deliberately NOT a default choice. Guessing is what produced
+            # a half-applied feature in the first place; an unanswered
+            # question must end the work, not silently pick a branch.
+            return ("The owner did not answer in time. Do NOT guess or pick "
+                    "an option yourself. Stop the work here, leave what you "
+                    "have in a consistent state, and put this question at "
+                    "the top of your final report.")
+        self.append(f"[you] {answer}\n")
+        return answer
+
     # ----- the permission gate -----
 
     async def gate(self, tool_name, tool_input, context):  # noqa: ARG002
@@ -240,6 +314,19 @@ class Runner:
                         "or retry this call — work from what the "
                         "auto-allowed read tools can see and describe any "
                         "needed change in your final report.")
+        # Branch-first backstop. Placement alone does not hold: an agent can
+        # still write an absolute path back into the live checkout, which is
+        # exactly what happened on 2026-07-25. This denial outranks the
+        # auto-allow set and session grants — like the read-only rule above,
+        # because a rule that any allow-list can override is not a rule.
+        wt, live_root = self.spec.get("worktree"), self.spec.get("live_root")
+        if wt and live_root and tool_name in worktree.WRITE_TOOLS:
+            for p in worktree.target_paths(tool_input):
+                if worktree.violates(p, live_root, wt):
+                    self.append(f"[vira] denied (branch-first) — {tool_name} "
+                                f"targets the live checkout: {p}\n")
+                    return PermissionResultDeny(
+                        message=worktree.deny_message(wt))
         if tool_name in self.auto_allow or tool_name in self.session_allow:
             return PermissionResultAllow()
         if self.spec["mode"] == "acceptedits" and tool_name in EDIT_TOOLS:
@@ -328,6 +415,12 @@ class Runner:
         result_text = ""
         ok = False
         try:
+            self.append(spec.get("branch_note") or "")
+            # The owner channel: a tool the session can call when it needs a
+            # DECISION, not a permission. Bound per-process because a runner
+            # supervises exactly one session, so there is no ambiguity about
+            # whose transcript the question belongs in.
+            viratools.bind_ask(self.ask_owner)
             vira_srv = viratools.sdk_server()
             options = ClaudeAgentOptions(
                 cwd=spec["cwd"],
@@ -337,7 +430,10 @@ class Runner:
                 # full Claude Code harness prompt, with the Vira preamble
                 # appended — the deep Vira connection.
                 system_prompt={"type": "preset", "preset": "claude_code",
-                               "append": viratools.preamble()},
+                               "append": viratools.preamble(
+                                   worktree_path=spec.get("worktree") or "",
+                                   branch=spec.get("branch") or "",
+                                   live_root=spec.get("live_root") or "")},
                 mcp_servers={"vira": vira_srv} if vira_srv else {},
                 allowed_tools=list(viratools.TOOL_NAMES) if vira_srv else [],
                 permission_mode=("bypassPermissions"

@@ -49,10 +49,16 @@ PREVIEW = 160            # per-line body/context preview
 
 # ---------- the session preamble ----------
 
-def preamble(native=True):
+def preamble(native=True, worktree_path="", branch="", live_root=""):
     """Context every Vira-spawned session gets about its parent. native=False
     is the legacy --print fallback, where the mcp__vira__* tools don't exist
-    (no SDK) and only the HTTP API applies."""
+    (no SDK) and only the HTTP API applies.
+
+    worktree_path/branch/live_root are filled in when the session was placed
+    in its own worktree; the prose then names the actual directory rather
+    than describing a workflow in the abstract, which is the form the
+    2026-07-25 session demonstrably did not follow.
+    """
     owner = settings.get("owner_name") or "the owner"
     tools_para = (
         "Native tools: the mcp__vira__* tools answer questions about "
@@ -68,10 +74,38 @@ def preamble(native=True):
         "ARE your calendar/email/contacts/knowledge access — use them "
         "instead of reporting that no connector is available.\n\n"
         if native else "")
+    # The two rules a session must not silently break. Both are ENFORCED
+    # elsewhere (the runner's gate denies live-tree writes; ask_owner blocks
+    # on a real card) — this paragraph exists so the agent understands the
+    # enforcement rather than fighting it.
+    branch_para = ""
+    if worktree_path:
+        branch_para = (
+            "BRANCH-FIRST — THIS IS ENFORCED, NOT ADVISORY. You are in a "
+            f"worktree at {worktree_path} on branch {branch}. Every file you "
+            f"create or change must be under that directory. The live "
+            f"checkout at {live_root} is READ-ONLY for you: read it freely, "
+            "but any Write/Edit aimed there is denied by the permission "
+            "gate, and retrying it will fail the same way. Do not merge, do "
+            "not push, and do not run `scripts/branch.sh merge` — the owner "
+            "decides that after reviewing your work.\n\n"
+            "FINISH WHAT YOU START. A half-applied change is worse than no "
+            "change: markup without its JavaScript, an engine without the "
+            "route that reaches it. If you cannot complete every part, "
+            "revert the parts you cannot finish so the tree is left "
+            "consistent, and say so.\n\n")
+    ask_para = (
+        "WHEN YOU NEED A DECISION, ASK WITH mcp__vira__ask_owner. It shows "
+        f"{owner} a card with clickable options, in the app and on their "
+        "phone, and waits. Putting a question only in your final report "
+        "does not reach them — that is how work gets left half-done. Ask "
+        "the moment the choice is genuinely theirs, and if no answer comes, "
+        "stop and report rather than guessing.\n\n"
+        if native else "")
     return (
         f"You are running inside Vira, {owner}'s personal AI chief-of-staff "
         f"web app, as an agent session on {owner}'s Mac.\n\n"
-        + tools_para +
+        + branch_para + ask_para + tools_para +
         "Vira's HTTP API on http://localhost:8377 serves the same data as "
         "JSON when you need it raw: GET /api/brief (calendar + who's "
         "waiting), /api/people?q=<name>, /api/person/<id>, "
@@ -521,6 +555,35 @@ async def _t_propose_idea(args):
         args.get("why")))
 
 
+# ---------- the owner channel ----------
+# A session that needs a DECISION had no way to raise one. Permission
+# requests got a clickable card; a question got a line of prose above a
+# free-text box, which on a phone is easy to miss entirely — so the runs
+# that stopped to ask were the runs that quietly never finished. The runner
+# binds its own handler here (one runner supervises one session, so there
+# is no ambiguity about whose transcript the question belongs in); unbound —
+# the legacy in-process path, or a bare import — the tool says so plainly
+# instead of pretending to have asked.
+_ASK = None
+
+
+def bind_ask(fn):
+    """Called by the runner with an async (question, options, allow_text)."""
+    global _ASK
+    _ASK = fn
+
+
+async def _t_ask_owner(args):
+    if _ASK is None:
+        return _txt("No owner channel is available in this session. Do not "
+                    "guess: stop and put the question in your final report.")
+    opts = [o.strip() for o in (args.get("options") or "").split("|")
+            if o.strip()]
+    return _txt(await _ASK(args.get("question"), opts,
+                           str(args.get("allow_text", "true")).lower()
+                           != "false"))
+
+
 def _update_module_map_text(modules_json):
     from . import modulemap
     try:
@@ -668,6 +731,18 @@ TOOL_SPECS = [
      "data/config.json or the boards registry by hand. An EMPTY locations "
      "list means unfiltered; never guess a city.",
      {"config_json": str}, _t_configure_applications),
+    ("ask_owner",
+     "Ask the owner a question and WAIT for the answer. Use this the "
+     "moment a decision is genuinely theirs — which of two approaches to "
+     "take, whether to keep going down a path, anything you would "
+     "otherwise guess at or leave half-done. It raises a card with "
+     "clickable options in the app and on their phone, so it reaches them; "
+     "writing the question into your final report does NOT. options is a "
+     "'|'-separated list (up to 6) — always offer them when the choice is "
+     "closed. Never call this for permission to use a tool (that already "
+     "has its own card), and never ask what you can determine by reading "
+     "the code.",
+     {"question": str, "options": str, "allow_text": str}, _t_ask_owner),
 ]
 
 TOOL_NAMES = [f"mcp__vira__{name}" for name, *_ in TOOL_SPECS]

@@ -40,7 +40,7 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from . import ideas, jobfiles, joblog, plans, settings, viratools
+from . import ideas, jobfiles, joblog, plans, settings, viratools, worktree
 from .suggest import config
 
 try:
@@ -74,6 +74,11 @@ SESSION_DEFAULTS = {
     "session_default_mode": "interactive",
     "session_max_live": 4,               # concurrent detached sessions cap
     "session_reply_window_hours": 12,    # safety reap for an idle linger
+    # A writing session in a branch-first repo gets its own worktree, and
+    # the gate refuses writes to the live checkout. See worktree.py for why
+    # this is placement-and-enforcement rather than a line in the preamble.
+    "session_branch_first": True,
+    "session_ask_timeout": 21600,        # 6h for an owner decision
 }
 
 # The permission ladder, safest first. A session's mode is ONE of these —
@@ -428,6 +433,40 @@ class Sessions:
             if not Path(cwd).is_dir():
                 cwd = None
         live = SDK_AVAILABLE
+        # Branch-first placement, decided HERE rather than asked of the model.
+        # A session that can write lands in its own worktree; the gate then
+        # refuses any write aimed back at the live checkout. Read-only and
+        # plan sessions are skipped — they cannot damage anything, and a
+        # worktree per plan run would litter the repo with empty branches.
+        branch_slug = wt_path = live_root = None
+        branch_note = ""
+        if (cwd and not read_only and not publish_plan
+                and bool(_scfg("session_branch_first"))):
+            root = worktree.repo_root(cwd)
+            if (root and worktree.is_branch_first(root)
+                    and not worktree.is_worktree(root)):
+                # Name it after what was asked, suffixed with the job id so
+                # two dispatches of the same idea never collide on a branch.
+                head = (prompt or "").strip().splitlines()[:1]
+                branch_slug = worktree.slugify(
+                    " ".join(head)[:60], fallback="session")
+                branch_slug = f"{branch_slug}-{jid[:6]}"[:40].strip("-")
+                wt_path, made, detail = worktree.ensure(root, branch_slug)
+                if wt_path:
+                    # capture the live root BEFORE cwd moves — afterwards
+                    # repo_root(cwd) answers with the worktree instead
+                    live_root = root
+                    cwd = str(wt_path)
+                    branch_note = (
+                        f"[vira] branch-first: working in {cwd} on "
+                        f"claude/{branch_slug} ({detail}); the live checkout "
+                        f"at {root} is read-only for this session\n")
+                else:
+                    branch_slug = None
+                    branch_note = (
+                        f"[vira] branch-first: could NOT create a worktree "
+                        f"({detail}) — running in {cwd}. Nothing enforces the "
+                        f"live tree here; commit nothing.\n")
         data = {"id": jid, "prompt": prompt, "cwd": cwd or str(Path.home()),
                 "status": "running", "output": "", "started": time.time(),
                 "finished": None,
@@ -436,7 +475,18 @@ class Sessions:
                 "model": resolve_model(model), "publish_plan": publish_plan,
                 "idea_id": idea_id, "session_id": "",
                 "mode": mode, "awaiting": None, "live": live,
-                "read_only": bool(read_only), "meta": meta or {}}
+                "read_only": bool(read_only), "meta": meta or {},
+                # the guard's two halves: where writes ARE allowed, and the
+                # tree they must stay out of
+                "worktree": str(wt_path) if wt_path else "",
+                "branch": f"claude/{branch_slug}" if branch_slug else "",
+                "live_root": str(live_root) if live_root else "",
+                # emitted by the runner at startup — a placement decided
+                # silently is one nobody can check, and "which tree was that
+                # session editing?" is exactly the question the 2026-07-25
+                # incident left unanswerable
+                "branch_note": branch_note,
+                "ask_timeout": float(_scfg("session_ask_timeout"))}
         with self.lock:
             if live:
                 running = sum(
@@ -621,6 +671,22 @@ class Sessions:
         jobfiles.append_control(h.dir, {
             "op": "permission", "req_id": req_id, "allow": bool(allow),
             "scope": scope or "once", "reason": reason})
+
+    def answer(self, jid, req_id, text):
+        """Answer a pending decision card. Same shape as permission() — the
+        card the session is blocked on is addressed by req_id, and an answer
+        for a card that is no longer pending is a 404 rather than a silent
+        no-op, so a double-tap on a phone cannot look like it worked."""
+        h = self._require_live(jid)
+        st = h.read_state() or {}
+        if not any(p.get("req_id") == req_id and p.get("kind") == "ask"
+                   for p in st.get("pending") or []):
+            raise KeyError(req_id)
+        answer = str(text or "").strip()
+        if not answer:
+            raise ValueError("an answer is required")
+        jobfiles.append_control(h.dir, {
+            "op": "answer", "req_id": req_id, "answer": answer})
 
     def interrupt(self, jid):
         """End the current turn. Queued steering still delivers afterwards;
