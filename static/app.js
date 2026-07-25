@@ -1064,6 +1064,15 @@ function makeContactCard(pid, card, ctx) {
       note: note || "",
     };
     const res = await post("/api/person/" + pid + "/card", payload);
+    // The Apple spoke's verdict rides the save response: say whether the
+    // edit reached the phone-visible contact, and why when it didn't.
+    if (res.apple_push) {
+      const ap = res.apple_push;
+      if (ap.ok && ap.cards.some((c) => c.changed.length))
+        toast("Apple contact updated — syncing to your phone");
+      else if (!ap.ok && ap.detail !== "apple push not available here")
+        toast("Apple contact not updated: " + ap.detail);
+    }
     Object.assign(base, clone(res.card));
     live = clone(res.card);
     Object.keys(touched).forEach((k) => delete touched[k]);

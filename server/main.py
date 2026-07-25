@@ -17,7 +17,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (actions, aihealth, applications, atlas, backup, brief,
+from . import (actions, aihealth, applecontacts, applications, atlas,
+               backup, brief,
                briefstate, changelog,
                circuits,
                companion,
@@ -180,11 +181,17 @@ def api_card(pid: str):
 @app.post("/api/person/{pid}/card")
 def api_card_save(pid: str, req: CardReq):
     try:
-        return contactcard.save(pid, req.model_dump())
+        out = contactcard.save(pid, req.model_dump())
     except KeyError:
         raise HTTPException(404, "unknown person")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # The Apple spoke: the same edit lands on the Mac's Contacts card (and
+    # from there the phone). Best-effort — a failed push never fails the
+    # save; the result rides the response so the card can say what happened.
+    if applecontacts.enabled():
+        out["apple_push"] = applecontacts.push_person(pid)
+    return out
 
 
 @app.get("/api/person/{pid}/thread")
