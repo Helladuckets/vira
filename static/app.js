@@ -5464,6 +5464,45 @@ function subCard(m) {
   });
   card.appendChild(note);
 
+  // The account this subscription bills to. It is what the duplicate check
+  // keys on: two entries sharing one login are almost certainly one
+  // subscription split by a counterparty-name variation, so recording the
+  // email here is what lets the engine SAY so (it never merges on its own).
+  const emText = m.account_email || "";
+  const em = el("div", "sub-email" + (emText ? "" : " empty"),
+                emText || "+ account email");
+  em.title = "The login this subscription bills to — Vira flags two "
+    + "merchants that share one";
+  em.addEventListener("click", () => {
+    const input = document.createElement("input");
+    input.className = "sub-note-edit";
+    input.type = "email";
+    input.placeholder = "you@example.com";
+    input.value = emText;
+    em.replaceWith(input);
+    input.focus();
+    let done = false;
+    const commit = () => {
+      if (done) return;            // blur fires after Enter too
+      done = true;
+      subUpdate(m, { account_email: input.value.trim() });
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") commit();
+      if (e.key === "Escape") { done = true; renderSubs(); }
+    });
+    input.addEventListener("blur", commit);
+  });
+  card.appendChild(em);
+
+  // Surfaced, never merged — the owner reconciles it.
+  if ((m.dup_emails || []).length) {
+    const dup = el("div", "sub-dup");
+    dup.appendChild(el("strong", null, "shares this login with "));
+    dup.appendChild(el("span", null, m.dup_emails.join(", ")));
+    card.appendChild(dup);
+  }
+
   m.evidence_needed.forEach((ev) => {
     const done = ev.kind === "anomaly_explained";
     const chip = el("div", "sub-evidence" + (done ? " ok" : ""));

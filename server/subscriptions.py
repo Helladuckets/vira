@@ -210,10 +210,13 @@ def _clean_pending_change(pc):
 
 def update_merchant(mid, status=None, note=None, url=None,
                     cadence_override=_UNSET, needs_review=None,
-                    pending_change=_UNSET):
+                    pending_change=_UNSET, account_email=None):
     """Registry write-back for the UI (atomic, validated). cadence_override
     accepts a cadence, None to clear, or omitted to leave untouched.
-    pending_change accepts a change record, None to clear, or omitted."""
+    pending_change accepts a change record, None to clear, or omitted.
+    account_email accepts an email string ("" clears it); a non-empty value
+    must look like an address so a typo can't silently defeat the
+    duplicate detection it feeds."""
     with _reg_lock:
         reg = load_registry()
         for m in reg["merchants"]:
@@ -227,6 +230,11 @@ def update_merchant(mid, status=None, note=None, url=None,
                 m["note"] = note.strip()
             if url is not None:
                 m["url"] = url.strip()
+            if account_email is not None:
+                em = account_email.strip()
+                if em and not re.match(r"[^@\s]+@[^@\s]+\.[^@\s]+$", em):
+                    raise ValueError("account_email must be an email address")
+                m["account_email"] = em
             if cadence_override is not _UNSET:
                 if cadence_override not in (None, "monthly", "quarterly",
                                             "semi-annual", "annual",
@@ -292,6 +300,7 @@ def ensure_merchant(counterparty, reg=None):
             "cadence_override": None,
             "status": "active",
             "note": "",
+            "account_email": "",
             "receipt_senders": [],
             "needs_review": True,
         })
@@ -722,9 +731,11 @@ def merchant_view(merchant, charges, data_through, evidence=()):
 
 
 def _public(merchant):
-    return {k: merchant.get(k) for k in
-            ("id", "display_name", "url", "category", "status", "note",
-             "cadence_override")}
+    out = {k: merchant.get(k) for k in
+           ("id", "display_name", "url", "category", "status", "note",
+            "cadence_override")}
+    out["account_email"] = (merchant.get("account_email") or "").strip()
+    return out
 
 
 def reconcile(conn=None, registry=None):
@@ -761,6 +772,25 @@ def reconcile(conn=None, registry=None):
                     "status": "active", "needs_review": True}
             merchants.append(merchant_view(stub, charges, data_through,
                                            ev_by_merchant.get(mid, [])))
+
+    # Accidental-duplicate detection (the owner's rule): two merchant entries
+    # sharing one account login email are almost certainly the same
+    # subscription split by a counterparty-name variation. Surface it — never
+    # merge silently — so the owner can reconcile them. Normalized (case /
+    # whitespace) for the match; each side learns the other's names.
+    by_email = {}
+    for m in merchants:
+        em = (m.get("account_email") or "").strip().lower()
+        if em:
+            by_email.setdefault(em, []).append(m)
+    for group in by_email.values():
+        if len(group) < 2:
+            continue
+        for m in group:
+            m["dup_emails"] = sorted(o["display_name"] for o in group
+                                     if o is not m)
+            if "shared_email" not in m["flags"]:
+                m["flags"].append("shared_email")
 
     counted = [m for m in merchants if m["status"] not in EXCLUDED_STATUSES]
     kpis = {
