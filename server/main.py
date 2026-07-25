@@ -528,12 +528,14 @@ class SubsUpdateReq(BaseModel):
     needs_review: bool | None = None
     pending_change: dict | None = None    # recorded cancel/downgrade/price change
     clear_pending_change: bool = False
+    account_email: str | None = None      # login the sub bills to ("" clears)
 
 
 @app.post("/api/subs/{mid}")
 def api_subs_update(mid: str, req: SubsUpdateReq):
     kwargs = {"status": req.status, "note": req.note, "url": req.url,
-              "needs_review": req.needs_review}
+              "needs_review": req.needs_review,
+              "account_email": req.account_email}
     if req.clear_cadence_override:
         kwargs["cadence_override"] = None
     elif req.cadence_override:

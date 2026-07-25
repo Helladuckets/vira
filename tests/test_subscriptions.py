@@ -12,6 +12,7 @@ bug the predecessor shipped with.
 
 Run: .venv/bin/python -m unittest discover tests
 """
+import json
 import tempfile
 import types
 import unittest
@@ -627,6 +628,133 @@ class PendingChangeVerification(FrozenClockCase):
         self.assertEqual(ok["new_amount"], 14.99)
         self.assertEqual(ok["new_plan"], "Plus Tier")
         self.assertNotIn("extra", ok)
+
+
+class AccountEmailDuplicates(FrozenClockCase):
+    """The account a subscription bills to, and the duplicate it reveals.
+
+    Two registry entries sharing one login are almost certainly ONE
+    subscription split by a counterparty-name variation. The engine SURFACES
+    that and never merges — merging would silently drop a real charge stream
+    if the guess were wrong.
+    """
+
+    def _reconcile(self, emails):
+        conn = subscriptions.ledger_connect(":memory:")
+        reg = {"merchants": [dict(m) for m in REG["merchants"]]}
+        for m in reg["merchants"]:
+            if m["id"] in emails:
+                m["account_email"] = emails[m["id"]]
+        mercury.ingest(conn, FIXTURE, reg)
+        result = subscriptions.reconcile(conn, registry=reg)
+        return {m["id"]: m for m in result["merchants"]}
+
+    # ---- the field itself ----
+
+    def test_public_payload_always_carries_account_email(self):
+        by_id = self._reconcile({})
+        self.assertEqual(by_id["querybird"]["account_email"], "")
+
+    def test_update_merchant_persists_and_clears(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "subscriptions.json"
+            path.write_text(json.dumps(REG))
+            with mock.patch.object(subscriptions, "REGISTRY", path):
+                subscriptions.update_merchant("querybird",
+                                              account_email="Me@Example.com")
+                reg = subscriptions.load_registry()
+                got = [m for m in reg["merchants"] if m["id"] == "querybird"][0]
+                self.assertEqual(got["account_email"], "Me@Example.com")
+                # "" clears it; None (omitted) would leave it untouched
+                subscriptions.update_merchant("querybird", account_email="")
+                reg = subscriptions.load_registry()
+                got = [m for m in reg["merchants"] if m["id"] == "querybird"][0]
+                self.assertEqual(got["account_email"], "")
+
+    def test_a_typo_is_refused_rather_than_silently_kept(self):
+        """A malformed address would defeat the very matching it feeds, so
+        it is rejected loudly instead of stored."""
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "subscriptions.json"
+            path.write_text(json.dumps(REG))
+            with mock.patch.object(subscriptions, "REGISTRY", path):
+                with self.assertRaises(ValueError):
+                    subscriptions.update_merchant("querybird",
+                                                  account_email="not-an-email")
+
+    # ---- what the email reveals ----
+
+    def test_two_merchants_on_one_login_flag_each_other(self):
+        by_id = self._reconcile({"querybird": "ops@example.com",
+                                 "parcelscope": "ops@example.com"})
+        for a, b in (("querybird", "ParcelScope"), ("parcelscope", "Querybird")):
+            self.assertIn("shared_email", by_id[a]["flags"])
+            self.assertEqual(by_id[a]["dup_emails"], [b])
+
+    def test_match_ignores_case_and_surrounding_space(self):
+        by_id = self._reconcile({"querybird": "  OPS@Example.com ",
+                                 "parcelscope": "ops@example.com"})
+        self.assertIn("shared_email", by_id["querybird"]["flags"])
+        self.assertIn("shared_email", by_id["parcelscope"]["flags"])
+
+    def test_a_login_used_once_is_not_a_duplicate(self):
+        by_id = self._reconcile({"querybird": "solo@example.com"})
+        self.assertNotIn("shared_email", by_id["querybird"]["flags"])
+        self.assertNotIn("dup_emails", by_id["querybird"])
+
+    def test_merchants_without_an_email_never_group_together(self):
+        """Empty is not a shared value — otherwise every un-annotated
+        merchant would flag against every other one."""
+        by_id = self._reconcile({})
+        for mid in ("querybird", "parcelscope", "nimbus-labs"):
+            self.assertNotIn("shared_email", by_id[mid]["flags"])
+
+    def test_three_on_one_login_each_name_the_other_two(self):
+        by_id = self._reconcile({"querybird": "ops@example.com",
+                                 "parcelscope": "ops@example.com",
+                                 "nimbus-labs": "ops@example.com"})
+        self.assertEqual(by_id["querybird"]["dup_emails"],
+                         ["Nimbus Labs", "ParcelScope"])
+
+    def test_the_flag_is_not_added_twice_on_a_second_reconcile(self):
+        reg = {"merchants": [dict(m) for m in REG["merchants"]]}
+        for m in reg["merchants"]:
+            if m["id"] in ("querybird", "parcelscope"):
+                m["account_email"] = "ops@example.com"
+        conn = subscriptions.ledger_connect(":memory:")
+        mercury.ingest(conn, FIXTURE, reg)
+        for _ in range(2):
+            result = subscriptions.reconcile(conn, registry=reg)
+        by_id = {m["id"]: m for m in result["merchants"]}
+        self.assertEqual(by_id["querybird"]["flags"].count("shared_email"), 1)
+
+
+class AccountEmailRoute(unittest.TestCase):
+    """The route layer is where this feature was left unreachable: the
+    engine accepted account_email while the request model had no such field,
+    so nothing could ever set it. Guard both halves."""
+
+    def test_request_model_exposes_the_field(self):
+        from server.main import SubsUpdateReq
+        self.assertIn("account_email", SubsUpdateReq.model_fields)
+        self.assertIsNone(SubsUpdateReq().account_email)
+
+    def test_handler_forwards_it_to_the_engine(self):
+        from server import main as main_mod
+        seen = {}
+
+        def fake_update(mid, **kwargs):
+            seen.update(kwargs)
+            seen["mid"] = mid
+            return {"id": mid}
+
+        with mock.patch.object(main_mod.subscriptions, "update_merchant",
+                               fake_update):
+            main_mod.api_subs_update(
+                "querybird",
+                main_mod.SubsUpdateReq(account_email="ops@example.com"))
+        self.assertEqual(seen["mid"], "querybird")
+        self.assertEqual(seen["account_email"], "ops@example.com")
 
 
 if __name__ == "__main__":
