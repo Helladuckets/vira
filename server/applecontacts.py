@@ -3,8 +3,9 @@
 Contact-card saves flow through to the matching card(s) in macOS
 Contacts.app, which iCloud/CardDAV-syncs to the owner's phone — so an
 edit made in Vira is an edit made everywhere, not an edit made in one
-database the phone never reads (the sync gap, 2026-07-24: company
-corrected in Vira while the iPhone card kept the old value).
+database the phone never reads (the gap that prompted this, 2026-07-24: a
+contact's employer was corrected in Vira while their phone card kept the
+old one).
 
 Design per the 2026-07-22 engine session: the CRM is the hub and owns
 every field; this module is the Apple SPOKE — AppleScript against
