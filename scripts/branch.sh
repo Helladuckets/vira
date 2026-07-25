@@ -75,12 +75,22 @@ instance_port() {
   python3 -c "import json;print(json.load(open('$dir/$PIDFILE'))['port'])" 2>/dev/null || true
 }
 
+# Record what main was when this branch forked. Cheap now, decisive later: if
+# main's history is ever REWRITTEN, this is the only way to tell "main moved"
+# (rebase onto it) from "your base no longer exists" (rebase --onto it). Lives
+# in the live .git dir, so it is never inside a worktree and never tracked.
+record_base() {
+  local d="$LIVE/.git/vira-bases"
+  mkdir -p "$d" && git -C "$LIVE" rev-parse main > "$d/$1" 2>/dev/null || true
+}
+
 cmd_start() {
   slug_check "$1"
   local dir; dir=$(wt_dir "$1")
   [[ -e "$dir" ]] && { echo "error: $dir already exists" >&2; exit 1; }
   git -C "$LIVE" worktree add -b "claude/$1" "$dir" main
   provision "$dir"
+  record_base "$1"
   echo ""
   echo "branch  claude/$1"
   echo "worktree $dir"
@@ -242,12 +252,43 @@ cmd_merge() {
   local pid; pid=$(instance_pid "$dir" 2>/dev/null)
   [[ -n "$pid" ]] && { echo "stopping test instance (pid $pid)"; kill "$pid"; rm -f "$dir/$PIDFILE"; }
 
+  # The checks that CLAUDE.md used to only ask for. Each one is a bug that
+  # already shipped once; see scripts/preflight.sh --list. A MISSING preflight
+  # is announced rather than silently skipped — an absent check that reads as a
+  # pass is the exact failure mode this whole gate exists to end.
+  if [[ ! -f "$LIVE/scripts/preflight.sh" ]]; then
+    echo "NOTE: scripts/preflight.sh not present — merging WITHOUT preflight checks."
+  elif ! PREFLIGHT_SLUG="$1" bash "$LIVE/scripts/preflight.sh" --pre-merge "$1"; then
+    echo ""
+    if [[ "${VIRA_SKIP_PREFLIGHT:-}" == "1" ]]; then
+      echo "VIRA_SKIP_PREFLIGHT=1 — proceeding over the failures above."
+    else
+      echo "preflight failed — merge refused. Fix the above, or override with:"
+      echo "  VIRA_SKIP_PREFLIGHT=1 scripts/branch.sh merge $1"
+      exit 1
+    fi
+  fi
+
   echo "merging $branch into main..."
   if ! git -C "$LIVE" merge --no-ff "$branch" -m "Merge branch '$branch'"; then
     git -C "$LIVE" merge --abort
     echo ""
     echo "CONFLICT — merge aborted, live tree restored. Resolve in-session:"
-    echo "  cd $dir && git rebase main   # fix conflicts, re-verify, then merge again"
+    local base n
+    base="$(cat "$LIVE/.git/vira-bases/$1" 2>/dev/null || true)"
+    n=$(git -C "$LIVE" rev-list --count "main..$branch" 2>/dev/null || echo 0)
+    # If the branch would contribute far more commits than anyone wrote, its
+    # base is gone (main was rewritten) and a plain rebase replays the whole
+    # dead lineage — measured 2026-07-25: 146 commits, stopped mid-rebase.
+    if [[ -n "$base" ]] && ! git -C "$LIVE" merge-base --is-ancestor "$base" main 2>/dev/null; then
+      echo "  NOTE: main's history was REWRITTEN since this branch forked."
+      echo "  cd $dir && git rebase --onto main $base   # NOT 'git rebase main'"
+    elif [[ "$n" -gt 25 ]]; then
+      echo "  NOTE: $branch would contribute $n commits — its base looks dead."
+      echo "  cd $dir && git rebase --onto main \$(git merge-base main $branch)"
+    else
+      echo "  cd $dir && git rebase main   # fix conflicts, re-verify, then merge again"
+    fi
     exit 1
   fi
 
