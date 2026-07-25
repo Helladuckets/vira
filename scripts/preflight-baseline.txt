@@ -1,0 +1,10 @@
+# Ratchet baselines for scripts/preflight.sh.
+#
+# A baseline is TOLERATED pre-existing debt, not a target. The check fails when
+# the count RISES, so new debt cannot land; when the count falls, the check says
+# so and this file should be lowered to lock the gain in. A ratchet is how a
+# large existing problem gets fixed without blocking every unrelated change on
+# it, and without anyone having to argue about it in review.
+#
+# id        count
+encoding    260

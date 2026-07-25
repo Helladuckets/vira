@@ -34,3 +34,10 @@ qocha @ git+https://github.com/Helladuckets/qocha@v0.3.0
 # transitively on this machine via the torch/transformers extras, which is why
 # it went unnoticed locally while CI, which installs only this file, went red.)
 pillow
+# Board polling (server/jobboards.py). Imported lazily INSIDE the fetch helper,
+# so a missing install does not fail at startup — it fails on the first poll,
+# which is why this went undeclared and unnoticed. Found by scripts/preflight.sh.
+requests
+# Imported directly by server/designstudio.py. It arrives with fastapi anyway,
+# but a direct import is a direct dependency: declare what the code names.
+pydantic
