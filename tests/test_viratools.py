@@ -168,5 +168,54 @@ class TestMailAndMedia(unittest.TestCase):
         self.assertIn("error", viratools._media_text("", None, 5))
 
 
+class ParseOptions(unittest.TestCase):
+    """Options carry the sentence that makes a choice answerable. JSON is the
+    documented shape; the looser forms still parse, because a model reaching
+    for the simple one should get a usable card rather than an error."""
+
+    def test_json_objects_with_descriptions(self):
+        got = viratools.parse_options(
+            '[{"label":"Fold it in","description":"One window."},'
+            ' {"label":"Keep it"}]')
+        self.assertEqual(got, [
+            {"label": "Fold it in", "description": "One window."},
+            {"label": "Keep it", "description": ""}])
+
+    def test_json_array_of_bare_strings(self):
+        self.assertEqual(viratools.parse_options('["A","B"]'), [
+            {"label": "A", "description": ""},
+            {"label": "B", "description": ""}])
+
+    def test_plain_pipe_list_still_works(self):
+        self.assertEqual(viratools.parse_options("A|B"), [
+            {"label": "A", "description": ""},
+            {"label": "B", "description": ""}])
+
+    def test_double_colon_gives_a_description(self):
+        self.assertEqual(
+            viratools.parse_options("Fold :: one window|Keep :: two"),
+            [{"label": "Fold", "description": "one window"},
+             {"label": "Keep", "description": "two"}])
+
+    def test_malformed_json_falls_back_rather_than_raising(self):
+        """A broken options string must still produce a card — losing the
+        question entirely is far worse than losing its formatting."""
+        got = viratools.parse_options('[{"label": broken]')
+        self.assertTrue(got)
+        self.assertTrue(all("label" in o for o in got))
+
+    def test_empty_is_empty(self):
+        self.assertEqual(viratools.parse_options(""), [])
+        self.assertEqual(viratools.parse_options(None), [])
+
+    def test_capped_at_six(self):
+        self.assertEqual(
+            len(viratools.parse_options("|".join("abcdefghij"))), 6)
+
+    def test_blanks_dropped(self):
+        self.assertEqual([o["label"] for o in
+                          viratools.parse_options("A| |B")], ["A", "B"])
+
+
 if __name__ == "__main__":
     unittest.main()

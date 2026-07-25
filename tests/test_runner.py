@@ -516,7 +516,9 @@ class AskOwnerTests(RunnerCase):
                  resolver=peek)
         self.assertEqual(seen["kind"], "ask")
         self.assertEqual(seen["question"], "Fold it or keep it?")
-        self.assertEqual(seen["options"], ["Fold", "Keep"])
+        self.assertEqual(seen["options"],
+                         [{"label": "Fold", "description": ""},
+                          {"label": "Keep", "description": ""}])
         self.assertEqual(seen["awaiting"], "ask")
 
     def test_free_text_answers_pass_through_verbatim(self):
@@ -544,7 +546,8 @@ class AskOwnerTests(RunnerCase):
 
         self.ask(r, options=["a", "  ", "b", "c", "d", "e", "f", "g"],
                  resolver=peek)
-        self.assertEqual(seen["options"], ["a", "b", "c", "d", "e", "f"])
+        self.assertEqual([o["label"] for o in seen["options"]],
+                         ["a", "b", "c", "d", "e", "f"])
 
     def test_an_empty_question_is_refused_without_a_card(self):
         r = self.make_runner()
@@ -565,13 +568,40 @@ class AskOwnerTests(RunnerCase):
         self.assertIsInstance(got, str)
         self.assertIn("Stop and report", got)
 
+    def test_descriptions_survive_onto_the_card(self):
+        """The description is what makes a choice answerable on a phone.
+        Dropping it anywhere in the path quietly undoes the whole card."""
+        r = self.make_runner()
+        seen = {}
+
+        async def peek(rr):
+            seen.update(rr.state["pending"][0])
+            await self.answer_with("x")(rr)
+
+        self.ask(r, options=[{"label": "Fold it in",
+                              "description": "One window, less to scan."},
+                             {"label": "Keep it", "description": ""}],
+                 resolver=peek)
+        self.assertEqual(seen["options"][0]["description"],
+                         "One window, less to scan.")
+        self.assertEqual(seen["options"][1]["description"], "")
+
+    def test_a_description_is_written_into_the_transcript_too(self):
+        r = self.make_runner()
+        self.ask(r, question="Fold?",
+                 options=[{"label": "Fold it in",
+                           "description": "One window, less to scan."}],
+                 resolver=self.answer_with("Fold it in"))
+        self.assertIn("One window, less to scan.", self.output(r))
+
     def test_the_question_is_written_into_the_transcript(self):
         r = self.make_runner()
         self.ask(r, question="Merge or hold?", options=("Merge", "Hold"),
                  resolver=self.answer_with("Hold"))
         out = self.output(r)
         self.assertIn("question for you — Merge or hold?", out)
-        self.assertIn("· Merge", out)
+        self.assertIn("1 — Merge", out)
+        self.assertIn("2 — Hold", out)
         self.assertIn("[you] Hold", out)
 
 

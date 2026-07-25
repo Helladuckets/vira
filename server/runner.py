@@ -255,7 +255,22 @@ class Runner:
         q = (question or "").strip()
         if not q:
             return "No question was asked."
-        opts = [str(o).strip() for o in (options or []) if str(o).strip()][:6]
+        # Options arrive as [{label, description}] (viratools.parse_options
+        # normalizes both shapes). Keep the description — it is what makes
+        # the choice answerable on a phone, and dropping it here would quietly
+        # undo the whole point of the card.
+        opts = []
+        for o in (options or []):
+            if isinstance(o, dict):
+                label = str(o.get("label") or "").strip()
+                desc = str(o.get("description") or "").strip()
+            else:
+                label, desc = str(o).strip(), ""
+            if label:
+                opts.append({"label": label, "description": desc})
+        # Cap AFTER dropping blanks — a blank must not eat one of the six
+        # slots the owner actually gets to choose from.
+        opts = opts[:6]
         req_id = uuid.uuid4().hex[:8]
         fut = asyncio.get_running_loop().create_future()
         self.futures[req_id] = fut
@@ -266,8 +281,10 @@ class Runner:
         })
         self.state["awaiting"] = "ask"
         self.append(f"[vira] question for you — {q}\n")
-        for o in opts:
-            self.append(f"    · {o}\n")
+        for i, o in enumerate(opts, 1):
+            self.append(f"    {i} — {o['label']}\n")
+            if o["description"]:
+                self.append(f"        {o['description']}\n")
         self.flush_state()
         timeout = float(self.spec.get("ask_timeout") or 21600)
         try:

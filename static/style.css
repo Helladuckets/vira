@@ -1089,18 +1089,41 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
   font-family: inherit; font-size: 11.5px; }
 .perm-reason::placeholder { color: var(--term-dim); }
 .perm-reason:focus { outline: none; border-color: var(--accent); }
-/* A decision card. Same frame as a permission card so it is unmistakably
-   the same "this is blocked on you" object, but the question is a readable
-   block rather than a one-line ellipsised summary — it is prose the owner
-   has to actually understand before choosing, sometimes on a phone. */
-.ask-card .ask-tag { text-transform: uppercase; letter-spacing: 0.12em;
-  font-size: 10.5px; }
-.ask-q { color: var(--term-fg); font-size: 13px; line-height: 1.5;
-  white-space: pre-wrap; word-break: break-word; margin-bottom: 10px; }
-.ask-options { gap: 8px; }
-/* Options are answers, not commands: let a long one wrap rather than
-   truncate, because a clipped option is one the owner cannot evaluate. */
-.ask-options .btn { white-space: normal; text-align: left; max-width: 100%; }
+/* A decision card is a NUMBERED PICKER, not a row of buttons. The question
+   heads it, each option is a full row carrying the sentence that makes it
+   answerable, and the number on the right is the keystroke that picks it. */
+.ask-card { padding: 0; overflow: hidden; }
+.ask-head { color: var(--term-fg); font-size: 13.5px; line-height: 1.5;
+  font-weight: 500; white-space: pre-wrap; word-break: break-word;
+  padding: 13px 16px; border-bottom: 1px solid var(--term-line); }
+.ask-list { display: flex; flex-direction: column; }
+.ask-opt { display: flex; align-items: flex-start; gap: 12px; cursor: pointer;
+  padding: 11px 16px; border-bottom: 1px solid var(--term-line);
+  transition: background 120ms ease; }
+.ask-opt:hover { background: var(--term-chrome); }
+.ask-opt.on { background: var(--accent-soft); }
+.ask-opt:focus-visible { outline: none; background: var(--term-chrome); }
+/* min-width: 0 or an unbreakable option shoves the number off the card —
+   the documented flex trap; the flexible column is what must give. */
+.ask-opt-main { flex: 1 1 auto; min-width: 0; }
+.ask-opt-label { color: var(--term-fg); font-size: 12.5px; line-height: 1.4; }
+.ask-opt.on .ask-opt-label { color: var(--accent); }
+.ask-opt-desc { color: var(--term-mut); font-size: 11.5px; line-height: 1.5;
+  margin-top: 3px; }
+.ask-opt-num { flex: none; color: var(--term-dim); font-size: 11.5px;
+  padding-top: 1px; }
+.ask-opt.on .ask-opt-num { color: var(--accent); }
+.ask-other-input { width: calc(100% - 32px); margin: 11px 16px 0;
+  background: var(--term-chrome); border: 1px solid var(--term-line);
+  border-radius: 2px; padding: 7px 10px; color: var(--term-fg);
+  font-family: inherit; font-size: 12px; }
+.ask-other-input::placeholder { color: var(--term-dim); }
+.ask-other-input:focus, .ask-other-input.armed { outline: none;
+  border-color: var(--accent); }
+.ask-actions { display: flex; justify-content: flex-end; gap: 8px;
+  padding: 11px 16px 13px; }
+.ask-actions .btn { font-family: inherit; }
+.ask-submit:disabled { opacity: .4; cursor: default; }
 .term-composebar { flex: none; display: flex; gap: 8px; align-items: center;
   border-top: 1px solid var(--term-line); background: var(--term-chrome); padding: 9px 14px; }
 .term-composebar.off { display: none; }
