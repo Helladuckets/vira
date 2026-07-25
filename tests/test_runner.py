@@ -404,5 +404,176 @@ class LiveCapTests(unittest.TestCase):
         self.assertFalse(self.make("done", None).working())
 
 
+class BranchGuardTests(RunnerCase):
+    """The gate's branch-first backstop. Placement puts the session in a
+    worktree; this is what stops it writing back into the live checkout
+    anyway — the exact move that broke the desktop on 2026-07-25."""
+
+    def spec_with_guard(self, **over):
+        base = {"worktree": "/tmp/repo-feature", "live_root": "/tmp/repo"}
+        base.update(over)
+        return base
+
+    def test_write_into_the_live_tree_is_denied(self):
+        r = self.make_runner(**self.spec_with_guard())
+        res = self.run_gate(r, "Edit", {"file_path": "/tmp/repo/static/app.js"})
+        self.assertEqual(res.behavior, "deny")
+        self.assertIn("/tmp/repo-feature", res.message)
+        self.assertIn("branch-first", self.output(r))
+        self.assertEqual(r.state["pending"], [])   # denied outright, no card
+
+    def test_write_into_the_worktree_is_not_blocked_by_this_guard(self):
+        # acceptedits is the rung whose EDIT_TOOLS pass THROUGH the gate.
+        # autopilot would be wrong here: it is SDK bypassPermissions, so the
+        # gate is never consulted at all and the test would prove nothing
+        # (and block on a real card).
+        r = self.make_runner(**self.spec_with_guard(mode="acceptedits"))
+        res = self.run_gate(
+            r, "Edit", {"file_path": "/tmp/repo-feature/static/app.js"})
+        self.assertEqual(res.behavior, "allow")
+
+    def test_reading_the_live_tree_stays_allowed(self):
+        """A session has to read the live checkout to know what to change."""
+        r = self.make_runner(**self.spec_with_guard())
+        res = self.run_gate(r, "Read", {"file_path": "/tmp/repo/static/app.js"})
+        self.assertEqual(res.behavior, "allow")
+
+    def test_the_denial_outranks_the_edits_rung(self):
+        """A rule any allow-list can override is not a rule. On acceptedits
+        every other Edit sails through the gate — not this one."""
+        r = self.make_runner(**self.spec_with_guard(mode="acceptedits"))
+        res = self.run_gate(r, "Write", {"file_path": "/tmp/repo/x.py"})
+        self.assertEqual(res.behavior, "deny")
+
+    def test_the_denial_outranks_a_session_grant(self):
+        r = self.make_runner(**self.spec_with_guard())
+        r.session_allow.add("Edit")
+        res = self.run_gate(r, "Edit", {"file_path": "/tmp/repo/x.py"})
+        self.assertEqual(res.behavior, "deny")
+
+    def test_multiedit_is_denied_if_any_target_is_live(self):
+        r = self.make_runner(**self.spec_with_guard(mode="acceptedits"))
+        res = self.run_gate(r, "MultiEdit", {"edits": [
+            {"file_path": "/tmp/repo-feature/ok.py"},
+            {"file_path": "/tmp/repo/bad.py"}]})
+        self.assertEqual(res.behavior, "deny")
+
+    def test_no_worktree_assigned_leaves_the_gate_unchanged(self):
+        """Sessions outside a branch-first repo must be untouched — the
+        guard must not quietly become a global write ban."""
+        r = self.make_runner(mode="acceptedits")
+        res = self.run_gate(r, "Edit", {"file_path": "/tmp/repo/static/app.js"})
+        self.assertEqual(res.behavior, "allow")
+
+    def test_read_only_denial_still_wins_over_the_branch_message(self):
+        """Ordering check: a plan session denies everything for its own
+        reason, and that reason is the one the agent should see."""
+        r = self.make_runner(**self.spec_with_guard(publish_plan=True))
+        res = self.run_gate(r, "Edit", {"file_path": "/tmp/repo/x.py"})
+        self.assertEqual(res.behavior, "deny")
+        self.assertIn("read-only", res.message.lower())
+
+
+class AskOwnerTests(RunnerCase):
+    """The decision channel. A question has to reach the owner the way a
+    permission request does — as a card — or the session parks behind prose
+    nobody reads and the work is silently abandoned."""
+
+    def ask(self, r, question="Which approach?", options=("A", "B"),
+            resolver=None, allow_text=True):
+        async def scenario():
+            task = asyncio.ensure_future(
+                r.ask_owner(question, list(options), allow_text))
+            await asyncio.sleep(0.01)
+            if resolver:
+                await resolver(r)
+            return await task
+        return asyncio.run(scenario())
+
+    def answer_with(self, text):
+        async def resolver(r):
+            req_id = r.state["pending"][0]["req_id"]
+            await r.handle({"op": "answer", "req_id": req_id, "answer": text})
+        return resolver
+
+    def test_a_question_raises_an_ask_card_and_blocks(self):
+        r = self.make_runner()
+        got = self.ask(r, resolver=self.answer_with("B"))
+        self.assertEqual(got, "B")
+        self.assertEqual(r.state["pending"], [])
+        self.assertIsNone(r.state["awaiting"])
+
+    def test_the_card_carries_the_question_and_options(self):
+        r = self.make_runner()
+        seen = {}
+
+        async def peek(rr):
+            seen.update(rr.state["pending"][0])
+            seen["awaiting"] = rr.state["awaiting"]
+            await self.answer_with("A")(rr)
+
+        self.ask(r, question="Fold it or keep it?", options=("Fold", "Keep"),
+                 resolver=peek)
+        self.assertEqual(seen["kind"], "ask")
+        self.assertEqual(seen["question"], "Fold it or keep it?")
+        self.assertEqual(seen["options"], ["Fold", "Keep"])
+        self.assertEqual(seen["awaiting"], "ask")
+
+    def test_free_text_answers_pass_through_verbatim(self):
+        r = self.make_runner()
+        got = self.ask(r, resolver=self.answer_with("neither, do C"))
+        self.assertEqual(got, "neither, do C")
+
+    def test_no_answer_tells_the_agent_to_stop_rather_than_guess(self):
+        """The whole failure being fixed is a session proceeding on its own
+        judgement. A timeout must never resolve to a default option."""
+        r = self.make_runner(ask_timeout=0.05)
+        got = self.ask(r)
+        self.assertIn("did not answer", got)
+        self.assertIn("Do NOT guess", got)
+        self.assertNotIn("A", got.split(".")[0])
+        self.assertIsNone(r.state["awaiting"])
+
+    def test_options_are_capped_and_blanks_dropped(self):
+        r = self.make_runner()
+        seen = {}
+
+        async def peek(rr):
+            seen.update(rr.state["pending"][0])
+            await self.answer_with("x")(rr)
+
+        self.ask(r, options=["a", "  ", "b", "c", "d", "e", "f", "g"],
+                 resolver=peek)
+        self.assertEqual(seen["options"], ["a", "b", "c", "d", "e", "f"])
+
+    def test_an_empty_question_is_refused_without_a_card(self):
+        r = self.make_runner()
+        got = asyncio.run(r.ask_owner("   ", ["A"]))
+        self.assertIn("No question", got)
+        self.assertEqual(r.state["pending"], [])
+
+    def test_closing_the_session_resolves_the_question_as_a_string(self):
+        """deny_pending resolves permission futures with a tuple. An ask
+        future must get a STRING, or the model is handed a tuple as its
+        answer."""
+        r = self.make_runner()
+
+        async def closer(rr):
+            rr.deny_pending("session closed by the owner")
+
+        got = self.ask(r, resolver=closer)
+        self.assertIsInstance(got, str)
+        self.assertIn("Stop and report", got)
+
+    def test_the_question_is_written_into_the_transcript(self):
+        r = self.make_runner()
+        self.ask(r, question="Merge or hold?", options=("Merge", "Hold"),
+                 resolver=self.answer_with("Hold"))
+        out = self.output(r)
+        self.assertIn("question for you — Merge or hold?", out)
+        self.assertIn("· Merge", out)
+        self.assertIn("[you] Hold", out)
+
+
 if __name__ == "__main__":
     unittest.main()
