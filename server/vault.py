@@ -170,6 +170,60 @@ def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
     return out[:limit]
 
 
+def grep_notes(text, limit=None, since=None, until=None, order="recent"):
+    """Literal, exhaustive substring match over every indexed chunk.
+
+    Nothing here ranks and nothing here truncates by relevance. This is the
+    path that was missing entirely: a similarity retriever cannot answer
+    "show me every note that mentions X", and that is most of what a work
+    record is asked for. The engine returned the top 8 by cosine and the
+    right note sat at rank 34 (2026-07-25) -- no amount of tuning fixes a
+    question the contract cannot express.
+
+    Ordered by note age, because when you have every match the useful axis is
+    time, not score.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    lo, hi = _epoch(since), _epoch(until)
+    con = _connect()
+    try:
+        _init(con)
+        sql = ("SELECT c.path, n.title, c.heading, c.text, n.mtime "
+               "FROM chunks c JOIN notes n ON n.path = c.path "
+               "WHERE c.text LIKE ? ESCAPE '\\' OR n.title LIKE ? ESCAPE '\\' "
+               "   OR c.path LIKE ? ESCAPE '\\'")
+        params = []
+        pat = "%" + text.replace("\\", "\\\\").replace(
+            "%", "\\%").replace("_", "\\_") + "%"
+        params.extend([pat, pat, pat])
+        if lo is not None:
+            sql += " AND n.mtime >= ?"
+            params.append(lo)
+        if hi is not None:
+            sql += " AND n.mtime < ?"
+            params.append(hi)
+        sql += " ORDER BY n.mtime " + ("ASC" if order == "oldest" else "DESC")
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        rows = con.execute(sql, params).fetchall()
+    finally:
+        con.close()
+
+    out, seen = [], set()
+    for r in rows:
+        key = (r["path"], r["heading"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"path": r["path"], "title": r["title"],
+                    "heading": r["heading"] or "", "text": r["text"] or "",
+                    "mtime": r["mtime"], "score": None, "literal": True})
+    return out
+
+
 def _epoch(iso):
     """ISO date -> local-midnight unix seconds (mtime's own units)."""
     if not iso:
