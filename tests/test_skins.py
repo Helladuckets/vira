@@ -99,7 +99,7 @@ class _Tree:
         for name in ("taurid.json", "phosphor-console.json", "phosphor-console.css"):
             shutil.copy(real / name, tmp / "static" / "skins" / name)
         # a style.css whose :root carries the floor values for the tokens we assert on
-        floor = json.loads((real / "taurid.json").read_text())["tokens"]
+        floor = json.loads((real / "taurid.json").read_text(encoding="utf-8"))["tokens"]
         lines = [":root {"]
         for k in ("--bg", "--text", "--radius", "--accent"):
             lines.append(f"  {k}: {floor[k]};")
@@ -125,7 +125,7 @@ class ApplyTests(unittest.TestCase):
         self.enterContext(self.tree.patches())
 
     def _style(self):
-        return skins.STYLE_CSS.read_text()
+        return skins.STYLE_CSS.read_text(encoding="utf-8")
 
     def test_apply_phosphor_rewrites_root_swaps_glass_records_active(self):
         out = skins.apply_skin("phosphor-console")
@@ -136,7 +136,7 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("static/skin-active.css", out["changed"])
         self.assertIn("--bg: #030100;", self._style())
         self.assertIn("--radius: 0;", self._style())
-        glass = skins.SKIN_ACTIVE.read_text()
+        glass = skins.SKIN_ACTIVE.read_text(encoding="utf-8")
         self.assertIn("body::after", glass)              # the tube overlay
         self.assertIn("pc-flicker", glass)               # the glass animation
         self.assertEqual(skins.active_id(), "phosphor-console")
@@ -147,7 +147,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(out["active"], "taurid")
         self.assertIn("--bg: #0d0d0d;", self._style())   # floor value restored
         self.assertIn("--radius: 2px;", self._style())
-        self.assertEqual(skins.SKIN_ACTIVE.read_text(), skins._ACTIVE_HEADER)
+        self.assertEqual(skins.SKIN_ACTIVE.read_text(encoding="utf-8"), skins._ACTIVE_HEADER)
         self.assertEqual(skins.active_id(), "taurid")
 
     def test_apply_is_idempotent(self):
@@ -181,7 +181,7 @@ class NoGitTests(unittest.TestCase):
         self.assertNotIn("committed", out)
         self.assertNotIn("pushed", out)
         self.assertIn("static/style.css", out["changed"])  # local write happened
-        self.assertIn("--bg: #030100;", skins.STYLE_CSS.read_text())
+        self.assertIn("--bg: #030100;", skins.STYLE_CSS.read_text(encoding="utf-8"))
 
 
 class RouteTests(unittest.TestCase):
@@ -211,7 +211,7 @@ class ShippedStateInvariant(unittest.TestCase):
     committed stylesheet is a no-op, and the committed skin-active.css carries
     no rules. This fails loudly if a visual-verification apply was not reset."""
     def test_shipped_style_is_the_floor(self):
-        style = (REPO / "static" / "style.css").read_text()
+        style = (REPO / "static" / "style.css").read_text(encoding="utf-8")
         floor = skins.load_manifest("taurid")["tokens"]
         self.assertEqual(skins._rewrite_root(style, floor), style)
 
@@ -219,7 +219,7 @@ class ShippedStateInvariant(unittest.TestCase):
         # the reset/idempotency guarantee rests on the floor carrying every
         # token line in the shipped :root — enforce it, don't assume it.
         import re
-        style = (REPO / "static" / "style.css").read_text()
+        style = (REPO / "static" / "style.css").read_text(encoding="utf-8")
         open_i = next(i for i, l in enumerate(style.split("\n"))
                       if re.match(r"^:root\s*{", l))
         lines = style.split("\n")
@@ -236,7 +236,7 @@ class ShippedStateInvariant(unittest.TestCase):
         self.assertTrue(names <= floor, names - floor)
 
     def test_shipped_skin_active_has_no_rules(self):
-        active = (REPO / "static" / "skin-active.css").read_text()
+        active = (REPO / "static" / "skin-active.css").read_text(encoding="utf-8")
         self.assertEqual(active, skins._ACTIVE_HEADER)   # exactly the reset content
         import re
         stripped = re.sub(r"/\*.*?\*/", "", active, flags=re.S)

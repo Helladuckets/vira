@@ -58,10 +58,10 @@ class RunnerCase(unittest.TestCase):
         return asyncio.run(scenario())
 
     def output(self, r):
-        return (r.dir / "output.log").read_text()
+        return (r.dir / "output.log").read_text(encoding="utf-8")
 
     def state(self, r):
-        return json.loads((r.dir / "state.json").read_text())
+        return json.loads((r.dir / "state.json").read_text(encoding="utf-8"))
 
 
 class GateTests(RunnerCase):
@@ -255,7 +255,7 @@ class ControlTests(RunnerCase):
                 r.render_message(FakeInit())
         self.assertEqual(r.state["session_id"], "sess-abc-123")
         self.assertEqual(self.state(r)["session_id"], "sess-abc-123")
-        rec = json.loads(store.read_text())["jobs"][0]
+        rec = json.loads(store.read_text(encoding="utf-8"))["jobs"][0]
         self.assertEqual(rec["session_id"], "sess-abc-123")
         self.assertIn("sess-abc-123.jsonl", rec["transcript"])
 
