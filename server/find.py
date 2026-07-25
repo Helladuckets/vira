@@ -597,11 +597,29 @@ def a_notes(p, limit):
     """One row per NOTE, not per chunk: a long note whose every section
     mentions the query would otherwise fill the group with itself. The
     best-ranked chunk wins and its heading becomes the row's context;
-    the ask still sees the full hit list, chunks and all."""
+    the ask still sees the full hit list, chunks and all.
+
+    Two paths now. A quoted phrase, or a totality word ("every", "all"),
+    takes the LITERAL path: exhaustive substring match, no ranking, every
+    hit. Anything else ranks as before. The literal path falls back to the
+    ranked one when it finds nothing, so asking for everything can never
+    return less than asking for something.
+    """
     from . import vault
     f = p["filters"]
+    phrase = (f.get("phrases") or [None])[0]
+    if f.get("limit_all") or phrase:
+        hits = vault.grep_notes(phrase or p["text"], limit=limit,
+                                since=f["since"], until=f["until"],
+                                order=f["order"])
+        if hits:
+            return _note_rows(hits, limit, literal=True)
     hits = vault.search_filtered(p["text"], limit=limit * 3, since=f["since"],
                                  until=f["until"], order=f["order"])
+    return _note_rows(hits, limit)
+
+
+def _note_rows(hits, limit, literal=False):
     rows, seen = [], set()
     for h in hits:
         if h["path"] in seen:
@@ -611,10 +629,11 @@ def a_notes(p, limit):
                      "heading": h.get("heading") or "",
                      "snippet": (h.get("text") or "")[:320],
                      "when": _iso_from_epoch(h.get("mtime")),
-                     "score": h.get("score")})
+                     "score": h.get("score"), "literal": literal})
         if len(rows) >= limit:
             break
-    return {"rows": rows, "count": len(rows), "hits": hits[:limit]}
+    return {"rows": rows, "count": len(rows), "hits": hits[:limit],
+            "literal": literal}
 
 
 def a_media(p, limit):
@@ -667,10 +686,23 @@ def _apple_ns(iso):
 
 # ---------- the fan-out ----------
 
+# "every", "all", "how many" used to set a flag that only drew a chip reading
+# "all matches" while the query stayed capped at 20. The sorter announced a
+# behaviour the engine did not have. Asking for everything now raises the
+# ceiling for real; the number is a sanity bound, not a relevance cut.
+EXHAUSTIVE_LIMIT = 2000
+
+# The ask window. Was 8 -- small enough that the right note routinely sat
+# outside it while the model answered confidently from the wrong ones.
+ASK_LIMIT = 24
+
+
 def run(p, limit=20):
     """Query every database in the plan concurrently. Groups stay
     separate — see the module docstring on why nothing is fused. One
     dead corpus reports its error and never kills the whole search."""
+    if p.get("filters", {}).get("limit_all"):
+        limit = max(limit, EXHAUSTIVE_LIMIT)
     groups = {}
     dbs = [d for d in p["databases"] if d in ADAPTERS]
     with futures.ThreadPoolExecutor(max_workers=max(1, len(dbs))) as pool:
@@ -689,7 +721,7 @@ def find(q, limit=20, today=None):
     return run(plan(q, today=today), limit=limit)
 
 
-def ask(question, limit=8, today=None):
+def ask(question, limit=ASK_LIMIT, today=None):
     """The answer path: rung 2, then the owning corpus's own ask.
 
     The two ask contracts stay distinct on purpose (the 2026-07-21 audit
