@@ -4,12 +4,21 @@
 tests drive the shell function directly against a synthetic source, stubbing
 `cp` to make the race deterministic instead of waiting for a real checkpoint.
 """
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 BRANCH_SH = Path(__file__).resolve().parents[1] / "scripts" / "branch.sh"
+
+# branch.sh is the OWNER'S Mac-side dev tooling for parallel worktrees — it is
+# sourced through /bin/zsh and leans on APFS clone-on-write and launchd. It is
+# not part of what a Windows install runs (that path is scripts/run.ps1), so on
+# Windows these tests have nothing to exercise. Skipping states that fact; it
+# does not paper over a portability gap in the app itself.
+posix_only = unittest.skipUnless(
+    os.name == "posix", "branch.sh is POSIX dev tooling, not a shipped path")
 
 
 def run_clone(body: str) -> subprocess.CompletedProcess:
@@ -24,6 +33,7 @@ def run_clone(body: str) -> subprocess.CompletedProcess:
     )
 
 
+@posix_only
 class CloneDataTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

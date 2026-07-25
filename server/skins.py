@@ -100,7 +100,7 @@ def load_manifest(skin_id: str) -> dict:
     if p.stat().st_size > MAX_MANIFEST_BYTES:
         raise HTTPException(500, f"skin manifest too large: {skin_id}")
     try:
-        m = json.loads(p.read_text())
+        m = json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
         raise HTTPException(500, f"unreadable skin manifest: {e}")
     if not isinstance(m, dict) or m.get("id") != skin_id:
@@ -187,14 +187,14 @@ def _extras_css(m: dict) -> str:
         raise HTTPException(500, f"skin extras missing: {name}")
     if p.stat().st_size > MAX_EXTRAS_BYTES:
         raise HTTPException(500, f"skin extras too large: {name}")
-    return p.read_text()
+    return p.read_text(encoding="utf-8")
 
 
 def _write_text_atomic(path: Path, text: str) -> None:
     """tmp + rename so a hard kill mid-write can never leave a truncated
     tracked stylesheet (which the next successful apply would commit)."""
     tmp = path.with_name("." + path.name + ".tmp")
-    tmp.write_text(text)
+    tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
 
 
@@ -214,7 +214,7 @@ def apply_skin(skin_id: str) -> dict:
 
     if not STYLE_CSS.is_file():
         raise HTTPException(500, "style.css not found")
-    text = STYLE_CSS.read_text()
+    text = STYLE_CSS.read_text(encoding="utf-8")
     new_css = _rewrite_root(text, merged)
     extras = _extras_css(skin)
 
@@ -222,7 +222,7 @@ def apply_skin(skin_id: str) -> dict:
     if new_css != text:
         _write_text_atomic(STYLE_CSS, new_css)
         changed.append("static/style.css")
-    if not SKIN_ACTIVE.is_file() or SKIN_ACTIVE.read_text() != extras:
+    if not SKIN_ACTIVE.is_file() or SKIN_ACTIVE.read_text(encoding="utf-8") != extras:
         _write_text_atomic(SKIN_ACTIVE, extras)
         changed.append("static/skin-active.css")
 

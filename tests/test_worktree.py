@@ -9,6 +9,7 @@ The guard is deliberately two-part — place the session in a worktree, then
 REFUSE writes aimed back at the live tree — because placement alone does not
 hold: an agent can still name an absolute path.
 """
+import os
 import subprocess
 import tempfile
 import unittest
@@ -180,11 +181,19 @@ class DenyMessage(unittest.TestCase):
         self.assertIn("do not merge", msg.lower())
 
 
+@unittest.skipUnless(os.name == "posix",
+                     "executes a /bin/sh stand-in for branch.sh")
 class EnsureAgainstARealRepo(unittest.TestCase):
     """The creation path, against a real git repo with a stand-in
     branch.sh. Proves ensure() actually yields a usable worktree and that a
     second call REUSES it — a re-dispatch of the same work must land back in
-    the branch it started, not mint slug-2, slug-3."""
+    the branch it started, not mint slug-2, slug-3.
+
+    POSIX only: the stand-in is a shell script run as an executable, which
+    Windows cannot exec. Production degrades honestly there — ensure() catches
+    the OSError and the session runs in place with a transcript note — and the
+    pure-python half of the guard (PathGuard, TargetPaths, DenyMessage) still
+    runs on every platform."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -11,12 +11,18 @@ These tests build real throwaway git repos with worktrees in both layouts.
 
 Run: .venv/bin/python -m unittest tests.test_branch_worktree
 """
+import os
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 
 BRANCH_SH = Path(__file__).resolve().parents[1] / "scripts" / "branch.sh"
+
+# See tests/test_branch_clone.py: branch.sh is POSIX-only dev tooling, driven
+# through /bin/zsh. A Windows install never runs it, so these skip there.
+posix_only = unittest.skipUnless(
+    os.name == "posix", "branch.sh is POSIX dev tooling, not a shipped path")
 
 
 def git(*args, cwd):
@@ -31,6 +37,7 @@ def run_in(live: Path, body: str) -> subprocess.CompletedProcess:
         cwd=live, capture_output=True, text=True)
 
 
+@posix_only
 class WorktreeResolution(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -84,6 +91,7 @@ class WorktreeResolution(unittest.TestCase):
         self.assertNotIn("claude/feat", branches)
 
 
+@posix_only
 class Provisioning(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -137,6 +145,7 @@ class Provisioning(unittest.TestCase):
         self.assertIn("live tree", r.stderr)
 
 
+@posix_only
 class MergeChecklistSpecWarning(unittest.TestCase):
     """CLAUDE.md is gitignored, so a spec line never rides a merge. The merge
     checklist has to say so — including in the silent case where the worktree
