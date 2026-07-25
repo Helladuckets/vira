@@ -3998,12 +3998,21 @@ function permissionCard(sid, p) {
 // to have no way to raise a decision: it wrote the question into its prose
 // and parked behind a free-text box, which is how runs ended up half-done
 // with nobody realising they were waiting (2026-07-25).
+// It is a NUMBERED PICKER, not a row of buttons. Each option is a full row —
+// label plus the sentence explaining what choosing it actually means — and
+// carries a number you can type. A bare button labelled "Option Two" asks the
+// owner to decide from three words; the sentence under it is the part that
+// makes the choice answerable, especially on a phone where the transcript
+// above has already scrolled away. Numbers matter because the fastest answer
+// is one keystroke, and because they give the options stable names.
 function askCard(sid, p) {
   const card = el("div", "perm-card ask-card");
-  const head = el("div", "perm-head");
-  head.appendChild(el("span", "perm-tool ask-tag", "question"));
-  card.appendChild(head);
-  card.appendChild(el("div", "ask-q", p.question || p.summary || ""));
+  card.appendChild(el("div", "ask-head", p.question || p.summary || ""));
+
+  const opts = (p.options || []).map((o) =>
+    typeof o === "string" ? { label: o, description: "" } : (o || {}));
+  const allowText = p.allow_text !== false;
+  let picked = null;                  // index, or "other"
 
   const send = async (answer) => {
     if (!answer) return;
@@ -4017,32 +4026,114 @@ function askCard(sid, p) {
     }
   };
 
-  if ((p.options || []).length) {
-    const row = el("div", "perm-actions ask-options");
-    p.options.forEach((o, i) => {
-      // the first option is the agent's own recommendation by convention,
-      // so it carries the primary weight — but nothing is preselected
-      const b = el("button", "btn small " + (i ? "" : "primary"), o);
-      b.addEventListener("click", () => send(o));
-      row.appendChild(b);
+  const list = el("div", "ask-list");
+  const rows = [];
+  const other = document.createElement("input");
+
+  const paint = () => {
+    rows.forEach((r, i) => r.classList.toggle("on", picked === i));
+    otherRow?.classList.toggle("on", picked === "other");
+    other.classList.toggle("armed", picked === "other");
+    submit.disabled = picked === null
+      || (picked === "other" && !other.value.trim());
+  };
+
+  const choose = (which) => {
+    picked = which;
+    paint();
+    if (which === "other") other.focus();
+  };
+
+  opts.forEach((o, i) => {
+    const row = el("div", "ask-opt");
+    row.setAttribute("role", "button");
+    row.tabIndex = 0;
+    const main = el("div", "ask-opt-main");
+    main.appendChild(el("div", "ask-opt-label", `${i + 1} — ${o.label || ""}`));
+    if (o.description)
+      main.appendChild(el("div", "ask-opt-desc", o.description));
+    row.appendChild(main);
+    row.appendChild(el("span", "ask-opt-num", String(i + 1)));
+    row.addEventListener("click", () => choose(i));
+    row.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); choose(i); }
     });
-    card.appendChild(row);
+    rows.push(row);
+    list.appendChild(row);
+  });
+
+  // A real decision often has an answer the agent did not think to offer, so
+  // Other is a first-class numbered row rather than an afterthought below.
+  let otherRow = null;
+  if (allowText) {
+    otherRow = el("div", "ask-opt");
+    otherRow.setAttribute("role", "button");
+    otherRow.tabIndex = 0;
+    const main = el("div", "ask-opt-main");
+    main.appendChild(el("div", "ask-opt-label", "Other"));
+    otherRow.appendChild(main);
+    otherRow.appendChild(el("span", "ask-opt-num", String(opts.length + 1)));
+    otherRow.addEventListener("click", () => choose("other"));
+    otherRow.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault(); choose("other");
+      }
+    });
+    list.appendChild(otherRow);
   }
-  // Free text stays available unless the agent closed the choice: a real
-  // decision often has an answer the agent did not think to offer.
-  if (p.allow_text !== false) {
-    const other = document.createElement("input");
+  card.appendChild(list);
+
+  if (allowText) {
     other.type = "text";
-    other.className = "perm-reason";
-    other.placeholder = (p.options || []).length
-      ? "or answer in your own words — enter to send"
-      : "your answer — enter to send";
+    other.className = "ask-other-input";
+    other.placeholder = "Type your own answer here";
     other.spellcheck = false;
+    other.addEventListener("focus", () => { picked = "other"; paint(); });
+    other.addEventListener("input", paint);
     other.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") send(other.value.trim());
+      // Enter submits from the field; the digit guard below must not fire
+      // while the owner is typing an answer that happens to contain one.
+      e.stopPropagation();
+      if (e.key === "Enter" && other.value.trim()) send(other.value.trim());
     });
     card.appendChild(other);
   }
+
+  const actions = el("div", "ask-actions");
+  const skip = el("button", "btn small ask-skip", "Skip");
+  // Skip is NOT a default answer — it tells the session to stop and report,
+  // the same as an unanswered question timing out. Silently proceeding on
+  // the agent's own judgement is the failure this whole card exists to end.
+  skip.addEventListener("click", () => send(
+    "The owner skipped this question. Do NOT guess or pick an option "
+    + "yourself. Stop the work here, leave what you have in a consistent "
+    + "state, and put this question at the top of your final report."));
+  const submit = el("button", "btn small primary ask-submit", "Submit ⏎");
+  submit.disabled = true;
+  submit.addEventListener("click", () => {
+    if (picked === "other") send(other.value.trim());
+    else if (picked !== null) send(opts[picked].label);
+  });
+  actions.appendChild(skip);
+  actions.appendChild(submit);
+  card.appendChild(actions);
+
+  // Type a number to pick, Enter to submit — the fastest answer is one
+  // keystroke. Scoped to the card so it cannot steal keys from the page.
+  card.addEventListener("keydown", (e) => {
+    if (e.target === other) return;
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= opts.length + (allowText ? 1 : 0)) {
+      e.preventDefault();
+      choose(n === opts.length + 1 && allowText ? "other" : n - 1);
+    } else if (e.key === "Enter" && !submit.disabled) {
+      e.preventDefault();
+      submit.click();
+    }
+  });
+  card.tabIndex = -1;
+  setTimeout(() => card.focus({ preventScroll: true }), 0);
+  paint();
   return card;
 }
 
@@ -4066,6 +4157,7 @@ function createJobTerm(jid, refs) {
   const t = {
     jid, refs, poll: null, permKey: "", banded: false,
     busy: false, queued: false,
+    wasStuck: false,     // was a card/park already on screen last poll?
     schedule() {
       if (this.busy) { this.queued = true; return; }
       this.busy = true;
@@ -4123,7 +4215,16 @@ function createJobTerm(jid, refs) {
         r.output.appendChild(el("span", "term-cursor"));
       this.renderPending(j);
       this.composeState(j);
-      if (atBottom || waiting || replying)
+      // Follow the tail while the owner is already at the bottom, and jump
+      // to a card the MOMENT it appears — but only on that transition.
+      // Re-asserting it every poll pinned a parked session to the bottom
+      // forever, so the owner could not scroll up to read what the session
+      // had actually done before answering it. A stuck view is worse than a
+      // missed jump: the jump happens once, scrolling is theirs after that.
+      const stuck = waiting || replying;
+      const arrived = stuck && !this.wasStuck;
+      this.wasStuck = stuck;
+      if (atBottom || arrived)
         scroller.scrollTop = scroller.scrollHeight;
       if (j.status !== "running") {
         this.stop();

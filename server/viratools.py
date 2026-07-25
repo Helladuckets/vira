@@ -573,13 +573,48 @@ def bind_ask(fn):
     _ASK = fn
 
 
+def parse_options(raw):
+    """Options as [{label, description}].
+
+    An option needs the sentence that says what CHOOSING it means — a bare
+    label asks the owner to decide from three words, which on a phone (where
+    the transcript has already scrolled away) is not a decision they can
+    actually make. So JSON is the documented shape. A plain '|' list still
+    parses, because a model that reaches for the simple form should get a
+    usable card rather than an error.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return []
+    out = []
+    if raw.startswith("["):
+        try:
+            for o in json.loads(raw):
+                if isinstance(o, str) and o.strip():
+                    out.append({"label": o.strip(), "description": ""})
+                elif isinstance(o, dict) and str(o.get("label", "")).strip():
+                    out.append({
+                        "label": str(o["label"]).strip(),
+                        "description": str(o.get("description") or "").strip(),
+                    })
+            return out[:6]
+        except (json.JSONDecodeError, TypeError):
+            pass          # fall through to the plain list
+    for part in raw.split("|"):
+        # tolerate "Label :: description" too — the shape a model reaches for
+        # when it wants a description without composing JSON
+        label, _, desc = part.partition("::")
+        if label.strip():
+            out.append({"label": label.strip(), "description": desc.strip()})
+    return out[:6]
+
+
 async def _t_ask_owner(args):
     if _ASK is None:
         return _txt("No owner channel is available in this session. Do not "
                     "guess: stop and put the question in your final report.")
-    opts = [o.strip() for o in (args.get("options") or "").split("|")
-            if o.strip()]
-    return _txt(await _ASK(args.get("question"), opts,
+    return _txt(await _ASK(args.get("question"),
+                           parse_options(args.get("options")),
                            str(args.get("allow_text", "true")).lower()
                            != "false"))
 
@@ -736,12 +771,16 @@ TOOL_SPECS = [
      "moment a decision is genuinely theirs — which of two approaches to "
      "take, whether to keep going down a path, anything you would "
      "otherwise guess at or leave half-done. It raises a card with "
-     "clickable options in the app and on their phone, so it reaches them; "
+     "numbered options in the app and on their phone, so it reaches them; "
      "writing the question into your final report does NOT. options is a "
-     "'|'-separated list (up to 6) — always offer them when the choice is "
-     "closed. Never call this for permission to use a tool (that already "
-     "has its own card), and never ask what you can determine by reading "
-     "the code.",
+     "JSON array (up to 6) of {\"label\", \"description\"}, e.g. "
+     "[{\"label\":\"Fold it in\",\"description\":\"One window, less to "
+     "scan; the old deep links keep working.\"}]. ALWAYS write the "
+     "description: the owner is often reading this on a phone with the "
+     "transcript scrolled away, and a bare label asks them to decide from "
+     "three words. Say what choosing it actually means and what it costs. "
+     "Never call this for permission to use a tool (that already has its "
+     "own card), and never ask what you can determine by reading the code.",
      {"question": str, "options": str, "allow_text": str}, _t_ask_owner),
 ]
 
