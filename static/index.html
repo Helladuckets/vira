@@ -99,16 +99,32 @@
     <div id="feed-list" class="list"></div>
   </section>
 
-  <!-- PEOPLE -->
+  <!-- PEOPLE (Contacts + Networking — Radar folded in as a tab, 2026-07-25) -->
   <section id="view-people" class="view">
-    <div class="section-head">
-      <h2>People</h2>
-      <button class="fchip" id="triage-toggle" style="margin-left:auto">Triage</button>
+    <div class="seg ideas-tabs" id="people-tabs">
+      <button data-tab="contacts" class="seg-btn on">Contacts</button>
+      <button data-tab="networking" class="seg-btn">Networking</button>
     </div>
-    <input id="people-search" class="search" type="search"
-           placeholder="Search name, email, phone" autocomplete="off">
-    <div id="people-sort" class="fchips"></div>
-    <div id="people-list" class="list"></div>
+    <div id="people-contacts-pane">
+      <div class="section-head">
+        <h2>People</h2>
+        <button class="fchip" id="triage-toggle" style="margin-left:auto">Triage</button>
+      </div>
+      <input id="people-search" class="search" type="search"
+             placeholder="Search name, email, phone" autocomplete="off">
+      <div id="people-sort" class="fchips"></div>
+      <div id="people-list" class="list"></div>
+    </div>
+    <div id="people-networking-pane" style="display:none">
+      <div class="section-head"><h2>Networking</h2>
+        <button class="fchip sm" id="radar-refresh" style="margin-left:auto">Refresh</button>
+      </div>
+      <div class="radar-sub">Talk to next <span class="hint">scored live — every row says why</span></div>
+      <div id="radar-people" class="list"></div>
+      <div class="radar-sub">Groupings <span class="hint" id="radar-groupings-meta"></span>
+        <button class="fchip sm" id="radar-groupings-refresh">Rescan</button></div>
+      <div id="radar-groupings" class="list"></div>
+    </div>
   </section>
 
   <!-- WORK (the cockpit: Actions + Jobs + Ideas + Circuits + Agent Loops,
@@ -340,17 +356,7 @@
   </section>
 
 
-  <!-- RADAR (who to talk to + who to put in a room together) -->
-  <section id="view-radar" class="view">
-    <div class="section-head"><h2>Radar</h2>
-      <button class="fchip sm" id="radar-refresh" style="margin-left:auto">Refresh</button>
-    </div>
-    <div class="radar-sub">Talk to next <span class="hint">scored live — every row says why</span></div>
-    <div id="radar-people" class="list"></div>
-    <div class="radar-sub">Groupings <span class="hint" id="radar-groupings-meta"></span>
-      <button class="fchip sm" id="radar-groupings-refresh">Rescan</button></div>
-    <div id="radar-groupings" class="list"></div>
-  </section>
+  <!-- Radar folded into the People window as the Networking tab (2026-07-25) -->
 
   <!-- VISUAL NETWORK (the face-graph of interconnection) -->
   <section id="view-atlas" class="view">

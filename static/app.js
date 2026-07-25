@@ -5012,7 +5012,8 @@ function renderBrief(b) {
   body.appendChild(narWrap);
 
   if ((b.radar || []).length) {
-    const rd = briefSection(body, "Who to talk to", "scored live — Radar has the full list");
+    const rd = briefSection(body, "Who to talk to",
+                            "scored live — People > Networking has the full list");
     b.radar.forEach((r) => briefRow(rd, {
       time: String(Math.round(r.score)),
       title: r.person_name,
@@ -6494,6 +6495,33 @@ const WORK_ALIAS = {
 // come through here, exactly as the five cockpit windows do above.
 const FIND_ALIAS = { search: "media", brain: "notes" };
 
+// Radar folded into People (2026-07-25) — the contacts you have and the ones
+// to talk to next are one subject. Same alias discipline as the two folds
+// above: the retired id keeps working everywhere it was ever written down.
+const PEOPLE_ALIAS = { radar: "networking" };
+
+let peopleTab = "contacts";   // contacts | networking
+
+function setPeopleTab(tab, opts = {}) {
+  peopleTab = tab;
+  $("#people-tabs")?.querySelectorAll(".seg-btn")
+    .forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  const panes = { contacts: "#people-contacts-pane",
+                  networking: "#people-networking-pane" };
+  Object.entries(panes).forEach(([t, sel]) => {
+    const p = $(sel);
+    if (p) p.style.display = t === tab ? "" : "none";
+  });
+  if (!opts.defer) peopleTabLoad(tab);
+}
+
+// Networking is the only tab with anything to fetch; contacts renders from
+// the list the People view already loads. Radar's own refresh buttons stay
+// wired to their element ids, which moved with the markup.
+function peopleTabLoad(tab) {
+  if (tab === "networking") loadRadar().catch(() => {});
+}
+
 function setWorkTab(tab, opts = {}) {
   workTab = tab;
   $("#work-tabs")?.querySelectorAll(".seg-btn")
@@ -6547,6 +6575,8 @@ $("#work-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
   b.addEventListener("click", () => setWorkTab(b.dataset.tab)));
 $("#work-sub-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
   b.addEventListener("click", () => setWorkSub(b.dataset.sub)));
+$("#people-tabs")?.querySelectorAll(".seg-btn").forEach((b) =>
+  b.addEventListener("click", () => setPeopleTab(b.dataset.tab)));
 
 function viewLoad(id) {
   if (id === "brief" && Date.now() - briefLoadedAt > 300000)
@@ -6558,7 +6588,7 @@ function viewLoad(id) {
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "find") loadFindStatus().catch(() => {});
-  if (id === "radar") loadRadar().catch(() => {});
+  if (id === "people") peopleTabLoad(peopleTab);
   if (id === "atlas") window.atlasLoad?.();
   if (id === "map") {
     const f = $("#map-frame");             // load the atlas page on first open
@@ -6598,6 +6628,13 @@ function openApp(id) {
   if (FIND_ALIAS[id]) {
     setFindTab(FIND_ALIAS[id]);
     id = "find";
+  }
+  if (PEOPLE_ALIAS[id]) {
+    // defer the load: on desktop openWindow -> viewLoad("people") runs it,
+    // and on mobile the viewLoad below does — either way the tab is already
+    // set, so the pane that fetches is the pane that shows.
+    setPeopleTab(PEOPLE_ALIAS[id], { defer: true });
+    id = "people";
   }
   if (typeof isDesktop !== "undefined" && isDesktop) {
     if (winState[id]) openWindow(id);
@@ -8205,7 +8242,10 @@ const WINDOWS = [
     icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" },
   { id: "feed", title: "Incoming", w: 440, defaultOpen: true,
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
-  { id: "people", title: "People", w: 440, defaultOpen: true,
+  // People carries Radar as its Networking tab (2026-07-25) — who you know
+  // and who to talk to next are one subject, so they are one window. Wider
+  // than the old contacts-only 440 to give the scored rows room.
+  { id: "people", title: "People", w: 560, defaultOpen: true,
     icon: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19c.5-3.4 2.7-5 5.5-5s5 1.6 5.5 5M15.5 11.4a2.7 2.7 0 1 0-1.2-5.2M15.8 14.2c2.4.3 4.2 1.8 4.7 4.8" },
   { id: "work", title: "Work", w: 720,
     icon: "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M12.5 14.5H16" },
@@ -8221,8 +8261,10 @@ const WINDOWS = [
     icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
   { id: "plans", title: "Plans", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
-  { id: "radar", title: "Radar", w: 560,
-    icon: "M12 12m-9 0a9 9 0 1 0 18 0a9 9 0 1 0-18 0M12 12m-5 0a5 5 0 1 0 10 0a5 5 0 1 0-10 0M12 12l6-6M12 12h.01" },
+  // Radar folded into People as the Networking tab (2026-07-25). Reached
+  // through PEOPLE_ALIAS, so #radar, the palette, saved dock slots and every
+  // right-click integration still land on it — exactly as search/brain do
+  // for Find and the five cockpit windows do for Work.
   { id: "atlas", title: "Visual Network", w: 900,
     icon: "M12 12m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0-4.8 0M5 5.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M19 6.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M5.5 18.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M18.5 18m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M10.3 10.3L6.3 6.9M13.7 10.6L17.5 7.6M10.5 13.7L6.8 17.2M13.6 13.5L17 16.7" },
   { id: "map", title: "System Map", w: 1000,
@@ -9575,7 +9617,7 @@ function mdockIds() {
     // and the slot silently disappears; and a bar that held BOTH old
     // windows collapses to one, so the freed slot is refilled below
     // rather than leaving the owner with a four-app bar.
-    const id = FIND_ALIAS[raw] ? "find" : raw;
+    const id = FIND_ALIAS[raw] ? "find" : (PEOPLE_ALIAS[raw] ? "people" : raw);
     if (appLive(id) && !out.includes(id) && out.length < MDOCK_MAX) out.push(id);
   });
   const target = Math.min(want.length, MDOCK_MAX);
@@ -10122,6 +10164,10 @@ function paletteMatches(q) {
       run: () => { setFindTab("media"); openWindow("find"); } },
     { label: "Brain — Find · Notes", kind: "find",
       run: () => { setFindTab("notes"); openWindow("find"); } },
+    // Radar likewise, folded into People (2026-07-25)
+    { label: "Radar — People · Networking", kind: "people",
+      run: () => { setPeopleTab("networking", { defer: true });
+                   openWindow("people"); } },
     { label: "Settings", kind: "sheet", run: () => $("#settings-btn").click() },
     { label: "Layout: Freeform", kind: "layout",
       run: () => setLayout("freeform") },
@@ -10387,6 +10433,15 @@ const HASH_ROUTES = {
   "find": (rest) => { setFindTab(rest[0] || "all"); openApp("find"); },
   "search": () => openApp("search"),
   "brain": () => openApp("brain"),
+  // #people, #radar (the retired window) and #networking all land on People;
+  // the alias in openApp picks the tab.
+  "people": (rest) => {
+    if (rest[0] === "networking" || rest[0] === "contacts")
+      setPeopleTab(rest[0], { defer: true });
+    openApp("people");
+  },
+  "radar": () => openApp("radar"),
+  "networking": () => openApp("radar"),
 };
 
 function routeHash() {
