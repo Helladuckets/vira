@@ -56,6 +56,8 @@ DEFAULTS = {
     "brief_remote_events": [],           # event-title substrings treated as remote/virtual
                                          # (a remote event never conflicts with an in-person one)
     "fixture_mode": None,                # None = auto (fixture when crm_root missing)
+    "apple_contacts_push": True,         # contact-card saves push to Apple Contacts
+                                         # (macOS only; AppleScript spoke, syncs to phone)
     "mercury_poll_hours": 6,             # subscriptions charge-poll cadence
     "receipts_sweep_days": 7,            # receipts-pass sweep cadence
     "subs_notify_threshold_usd": 100,    # renewal ping floor ($/cycle; annuals always ping)
