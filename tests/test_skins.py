@@ -104,8 +104,14 @@ class _Tree:
         for k in ("--bg", "--text", "--radius", "--accent"):
             lines.append(f"  {k}: {floor[k]};")
         lines += ["}", "", "body { color: var(--text); }", ""]
-        (tmp / "static" / "style.css").write_text("\n".join(lines))
-        (tmp / "static" / "skin-active.css").write_text(skins._ACTIVE_HEADER)
+        # utf-8 explicitly, matching what _write_text_atomic writes: the fixture
+        # stands in for the tracked stylesheets, and _ACTIVE_HEADER carries an
+        # em dash. Left bare, Windows encodes it cp1252 (0x97) and apply_skin's
+        # utf-8 read then fails on a file the test itself wrote.
+        (tmp / "static" / "style.css").write_text("\n".join(lines),
+                                                  encoding="utf-8")
+        (tmp / "static" / "skin-active.css").write_text(skins._ACTIVE_HEADER,
+                                                        encoding="utf-8")
 
     def patches(self):
         s = self.tmp / "static"
