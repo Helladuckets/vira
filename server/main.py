@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +32,8 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                find,
                frontdoor,
                reading,
+               readinglist,
+               readingroom,
                fixtures, ideas, ideatags, imessage, jobboards, jobfiles,
                joblog,
                journal,
@@ -1049,8 +1051,152 @@ def api_frontdoor_dismiss(module_id: str, req: DismissReq):
 
 @app.get("/api/reading/pages")
 def api_reading_pages():
-    """Personal reading-room pages on disk; the Reader launcher's list."""
-    return {"pages": reading.list_pages()}
+    """Personal reading-room pages on disk, with what a Reader card needs:
+    subtitle, item count, done count, built date (all best-effort)."""
+    return {"pages": reading.page_details()}
+
+
+@app.get("/api/reading/rooms/{name}")
+def api_reading_room(name: str):
+    """A native room's full store — meta + items — plus its done-marks, for
+    the Reader's in-app renderer."""
+    room = readingroom.load_room(name)
+    if room is None:
+        raise HTTPException(404, "no such reading room")
+    try:
+        done = reading.get_done(name)
+    except ValueError:
+        done = []
+    return {"room": room, "done": done}
+
+
+@app.get("/reading/{slug}.html")
+def reading_room_page(slug: str):
+    """A room's standalone page. Native rooms render on demand from the
+    store (the shareable EXPORT — never the source of truth); a legacy page
+    still on disk is served as the file it is."""
+    room_html = None
+    try:
+        room_html = readingroom.export_html(slug)
+    except (KeyError, ValueError):
+        pass
+    if room_html is not None:
+        return HTMLResponse(room_html,
+                            headers={"Cache-Control": "no-cache"})
+    if reading.NAME_RE.match(slug):
+        p = ROOT / "static" / "reading" / f"{slug}.html"
+        if p.is_file():
+            return FileResponse(p, media_type="text/html")
+    raise HTTPException(404, "no such reading room")
+
+
+class RoomDefinitionReq(BaseModel):
+    subject: str = ""
+    why: str = ""
+    people: str = ""
+    modes: list = []
+    depth: str = ""
+    notes: str = ""
+    title: str | None = None      # None = keep; the room must stay nameable
+    subtitle: str | None = None
+
+
+@app.put("/api/reading/rooms/{name}/definition")
+def api_reading_room_definition(name: str, req: RoomDefinitionReq):
+    """Save a room's definition — the owner-visible spec of what it tracks
+    and why — plus, when sent, the title and the line under it. Refreshes
+    follow the definition; forking starts from it."""
+    try:
+        out = {"definition": readingroom.set_definition(
+            name, req.dict(exclude={"title", "subtitle"}))}
+        if req.title is not None or req.subtitle is not None:
+            out["meta"] = readingroom.set_meta(name, req.title, req.subtitle)
+        return out
+    except KeyError:
+        raise HTTPException(404, "no such reading room")
+    except readingroom.BuildError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/api/reading/rooms/{name}/update-prompt")
+def api_reading_room_update_prompt(name: str):
+    """The refresh prompt for pasting into another session — no job launched.
+    The copy path also serves passive test instances, which cannot dispatch."""
+    try:
+        return {"prompt": readingroom.update_prompt(name), "cwd": str(ROOT)}
+    except (KeyError, ValueError):
+        raise HTTPException(404, "no such reading room")
+
+
+@app.post("/api/reading/rooms/{name}/update")
+def api_reading_room_update(name: str):
+    """Dispatch a session that re-researches the room's subject and rebuilds
+    the same slug — item ids are URL-stable, so done-marks survive. This is
+    what makes a room a live tracker rather than a frozen sweep."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — copy the prompt into a "
+                                 "session instead (update-prompt)")
+    try:
+        prompt = readingroom.update_prompt(name)
+    except (KeyError, ValueError):
+        raise HTTPException(404, "no such reading room")
+    jid = jobs.launch(prompt, cwd=str(ROOT), mode="interactive",
+                      meta={"kind": "room-update", "room": name})
+    return {"job_id": jid}
+
+
+class ReadingCompleteReq(BaseModel):
+    done: bool = True
+
+
+@app.get("/api/reading/list")
+def api_reading_list():
+    """The Reader's queue: everything worth reading that is not read yet.
+
+    Completed entries are deliberately absent from `queue` — marking a document
+    read takes it off the list, because the document still lives wherever its
+    producer put it. `completed` carries a short tail for the undo affordance."""
+    return {"queue": readinglist.queue(),
+            "completed": readinglist.completed(),
+            "counts": readinglist.counts()}
+
+
+@app.post("/api/reading/list/backfill")
+def api_reading_list_backfill():
+    """Register everything already on disk. Idempotent."""
+    return readinglist.backfill()
+
+
+@app.post("/api/reading/list/{item_id}/complete")
+def api_reading_list_complete(item_id: str, req: ReadingCompleteReq):
+    try:
+        return {"item": readinglist.complete(item_id, req.done)}
+    except KeyError:
+        raise HTTPException(404, "no such reading-list entry")
+
+
+@app.delete("/api/reading/list/{item_id}")
+def api_reading_list_forget(item_id: str):
+    """Drop the pointer. The document itself is never touched."""
+    try:
+        readinglist.forget(item_id)
+    except KeyError:
+        raise HTTPException(404, "no such reading-list entry")
+    return {"ok": True}
+
+
+@app.get("/api/reading/list/{item_id}")
+def api_reading_list_item(item_id: str):
+    """One entry plus its sections, so the client knows how to open it and
+    whether to show section progress."""
+    it = readinglist.get(item_id)
+    if not it:
+        raise HTTPException(404, "no such reading-list entry")
+    out = dict(it)
+    out["missing"] = readinglist._missing(it)
+    out["sections"] = readinglist.sections(it)
+    out["progress"] = readinglist.progress(it)
+    return out
 
 
 @app.get("/api/reading/{name}/done")

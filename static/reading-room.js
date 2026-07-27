@@ -39,7 +39,10 @@
     person: "", year: "", sort: "prio", hideDone: false,
   };
   var PRIO_RANK = { P1: 0, P2: 1, P3: 2 };
-  var STATUS_LABEL = { MISSING: "unseen", PARTIAL: "secondhand", HAVE: "vault" };
+  // HAVE renders no badge and no chip (owner's call, 2026-07-27): everything
+  // in a room is headed into the vault anyway, so "in the vault" is not a
+  // distinction worth a filter. The status value survives in data.
+  var STATUS_LABEL = { MISSING: "unseen", PARTIAL: "secondhand" };
 
   function $(id) { return document.getElementById(id); }
   function esc(s) {
@@ -177,8 +180,9 @@
       var isDone = done.has(it.id);
       var badges = [
         '<span class="badge ' + it.prio + '">' + it.prio + "</span>",
-        '<span class="badge ' + it.status + '">'
-          + (STATUS_LABEL[it.status] || it.status.toLowerCase()) + "</span>",
+        STATUS_LABEL[it.status]
+          ? '<span class="badge ' + it.status + '">'
+            + STATUS_LABEL[it.status] + "</span>" : "",
         '<span class="badge mode">' + esc(it.mode) + "</span>",
         it.pay ? '<span class="badge pay">$ paywall</span>' : "",
       ].join(" ");

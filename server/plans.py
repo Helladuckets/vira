@@ -135,6 +135,17 @@ def save_plan(md, idea_id=None, job_id=None, lab_url=None):
         s = _load()
         s["plans"].insert(0, entry)
         _save(s)
+    # A saved plan is something to read, so it joins the Reader's queue. Done
+    # outside the lock above and best-effort on purpose: this runs inside the
+    # detached job runner, and a queue that cannot be written is never a reason
+    # to lose the plan itself. The backfill sweep picks up anything missed.
+    try:
+        from . import readinglist
+        readinglist.register(title, "plan", entry["id"], "plan",
+                             ref=entry["id"], source="plan-mode",
+                             created=entry["created"])
+    except Exception:  # noqa: BLE001 — the plan is saved; the pointer is a nicety
+        pass
     return entry
 
 

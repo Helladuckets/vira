@@ -61,12 +61,28 @@ _lock = threading.Lock()
 # world (files on disk, keys in config), never from a stored flag.
 
 def _reader_state():
+    """The Reader is live when it has ANYTHING to show — a queued document or a
+    reading room.
+
+    Widened 2026-07-27 with the queue. Counting only rooms made a Reader
+    holding twenty dossiers, plans and retros report itself as not set up and
+    mount its front door over a full list, which is the coherence gap a module
+    acquires whenever its purpose grows and its probe does not."""
+    from . import readinglist
     pages = reading.list_pages()
+    try:
+        queued = readinglist.counts()["queued"]
+    except Exception:  # noqa: BLE001 — a dormant queue is a state, not a failure
+        queued = 0
+    bits = []
+    if queued:
+        bits.append(f"{queued} to read")
+    if pages:
+        bits.append(f"{len(pages)} reading room{'s' if len(pages) != 1 else ''}")
     return {
-        "ready": bool(pages),
-        "detail": (f"{len(pages)} reading room{'s' if len(pages) != 1 else ''}"
-                   if pages else "No reading rooms yet."),
-        "count": len(pages),
+        "ready": bool(pages or queued),
+        "detail": " · ".join(bits) or "Nothing to read yet.",
+        "count": len(pages) + queued,
     }
 
 

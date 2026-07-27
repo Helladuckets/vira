@@ -28,7 +28,11 @@ DEST = Path.home() / ".vira-backups"
 FILES = ("ideas.json", "config.json", "subscriptions.json",
          "routines.json", "circuit-runs.json", "brief-journal.json",
          "atlas-groups.json", "jobs-log.json", "applications.json",
-         "mail-accounts.json", "circuits.json", "evidence.json")
+         "mail-accounts.json", "circuits.json", "evidence.json",
+         # The Reader's queue: which documents are worth reading and which are
+         # read. The documents themselves live at their sources, but the
+         # curation and the read-state are only here.
+         "reading-list.json")
 KEEP = 14
 
 

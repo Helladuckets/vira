@@ -746,14 +746,15 @@ TOOL_SPECS = [
      "is refused. Use only when refreshing the system map.",
      {"modules_json": str}, _t_update_module_map),
     ("create_reading_room",
-     "Build a reading room — a researched consumption queue — and write "
-     "it as a live page in the owner's Reader. Pass the COMPLETE item "
-     "array as items_json (a JSON string). Each item: title (required), "
-     "url, date YYYY-MM-DD, type, mode watch|listen|read, prio P1|P2|P3, "
-     "people [], venue, note, why, status MISSING|PARTIAL|HAVE, vault, "
-     "pay. The server validates, dedupes on a stable id, renders the page "
-     "and writes it — never write reading-room HTML yourself. Rebuilding "
-     "an existing slug is a repass and preserves the owner's done-marks.",
+     "Build a reading room — a researched consumption queue — live in the "
+     "owner's Reader. Pass the COMPLETE item array as items_json (a JSON "
+     "string). Each item: title (required), url, date (YYYY, YYYY-MM or "
+     "YYYY-MM-DD), type, mode watch|listen|read, prio P1|P2|P3, people [], "
+     "venue, note, why, status MISSING|PARTIAL, vault, pay. The server "
+     "validates, dedupes on a stable id and writes the room's data store — "
+     "never write reading-room files yourself. Rebuilding an existing slug "
+     "is a repass: the owner's done-marks are preserved and they are "
+     "notified of any items the rebuild added.",
      {"slug": str, "title": str, "subtitle": str, "items_json": str},
      _t_create_reading_room),
     ("configure_applications",
