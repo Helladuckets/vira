@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import briefstate, data as crm, journal
+from server import brief, briefstate, data as crm, journal
 
 
 def _seed_crm(root):
@@ -24,8 +24,8 @@ def _seed_crm(root):
         {"id": "p_test00000002", "name": "Drew Sample",
          "handles": {"imessage": [], "emails": [], "phones10": []}},
     ]}
-    (root / "people.json").write_text(json.dumps(people))
-    (root / "master.json").write_text("[]")
+    (root / "people.json").write_text(json.dumps(people), encoding="utf-8")
+    (root / "master.json").write_text("[]", encoding="utf-8")
     prof = {"name": "Casey Example",
             "open_loops": [
                 {"what": "Dinner was proposed but never scheduled",
@@ -530,3 +530,129 @@ class TestJournalPidVerification(JournalBase):
         self.assertEqual(e["result"]["unapplied"][0]["pid_check"],
                          "unverified")
         self.assertEqual(len(self._profile()["personal_facts"]), 1)
+
+
+def _seed_bundle_crm(root):
+    """Casey carries three open owed-by-me loops (distinct since dates) plus
+    one closed me-loop and one owed-by-them loop; Drew carries a single
+    me-loop. Used to exercise brief._consolidate_loops."""
+    root = Path(root)
+    (root / "profiles").mkdir(parents=True)
+    people = {"people": [
+        {"id": "p_test00000001", "name": "Casey Example",
+         "handles": {"imessage": [], "emails": [], "phones10": []}},
+        {"id": "p_test00000002", "name": "Drew Sample",
+         "handles": {"imessage": [], "emails": [], "phones10": []}},
+    ]}
+    (root / "people.json").write_text(json.dumps(people), encoding="utf-8")
+    (root / "master.json").write_text("[]", encoding="utf-8")
+    casey = {"name": "Casey Example",
+             "open_loops": [
+                 {"what": "Send the tax documents", "owed_by": "me",
+                  "since": "2024-01-01", "channel": "imessage",
+                  "status": "open"},
+                 {"what": "Reply about the wedding invite", "owed_by": "me",
+                  "since": "2024-02-01", "channel": "imessage",
+                  "status": "open"},
+                 {"what": "Follow up on the referral", "owed_by": "me",
+                  "since": "2024-03-01", "channel": "imessage",
+                  "status": "open"},
+                 {"what": "An already-resolved ask", "owed_by": "me",
+                  "since": "2023-12-01", "channel": "imessage",
+                  "status": "closed", "closed_on": "2023-12-15"},
+                 {"what": "Casey offered to lend the drill", "owed_by": "them",
+                  "since": "2024-02-15", "channel": "imessage",
+                  "status": "open"},
+             ]}
+    drew = {"name": "Drew Sample",
+            "open_loops": [
+                {"what": "Send Drew the deck", "owed_by": "me",
+                 "since": "2024-02-20", "channel": "imessage",
+                 "status": "open"},
+            ]}
+    (root / "profiles" / "p_test00000001.json").write_text(json.dumps(casey), encoding="utf-8")
+    (root / "profiles" / "p_test00000002.json").write_text(json.dumps(drew), encoding="utf-8")
+    return root
+
+
+class TestLoopConsolidation(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = _seed_bundle_crm(self.tmp.name)
+        self.patcher = mock.patch("server.data.settings.crm_root",
+                                  return_value=self.root)
+        self.patcher.start()
+        crm.invalidate()
+
+    def tearDown(self):
+        self.patcher.stop()
+        crm.invalidate()
+        self.tmp.cleanup()
+
+    def test_bundles_multiple_me_loops_per_person(self):
+        rows = brief._consolidate_loops(brief._open_loops(limit=None))
+        bundles = [r for r in rows if r.get("bundle")]
+        self.assertEqual(len(bundles), 1)
+        b = bundles[0]
+        self.assertEqual(b["person_id"], "p_test00000001")
+        self.assertEqual(b["count"], 3)
+        whats = {i["what"] for i in b["items"]}
+        self.assertEqual(whats, {"Send the tax documents",
+                                  "Reply about the wedding invite",
+                                  "Follow up on the referral"})
+        # closed loop never enters _open_loops, so never bundles
+        self.assertNotIn("An already-resolved ask", whats)
+        # stalest item (2024-01-01) drives the bundle's own days figure
+        stalest = max(i["days"] for i in b["items"])
+        self.assertEqual(b["days"], stalest)
+
+    def test_them_loops_never_bundle(self):
+        rows = brief._consolidate_loops(brief._open_loops(limit=None))
+        them = [r for r in rows if r["owed_by"] == "them"]
+        self.assertEqual(len(them), 1)
+        self.assertNotIn("bundle", them[0])
+
+    def test_singleton_me_loop_stays_flat(self):
+        rows = brief._consolidate_loops(brief._open_loops(limit=None))
+        drew = [r for r in rows if r["person_id"] == "p_test00000002"]
+        self.assertEqual(len(drew), 1)
+        self.assertNotIn("bundle", drew[0])
+        self.assertEqual(drew[0]["what"], "Send Drew the deck")
+
+    def test_sort_puts_bundle_before_singleton_before_them(self):
+        rows = brief._consolidate_loops(brief._open_loops(limit=None))
+        owed_by = [r["owed_by"] for r in rows]
+        # every "me" row (bundle or singleton) precedes every "them" row
+        first_them = owed_by.index("them")
+        self.assertTrue(all(v == "me" for v in owed_by[:first_them]))
+        bundle_idx = next(i for i, r in enumerate(rows) if r.get("bundle"))
+        drew_idx = next(i for i, r in enumerate(rows)
+                         if r["person_id"] == "p_test00000002")
+        self.assertLess(bundle_idx, drew_idx)
+        self.assertLess(drew_idx, first_them)
+
+    def test_bundle_items_are_close_addressable(self):
+        rows = brief._consolidate_loops(brief._open_loops(limit=None))
+        bundle = next(r for r in rows if r.get("bundle"))
+        item = bundle["items"][0]
+        closed = crm.update_loop(item["person_id"], item["what"], "close")
+        self.assertEqual(closed["status"], "closed")
+
+    def test_pure_function_edges(self):
+        self.assertEqual(brief._consolidate_loops([]), [])
+        rows = [
+            {"person_id": "p_x", "person_name": "X", "owed_by": "me",
+             "what": "a", "channel": "", "since": "", "days": None},
+            {"person_id": "p_x", "person_name": "X", "owed_by": "me",
+             "what": "b", "channel": "", "since": "", "days": None},
+        ]
+        out = brief._consolidate_loops(rows)
+        self.assertEqual(len(out), 1)
+        self.assertTrue(out[0]["bundle"])
+        self.assertIsNone(out[0]["days"])
+        self.assertEqual(out[0]["since"], "")
+
+    def test_radar_default_call_stays_flat_and_capped(self):
+        rows = brief._open_loops()
+        self.assertTrue(all("bundle" not in r for r in rows))
+        self.assertLessEqual(len(rows), 15)

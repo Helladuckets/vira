@@ -240,7 +240,10 @@ def _is_company(person):
     return (person or {}).get("class_hint") == "company"
 
 
-def _open_loops():
+LOOPS_CAP = 15
+
+
+def _open_loops(limit=15):
     c = crm._load()
     out = []
     today = dt.date.today()
@@ -268,7 +271,47 @@ def _open_loops():
             })
     # what the owner owes first, stalest first
     out.sort(key=lambda x: (x["owed_by"] != "me", -(x["days"] or 0)))
-    return out[:15]
+    return out if limit is None else out[:limit]
+
+
+def _consolidate_loops(rows):
+    """Group 2+ owed-by-me loops for the same person into one bundle row,
+    derived at read time — the underlying CRM loop records are untouched
+    and still addressed individually by `what` text (server/data.py's
+    update_loop contract). "them" loops and singleton "me" loops pass
+    through unchanged."""
+    me_by_person = {}
+    for r in rows:
+        if r["owed_by"] == "me":
+            me_by_person.setdefault(r["person_id"], []).append(r)
+
+    bundled_pids = {pid for pid, items in me_by_person.items() if len(items) >= 2}
+    out = []
+    seen_bundle = set()
+    for r in rows:
+        pid = r["person_id"]
+        if r["owed_by"] == "me" and pid in bundled_pids:
+            if pid in seen_bundle:
+                continue
+            seen_bundle.add(pid)
+            items = me_by_person[pid]
+            days_vals = [i["days"] for i in items if i["days"] is not None]
+            since_vals = [i["since"] for i in items if i["since"]]
+            out.append({
+                "person_id": pid,
+                "person_name": items[0]["person_name"],
+                "owed_by": "me",
+                "bundle": True,
+                "count": len(items),
+                "days": max(days_vals) if days_vals else None,
+                "since": min(since_vals) if since_vals else "",
+                "what": f"{len(items)} open loops you owe",
+                "items": items,
+            })
+        else:
+            out.append(r)
+    out.sort(key=lambda x: (x["owed_by"] != "me", -(x["days"] or 0)))
+    return out
 
 
 _imsg_last_cache = {"at": 0, "by_handle": {}}
@@ -522,7 +565,7 @@ def compose(feed_items=None):
             "imessage": _not_dismissed(_unreplied_imessages()),
             "email": _not_dismissed(_recent_mail(feed_items)),
         },
-        "loops": _open_loops(),
+        "loops": _consolidate_loops(_open_loops(limit=None))[:LOOPS_CAP],
         "quiet": _not_dismissed(_going_quiet()),
         "radar": _radar_top(),
         "drafts": {k: _drafts_queued()[k] for k in ("items", "status")},
@@ -539,7 +582,8 @@ NARRATIVE_PROMPT = """You are writing the TL;DR for {owner}'s daily brief.
 
 Below is today's brief data as JSON: calendar (their day and the family's),
 iMessages waiting on a reply from them, recent inbound work/personal email,
-open relationship loops (owed_by "me" = {owner} owes it), contacts going
+open relationship loops (owed_by "me" = {owner} owes it; a row with
+"items" bundles several loops owed to one person), contacts going
 quiet, unknown-sender triage counts, and journal — notes {owner} recently
 typed into the brief themselves (their own knowledge; treat these as true
 and current, they may supersede older data above).

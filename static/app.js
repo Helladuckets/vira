@@ -4947,6 +4947,41 @@ function editBriefLoop(row, l) {
   input.select();
 }
 
+// bundle row expand/collapse: inserts one brief-subrow per bundled loop
+// directly after the bundle row, each addressable (done/edit/tell) exactly
+// like a flat loop row — the bundle itself carries no "done" action.
+function toggleLoopBundle(btn, row, l) {
+  if (row._expanded) {
+    row._expanded.forEach((n) => n.remove());
+    row._expanded = null;
+    btn.textContent = "show";
+    return;
+  }
+  const sec = row.parentElement;
+  const nodes = [];
+  for (let i = l.items.length - 1; i >= 0; i--) {
+    const item = l.items[i];
+    const node = briefRow(sec, {
+      time: briefDays(item.days), title: "", sub: item.what,
+      personId: item.person_id,
+      actions: [
+        { label: "done", title: "Resolve — closes the loop on the profile",
+          run: (b2, r2) => closeBriefLoop(r2, item) },
+        { label: "edit", title: "Rewrite this loop in place",
+          run: (b2, r2) => editBriefLoop(r2, item) },
+        { label: "tell", title: "Tell Vira what you know about this",
+          run: (b2) => tellFromRow(b2, item.person_id, item.person_name,
+                                    item.what) },
+      ],
+    });
+    node.classList.add("brief-subrow");
+    row.after(node);
+    nodes.unshift(node);
+  }
+  row._expanded = nodes;
+  btn.textContent = "hide";
+}
+
 // "tell" row buttons: open the Tell-Vira popup anchored to the button —
 // the composer bar the brief used to carry is gone (Tell Vira lives in
 // the right-click menu everywhere now)
@@ -5164,26 +5199,44 @@ function renderBrief(b) {
     briefEmpty(wait, "Nobody is waiting on a reply.");
 
   const loops = briefSection(body, "Open loops", "stalest first");
-  (b.loops || []).forEach((l) => briefRow(loops, {
-    time: briefDays(l.days), title: l.person_name, sub: l.what,
-    tag: l.owed_by === "me" ? "you owe" : (l.owed_by ? "theirs" : null),
-    tagCls: l.owed_by === "me" ? "owe" : "",
-    personId: l.person_id,
-    actions: [
-      { label: "done", title: "Resolve — closes the loop on the profile",
-        run: (btn, row) => closeBriefLoop(row, l) },
-      { label: "edit", title: "Rewrite this loop in place",
-        run: (btn, row) => editBriefLoop(row, l) },
-      { label: "tell", title: "Tell Vira what you know about this",
-        run: (btn) => tellFromRow(btn, l.person_id, l.person_name, l.what) },
-    ],
-  }));
+  (b.loops || []).forEach((l) => {
+    if (l.bundle) {
+      briefRow(loops, {
+        time: briefDays(l.days), title: l.person_name,
+        sub: `${l.count} things — ${l.items[0].what}`,
+        tag: "you owe ×" + l.count, tagCls: "owe",
+        personId: l.person_id,
+        actions: [
+          { label: "show", title: "Show each loop in this bundle",
+            run: (btn, row) => toggleLoopBundle(btn, row, l) },
+          { label: "tell", title: "Tell Vira what you know about this",
+            run: (btn) => tellFromRow(btn, l.person_id, l.person_name,
+                                       l.items.map((i) => i.what).join("; ")) },
+        ],
+      });
+      return;
+    }
+    briefRow(loops, {
+      time: briefDays(l.days), title: l.person_name, sub: l.what,
+      tag: l.owed_by === "me" ? "you owe" : (l.owed_by ? "theirs" : null),
+      tagCls: l.owed_by === "me" ? "owe" : "",
+      personId: l.person_id,
+      actions: [
+        { label: "done", title: "Resolve — closes the loop on the profile",
+          run: (btn, row) => closeBriefLoop(row, l) },
+        { label: "edit", title: "Rewrite this loop in place",
+          run: (btn, row) => editBriefLoop(row, l) },
+        { label: "tell", title: "Tell Vira what you know about this",
+          run: (btn) => tellFromRow(btn, l.person_id, l.person_name, l.what) },
+      ],
+    });
+  });
   if (!(b.loops || []).length) briefEmpty(loops, "No open loops on file.");
   else {
     const sweep = el("button", "brief-act sweep", "clear all shown…");
     sweep.title = "Close every loop listed above";
     sweep.addEventListener("click", async () => {
-      const items = b.loops || [];
+      const items = (b.loops || []).flatMap((l) => l.items || [l]);
       if (!confirm(`Close all ${items.length} loops shown? They stay on `
                    + "each profile, struck through.")) return;
       sweep.disabled = true;
