@@ -290,6 +290,34 @@ def clean_definition(raw):
     return d
 
 
+def set_meta(slug, title=None, subtitle=None):
+    """Rename a room's title and/or the line under it. Safe by
+    construction: the SLUG keys the done-mark store and the item ids, so a
+    retitle orphans nothing — it flows to the switcher, the export page and
+    the list on the next read. None keeps the existing value; an empty
+    title is refused (a room must be nameable)."""
+    if title is not None:
+        title = _text(title, "title", cap=120, required=True)
+    if subtitle is not None:
+        subtitle = _text(subtitle, "subtitle", cap=300)
+    path = ROOMS_DIR / f"{slug}.json"
+    with locked(ROOT / "data" / "reading" / f"{slug}.build"):
+        room = load_room(slug)
+        if room is None:
+            raise KeyError(slug)
+        if title is not None:
+            room["title"] = title
+        if subtitle is not None:
+            room["subtitle"] = subtitle
+        room["updated"] = datetime.now(timezone.utc).astimezone() \
+            .isoformat(timespec="seconds")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(room, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        tmp.replace(path)
+    return {"title": room["title"], "subtitle": room.get("subtitle", "")}
+
+
 def set_definition(slug, raw):
     """Validate and write a room's definition in place. Items untouched.
     Raises KeyError on an unknown room, BuildError on a bad payload."""

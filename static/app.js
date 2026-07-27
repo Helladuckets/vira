@@ -12071,14 +12071,14 @@ function fdWatch() {
 // ---------- reader: one surface, the room UI itself ----------
 // NO CARDS (owner's call, 2026-07-27): the reading-room UI *is* the Reader.
 // The header names what you are in — a big-topic room ("Anthropic reading
-// room") or My Documents — and the title is a SWITCHER: click it to move
-// between rooms, My Documents, and creating/forking a room. A "Details"
+// room") or Vira's Documents — and the title is a SWITCHER: click it to
+// move between rooms, Vira's Documents, and creating/forking a room. A "Details"
 // reveal under the title answers the questions a room otherwise begs: what
 // is the corpus, how was it derived, what is it tracking — with Refresh,
 // editable standing instructions (Save), and Fork (start a new room from
 // this one's definition, e.g. swap the company name).
 //
-// Inside My Documents, THE QUEUE IS ACTIVE WORK. Marking something read takes
+// Inside Vira's Documents, THE QUEUE IS ACTIVE WORK. Marking something read takes
 // it OFF the list rather than greying it out, because the document is still
 // saved at its source. "Recently read" is a fold underneath, for undo.
 //
@@ -12143,13 +12143,16 @@ function readerStage(url, title) {
   readerShow("stage");
 }
 
-// Open by locator kind. A served path goes in the frame; markdown goes to
-// the note panel, which already knows how to render a plan and a vault note.
+// Open by locator kind — EVERY document type comes up in a large central
+// window that dismisses on a click away (owner's call, 2026-07-27):
+// plans and vault documents in the note panel, served HTML (dossiers) in
+// the viewer focus panel. The in-view stage survives only for legacy
+// room pages selected from the switcher.
 function openReaderItem(it) {
   if (it.missing) { toast("That document is no longer where it was saved."); return; }
   if (it.locator_kind === "plan") { openPlan(it.ref || it.locator); return; }
   if (it.locator_kind === "vault") { openNote(it.locator, it.title); return; }
-  readerStage(it.locator, it.title);
+  openViewer(it.locator);
 }
 
 async function completeReaderItem(it, done = true) {
@@ -12307,9 +12310,9 @@ function renderReaderHead() {
   const titleRow = el("div", "rdr-title-row");
   const sw = el("button", "rdr-switch");
   sw.appendChild(el("span", "rdr-switch-t",
-    isDocs ? "My Documents" : (page?.title || "Reader")));
+    isDocs ? "Vira's Documents" : (page?.title || "Reader")));
   sw.appendChild(el("span", "rdr-caret", "▾"));
-  sw.title = "Switch — rooms, My Documents, new room";
+  sw.title = "Switch — rooms, Vira's Documents, new room";
   sw.addEventListener("click", (e) => {
     const r = sw.getBoundingClientRect();
     const items = [{ head: "Reading rooms" }];
@@ -12319,7 +12322,7 @@ function renderReaderHead() {
     }));
     items.push({ sep: true });
     items.push({
-      label: (isDocs ? "✓ " : "") + "My Documents — what Vira writes for you",
+      label: (isDocs ? "✓ " : "") + "Vira's Documents — what Vira writes for you",
       run: () => selectReader("docs"),
     });
     items.push({ sep: true });
@@ -12416,6 +12419,10 @@ function renderReaderDefs() {
 
   const form = el("div", "rdr-def-form");
   const fields = [
+    ["title", "Title — how this room is named everywhere",
+     (room && room.title) || page.title || ""],
+    ["subtitle", "Description — the line under the title",
+     (room && room.subtitle) || page.subtitle || ""],
     ["subject", "Subject — the corpus this room tracks", d.subject],
     ["why", "Why — the ranking rule (what P1 means here)", d.why],
     ["people", "People to track", d.people],
@@ -12446,6 +12453,8 @@ function renderReaderDefs() {
     save.disabled = true;
     try {
       const body = {
+        title: inputs.title.value.trim(),
+        subtitle: inputs.subtitle.value.trim(),
         subject: inputs.subject.value.trim(),
         why: inputs.why.value.trim(),
         people: inputs.people.value.trim(),
@@ -12459,9 +12468,19 @@ function renderReaderDefs() {
         body: JSON.stringify(body),
       });
       if (!r.ok) throw new Error((await r.json()).detail || r.status);
-      if (room) room.definition = (await r.json().catch(() => ({})))
-        .definition || body;
-      toast("Instructions saved — refreshes will follow them");
+      const out = await r.json().catch(() => ({}));
+      if (room) {
+        room.definition = out.definition || body;
+        if (out.meta) {
+          room.title = out.meta.title;
+          room.subtitle = out.meta.subtitle;
+        }
+      }
+      // A retitle must show everywhere at once — switcher, subline, list.
+      readerPages = null;
+      await fetchReaderPages().catch(() => {});
+      renderReaderHead();
+      toast("Saved — refreshes will follow these instructions");
     } catch (e2) { toast("Couldn't save: " + (e2.message || e2)); }
     finally { save.disabled = false; }
   });

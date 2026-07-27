@@ -1097,14 +1097,21 @@ class RoomDefinitionReq(BaseModel):
     modes: list = []
     depth: str = ""
     notes: str = ""
+    title: str | None = None      # None = keep; the room must stay nameable
+    subtitle: str | None = None
 
 
 @app.put("/api/reading/rooms/{name}/definition")
 def api_reading_room_definition(name: str, req: RoomDefinitionReq):
     """Save a room's definition — the owner-visible spec of what it tracks
-    and why. Refreshes follow it; forking starts from it."""
+    and why — plus, when sent, the title and the line under it. Refreshes
+    follow the definition; forking starts from it."""
     try:
-        return {"definition": readingroom.set_definition(name, req.dict())}
+        out = {"definition": readingroom.set_definition(
+            name, req.dict(exclude={"title", "subtitle"}))}
+        if req.title is not None or req.subtitle is not None:
+            out["meta"] = readingroom.set_meta(name, req.title, req.subtitle)
+        return out
     except KeyError:
         raise HTTPException(404, "no such reading room")
     except readingroom.BuildError as e:

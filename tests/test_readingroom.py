@@ -107,6 +107,40 @@ class DefinitionTest(Base):
                          readingroom.update_prompt("test-room"))
 
 
+class MetaTest(Base):
+    def test_retitle_flows_and_orphans_nothing(self):
+        self.build()
+        reading.set_done("test-room", "someid", True)
+        out = readingroom.set_meta("test-room", title="Anthropic")
+        self.assertEqual(out["title"], "Anthropic")
+        # Subtitle untouched, marks untouched, list shows the new name.
+        self.assertEqual(out["subtitle"], "Everything on one subject.")
+        self.assertEqual(reading.get_done("test-room"), ["someid"])
+        self.assertEqual(reading.list_pages()[0]["title"], "Anthropic")
+        self.assertIn("<title>Anthropic</title>",
+                      readingroom.export_html("test-room"))
+
+    def test_none_keeps_and_empty_title_is_refused(self):
+        self.build()
+        readingroom.set_meta("test-room", subtitle="A new line.")
+        room = readingroom.load_room("test-room")
+        self.assertEqual(room["title"], "Test Room")
+        self.assertEqual(room["subtitle"], "A new line.")
+        with self.assertRaises(readingroom.BuildError):
+            readingroom.set_meta("test-room", title="   ")
+        with self.assertRaises(KeyError):
+            readingroom.set_meta("nowhere", title="X")
+
+    def test_rebuild_after_retitle_keeps_the_new_name(self):
+        """A refresh session passes the CURRENT title back through the tool;
+        set_meta's write must survive an unrelated definition save too."""
+        self.build()
+        readingroom.set_meta("test-room", title="Anthropic")
+        readingroom.set_definition("test-room", {"subject": "s"})
+        self.assertEqual(readingroom.load_room("test-room")["title"],
+                         "Anthropic")
+
+
 class RefreshAllTest(Base):
     def test_no_rooms_is_an_empty_prompt_not_an_error(self):
         self.assertEqual(readingroom.refresh_all_prompt(), "")
