@@ -2742,7 +2742,22 @@ const IDEA_STATUSES = [["proposed", "Proposed"],
 // stamp (edits, status flips, note stamps); the two "Date added" orderings key
 // on creation time — a deliberately different axis, spelled out so they don't
 // read as duplicates of "Last updated".
+// The tag axes beyond `project`, mirroring server/ideatags.py AXES. The
+// live list arrives with /api/ideas (tag_status.axes) so adding an axis
+// stays a server-side data edit; this is only the pre-load fallback.
+let IDEA_AXES = [["module", "Module"], ["subproject", "Sub-project"],
+                 ["theme", "Theme"], ["concept", "Concept"]];
+let ideaVocab = {};          // {axis: [[tag, count], ...]} commonest first
+let ideaTagStatus = null;    // {total, tagged, pending, vectors}
+// Free-text search over the whole queue and the active tag filters. Both
+// persist: a filtered queue you return to is the point of filtering.
+let ideaQuery = localStorage.getItem("vira-idea-q") || "";
+let ideaTagFilter = lsGet("vira-idea-tags", []);   // ["theme:mobile-layout"]
+const relatedCache = new Map();                    // idea id -> related rows
+
 const IDEA_SORTS = [["grouped", "Status (grouped)"],
+                    ["theme", "Theme (grouped)"],
+                    ["module", "Module (grouped)"],
                     ["updated", "Last updated"],
                     ["newest", "Date added (new→old)"],
                     ["oldest", "Date added (old→new)"],
@@ -2754,11 +2769,93 @@ if (!IDEA_SORTS.some(([v]) => v === ideaSort)) ideaSort = "grouped";
 const ideaTs = (s) => Date.parse(s || "") || 0;
 
 async function loadIdeas() {
-  const { items, projects } = await api("/api/ideas");
-  ideasCache = items || [];
-  projectsCache = projects || [];
+  const r = await api("/api/ideas");
+  ideasCache = r.items || [];
+  projectsCache = r.projects || [];
+  ideaVocab = r.vocab || {};
+  ideaTagStatus = r.tag_status || null;
+  if (ideaTagStatus?.axes?.length)
+    IDEA_AXES = ideaTagStatus.axes.map((a) => [a.id, a.label]);
+  relatedCache.clear();
   renderProjectControls();
   renderIdeas();
+}
+
+// ----- search + tag filtering (client-side over the whole loaded queue).
+// The backlog is small enough to filter in the browser, which is both
+// instant and structurally incapable of the silent truncation a paged
+// search endpoint invites: what the count says is what is on screen. -----
+
+// Everything one idea can be found BY, lowercased once per render pass.
+function ideaHaystack(it) {
+  if (it._hay) return it._hay;
+  const tags = Object.values(it.tags || {}).flat().join(" ");
+  it._hay = [it.text, it.note, it.project, it.source, tags]
+    .filter(Boolean).join("   ").toLowerCase();
+  return it._hay;
+}
+
+// Every whitespace-separated term must appear somewhere in the haystack
+// (substring, so "read" finds "reader"). Quoted "..." is one phrase.
+function ideaMatchesQuery(it, q) {
+  if (!q) return true;
+  const hay = ideaHaystack(it);
+  const terms = (q.toLowerCase().match(/"[^"]+"|\S+/g) || [])
+    .map((t) => t.replace(/^"|"$/g, "")).filter(Boolean);
+  return terms.every((t) => hay.includes(t));
+}
+
+function ideaTagList(it) {
+  return IDEA_AXES.flatMap(([ax]) =>
+    ((it.tags || {})[ax] || []).map((t) => [ax, t]));
+}
+
+// Active tag filters are ANDed: picking "reader" then "mobile-layout"
+// means the ideas that are BOTH, which is how a filter earns its keep.
+function ideaMatchesTags(it) {
+  if (!ideaTagFilter.length) return true;
+  const own = new Set(ideaTagList(it).map(([ax, t]) => ax + ":" + t));
+  return ideaTagFilter.every((k) => own.has(k));
+}
+
+function toggleTagFilter(key) {
+  ideaTagFilter = ideaTagFilter.includes(key)
+    ? ideaTagFilter.filter((k) => k !== key) : ideaTagFilter.concat([key]);
+  lsSet("vira-idea-tags", ideaTagFilter);
+  renderIdeas();
+}
+
+function tagChip(ax, tag, opts = {}) {
+  const key = ax + ":" + tag;
+  const on = ideaTagFilter.includes(key);
+  const chip = el("button", "tag-chip tag-" + ax + (on ? " on" : ""));
+  chip.appendChild(el("span", "tag-ax", (IDEA_AXES.find(
+    ([a]) => a === ax) || [ax, ax])[1]));
+  chip.appendChild(el("span", "tag-val", tag));
+  if (opts.count) chip.appendChild(el("span", "tag-n", String(opts.count)));
+  chip.title = (on ? "Remove filter" : "Filter to") + " " + tag;
+  chip.addEventListener("click", (e) => { e.stopPropagation();
+                                          toggleTagFilter(key); });
+  if (opts.removable) {
+    // A wrong tag the owner cannot remove is the dead end that makes the
+    // whole tag layer untrustworthy. The correction lives on the idea
+    // (tags_drop), so a re-tag pass cannot silently undo it.
+    const x = el("span", "tag-x", "×");
+    x.title = "Remove this tag from the idea";
+    x.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const drop = (opts.item.tags_drop || []).concat([tag]);
+      try {
+        Object.assign(opts.item,
+                      await put("/api/ideas/" + opts.item.id,
+                                { tags_drop: drop }));
+        delete opts.item._hay;
+        renderIdeas();
+      } catch (err) { alert("Remove tag failed: " + err.message); }
+    });
+    chip.appendChild(x);
+  }
+  return chip;
 }
 
 // Populate a <select> with the known projects. `includeAll` prepends an
@@ -2896,6 +2993,19 @@ function ideaRow(it) {
     box.appendChild(meta);
   }
 
+  // Derived tags (click to filter, × to correct) + the "what else is
+  // like this" opener. Every idea gets the Similar button, tagged or not:
+  // similarity runs on embeddings, so it works before the tagger arrives.
+  const tags = ideaTagList(it);
+  const tagRow = el("div", "idea-tags");
+  tags.forEach(([ax, t]) => tagRow.appendChild(
+    tagChip(ax, t, { removable: true, item: it })));
+  const sim = el("button", "idea-sim-btn", "Similar");
+  sim.title = "Ideas that look like this one";
+  sim.addEventListener("click", () => toggleSimilar(box, it, sim));
+  tagRow.appendChild(sim);
+  box.appendChild(tagRow);
+
   // Vira-proposed ideas carry the approval bar — nothing runs unapproved
   if (it.status === "proposed") {
     const bar = el("div", "idea-run idea-approve-bar");
@@ -2957,6 +3067,149 @@ function ideaRow(it) {
   return box;
 }
 
+// ----- "what else is like this" -----
+
+async function fetchRelated(id, opts = {}) {
+  if (!opts.force && relatedCache.has(id)) return relatedCache.get(id);
+  const r = await api(`/api/ideas/${id}/related?limit=${opts.limit || 8}`
+    + (opts.floor != null ? `&floor=${opts.floor}` : ""));
+  relatedCache.set(id, r);
+  return r;
+}
+
+// One related idea as a compact row: the text, why it scored, and a jump
+// to it. The reasons are the point — a similarity list you cannot audit
+// is one you will not act on.
+function relatedRow(r, opts = {}) {
+  const row = el("div", "rel-row");
+  if (opts.check) {
+    const cb = el("input", "rel-check");
+    cb.type = "checkbox";
+    cb.checked = !!opts.checked;
+    cb.dataset.ideaId = r.id;
+    cb.addEventListener("change", opts.onToggle || (() => {}));
+    row.appendChild(cb);
+  }
+  const main = el("div", "rel-main");
+  const txt = el("div", "rel-text", r.text);
+  main.appendChild(txt);
+  const why = el("div", "rel-why");
+  const bits = (r.reasons || []).slice(0, 3);
+  if (r.status && r.status !== "open") bits.unshift(r.status);
+  why.textContent = bits.join(" · ") || "similar wording";
+  if (opts.verdict) {
+    const v = el("span", "rel-verdict " + opts.verdict.verdict,
+                 opts.verdict.verdict === "fold" ? "fold in" : "keep separate");
+    why.prepend(v, document.createTextNode(" "));
+    if (opts.verdict.why) why.append(" — " + opts.verdict.why);
+  }
+  main.appendChild(why);
+  row.appendChild(main);
+  if (!opts.check) {
+    const go = el("button", "btn small", "Open");
+    go.title = "Find this idea in the queue";
+    go.addEventListener("click", () => revealIdea(r.id));
+    row.appendChild(go);
+  }
+  return row;
+}
+
+// Jump to an idea: drop the filters that would hide it, then scroll and
+// flash it. Silently failing to reveal a row the owner just asked for is
+// the kind of dead end that makes a feature feel broken.
+function revealIdea(id) {
+  const it = ideasCache.find((x) => x.id === id);
+  if (it && ideaProject && (it.project || "") !== ideaProject) {
+    ideaProject = "";
+    localStorage.setItem("vira-idea-project", "");
+    renderProjectControls();
+  }
+  if (it && !ideaMatchesTags(it)) {
+    ideaTagFilter = [];
+    lsSet("vira-idea-tags", ideaTagFilter);
+  }
+  if (it && !ideaMatchesQuery(it, ideaQuery.trim())) setIdeaQuery("");
+  if (it && (it.status === "done" || it.status === "dropped")
+      && !ideaShowParked) {
+    ideaShowParked = true;
+    localStorage.setItem("vira-idea-show-parked", "1");
+  }
+  renderIdeas();
+  const node = document.querySelector(`.idea[data-idea-id="${id}"]`);
+  if (!node) { toast("That idea is no longer in the queue"); return; }
+  node.scrollIntoView({ block: "center", behavior: "smooth" });
+  node.classList.add("idea-flash");
+  setTimeout(() => node.classList.remove("idea-flash"), 1600);
+}
+
+async function toggleSimilar(box, it, btn) {
+  const open = box.querySelector(".idea-similar");
+  if (open) { open.remove(); btn.classList.remove("on"); return; }
+  btn.classList.add("on");
+  const panel = el("div", "idea-similar");
+  panel.appendChild(el("div", "rel-loading", "Looking…"));
+  box.appendChild(panel);
+  try {
+    const r = await fetchRelated(it.id);
+    panel.innerHTML = "";
+    if (!r.related?.length) {
+      panel.appendChild(el("div", "rel-loading",
+        "Nothing else in the queue looks like this one."));
+      return;
+    }
+    const head = el("div", "rel-head",
+      `${r.related.length} similar in the queue`);
+    if (r.basis === "text")
+      head.appendChild(el("span", "rel-basis",
+        "word overlap only — the embedding daemon is unreachable"));
+    panel.appendChild(head);
+    r.related.forEach((x) => panel.appendChild(relatedRow(x)));
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", "rel-loading", "Lookup failed: " + e.message));
+  }
+}
+
+// The nudge the owner asked for: after adding an idea, say so if they
+// have effectively had it before. Deliberately a dismissible card and
+// never a blocking dialog — a false positive must cost one glance.
+async function nudgeDuplicates(it) {
+  const box = $("#idea-dupnudge");
+  if (!box) return;
+  box.innerHTML = "";
+  let r;
+  try {
+    r = await fetchRelated(it.id, { force: true, limit: 4, floor: 0.5 });
+  } catch (e) { return; }
+  if (!r.related?.length) return;
+  const card = el("div", "dupnudge");
+  const head = el("div", "dupnudge-head");
+  const n = r.related.length;
+  head.appendChild(el("span", null, n === 1
+    ? "You already have an idea that reads like this one"
+    : `You already have ${n} ideas that read like this one`));
+  const x = el("button", "btn small", "Dismiss");
+  x.addEventListener("click", () => { box.innerHTML = ""; });
+  head.appendChild(x);
+  card.appendChild(head);
+  r.related.forEach((v) => card.appendChild(relatedRow(v)));
+  box.appendChild(card);
+}
+
+function setIdeaQuery(q) {
+  ideaQuery = q;
+  localStorage.setItem("vira-idea-q", q);
+  const inp = $("#idea-search");
+  if (inp && inp.value !== q) inp.value = q;
+}
+
+function clearIdeaFilters() {
+  setIdeaQuery("");
+  ideaTagFilter = [];
+  lsSet("vira-idea-tags", ideaTagFilter);
+  renderIdeas();
+}
+
 function editIdea(box, it) {
   const form = el("div", "idea-edit");
   const ta = el("textarea", "hook-input");
@@ -3010,10 +3263,73 @@ function sortedIdeas(source) {
   }
 }
 
-// Ideas visible under the current project filter ("" = all projects).
+// Ideas visible under the current project filter ("" = all projects),
+// the active tag filters, and the search box — in that order, all ANDed.
 function filteredIdeas() {
-  if (!ideaProject) return ideasCache;
-  return ideasCache.filter((i) => (i.project || "") === ideaProject);
+  const q = ideaQuery.trim();
+  return ideasCache.filter((i) =>
+    (!ideaProject || (i.project || "") === ideaProject)
+    && ideaMatchesTags(i) && ideaMatchesQuery(i, q));
+}
+
+// The filter bar above the list: whatever is currently narrowing the
+// queue (removable), then the commonest tags in the CURRENT scope so the
+// next filter is one click away.
+function renderTagBar(scoped) {
+  const bar = $("#idea-tagbar");
+  if (!bar) return;
+  bar.innerHTML = "";
+  if (ideaTagFilter.length) {
+    const on = el("div", "tagbar-row");
+    on.appendChild(el("span", "tagbar-label", "Filtering by"));
+    ideaTagFilter.forEach((k) => {
+      const [ax, ...rest] = k.split(":");
+      on.appendChild(tagChip(ax, rest.join(":")));
+    });
+    const clear = el("button", "btn small", "Clear tags");
+    clear.addEventListener("click", () => {
+      ideaTagFilter = [];
+      lsSet("vira-idea-tags", ideaTagFilter);
+      renderIdeas();
+    });
+    on.appendChild(clear);
+    bar.appendChild(on);
+  }
+  // Counts are over what is on screen, not over the whole backlog — a
+  // suggestion that yields zero results is worse than no suggestion.
+  const counts = new Map();
+  scoped.forEach((it) => ideaTagList(it).forEach(([ax, t]) => {
+    const k = ax + ":" + t;
+    if (!ideaTagFilter.includes(k)) counts.set(k, (counts.get(k) || 0) + 1);
+  }));
+  const top = [...counts.entries()].filter(([, n]) => n > 1)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 14);
+  if (top.length) {
+    const row = el("div", "tagbar-row");
+    row.appendChild(el("span", "tagbar-label",
+                       ideaTagFilter.length ? "Narrow further" : "Tags"));
+    top.forEach(([k, n]) => {
+      const [ax, ...rest] = k.split(":");
+      row.appendChild(tagChip(ax, rest.join(":"), { count: n }));
+    });
+    bar.appendChild(row);
+  }
+}
+
+// What the list is showing versus what exists, always stated. A filtered
+// view that does not say it is filtered reads as a shrinking backlog.
+function renderIdeaCount(shown, notes) {
+  const box = $("#idea-count");
+  if (!box) return;
+  const total = ideasCache.length;
+  const bits = [];
+  const filtered = shown !== total || ideaTagFilter.length || ideaQuery.trim();
+  bits.push(filtered ? `${shown} of ${total} ideas` : `${total} ideas`);
+  if (notes) bits.push(`${notes} note${notes === 1 ? "" : "s"} needing a session`);
+  const st = ideaTagStatus;
+  if (st && st.pending) bits.push(`${st.pending} not tagged yet`);
+  box.textContent = bits.join(" · ");
+  box.classList.toggle("filtered", !!filtered);
 }
 
 function renderIdeas() {
@@ -3025,10 +3341,24 @@ function renderIdeas() {
   // squatting above the list in their own pinned lane.
   const notes = queueNotes();
   const scoped = filteredIdeas();
+  renderTagBar(scoped);
+  renderIdeaCount(scoped.length, notes.length);
   if (!scoped.length && !notes.length) {
-    list.appendChild(el("div", "empty left", ideasCache.length
-      ? "No ideas for " + ideaProject + " yet — add one above."
-      : "No ideas yet — add one above."));
+    const why = ideaQuery.trim() || ideaTagFilter.length
+      ? "Nothing matches this search." + (ideasCache.length
+        ? " " + ideasCache.length + " ideas are filtered out."
+        : "")
+      : (ideasCache.length
+        ? "No ideas for " + ideaProject + " yet — add one above."
+        : "No ideas yet — add one above.");
+    const empty = el("div", "empty left", why);
+    if (ideaQuery.trim() || ideaTagFilter.length) {
+      const reset = el("button", "btn small", "Clear filters");
+      reset.addEventListener("click", clearIdeaFilters);
+      empty.appendChild(document.createTextNode(" "));
+      empty.appendChild(reset);
+    }
+    list.appendChild(empty);
     return;
   }
   const isParked = (i) => i.status === "done" || i.status === "dropped";
@@ -3038,6 +3368,10 @@ function renderIdeas() {
   const isParkedW = (w) => w.kind === "idea" && isParked(w.it);
   const node = (w) => w.kind === "note"
     ? queueNoteRow(w.e, w.u) : ideaRow(w.it);
+  if (ideaSort === "theme" || ideaSort === "module") {
+    renderIdeasByTag(list, merged, ideaSort, node, isParkedW);
+    return;
+  }
   const flat = sortedIdeas(merged);
   if (flat) {
     // Completed items fold here too (collapsed by default), so the queue
@@ -3061,6 +3395,44 @@ function renderIdeas() {
     proposed.forEach((it) => list.appendChild(ideaRow(it)));
   }
   active.forEach((w) => list.appendChild(node(w)));
+  appendParkedFold(list, parked);
+}
+
+// Group the queue by one tag axis — the "show me everything about the
+// Reader" view. An idea is filed under its FIRST tag on the axis, so
+// every row appears exactly once and the buckets stay countable; to see
+// every idea carrying a tag regardless of position, click the tag chip
+// (that filter is not first-tag-only). Buckets are ordered biggest
+// first, with untagged work last rather than hidden — an idea the tagger
+// has not reached must not fall out of the queue.
+function renderIdeasByTag(list, merged, axis, node, isParkedW) {
+  const label = (IDEA_AXES.find(([a]) => a === axis) || [axis, axis])[1];
+  const buckets = new Map();
+  const loose = [];
+  const parked = [];
+  merged.forEach((w) => {
+    if (isParkedW(w)) { parked.push(w.it); return; }
+    const tags = w.kind === "idea" ? ((w.it.tags || {})[axis] || []) : [];
+    if (!tags.length) { loose.push(w); return; }
+    const k = tags[0];
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(w);
+  });
+  const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
+  [...buckets.entries()]
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+    .forEach(([tag, rows]) => {
+      const head = el("div", "ideas-sub");
+      head.appendChild(el("span", "ideas-sub-tag", tag));
+      head.appendChild(el("span", "ideas-sub-n", String(rows.length)));
+      list.appendChild(head);
+      rows.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+    });
+  if (loose.length) {
+    list.appendChild(el("div", "ideas-sub",
+      `No ${label.toLowerCase()} tag (${loose.length})`));
+    loose.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+  }
   appendParkedFold(list, parked);
 }
 
@@ -3145,6 +3517,26 @@ function initIdeas() {
     });
   }
 
+  const search = $("#idea-search");
+  if (search && !search.dataset.wired) {
+    search.dataset.wired = "1";
+    search.value = ideaQuery;
+    // Filtering is local, so it can run on every keystroke — one frame of
+    // debounce only to avoid re-rendering mid-word on a long list.
+    let t = null;
+    search.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => { setIdeaQuery(search.value); renderIdeas(); }, 80);
+    });
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); clearIdeaFilters(); }
+    });
+    $("#idea-search-clear")?.addEventListener("click", () => {
+      clearIdeaFilters();
+      search.focus();
+    });
+  }
+
   const filter = $("#idea-project-filter");
   if (filter && !filter.dataset.wired) {
     filter.dataset.wired = "1";
@@ -3194,6 +3586,8 @@ function initIdeas() {
       if (!projectsCache.includes(it.project)) projectsCache.push(it.project);
       renderProjectControls();
       renderIdeas();
+      // "You already had that idea" — asked the moment it is worth asking.
+      nudgeDuplicates(it).catch(() => {});
     } catch (e) { alert("Add failed: " + e.message); }
     finally { add.disabled = false; inp.focus(); }
   };
@@ -3339,7 +3733,22 @@ function ideaExtraBlock(extra) {
   return extra ? "\nAdditional instructions from the owner:\n" + extra + "\n" : "";
 }
 
-function ideaImplementPrompt(it, extra, cwd, perm) {
+// Backlog items the owner ticked to fold into THIS dispatch. Stated as
+// part of the same piece of work — the whole point is that the agent
+// does them together rather than leaving three near-identical tasks
+// behind it.
+function ideaFoldBlock(rows) {
+  if (!rows || !rows.length) return "";
+  return ["",
+    "The owner has folded these related backlog items INTO this task. They",
+    "are part of the same piece of work — handle them together, and say in",
+    "your report how each one was addressed:",
+    "",
+    ...rows.map((r, i) => `${i + 1}. ${r.text}`),
+    ""].join("\n");
+}
+
+function ideaImplementPrompt(it, extra, cwd, perm, fold) {
   // What each rung stops for. The owner is reachable in ALL of them — the
   // session holds open at the end of its turn, so a closing question is
   // something they can actually answer rather than shout into a dead log.
@@ -3366,6 +3775,7 @@ function ideaImplementPrompt(it, extra, cwd, perm) {
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
+    ideaFoldBlock(fold),
     ideaExtraBlock(extra),
     "Carry it out end to end:",
     "- First read the repo (its CLAUDE.md and the relevant modules) so your",
@@ -3388,7 +3798,7 @@ function ideaImplementPrompt(it, extra, cwd, perm) {
   ].join("\n");
 }
 
-function ideaPlanPrompt(it, extra, cwd) {
+function ideaPlanPrompt(it, extra, cwd, fold) {
   return [
     "You are Vira's planning agent, running headless and READ-ONLY inside the",
     "git repository at " + cwd + ". Research only — do NOT modify, create, or",
@@ -3397,6 +3807,7 @@ function ideaPlanPrompt(it, extra, cwd) {
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
+    ideaFoldBlock(fold),
     ideaExtraBlock(extra),
     "Read the repo (its CLAUDE.md and the relevant modules) so the plan is",
     "grounded in the real code, then produce a thorough, well-structured",
@@ -3462,8 +3873,80 @@ function ideaRunNote(mode) {
   return permMode($("#idea-run-perm").value).note
     + " Will not commit or push.";
 }
+// ----- the related-ideas block in the run sheet -----
+// The owner's ask, in one place: "there are 15 things like this — which
+// belong in this task?" Vira answers with a recommendation and reasons;
+// the checkboxes stay the owner's, because widening a dispatch is a scope
+// decision, not a retrieval one.
+
+function renderRunRelated() {
+  const wrap = $("#idea-run-related");
+  const list = $("#idea-run-related-list");
+  if (!wrap || !list || !ideaRunCtx) return;
+  const rows = ideaRunCtx.related || [];
+  wrap.style.display = rows.length ? "" : "none";
+  if (!rows.length) return;
+  const picked = ideaRunCtx.picked;
+  $("#idea-run-related-title").textContent =
+    `${rows.length} related idea${rows.length === 1 ? "" : "s"} in the queue`;
+  const n = picked.size;
+  $("#idea-run-related-note").textContent = n
+    ? `${n} folded into this ${ideaRunCtx.mode} — the agent will handle them together.`
+    : "Tick anything that belongs in this task, or let Vira sort them.";
+  list.innerHTML = "";
+  rows.forEach((r) => list.appendChild(relatedRow(r, {
+    check: true,
+    checked: picked.has(r.id),
+    verdict: (ideaRunCtx.verdicts || {})[r.id],
+    onToggle: (e) => {
+      if (e.target.checked) picked.add(r.id); else picked.delete(r.id);
+      renderRunRelated();
+    },
+  })));
+}
+
+async function loadRunRelated(it) {
+  try {
+    const r = await fetchRelated(it.id, { limit: 12 });
+    if (!ideaRunCtx || ideaRunCtx.it.id !== it.id) return;   // sheet moved on
+    ideaRunCtx.related = r.related || [];
+    renderRunRelated();
+  } catch (e) { /* the dispatch must not depend on the suggestion */ }
+}
+
+$("#idea-run-analyze").addEventListener("click", async (e) => {
+  if (!ideaRunCtx?.related?.length) return;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Reading them…";
+  try {
+    const { verdicts } = await post(
+      `/api/ideas/${ideaRunCtx.it.id}/fold-analysis`,
+      { candidates: ideaRunCtx.related.map((r) => r.id) });
+    ideaRunCtx.verdicts = {};
+    (verdicts || []).forEach((v) => {
+      ideaRunCtx.verdicts[v.id] = v;
+      // Vira's recommendation PRE-TICKS; it never dispatches on its own.
+      if (v.verdict === "fold") ideaRunCtx.picked.add(v.id);
+      else ideaRunCtx.picked.delete(v.id);
+    });
+    renderRunRelated();
+    const n = (verdicts || []).filter((v) => v.verdict === "fold").length;
+    toast(n ? `Vira folded in ${n} — review before launching`
+            : "Vira kept them all separate");
+  } catch (err) {
+    toast("Analysis failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Have Vira sort these";
+  }
+});
+
 function openIdeaRun(it, mode) {
-  ideaRunCtx = { it, mode };
+  ideaRunCtx = { it, mode, related: [], picked: new Set(), verdicts: {} };
+  $("#idea-run-related").style.display = "none";
+  $("#idea-run-related-list").innerHTML = "";
+  loadRunRelated(it);
   $("#idea-run-mode").textContent = mode === "plan" ? "Plan" : "Implement";
   $("#idea-run-title").textContent =
     mode === "plan" ? "Plan this idea" : "Implement this idea";
@@ -3507,9 +3990,11 @@ $("#idea-run-go").addEventListener("click", async () => {
   localStorage.setItem("vira-idea-cwd", cwd);
   localStorage.setItem("vira-idea-model", model);
   if (mode !== "plan") lsSet("vira-idea-perm", perm);
+  const fold = (ideaRunCtx.related || [])
+    .filter((r) => ideaRunCtx.picked.has(r.id));
   const prompt = mode === "plan"
-    ? ideaPlanPrompt(it, extra, cwd)
-    : ideaImplementPrompt(it, extra, cwd, perm);
+    ? ideaPlanPrompt(it, extra, cwd, fold)
+    : ideaImplementPrompt(it, extra, cwd, perm, fold);
   // Plan runs read-only (the session gate denies writes) and Vira publishes
   // its markdown to the lab; Implement runs on the rung the owner picked.
   const permission_mode = perm === "autopilot" ? "bypassPermissions" : null;
@@ -3519,11 +4004,23 @@ $("#idea-run-go").addEventListener("click", async () => {
   const jid = await launchJob(prompt, cwd,
     { permission_mode, model, publish_plan, idea_id: it.id, mode: runMode });
   // stamp the idea so the dispatch is visible next time it's opened
+  const day = new Date().toISOString().slice(0, 10);
+  const job = " (job " + String(jid || "?").slice(0, 8) + ")";
   try {
-    const stamp = "dispatched " + mode + " " + new Date().toISOString().slice(0, 10)
-      + " (job " + String(jid || "?").slice(0, 8) + ")";
+    const stamp = "dispatched " + mode + " " + day
+      + (fold.length ? ` with ${fold.length} folded in` : "") + job;
     const note = (it.note ? it.note + " · " : "") + stamp;
     Object.assign(it, await put("/api/ideas/" + it.id, { note }));
+    // A folded idea is now being worked on somewhere else — say so on its
+    // own row, or it sits in the queue looking untouched and gets
+    // dispatched a second time.
+    await Promise.all(fold.map(async (r) => {
+      const t = ideasCache.find((x) => x.id === r.id);
+      if (!t) return;
+      const n = (t.note ? t.note + " · " : "")
+        + `folded into "${(it.text || "").slice(0, 48)}…" ${day}${job}`;
+      Object.assign(t, await put("/api/ideas/" + r.id, { note: n }));
+    }));
     renderIdeas();
   } catch (e) { /* stamping is best-effort */ }
 });

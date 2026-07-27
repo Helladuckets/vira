@@ -157,12 +157,28 @@
                 title="Project this idea belongs to"></select>
         <button class="btn primary" id="idea-add">Add</button>
       </div>
+      <div id="idea-dupnudge"></div>
       <div class="ideas-sortbar">
-        <label for="idea-project-filter">Project</label>
-        <select id="idea-project-filter" class="idea-sort"></select>
-        <label for="idea-sort">Sort</label>
-        <select id="idea-sort" class="idea-sort"></select>
+        <div class="idea-searchwrap">
+          <input id="idea-search" class="search" type="search"
+                 placeholder="Search the queue — text, tags, project, notes"
+                 autocomplete="off" spellcheck="false">
+          <button id="idea-search-clear" class="idea-search-clear"
+                  title="Clear search" aria-label="Clear search">×</button>
+        </div>
+        <!-- label + control wrap as ONE unit: as siblings they orphan on a
+             narrow column, leaving "PROJECT" stranded beside the search box -->
+        <span class="sb-pair">
+          <label for="idea-project-filter">Project</label>
+          <select id="idea-project-filter" class="idea-sort"></select>
+        </span>
+        <span class="sb-pair">
+          <label for="idea-sort">Sort</label>
+          <select id="idea-sort" class="idea-sort"></select>
+        </span>
       </div>
+      <div id="idea-tagbar" class="idea-tagbar"></div>
+      <div id="idea-count" class="idea-count"></div>
       <div id="work-journal-lane"></div>
       <div id="ideas-list" class="list"></div>
     </div>
@@ -576,6 +592,18 @@
       <!-- the ladder, safest first; options are filled from PERM_MODES -->
       <select id="idea-run-perm"></select>
     </label>
+    <!-- Related backlog items. Populated when the sheet opens: the owner
+         ticks what belongs in THIS dispatch, and Vira can recommend. -->
+    <div id="idea-run-related" class="run-related" style="display:none">
+      <div class="run-related-head">
+        <span id="idea-run-related-title">Related ideas</span>
+        <button class="btn small" id="idea-run-analyze"
+                title="Have Vira read them and say which belong in this task">
+          Have Vira sort these</button>
+      </div>
+      <p class="hint" id="idea-run-related-note"></p>
+      <div id="idea-run-related-list" class="run-related-list"></div>
+    </div>
     <label class="field">Additional instructions (optional)
       <textarea id="idea-run-extra" rows="3" spellcheck="false"
                 placeholder="Anything else Vira should know or do…"></textarea></label>
