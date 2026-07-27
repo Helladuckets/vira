@@ -10,7 +10,8 @@ jobs-log.json (the durable job ledger). The last five joined 2026-07-20
 closing the external audit's P1-8 gap list (decision D5 bucket A).
 applications.json (job-application owner state), mail-accounts.json (mail
 account registry), and circuits.json (circuit definitions) joined
-2026-07-21 (module-audit wave 1).
+2026-07-21 (module-audit wave 1). evidence.json (Evidence Ledger case
+studies — curated owner work, not regenerable) joined 2026-07-25.
 
 One dated snapshot per file per day into ~/.vira-backups/ (outside the
 repo), keeping the newest 14 of each. Runs at startup and then daily from
@@ -27,7 +28,7 @@ DEST = Path.home() / ".vira-backups"
 FILES = ("ideas.json", "config.json", "subscriptions.json",
          "routines.json", "circuit-runs.json", "brief-journal.json",
          "atlas-groups.json", "jobs-log.json", "applications.json",
-         "mail-accounts.json", "circuits.json")
+         "mail-accounts.json", "circuits.json", "evidence.json")
 KEEP = 14
 
 

@@ -87,5 +87,7 @@
   "whatsapp_bridge_port": 18377,
   "_whatsapp_bridge_port": "Linked-device WhatsApp sidecar port (127.0.0.1 only). Dormant until paired via settings > WhatsApp. whatsapp_poll_seconds (default 5) and whatsapp_node_bin (default \"node\") tune the watcher and node binary.",
   "sms_fallback": true,
-  "_sms_fallback": "When an iMessage is not delivered (an Android/iMessage-less recipient), re-send it as a plain text. Needs Text Message Forwarding to the paired iPhone so Messages owns an SMS account. send_verify_seconds (default 8) is how long Vira watches chat.db for the delivery error before giving up (0 disables the reactive check). A contact can also be marked SMS on their person page, which sends as a text from the start."
+  "_sms_fallback": "When an iMessage is not delivered (an Android/iMessage-less recipient), re-send it as a plain text. Needs Text Message Forwarding to the paired iPhone so Messages owns an SMS account. send_verify_seconds (default 8) is how long Vira watches chat.db for the delivery error before giving up (0 disables the reactive check). A contact can also be marked SMS on their person page, which sends as a text from the start.",
+  "evidence_retro_dir": "",
+  "_evidence_retro_dir": "Directory the Evidence Ledger mines session retros from (glob \"* vira.md\"). Empty = ~/TC-IL/Sessions. The ledger also reads this checkout's own git-ignored retros/*.md when present."
 }

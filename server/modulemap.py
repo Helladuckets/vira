@@ -333,6 +333,22 @@ DEFAULT_MODULES = [
      "endpoints": ["/api/changelog"],
      "keywords": ["change log", "changelog", "shipped", "scoped"],
      "updated": TODAY},
+    {"id": "evidence-engine", "name": "Evidence Ledger", "layer": "engine",
+     "group": "operate", "kind": "derived episodes + one model call per case",
+     "what": "Mines session retros, this checkout's git log, and the job "
+             "ledger into EPISODES (rung 1, deterministic, no model call), "
+             "then composes each into an interview-ready case study — "
+             "problem, how the owner directed the agent, what shipped — "
+             "with exactly one model call per episode (rung 2), validated "
+             "so every citation must actually appear in the episode's own "
+             "material or it is dropped. Curated in data/evidence.json, "
+             "draft -> approved -> archived, exportable as plain text.",
+     "links": [{"to": "retros-src", "how": "parses sections of"},
+               {"to": "job-ledger", "how": "folds Vira-repo jobs from"}],
+     "endpoints": ["/api/evidence", "/api/evidence/compose"],
+     "keywords": ["evidence ledger", "case study", "build provenance",
+                  "interview"],
+     "updated": TODAY},
     {"id": "housekeeping", "name": "Housekeeping", "layer": "engine",
      "group": "operate", "kind": "notify + updater + backups",
      "what": "iMessage pings when something needs eyes, the in-app git "
