@@ -576,13 +576,54 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 }
 .idea-search-clear:hover { color: var(--text); }
 
-.idea-tagbar { display: flex; flex-direction: column; gap: 6px;
-  margin: 8px 0 4px; }
-.tagbar-row { display: flex; flex-wrap: wrap; gap: 6px;
-  align-items: center; }
 .tagbar-label {
   font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text-faint); margin-right: 2px;
+}
+
+/* The tag filter dropdown: a button that names the active filters, and a
+   multi-select panel. Replaces the chip block, which cost a whole band of
+   vertical space above the list. */
+.tagbtn { cursor: pointer; text-align: left; min-width: 96px; }
+.tagbtn::after { content: " \25be"; color: var(--text-faint); }
+.tagbtn.on { border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg); }
+.tag-pop { width: 268px; max-width: calc(100vw - 24px); }
+.tag-pop-search { width: 100%; margin-bottom: 6px; }
+.tag-pop-body { max-height: 46vh; overflow-y: auto; }
+.tag-pop-ax {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint); margin: 8px 0 3px;
+}
+.tag-pop-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 4px 5px; border-radius: var(--radius); font-size: 12px;
+  color: var(--text-dim);
+}
+.tag-pop-row:hover { background: var(--hover-wash); color: var(--text); }
+.tag-pop-row.on { color: var(--sel-text); background: var(--sel-bg); }
+.tag-pop-check { flex: none; accent-color: var(--accent); }
+.tag-pop-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tag-pop-n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.tag-pop-foot {
+  display: flex; justify-content: flex-end; gap: 6px;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line);
+}
+
+/* Grouped sorts: the expand/collapse-all strip above the group headers. */
+.group-allbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 4px 0 2px;
+}
+
+/* Any card or row whose whole surface activates its primary action. The
+   cue is a cursor and a hover wash, never a border that would fight the
+   card's own state colors. */
+.card-actionable { cursor: pointer; }
+.card-actionable:focus-visible { outline: 1px solid var(--sel-line);
+  outline-offset: 1px; }
+.sub-card.card-actionable:hover, .app-row.card-actionable:hover {
+  border-color: var(--accent-line);
 }
 .idea-count { font-size: 11px; color: var(--text-faint); margin: 6px 0 10px; }
 .idea-count.filtered { color: var(--text-dim); }
@@ -654,8 +695,10 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .rel-loading { font-size: 11px; color: var(--text-faint); }
 .rel-row {
   display: flex; align-items: flex-start; gap: 8px;
-  padding: 6px 0; border-top: 1px solid var(--line);
+  padding: 6px 4px; border-top: 1px solid var(--line);
+  border-radius: var(--radius);
 }
+.rel-row.card-actionable:hover { background: var(--hover-wash); }
 .rel-row:first-of-type { border-top: 0; }
 .rel-main { flex: 1 1 auto; min-width: 0; }   /* the shrinkable column */
 .rel-text {

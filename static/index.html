@@ -176,8 +176,14 @@
           <label for="idea-sort">Sort</label>
           <select id="idea-sort" class="idea-sort"></select>
         </span>
+        <!-- Tags are a multi-select dropdown, not a chip block: the block
+             cost a whole band of vertical space, worst on a phone. -->
+        <span class="sb-pair">
+          <label for="idea-tagbtn">Tags</label>
+          <button id="idea-tagbtn" class="idea-sort tagbtn"
+                  aria-haspopup="true" aria-expanded="false">All tags</button>
+        </span>
       </div>
-      <div id="idea-tagbar" class="idea-tagbar"></div>
       <div id="idea-count" class="idea-count"></div>
       <div id="work-journal-lane"></div>
       <div id="ideas-list" class="list"></div>

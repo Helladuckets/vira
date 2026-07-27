@@ -61,6 +61,72 @@ function startPoll(fn, ms, maxMs) {
   return h;
 }
 
+// ---------- whole-card activation (the owner's rule, 2026-07-27) ----------
+// If a card or row can be opened or expanded, clicking ANYWHERE on it does
+// that — the way a person row in People opens the person. A small link or
+// a lone "Open" button as the only target is a smaller hit area than the
+// thing it belongs to, and on a phone it is a miss waiting to happen.
+//
+// Controls inside a card keep their own behaviour: this never fires for a
+// click that landed on a button, a form control, a link, a tag chip, or
+// anything else that already means something. Right-click is left alone so
+// the Vira-wide context menu still opens, and a click that ends a text
+// selection is a read, not an activation.
+const CARD_CONTROL_SEL =
+  "button, a, input, select, textarea, label, summary, [contenteditable], "
+  + ".tag-chip, .idea-status, .seg-btn";
+
+function cardAction(node, run, opts = {}) {
+  node.classList.add("card-actionable");
+  if (opts.hint) node.title = node.title || opts.hint;
+  node.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.defaultPrevented) return;
+    if (e.target.closest(CARD_CONTROL_SEL)) return;
+    if (node._swallowClick) { node._swallowClick = false; return; }
+    const sel = window.getSelection?.();
+    if (sel && !sel.isCollapsed && node.contains(sel.anchorNode)) return;
+    run(e);
+  });
+  // Keyboard parity: a card that is clickable is reachable and operable.
+  if (!opts.noKeys) {
+    node.tabIndex = 0;
+    node.addEventListener("keydown", (e) => {
+      if (e.target !== node) return;
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); run(e); }
+    });
+  }
+  return node;
+}
+
+// longPress(node, run): the phone's answer to a right-click. Desktop has
+// the context menu, so this only arms for touch — a mouse held still is
+// not an intent, and treating it as one steals ordinary clicks. Movement,
+// lift, or a scroll cancels. The click that follows the press is swallowed
+// so a long press cannot also activate the card underneath it.
+const LONG_PRESS_MS = 500;
+
+function longPress(node, run, ms = LONG_PRESS_MS) {
+  let timer = null, sx = 0, sy = 0;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  node.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch" || e.isPrimary === false) return;
+    sx = e.clientX; sy = e.clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      node._swallowClick = true;
+      if (navigator.vibrate) navigator.vibrate(8);
+      run(e);
+    }, ms);
+  });
+  node.addEventListener("pointermove", (e) => {
+    if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 8) cancel();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((t) =>
+    node.addEventListener(t, cancel));
+  node.addEventListener("scroll", cancel, true);
+  return node;
+}
+
 // bindSheet: the modal-sheet chrome (open/close + Cancel wiring) every
 // sheet hand-rolled. Each sheet's field wiring stays its own; this is
 // only the scaffolding. A sheet answers Escape as well as Cancel, and on
@@ -2786,23 +2852,34 @@ async function loadIdeas() {
 // instant and structurally incapable of the silent truncation a paged
 // search endpoint invites: what the count says is what is on screen. -----
 
-// Everything one idea can be found BY, lowercased once per render pass.
+// Punctuation is not a search term. "Visual Network." found nothing
+// while "Visual Network" matched, because the trailing period was being
+// matched literally - the search was reading typing as intent. Both
+// sides fold the same way now: lowercased, every run of
+// non-alphanumerics collapsed to one space. Hyphenation stops mattering
+// too, so "mobile-layout", "mobile layout" and "Mobile Layout" are one
+// query.
+function searchFold(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Everything one idea can be found BY, folded once per render pass.
 function ideaHaystack(it) {
   if (it._hay) return it._hay;
   const tags = Object.values(it.tags || {}).flat().join(" ");
-  it._hay = [it.text, it.note, it.project, it.source, tags]
-    .filter(Boolean).join("   ").toLowerCase();
+  it._hay = searchFold([it.text, it.note, it.project, it.source, tags]
+    .filter(Boolean).join("   "));
   return it._hay;
 }
 
-// Every whitespace-separated term must appear somewhere in the haystack
-// (substring, so "read" finds "reader"). Quoted "..." is one phrase.
+// Every term must appear somewhere in the haystack (substring, so "read"
+// finds "reader"). A quoted "..." stays one phrase, not loose words.
 function ideaMatchesQuery(it, q) {
   if (!q) return true;
   const hay = ideaHaystack(it);
-  const terms = (q.toLowerCase().match(/"[^"]+"|\S+/g) || [])
-    .map((t) => t.replace(/^"|"$/g, "")).filter(Boolean);
-  return terms.every((t) => hay.includes(t));
+  const terms = (q.match(/"[^"]+"|\S+/g) || [])
+    .map((x) => searchFold(x.replace(/^"|"$/g, ""))).filter(Boolean);
+  return terms.every((x) => hay.includes(x));
 }
 
 function ideaTagList(it) {
@@ -2917,10 +2994,16 @@ function ideaRow(it) {
   const proj = el("span", "badge idea-proj", it.project || "Vira");
   proj.title = "Project";
   top.appendChild(proj);
+  // Clicking the text does NOT edit (owner's call, 2026-07-27). A click on
+  // a card reads as "open this", and editing on a plain click means every
+  // attempt to read a long idea drops you into a textarea. Editing is a
+  // deliberate gesture on both surfaces: right-click on desktop (the
+  // Vira-wide menu already carries "Edit idea"), long-press on a phone.
+  // Nothing expands on an idea card yet, so a plain click does nothing.
   const text = el("div", "idea-text", it.text);
-  text.title = "Click to edit";
-  text.addEventListener("click", () => editIdea(box, it));
+  text.title = "Right-click (or long-press) to edit";
   top.appendChild(text);
+  longPress(box, () => editIdea(box, it));
 
   const del2 = el("button", "idea-del", "×");
   del2.title = "Delete";
@@ -3078,12 +3161,17 @@ async function fetchRelated(id, opts = {}) {
 }
 
 // One related idea as a compact row: the text, why it scored, and a jump
-// to it. The reasons are the point — a similarity list you cannot audit
-// is one you will not act on.
+// to it. The reasons are the point — a similarity list you cannot audit is
+// one you will not act on.
+//
+// The WHOLE ROW is the target (owner's rule): in the run sheet it toggles
+// its checkbox, and everywhere else it opens the idea. The "Open" button
+// stays as a visible affordance, not as the only place a click counts.
 function relatedRow(r, opts = {}) {
   const row = el("div", "rel-row");
+  let cb = null;
   if (opts.check) {
-    const cb = el("input", "rel-check");
+    cb = el("input", "rel-check");
     cb.type = "checkbox";
     cb.checked = !!opts.checked;
     cb.dataset.ideaId = r.id;
@@ -3105,11 +3193,17 @@ function relatedRow(r, opts = {}) {
   }
   main.appendChild(why);
   row.appendChild(main);
-  if (!opts.check) {
+  if (cb) {
+    cardAction(row, () => {
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change", { bubbles: true }));
+    }, { hint: "Fold this into the dispatch" });
+  } else {
     const go = el("button", "btn small", "Open");
     go.title = "Find this idea in the queue";
     go.addEventListener("click", () => revealIdea(r.id));
     row.appendChild(go);
+    cardAction(row, () => revealIdea(r.id), { hint: "Open this idea" });
   }
   return row;
 }
@@ -3272,48 +3366,102 @@ function filteredIdeas() {
     && ideaMatchesTags(i) && ideaMatchesQuery(i, q));
 }
 
-// The filter bar above the list: whatever is currently narrowing the
-// queue (removable), then the commonest tags in the CURRENT scope so the
-// next filter is one click away.
-function renderTagBar(scoped) {
-  const bar = $("#idea-tagbar");
-  if (!bar) return;
-  bar.innerHTML = "";
-  if (ideaTagFilter.length) {
-    const on = el("div", "tagbar-row");
-    on.appendChild(el("span", "tagbar-label", "Filtering by"));
-    ideaTagFilter.forEach((k) => {
-      const [ax, ...rest] = k.split(":");
-      on.appendChild(tagChip(ax, rest.join(":")));
-    });
-    const clear = el("button", "btn small", "Clear tags");
-    clear.addEventListener("click", () => {
-      ideaTagFilter = [];
-      lsSet("vira-idea-tags", ideaTagFilter);
-      renderIdeas();
-    });
-    on.appendChild(clear);
-    bar.appendChild(on);
-  }
-  // Counts are over what is on screen, not over the whole backlog — a
-  // suggestion that yields zero results is worse than no suggestion.
+// The tag filter is a DROPDOWN, not a bar of chips (owner's call,
+// 2026-07-27). A chip block for a converged vocabulary is a whole band of
+// vertical space above the list, and on a phone it pushed the queue itself
+// below the fold — the control was costing more room than the thing it
+// filtered. The button states what is active; the picker holds the rest.
+function tagLabel(key) {
+  const [ax, ...rest] = key.split(":");
+  return rest.join(":");
+}
+
+function renderTagButton() {
+  const btn = $("#idea-tagbtn");
+  if (!btn) return;
+  const n = ideaTagFilter.length;
+  btn.textContent = n === 0 ? "All tags"
+    : n === 1 ? tagLabel(ideaTagFilter[0])
+    : `${n} tags`;
+  btn.classList.toggle("on", n > 0);
+  btn.title = n ? "Filtering by " + ideaTagFilter.map(tagLabel).join(", ")
+                : "Filter the queue by tag";
+}
+
+// Counts are over what is ON SCREEN under the other filters, so a tag the
+// picker offers can never yield an empty list. Selected tags are always
+// listed even at zero, or unticking the one you just picked is impossible.
+function tagCounts(scoped) {
   const counts = new Map();
-  scoped.forEach((it) => ideaTagList(it).forEach(([ax, t]) => {
-    const k = ax + ":" + t;
-    if (!ideaTagFilter.includes(k)) counts.set(k, (counts.get(k) || 0) + 1);
+  scoped.forEach((it) => ideaTagList(it).forEach(([ax, tg]) => {
+    const k = ax + ":" + tg;
+    counts.set(k, (counts.get(k) || 0) + 1);
   }));
-  const top = [...counts.entries()].filter(([, n]) => n > 1)
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 14);
-  if (top.length) {
-    const row = el("div", "tagbar-row");
-    row.appendChild(el("span", "tagbar-label",
-                       ideaTagFilter.length ? "Narrow further" : "Tags"));
-    top.forEach(([k, n]) => {
-      const [ax, ...rest] = k.split(":");
-      row.appendChild(tagChip(ax, rest.join(":"), { count: n }));
+  ideaTagFilter.forEach((k) => { if (!counts.has(k)) counts.set(k, 0); });
+  return counts;
+}
+
+function openTagPicker(anchor) {
+  closeCtxPops();
+  const counts = tagCounts(filteredIdeas());
+  const pop = el("div", "ctx-pop tag-pop");
+  const search = el("input", "search tag-pop-search");
+  search.type = "search";
+  search.placeholder = "Filter tags…";
+  pop.appendChild(search);
+  const body = el("div", "tag-pop-body");
+  pop.appendChild(body);
+
+  const draw = () => {
+    const q = searchFold(search.value);
+    body.innerHTML = "";
+    let shown = 0;
+    IDEA_AXES.forEach(([ax, label]) => {
+      const rows = [...counts.entries()]
+        .filter(([k]) => k.startsWith(ax + ":"))
+        .filter(([k]) => !q || searchFold(tagLabel(k)).includes(q))
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      if (!rows.length) return;
+      body.appendChild(el("div", "tag-pop-ax", label));
+      rows.forEach(([k, n]) => {
+        const row = el("label", "tag-pop-row" +
+          (ideaTagFilter.includes(k) ? " on" : ""));
+        const cb = el("input", "tag-pop-check");
+        cb.type = "checkbox";
+        cb.checked = ideaTagFilter.includes(k);
+        cb.addEventListener("change", () => {
+          toggleTagFilter(k);          // re-renders the queue live
+          row.classList.toggle("on", cb.checked);
+        });
+        row.appendChild(cb);
+        row.appendChild(el("span", "tag-pop-name", tagLabel(k)));
+        row.appendChild(el("span", "tag-pop-n", String(n)));
+        body.appendChild(row);
+        shown += 1;
+      });
     });
-    bar.appendChild(row);
-  }
+    if (!shown) body.appendChild(el("div", "rel-loading", "No tags match."));
+  };
+  draw();
+  search.addEventListener("input", draw);
+
+  const foot = el("div", "tag-pop-foot");
+  const clear = el("button", "btn small", "Clear");
+  clear.addEventListener("click", () => {
+    ideaTagFilter = [];
+    lsSet("vira-idea-tags", ideaTagFilter);
+    renderIdeas();
+    draw();
+  });
+  const done = el("button", "btn small primary", "Done");
+  done.addEventListener("click", () => pop.remove());
+  foot.appendChild(clear);
+  foot.appendChild(done);
+  pop.appendChild(foot);
+
+  const r = anchor.getBoundingClientRect();
+  placeCtxPop(pop, Math.max(8, r.right - 260), r.bottom + 4);
+  search.focus();
 }
 
 // What the list is showing versus what exists, always stated. A filtered
@@ -3369,7 +3517,7 @@ function renderIdeas() {
   // squatting above the list in their own pinned lane.
   const notes = queueNotes();
   const scoped = filteredIdeas();
-  renderTagBar(scoped);
+  renderTagButton();
   renderIdeaCount(scoped.length, notes.length);
   if (!scoped.length && !notes.length) {
     const why = ideaQuery.trim() || ideaTagFilter.length
@@ -3427,12 +3575,28 @@ function renderIdeas() {
 }
 
 // Group the queue by one tag axis — the "show me everything about the
-// Reader" view. An idea is filed under its FIRST tag on the axis, so
-// every row appears exactly once and the buckets stay countable; to see
-// every idea carrying a tag regardless of position, click the tag chip
-// (that filter is not first-tag-only). Buckets are ordered biggest
-// first, with untagged work last rather than hidden — an idea the tagger
-// has not reached must not fall out of the queue.
+// Reader" view. An idea files under its FIRST tag on the axis, so every row
+// appears exactly once and the buckets stay countable; to see every idea
+// carrying a tag regardless of position, use the tag filter (which is not
+// first-tag-only). Buckets order biggest first, untagged work last rather
+// than hidden.
+//
+// EVERY GROUP STARTS COLLAPSED (owner's call, 2026-07-27): the point of
+// grouping is to jump to the part you want, and a grouped list that opens
+// fully expanded is the ungrouped list with headings in it — you still
+// scroll past everything. So the first screen is the map: every group,
+// named and counted, one click from its contents. Which groups are open is
+// remembered per axis, so a queue you left open comes back that way.
+function openGroups(axis) {
+  return new Set(lsGet("vira-idea-groups-" + axis, []));
+}
+
+function setGroupOpen(axis, tag, open) {
+  const s = openGroups(axis);
+  if (open) s.add(tag); else s.delete(tag);
+  lsSet("vira-idea-groups-" + axis, [...s]);
+}
+
 function renderIdeasByTag(list, merged, axis, node, isParkedW) {
   const label = (IDEA_AXES.find(([a]) => a === axis) || [axis, axis])[1];
   const buckets = new Map();
@@ -3447,20 +3611,50 @@ function renderIdeasByTag(list, merged, axis, node, isParkedW) {
     buckets.get(k).push(w);
   });
   const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
-  [...buckets.entries()]
-    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
-    .forEach(([tag, rows]) => {
-      const head = el("div", "ideas-sub");
-      head.appendChild(el("span", "ideas-sub-tag", tag));
-      head.appendChild(el("span", "ideas-sub-n", String(rows.length)));
-      list.appendChild(head);
-      rows.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+  const open = openGroups(axis);
+  // A search narrows to what you were looking for, so hiding it behind a
+  // closed group would defeat the search: with a query live, every group
+  // holding a match opens.
+  const searching = !!ideaQuery.trim();
+
+  const group = (key, title, rows) => {
+    const isOpen = searching || open.has(key);
+    const head = el("div", "ideas-sub ideas-toggle" + (isOpen ? " open" : ""));
+    head.appendChild(el("span", "ideas-sub-tag", title));
+    head.appendChild(el("span", "ideas-sub-n", String(rows.length)));
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    const toggle = () => { setGroupOpen(axis, key, !isOpen); renderIdeas(); };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
     });
-  if (loose.length) {
-    list.appendChild(el("div", "ideas-sub",
-      `No ${label.toLowerCase()} tag (${loose.length})`));
-    loose.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+    list.appendChild(head);
+    if (isOpen) rows.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+  };
+
+  const ordered = [...buckets.entries()]
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  if (ordered.length) {
+    const bar = el("div", "group-allbar");
+    const anyOpen = searching || ordered.some(([k]) => open.has(k))
+      || open.has("__none__");
+    const all = el("button", "btn small",
+                   anyOpen ? "Collapse all" : "Expand all");
+    all.addEventListener("click", () => {
+      lsSet("vira-idea-groups-" + axis, anyOpen
+        ? [] : ordered.map(([k]) => k).concat(loose.length ? ["__none__"] : []));
+      renderIdeas();
+    });
+    bar.appendChild(el("span", "tagbar-label",
+      `${ordered.length} ${label.toLowerCase()} groups`));
+    bar.appendChild(all);
+    list.appendChild(bar);
   }
+  ordered.forEach(([tag, rows]) => group(tag, tag, rows));
+  if (loose.length)
+    group("__none__", `No ${label.toLowerCase()} tag`, loose);
   appendParkedFold(list, parked);
 }
 
@@ -3543,6 +3737,12 @@ function initIdeas() {
       localStorage.setItem("vira-idea-sort", ideaSort);
       renderIdeas();
     });
+  }
+
+  const tagBtn = $("#idea-tagbtn");
+  if (tagBtn && !tagBtn.dataset.wired) {
+    tagBtn.dataset.wired = "1";
+    tagBtn.addEventListener("click", () => openTagPicker(tagBtn));
   }
 
   const search = $("#idea-search");
@@ -6260,6 +6460,11 @@ function subCard(m) {
     controls.appendChild(ok);
   }
   card.appendChild(controls);
+  // The whole card opens its history, the way a person row opens the
+  // person (owner's rule, 2026-07-27). The History button stays as the
+  // visible affordance; it is no longer the only place a click lands.
+  cardAction(card, () => hist.click(),
+             { hint: "Open this subscription's charge history" });
   return card;
 }
 
@@ -9063,6 +9268,13 @@ function appRow(r) {
     actions.appendChild(sess);
   }
   row.appendChild(actions);
+  // Clicking the row opens its dossier, same rule as everywhere else. The
+  // "Why" button remains the visible affordance; a role with no dossier
+  // read has nothing to expand, so its row stays inert.
+  const why = actions.querySelector(".app-cbtn");
+  if (why && why.textContent === "Why")
+    cardAction(row, () => why.click(),
+               { hint: "Open the fit read for this role" });
   return row;
 }
 
