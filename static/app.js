@@ -7384,6 +7384,12 @@ const FIND_ALIAS = { search: "media", brain: "notes" };
 // above: the retired id keeps working everywhere it was ever written down.
 const PEOPLE_ALIAS = { radar: "networking" };
 
+// Plans folded into the Reader (2026-07-27) — a saved plan is one more thing
+// to read, and it lands in the same queue as the dossiers and retros. Unlike
+// the folds above there is no tab to select: the queue is one list, so the
+// alias only has to redirect the window id.
+const READER_ALIAS = { plans: "reader" };
+
 let peopleTab = "contacts";   // contacts | networking
 
 function setPeopleTab(tab, opts = {}) {
@@ -7467,7 +7473,6 @@ function viewLoad(id) {
     loadBrief().catch(() => {});
   if (id === "triage") loadTriageWindow().catch(() => {});
   if (id === "work") workTabLoad(workTab);
-  if (id === "plans") loadPlans().catch(() => {});
   if (id === "evidence") loadEvidence().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
@@ -7521,6 +7526,7 @@ function openApp(id) {
     setPeopleTab(PEOPLE_ALIAS[id], { defer: true });
     id = "people";
   }
+  if (READER_ALIAS[id]) id = READER_ALIAS[id];
   if (typeof isDesktop !== "undefined" && isDesktop) {
     if (winState[id]) openWindow(id);
     return;
@@ -7710,56 +7716,11 @@ async function openNoteByRef(ref) {
 }
 
 // ----- Plans: Plan-mode output saved to the vault, reopenable in-app -----
-
-let plansCache = [];
-
-async function loadPlans() {
-  const meta = $("#plans-meta");
-  try {
-    const r = await api("/api/plans");
-    plansCache = r.plans || [];
-  } catch (e) {
-    if (meta) meta.textContent = "unavailable";
-    return;
-  }
-  const list = $("#plans-list");
-  list.innerHTML = "";
-  if (meta) meta.textContent = plansCache.length
-    ? plansCache.length + (plansCache.length === 1 ? " plan" : " plans") : "";
-  if (!plansCache.length) {
-    list.appendChild(el("div", "empty left",
-      "No plans yet. Run “Plan” on an idea and it lands here."));
-    return;
-  }
-  plansCache.forEach((p) => list.appendChild(planRow(p)));
-}
-
-function planRow(p) {
-  const box = el("div", "plan-item");
-  const top = el("div", "plan-item-top");
-  const name = el("button", "plan-item-name", p.title || "Untitled plan");
-  name.title = "Open this plan";
-  name.addEventListener("click", () => openPlan(p.id));
-  top.appendChild(name);
-  const delBtn = el("button", "idea-del", "×");
-  delBtn.title = "Delete";
-  delBtn.addEventListener("click", async () => {
-    if (!confirm("Delete this plan? It is removed from your vault too.")) return;
-    try {
-      await del("/api/plans/" + p.id);
-      plansCache = plansCache.filter((x) => x.id !== p.id);
-      loadPlans();
-    } catch (e) { alert("Delete failed: " + e.message); }
-  });
-  top.appendChild(delBtn);
-  box.appendChild(top);
-  const bits = [p.created ? fmtTime(p.created) : "",
-    p.missing ? "file missing" : "",
-    p.lab_url ? "hosted" : ""].filter(Boolean);
-  if (bits.length)
-    box.appendChild(el("div", "plan-item-meta", bits.join(" · ")));
-  return box;
-}
+// The Plans WINDOW retired into the Reader on 2026-07-27 — a saved plan is one
+// more thing to read, and plans.py was already the registry-of-pointers shape
+// the Reader queue now generalizes. What stays here is openPlan(), because it
+// is called from three places that have nothing to do with that window: the
+// Reader queue, an idea's note, and the [plan <id>] link in a job terminal.
 
 // Open a saved plan in the shared markdown focus panel (the vault note
 // viewer). Works from anywhere the plan is referenced — the Plans window,
@@ -9555,10 +9516,13 @@ const WINDOWS = [
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
   { id: "find", title: "Find", w: 720,
     icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
-  { id: "plans", title: "Plans", w: 520,
-    icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
   { id: "evidence", title: "Evidence Ledger", w: 640,
     icon: "M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6zM9 12l2 2 4-4" },
+  // Plans folded into the Reader (2026-07-27). A saved plan is something to
+  // read, and it was already the same shape as the Reader's queue — a registry
+  // of pointers to documents living elsewhere. Reached through READER_ALIAS,
+  // so #plans, the palette, saved dock slots and the [plan <id>] links in job
+  // terminals and idea notes all still land on it.
   // Radar folded into People as the Networking tab (2026-07-25). Reached
   // through PEOPLE_ALIAS, so #radar, the palette, saved dock slots and every
   // right-click integration still land on it — exactly as search/brain do
@@ -10915,7 +10879,8 @@ function mdockIds() {
     // and the slot silently disappears; and a bar that held BOTH old
     // windows collapses to one, so the freed slot is refilled below
     // rather than leaving the owner with a four-app bar.
-    const id = FIND_ALIAS[raw] ? "find" : (PEOPLE_ALIAS[raw] ? "people" : raw);
+    const id = FIND_ALIAS[raw] ? "find"
+      : (PEOPLE_ALIAS[raw] ? "people" : (READER_ALIAS[raw] || raw));
     if (appLive(id) && !out.includes(id) && out.length < MDOCK_MAX) out.push(id);
   });
   const target = Math.min(want.length, MDOCK_MAX);
@@ -11740,6 +11705,7 @@ const HASH_ROUTES = {
   },
   "radar": () => openApp("radar"),
   "networking": () => openApp("radar"),
+  "plans": () => openApp("plans"),     // retired window -> the Reader queue
 };
 
 function routeHash() {
@@ -12092,11 +12058,27 @@ function fdWatch() {
   }, 5000);
 }
 
-// ---------- reader: launcher window for personal reading-room pages ----------
-// Pages are personal-layer static HTML under /reading/ (never committed);
-// the Reader lists whatever exists and shows it in a frame. With no pages
-// the Reader shows its front door instead of withdrawing from the grid.
+// ---------- reader: the focused-attention queue ----------
+// Everything Vira generates that is worth reading — audit dossiers, saved
+// plans, session retros, morning briefs — plus the personal reading rooms.
+// Each entry is a SOFT POINTER: the document keeps living wherever its
+// producer put it, and the Reader only holds title/kind/locator.
+//
+// THE QUEUE IS ACTIVE WORK. Marking something read takes it OFF the list
+// rather than greying it out, because the document is still saved at its
+// source. "Recently read" is a fold underneath, for undo.
+//
+// Rooms and dossiers are served HTML and open in the frame; plans and vault
+// documents are markdown and open in the shared note panel. Section progress
+// appears only where a document has anchors to count.
 let readerPages = null;
+let readerQueue = [];
+let readerDoneOpen = lsGet("vira-reader-done-open", false);
+
+const READER_KIND = {
+  dossier: "dossier", plan: "plan", retro: "retro",
+  brief: "brief", room: "reading room",
+};
 
 async function fetchReaderPages() {
   if (readerPages) return readerPages;
@@ -12115,29 +12097,199 @@ function selectReaderPage(page, pill) {
     .forEach((x) => x.classList.toggle("on", x === pill));
 }
 
-async function loadReader() {
-  const pages = await fetchReaderPages();
+// Open by locator kind. A served path goes in the frame (and lights the
+// matching room pill when there is one); markdown goes to the note panel,
+// which already knows how to render a plan and a vault note.
+function openReaderItem(it) {
+  if (it.missing) { toast("That document is no longer where it was saved."); return; }
+  if (it.locator_kind === "plan") { openPlan(it.ref || it.locator); return; }
+  if (it.locator_kind === "vault") { openNote(it.locator, it.title); return; }
+  const f = $("#reader-frame");
+  if (f) f.src = it.locator;
+  const a = $("#reader-fulltab");
+  if (a) a.href = it.locator;
+  document.querySelectorAll(".reader-pill").forEach((x) => x.classList.remove("on"));
+  $("#reader-stage")?.scrollIntoView({ block: "nearest" });
+}
+
+async function completeReaderItem(it, done = true) {
+  try {
+    await post("/api/reading/list/" + encodeURIComponent(it.id) + "/complete",
+               { done });
+  } catch (e) { toast("Couldn't update that: " + (e.message || e)); return; }
+  await loadReader({ force: true });
+  if (done) {
+    toast("Marked read — still saved where it lives",
+          [["Undo", () => completeReaderItem(it, false)]]);
+  }
+}
+
+// A row expands into its own sections. The marks reuse the per-list done
+// store the reading rooms already use, keyed by the entry's slug, so
+// progress follows the owner across devices like everything else.
+async function toggleReaderSections(it, row, btn) {
+  const open = row.querySelector(".reader-secs");
+  if (open) { open.remove(); btn.classList.remove("on"); return; }
+  btn.classList.add("on");
+  const box = el("div", "reader-secs");
+  box.appendChild(el("div", "spin", "Loading sections…"));
+  row.appendChild(box);
+  let full;
+  try { full = await api("/api/reading/list/" + encodeURIComponent(it.id)); }
+  catch { box.innerHTML = ""; box.appendChild(el("div", "hint", "Unavailable.")); return; }
+  let marked = [];
+  try { marked = (await api("/api/reading/" + full.slug + "/done")).done || []; }
+  catch { marked = []; }
+  box.innerHTML = "";
+  (full.sections || []).forEach((s) => {
+    const line = el("label", "reader-sec");
+    const cb = el("input");
+    cb.type = "checkbox";
+    cb.checked = marked.includes(s.id);
+    cb.addEventListener("change", async () => {
+      try {
+        await post("/api/reading/" + full.slug + "/done",
+                   { id: s.id, done: cb.checked });
+        loadReader({ force: true });
+      } catch { cb.checked = !cb.checked; toast("Couldn't save that mark"); }
+    });
+    line.appendChild(cb);
+    line.appendChild(el("span", "reader-sec-t", s.title));
+    box.appendChild(line);
+  });
+}
+
+function readerRow(it) {
+  const row = el("div", "reader-item" + (it.missing ? " missing" : ""));
+  const top = el("div", "reader-item-top");
+  const name = el("button", "reader-item-name", it.title);
+  name.title = "Open";
+  name.addEventListener("click", () => openReaderItem(it));
+  top.appendChild(name);
+
+  const acts = el("div", "reader-acts");
+  const p = it.progress || {};
+  if (p.total > 1) {
+    const secBtn = el("button", "reader-mini", p.done + " of " + p.total);
+    secBtn.title = "Sections";
+    secBtn.addEventListener("click", () => toggleReaderSections(it, row, secBtn));
+    acts.appendChild(secBtn);
+  }
+  const doneBtn = el("button", "reader-done", "Read");
+  doneBtn.title = "Mark read — it drops off the list and stays where it is saved";
+  doneBtn.addEventListener("click", () => completeReaderItem(it));
+  acts.appendChild(doneBtn);
+  top.appendChild(acts);
+  row.appendChild(top);
+
+  const bits = [READER_KIND[it.kind] || it.kind,
+    it.created ? fmtTime(it.created) : "",
+    it.missing ? "source missing" : ""].filter(Boolean);
+  row.appendChild(el("div", "reader-item-meta", bits.join(" · ")));
+  return row;
+}
+
+async function loadReader(opts = {}) {
+  if (opts.force) readerPages = null;
+  const pages = await fetchReaderPages().catch(() => []);
+
+  // the room picker above the frame stays, for the rooms specifically
   const bar = $("#reader-pages");
-  if (!bar || !pages.length) return;
-  if (!bar.childElementCount) {
+  if (bar && pages.length && !bar.childElementCount) {
     pages.forEach((p) => {
       const b = el("button", "reader-pill", p.title);
       b.addEventListener("click", () => selectReaderPage(p, b));
       bar.appendChild(b);
     });
-    if (pages.length === 1) bar.style.display = "none";  // one page: no picker
   }
+
+  let data;
+  try { data = await api("/api/reading/list"); }
+  catch { data = { queue: [], completed: [], counts: {} }; }
+  readerQueue = data.queue || [];
+
+  const meta = $("#reader-meta");
+  if (meta) {
+    const n = readerQueue.length;
+    meta.textContent = n ? n + (n === 1 ? " to read" : " to read") : "all read";
+  }
+
+  const list = $("#reader-list");
+  if (list) {
+    list.innerHTML = "";
+    if (!readerQueue.length) {
+      list.appendChild(el("div", "empty left",
+        "Nothing queued. Dossiers, plans, retros and briefs land here as they "
+        + "are made — and drop off once you mark them read."));
+    } else readerQueue.forEach((it) => list.appendChild(readerRow(it)));
+  }
+  renderReaderDone(data.completed || [], (data.counts || {}).completed || 0);
+
   const f = $("#reader-frame");
-  if (f && !f.getAttribute("src")) selectReaderPage(pages[0], bar.firstChild);
+  if (f && !f.getAttribute("src") && pages.length)
+    selectReaderPage(pages[0], bar && bar.firstChild);
 }
 
+// Recently read, folded away. Present for undo, not as a library — the
+// documents themselves are still wherever they were saved.
+// `rows` is a capped tail; `total` is how many have actually been read. The
+// label names the total and the list shows the tail, rather than reporting the
+// cap as if it were the count.
+function renderReaderDone(rows, total) {
+  const host = $("#reader-done");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!rows.length) return;
+  const n = total || rows.length;
+  const head = el("button", "reader-fold",
+    n + " read" + (rows.length < n ? " · showing the last " + rows.length : ""));
+  const body = el("div", "reader-done-body");
+  body.style.display = readerDoneOpen ? "" : "none";
+  head.classList.toggle("on", readerDoneOpen);
+  head.addEventListener("click", () => {
+    readerDoneOpen = !readerDoneOpen;
+    body.style.display = readerDoneOpen ? "" : "none";
+    head.classList.toggle("on", readerDoneOpen);
+    lsSet("vira-reader-done-open", readerDoneOpen);
+  });
+  rows.forEach((it) => {
+    const line = el("div", "reader-donerow");
+    const n = el("button", "reader-donename", it.title);
+    n.addEventListener("click", () => openReaderItem(it));
+    line.appendChild(n);
+    const undo = el("button", "reader-mini", "unread");
+    undo.addEventListener("click", () => completeReaderItem(it, false));
+    line.appendChild(undo);
+    body.appendChild(line);
+  });
+  host.appendChild(head);
+  host.appendChild(body);
+}
+
+async function readerBackfill() {
+  const btn = $("#reader-scan");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await post("/api/reading/list/backfill", {});
+    toast(r.added ? "Found " + r.added + " to read" : "Nothing new");
+    await loadReader({ force: true });
+  } catch (e) {
+    toast("Scan failed: " + (e.message || e));
+  } finally { if (btn) btn.disabled = false; }
+}
+
+$("#reader-scan")?.addEventListener("click", readerBackfill);
+
 async function readerProbe() {
-  // Dormancy no longer means disappearing. With no personal pages the
-  // Reader keeps its Launchpad tile (in the unconfigured state) and opens
-  // its front door instead; it stays off the dock and the phone's access
-  // bar, which are the curated working set rather than the catalog.
+  // Dormancy no longer means disappearing. With nothing to read the Reader
+  // keeps its Launchpad tile (in the unconfigured state) and opens its front
+  // door instead; it stays off the dock and the phone's access bar, which are
+  // the curated working set rather than the catalog.
   try { await fetchReaderPages(); } catch { readerPages = []; }
-  if (readerPages && readerPages.length) return;
+  let queued = 0;
+  try { queued = (await api("/api/reading/list")).counts?.total || 0; }
+  catch { queued = 0; }
+  if ((readerPages && readerPages.length) || queued) return;
   document.querySelector('.dock-item[data-dock="reader"]')?.remove();
   renderMobileDock();
 }

@@ -158,15 +158,38 @@ class FrontDoorStateTest(unittest.TestCase):
             self.assertIn("ready", m)
             json.dumps(m)          # the payload must be serializable
 
+    def _reader(self, pages=(), queued=0):
+        """The probe reads two sources since the 2026-07-27 widening, so both
+        have to be pinned or the machine's real store decides the answer."""
+        from server import readinglist
+        with mock.patch.object(frontdoor.reading, "list_pages",
+                               return_value=list(pages)), \
+             mock.patch.object(readinglist, "counts",
+                               return_value={"queued": queued}):
+            return frontdoor._reader_state()
+
+    def test_reader_is_dormant_with_neither_rooms_nor_a_queue(self):
+        self.assertFalse(self._reader()["ready"])
+        self.assertIn("Nothing to read", self._reader()["detail"])
+
     def test_reader_readiness_follows_the_pages_on_disk(self):
-        with mock.patch.object(frontdoor.reading, "list_pages",
-                               return_value=[]):
-            self.assertFalse(frontdoor._reader_state()["ready"])
-        with mock.patch.object(frontdoor.reading, "list_pages",
-                               return_value=[{"name": "a"}]):
-            st = frontdoor._reader_state()
+        st = self._reader(pages=[{"name": "a"}])
         self.assertTrue(st["ready"])
         self.assertIn("1 reading room", st["detail"])
+
+    def test_a_queue_alone_makes_the_reader_live(self):
+        # a Reader holding dossiers but no rooms is set up, and must not mount
+        # its front door over a full list
+        st = self._reader(queued=20)
+        self.assertTrue(st["ready"])
+        self.assertIn("20 to read", st["detail"])
+        self.assertNotIn("reading room", st["detail"])
+
+    def test_both_sources_are_named(self):
+        st = self._reader(pages=[{"name": "a"}], queued=3)
+        self.assertIn("3 to read", st["detail"])
+        self.assertIn("1 reading room", st["detail"])
+        self.assertEqual(st["count"], 4)
 
     def test_applications_needs_both_sources_and_a_record(self):
         with tempfile.TemporaryDirectory() as tmp:

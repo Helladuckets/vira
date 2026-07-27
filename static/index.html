@@ -275,15 +275,6 @@
   </section>
 
   <!-- PLANS (Plan-mode output, saved to the vault + reopenable in-app) -->
-  <section id="view-plans" class="view">
-    <div class="section-head"><h2>Plans</h2>
-      <span class="hint" id="plans-meta" style="margin-left:auto"></span>
-    </div>
-    <p class="hint ideas-hint">Plans Vira drafts from your ideas, saved to
-      your vault. Click a plan to open it; the link stays even after the
-      job terminal is gone.</p>
-    <div id="plans-list" class="list"></div>
-  </section>
 
   <!-- EVIDENCE LEDGER (build provenance -> interview-ready case studies) -->
   <section id="view-evidence" class="view">
@@ -460,12 +451,24 @@
        dock icon and tab remove themselves when no pages exist) -->
   <section id="view-reader" class="view">
     <div class="section-head"><h2>Reader</h2>
-      <div class="reader-pages" id="reader-pages"></div>
-      <a class="fchip sm newtab" id="reader-fulltab" href="#" target="_blank"
-         rel="noopener" style="margin-left:auto; text-decoration:none">Open full tab</a>
+      <span class="hint" id="reader-meta" style="margin-left:auto"></span>
+      <button class="fchip sm" id="reader-scan" title="Look for documents that
+        have been made since the last scan">Scan</button>
     </div>
-    <iframe class="reader-frame" id="reader-frame"
-            title="Reader — personal reading pages" loading="lazy"></iframe>
+    <p class="hint ideas-hint">Everything worth reading, wherever it actually
+      lives — dossiers, plans, retros and briefs. Mark one read and it drops off
+      the list; the document stays exactly where it was saved.</p>
+    <div id="reader-list" class="list"></div>
+    <div id="reader-done" class="reader-done"></div>
+    <div id="reader-stage" class="reader-stage">
+      <div class="section-head sub">
+        <div class="reader-pages" id="reader-pages"></div>
+        <a class="fchip sm newtab" id="reader-fulltab" href="#" target="_blank"
+           rel="noopener" style="margin-left:auto; text-decoration:none">Open full tab</a>
+      </div>
+      <iframe class="reader-frame" id="reader-frame"
+              title="Reader — the document you are reading" loading="lazy"></iframe>
+    </div>
   </section>
 
   <!-- LAUNCHPAD (every app as an icon grid; on desktop this section lives

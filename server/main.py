@@ -32,6 +32,7 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                find,
                frontdoor,
                reading,
+               readinglist,
                fixtures, ideas, ideatags, imessage, jobboards, jobfiles,
                joblog,
                journal,
@@ -1051,6 +1052,60 @@ def api_frontdoor_dismiss(module_id: str, req: DismissReq):
 def api_reading_pages():
     """Personal reading-room pages on disk; the Reader launcher's list."""
     return {"pages": reading.list_pages()}
+
+
+class ReadingCompleteReq(BaseModel):
+    done: bool = True
+
+
+@app.get("/api/reading/list")
+def api_reading_list():
+    """The Reader's queue: everything worth reading that is not read yet.
+
+    Completed entries are deliberately absent from `queue` — marking a document
+    read takes it off the list, because the document still lives wherever its
+    producer put it. `completed` carries a short tail for the undo affordance."""
+    return {"queue": readinglist.queue(),
+            "completed": readinglist.completed(),
+            "counts": readinglist.counts()}
+
+
+@app.post("/api/reading/list/backfill")
+def api_reading_list_backfill():
+    """Register everything already on disk. Idempotent."""
+    return readinglist.backfill()
+
+
+@app.post("/api/reading/list/{item_id}/complete")
+def api_reading_list_complete(item_id: str, req: ReadingCompleteReq):
+    try:
+        return {"item": readinglist.complete(item_id, req.done)}
+    except KeyError:
+        raise HTTPException(404, "no such reading-list entry")
+
+
+@app.delete("/api/reading/list/{item_id}")
+def api_reading_list_forget(item_id: str):
+    """Drop the pointer. The document itself is never touched."""
+    try:
+        readinglist.forget(item_id)
+    except KeyError:
+        raise HTTPException(404, "no such reading-list entry")
+    return {"ok": True}
+
+
+@app.get("/api/reading/list/{item_id}")
+def api_reading_list_item(item_id: str):
+    """One entry plus its sections, so the client knows how to open it and
+    whether to show section progress."""
+    it = readinglist.get(item_id)
+    if not it:
+        raise HTTPException(404, "no such reading-list entry")
+    out = dict(it)
+    out["missing"] = readinglist._missing(it)
+    out["sections"] = readinglist.sections(it)
+    out["progress"] = readinglist.progress(it)
+    return out
 
 
 @app.get("/api/reading/{name}/done")

@@ -14,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import plans, session
+from server import plans, readinglist, session
 
 
 class TitleSlugTests(unittest.TestCase):
@@ -34,7 +34,13 @@ class TitleSlugTests(unittest.TestCase):
 
 class _VaultCase(unittest.TestCase):
     """A tmp registry + a connected tmp vault, so no real store is touched
-    and ensure_vault never needs qocha."""
+    and ensure_vault never needs qocha.
+
+    The reading-list store is isolated here too: since 2026-07-27 save_plan
+    also registers the plan in the Reader's queue, and a test that isolates
+    only the store it knows about will happily write fixture rows ("Plan A",
+    "Same Title") into the owner's real queue. A test has to isolate the side
+    effects of the function it calls, not the ones it remembers."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -42,8 +48,10 @@ class _VaultCase(unittest.TestCase):
         root = Path(self.tmp.name)
         self.vault = root / "vault"
         self.reg = root / "plans.json"
+        self.rlist = root / "reading-list.json"
         for p in (
             mock.patch.object(plans, "REG_PATH", self.reg),
+            mock.patch.object(readinglist, "STORE", self.rlist),
             mock.patch.object(
                 plans.settings, "get",
                 side_effect=lambda k: (str(self.vault) if k == "vault_root"
@@ -51,6 +59,28 @@ class _VaultCase(unittest.TestCase):
         ):
             p.start()
             self.addCleanup(p.stop)
+
+
+class ReaderQueueTests(_VaultCase):
+    """A saved plan is something to read, so it joins the Reader's queue. This
+    coupling is deliberate and easy to forget, which is why it is pinned."""
+
+    def test_a_saved_plan_lands_in_the_reading_queue(self):
+        e = plans.save_plan("# Cool Plan\n\nDo the thing.")
+        q = readinglist.queue()
+        self.assertEqual([i["title"] for i in q], ["Cool Plan"])
+        self.assertEqual(q[0]["kind"], "plan")
+        self.assertEqual(q[0]["locator_kind"], "plan")
+        self.assertEqual(q[0]["ref"], e["id"])
+
+    def test_the_queue_write_never_costs_the_plan(self):
+        # this runs inside the detached job runner; a queue that cannot be
+        # written is not a reason to lose the plan
+        with mock.patch.object(readinglist, "register",
+                               side_effect=OSError("disk gone")):
+            e = plans.save_plan("# Still Saved\n\nbody")
+        self.assertEqual(e["title"], "Still Saved")
+        self.assertTrue(Path(e["path"]).is_file())
 
 
 class SaveTests(_VaultCase):
