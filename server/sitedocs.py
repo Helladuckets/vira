@@ -345,7 +345,12 @@ def _title_of(page: Path | None) -> str:
     except OSError:
         return ""
     m = _TITLE_RE.search(head)
-    return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+    if not m:
+        return ""
+    # Unescape entities: the <title> text is HTML-escaped in source, and
+    # every consumer (registry, Reader, the generated index) re-escapes on
+    # render — without this, "&amp;" displays literally.
+    return _html.unescape(re.sub(r"\s+", " ", m.group(1)).strip())
 
 
 def _write_provenance_sidecar(docs_dir: Path, entries: list[dict]) -> None:
