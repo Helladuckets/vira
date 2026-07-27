@@ -38,7 +38,7 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
-               photos, plans, radar, textindex,
+               photos, plans, radar, reconnect, textindex,
                receipts,
                resolver,
                routines,
@@ -1999,6 +1999,20 @@ class DismissGroupingReq(BaseModel):
 @app.post("/api/radar/dismiss")
 def api_radar_dismiss(req: DismissGroupingReq):
     radar.dismiss(req.key, restore=req.restore)
+    return {"ok": True}
+
+
+@app.post("/api/reconnect/refresh")
+def api_reconnect_refresh():
+    import threading as _t
+    _t.Thread(target=reconnect.refresh, daemon=True,
+              name="vira-pivot-scout").start()
+    return {"refreshing": True}
+
+
+@app.post("/api/reconnect/dismiss")
+def api_reconnect_dismiss(req: DismissGroupingReq):
+    reconnect.dismiss(req.key, restore=req.restore)
     return {"ok": True}
 
 
