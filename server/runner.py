@@ -195,6 +195,28 @@ class Runner:
 
     # ----- the reply window -----
 
+    def parks_at_turn_end(self):
+        """Whether a completed turn holds the session open for a reply.
+
+        Only a session the OWNER dispatched parks — the window exists so
+        the question a coding agent signs off with can be answered. A
+        MACHINE-dispatched session has nobody in the terminal and its
+        deliverable lands somewhere else entirely (a plan publishes in the
+        epilogue, a muse's proposals sit in the Queue's approval bar, a
+        judge's verdict is read off the finished run, a circuit stage's
+        output feeds the next stage), so parking one only manufactures a
+        fake-pending row in Live — and a parked circuit stage would stall
+        its whole circuit at the barrier for the length of the window.
+        Owner's ruling 2026-07-27: processes like Muse and Plan end
+        cleanly with the delivered thing; the approval surfaces already
+        exist.
+        """
+        if self.spec.get("publish_plan"):
+            return False
+        meta = self.spec.get("meta") or {}
+        return not (meta.get("routine_id") or meta.get("circuit_run")
+                    or meta.get("judge_of"))
+
     async def await_reply(self):
         """Park at a completed turn boundary with the session still open.
 
@@ -505,9 +527,11 @@ class Runner:
                     # auth failures the AI-health watcher exists to catch.
                     # And a PLAN session's whole deliverable is published in
                     # the epilogue, so lingering would withhold its own
-                    # output; refine a plan by running Plan again.
+                    # output; refine a plan by running Plan again. The same
+                    # goes for every machine-dispatched run — see
+                    # parks_at_turn_end for the full reasoning.
                     reply = (await self.await_reply()
-                             if ok and not spec.get("publish_plan") else None)
+                             if ok and self.parks_at_turn_end() else None)
                     if reply is None:
                         done = True
                     else:

@@ -315,6 +315,23 @@ class ReplyWindowTests(RunnerCase):
             return await task
         return asyncio.run(scenario())
 
+    def test_owner_dispatched_sessions_park(self):
+        """The window exists for the session the owner is talking to."""
+        self.assertTrue(self.make_runner().parks_at_turn_end())
+        self.assertTrue(self.make_runner(mode="autopilot").parks_at_turn_end())
+
+    def test_machine_dispatched_sessions_never_park(self):
+        """A routine, circuit stage, judge or plan has nobody in the
+        terminal — its deliverable lands in a store, so a park only
+        manufactures a fake-pending row (owner's ruling 2026-07-27), and a
+        parked circuit stage would stall its circuit at the barrier."""
+        for spec in ({"publish_plan": True},
+                     {"meta": {"routine_id": "muse"}},
+                     {"meta": {"circuit_run": "cr_x", "stage": "build"}},
+                     {"meta": {"judge_of": "abc123"}}):
+            with self.subTest(spec=spec):
+                self.assertFalse(self.make_runner(**spec).parks_at_turn_end())
+
     def test_reply_is_delivered_and_marks_the_turn_unfinished(self):
         r = self.make_runner()
         got = self.await_reply(r, {"op": "say", "text": "merge it"})
