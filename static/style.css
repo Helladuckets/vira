@@ -3297,6 +3297,85 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 }
 .rd-card-bit { font-size: 11px; color: var(--text-faint); }
 .rd-card-update { margin-left: auto; }
+.rd-card-new { border-style: dashed; background: none; }
+.rd-card-new:hover { background: var(--hover-wash); }
+
+/* The native room renderer — a store-backed room drawn with the app's own
+   tokens, so every skin reaches it. The legacy iframe path keeps the old
+   .reader-stage styles. */
+.reader-room { margin-top: 8px; }
+.rm-head { display: flex; gap: 10px; align-items: flex-start; }
+.rm-titles { min-width: 0; flex: 1 1 auto; }
+.rm-title { margin: 0; font-size: 16px; color: var(--text-head); }
+.rm-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
+.rm-bar {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  margin: 10px 0 8px; position: sticky; top: 0; z-index: 3;
+  background: var(--bg); padding: 6px 0;
+}
+.rm-q {
+  flex: 1 1 170px; min-width: 140px; background: var(--bg-card);
+  border: 1px solid var(--line); color: var(--text);
+  border-radius: var(--radius); padding: 6px 10px; font-size: 13px;
+  outline: none;
+}
+.rm-q:focus { border-color: var(--accent-line); }
+.rm-chip.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
+.rm-sel {
+  background: var(--bg-card); border: 1px solid var(--line);
+  color: var(--text-dim); border-radius: var(--radius);
+  padding: 5px 8px; font-size: 12px; max-width: 150px;
+}
+.rm-count { flex: none; }
+.rm-item {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 9px 10px; border: 1px solid var(--line);
+  border-radius: var(--radius); background: var(--bg-card);
+  margin-bottom: 6px; min-width: 0;
+}
+.rm-item.done { opacity: 0.5; }
+.rm-item.done .rm-name { text-decoration: line-through; }
+.rm-check {
+  flex: none; width: 20px; height: 20px; margin-top: 1px;
+  border: 1px solid var(--line); border-radius: 50%;
+  background: none; cursor: pointer; position: relative;
+}
+.rm-check::after {
+  content: ""; position: absolute; inset: 4px;
+  border-radius: 50%; background: transparent;
+}
+.rm-item.done .rm-check { border-color: var(--green-line); }
+.rm-item.done .rm-check::after { background: var(--green); }
+.rm-check:hover { border-color: var(--accent-line); }
+.rm-body { min-width: 0; flex: 1 1 auto; }
+.rm-name { color: var(--text); font-size: 13.5px; text-decoration: none; }
+a.rm-name:hover { color: var(--accent); }
+.rm-meta {
+  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  margin-top: 4px;
+}
+.rm-badge {
+  font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: var(--radius);
+  border: 1px solid var(--line); color: var(--text-faint);
+}
+.rm-badge.prio-P1 { border-color: var(--accent-line); color: var(--accent); }
+.rm-badge.prio-P2 { border-color: var(--steel-line); color: var(--steel); }
+.rm-badge.st-MISSING { border-color: var(--red-line); color: var(--red); }
+.rm-badge.st-PARTIAL { border-color: var(--amber-line); color: var(--accent); }
+.rm-badge.pay { border-color: var(--amber-line); color: var(--accent); }
+.rm-bits { font-size: 11px; color: var(--text-faint); }
+.rm-note { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+.rm-people { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.rm-person {
+  background: none; border: 1px solid var(--line);
+  border-radius: var(--radius); color: var(--text-dim);
+  font-size: 11px; padding: 1px 7px; cursor: pointer;
+}
+.rm-person:hover { border-color: var(--accent-line); color: var(--accent); }
 .reader-frame {
   width: 100%; border: 1px solid var(--line); border-radius: 2px;
   background: var(--bg-frame); height: calc(100dvh - 190px); display: block;

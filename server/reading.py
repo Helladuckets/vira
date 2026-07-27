@@ -32,23 +32,35 @@ MAX_KEYS = 20000  # far above any real list; guards a runaway client
 
 
 def list_pages():
-    """The personal reading-room pages that exist on disk (empty if none).
+    """Every reading room: store-native ones first (the canonical kind since
+    2026-07-27), then any legacy page still on disk that has not been
+    migrated. The url stays /reading/<slug>.html for both — a native room's
+    is served as an on-demand export from the store.
 
-    The Reader launcher in the app calls this to decide whether to show
-    itself at all and what to list. Titles come from each page's <title>."""
+    The Reader launcher calls this to decide whether to show itself at all
+    and what to list."""
+    from . import readingroom               # lazy: readingroom imports us too
     pages = []
+    seen = set()
+    for r in readingroom.list_rooms():
+        seen.add(r["slug"])
+        pages.append({"name": r["slug"], "title": r["title"],
+                      "url": f"/reading/{r['slug']}.html", "native": True})
     try:
         files = sorted(PAGES_DIR.glob("*.html"))
     except OSError:
         return pages
     for p in files:
+        if p.stem in seen:
+            continue
         try:
-            head = p.read_text(errors="replace")[:4096]
+            head = p.read_text(encoding="utf-8", errors="replace")[:4096]
         except OSError:
             continue
         m = TITLE_RE.search(head)
         title = " ".join(m.group(1).split()) if m else p.stem
-        pages.append({"name": p.stem, "title": title, "url": f"/reading/{p.name}"})
+        pages.append({"name": p.stem, "title": title,
+                      "url": f"/reading/{p.name}", "native": False})
     return pages
 
 
@@ -69,10 +81,27 @@ def _room_items(text):
 
 def page_details():
     """list_pages() plus what a card needs: subtitle, item count, done count,
-    and the date the page was last built. All best-effort — a field the page
-    does not yield is simply absent from the row, never an exception."""
+    and the date the room was last built/refreshed. A native room answers
+    straight from its store; a legacy page is parsed best-effort — a field a
+    page does not yield is simply absent from the row, never an exception."""
+    from . import readingroom
     out = []
     for row in list_pages():
+        if row.get("native"):
+            room = readingroom.load_room(row["name"]) or {"items": []}
+            row["subtitle"] = room.get("subtitle", "")
+            row["built"] = (room.get("updated") or "")[:10] \
+                or room.get("built", "")
+            ids = {str(it.get("id")) for it in room["items"]
+                   if isinstance(it, dict)}
+            try:
+                done = set(get_done(row["name"]))
+            except ValueError:
+                done = set()
+            row["items"] = len(room["items"])
+            row["done"] = len(done & ids) if ids else len(done)
+            out.append(row)
+            continue
         p = PAGES_DIR / f"{row['name']}.html"
         try:
             text = p.read_text(encoding="utf-8", errors="replace")

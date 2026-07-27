@@ -91,6 +91,21 @@ SEEDS = [
                        "live job-search target picture.",
     },
     {
+        "id": "room-scout",
+        "name": "Room scout — refresh the reading rooms",
+        "kind": "digest",
+        "every_hours": 168,
+        "enabled": True,
+        "notify": False,   # build() pings per-room additions itself
+        "model": "",
+        "cwd": str(ROOT),
+        "prompt": "__room_scout__",       # composed at dispatch (readingroom)
+        "description": "Weekly sweep over every reading room: research what "
+                       "is new on each subject since the last refresh and "
+                       "rebuild it in place — the owner is pinged when a "
+                       "room gains items, the applications-watch pattern.",
+    },
+    {
         "id": "system-map",
         "name": "System map — refresh from the change log",
         "kind": "digest",
@@ -338,6 +353,13 @@ def dispatch(r):
     if prompt == "__module_map__":       # composed fresh per run, like muse
         from . import modulemap
         prompt = modulemap.refresh_prompt()
+    if prompt == "__room_scout__":       # composed fresh per run (readingroom)
+        from . import readingroom
+        prompt = readingroom.refresh_all_prompt()
+        if not prompt:                   # no rooms yet: a quiet no-op, not
+            _stamp(r["id"], last_run=_now_iso(), last_job=None,   # a failure
+                   last_run_id=None, last_status="done")
+            return {"internal": "no_rooms"}
     if not prompt.strip():
         raise ValueError("routine has no prompt")
     jid = session.sessions.launch(prompt, cwd=r.get("cwd") or None,

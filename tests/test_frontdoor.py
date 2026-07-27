@@ -26,33 +26,38 @@ def item(title="A talk", url="https://example.com/a", **kw):
 
 
 class ReadingRoomBuildTest(unittest.TestCase):
+    """build() writes the STORE (the room's source of truth since the
+    2026-07-27 store-native rework); the page is an on-demand EXPORT."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         root = Path(self.tmp.name)
         for target, value in (("PAGES_DIR", root / "static" / "reading"),
+                              ("ROOMS_DIR", root / "data" / "reading" / "rooms"),
                               ("ROOT", root)):
             p = mock.patch.object(readingroom, target, value)
             p.start()
             self.addCleanup(p.stop)
         self.pages = root / "static" / "reading"
 
-    def test_builds_a_page_the_reader_can_list(self):
+    def test_builds_a_store_the_reader_can_list_and_export(self):
         res = readingroom.build("widgets", "Widgets", "A room.",
                                 [item(), item("Another", "https://e.com/b")])
         self.assertEqual(res["items"], 2)
         self.assertFalse(res["rebuilt"])
-        page = (self.pages / "widgets.html").read_text()
+        room = readingroom.load_room("widgets")
+        self.assertEqual(room["title"], "Widgets")
+        self.assertEqual(len(room["items"]), 2)
+        self.assertEqual([r["slug"] for r in readingroom.list_rooms()],
+                         ["widgets"])
+        page = readingroom.export_html("widgets")
         self.assertIn("<title>Widgets</title>", page)
         self.assertIn('src="/reading-room.js"', page)
         self.assertIn('href="/reading-room.css"', page)
-        self.assertIn('"slug": "widgets"', page.replace('"slug":"', '"slug": "'))
 
     def data_of(self, slug="w"):
-        """The item array the generated page hands the browser."""
-        page = (self.pages / f"{slug}.html").read_text()
-        blob = page.split("window.DATA=", 1)[1].split("</script>", 1)[0]
-        return json.loads(blob.rstrip().rstrip(";"))
+        return readingroom.load_room(slug)["items"]
 
     def test_ids_are_stable_across_rebuilds(self):
         """A repass must not orphan the owner's done-marks — the whole
@@ -64,10 +69,34 @@ class ReadingRoomBuildTest(unittest.TestCase):
         self.assertEqual(ids1, ids2)
         self.assertTrue(first["items"])
 
-    def test_rebuild_is_flagged(self):
+    def test_rebuild_is_flagged_and_counts_additions(self):
         readingroom.build("w", "W", "", [item()])
-        res = readingroom.build("w", "W", "", [item()])
+        with mock.patch.object(readingroom, "_ping_additions") as ping:
+            res = readingroom.build("w", "W", "", [
+                item(), item("Fresh talk", "https://e.com/fresh")])
         self.assertTrue(res["rebuilt"])
+        self.assertEqual(res["added"], 1)
+        ping.assert_called_once()
+        self.assertIn("Fresh talk", ping.call_args.args[2])
+
+    def test_a_rebuild_with_nothing_new_never_pings(self):
+        readingroom.build("w", "W", "", [item()])
+        with mock.patch.object(readingroom, "_ping_additions") as ping:
+            res = readingroom.build("w", "W", "", [item(note="richer")])
+        self.assertEqual(res["added"], 0)
+        ping.assert_not_called()
+
+    def test_a_first_build_never_pings(self):
+        """The jobboards baseline rule: the initial load is not news."""
+        with mock.patch.object(readingroom, "_ping_additions") as ping:
+            readingroom.build("w", "W", "", [item(), item("B", "https://e.com/b")])
+        ping.assert_not_called()
+
+    def test_built_date_survives_a_rebuild(self):
+        readingroom.build("w", "W", "", [item()])
+        first = readingroom.load_room("w")["built"]
+        readingroom.build("w", "W", "", [item()])
+        self.assertEqual(readingroom.load_room("w")["built"], first)
 
     def test_duplicates_merge_and_richer_record_wins(self):
         res = readingroom.build("w", "W", "", [
@@ -76,32 +105,44 @@ class ReadingRoomBuildTest(unittest.TestCase):
         ])
         self.assertEqual(res["items"], 1)
         self.assertEqual(res["dropped"], 1)
-        page = (self.pages / "w.html").read_text()
-        self.assertIn("the fuller one", page)
+        self.assertEqual(self.data_of()[0]["note"], "the fuller one")
 
-    def test_the_lock_never_lands_in_the_served_tree(self):
+    def test_nothing_lands_in_the_served_tree(self):
         readingroom.build("w", "W", "", [item()])
-        self.assertEqual(sorted(p.name for p in self.pages.iterdir()),
-                         ["w.html"])
+        self.assertFalse(self.pages.exists())
 
-    def test_script_close_cannot_break_out_of_the_data_block(self):
+    def test_script_close_cannot_break_out_of_the_export_data_block(self):
         res = readingroom.build("w", "W", "", [
             item(title="</script><img src=x onerror=alert(1)>")])
-        page = (self.pages / "w.html").read_text()
+        page = readingroom.export_html("w")
         self.assertEqual(res["items"], 1)
         self.assertNotIn("</script><img", page)
 
-    def test_title_is_escaped(self):
+    def test_export_title_is_escaped(self):
         readingroom.build("w", "<b>W</b>", "sub & sub", [item()])
-        page = (self.pages / "w.html").read_text()
+        page = readingroom.export_html("w")
         self.assertIn("&lt;b&gt;W&lt;/b&gt;", page)
         self.assertIn("sub &amp; sub", page)
 
+    def test_export_carries_no_vault_pill(self):
+        readingroom.build("w", "W", "", [item()])
+        self.assertNotIn("In the vault", readingroom.export_html("w"))
+
+    def test_export_of_an_unknown_room_raises(self):
+        with self.assertRaises(KeyError):
+            readingroom.export_html("nope")
+
     def test_year_derives_from_date(self):
-        res = readingroom.build("w", "W", "", [item(date="2024-03-02")])
-        self.assertTrue(res["items"])
-        page = (self.pages / "w.html").read_text()
-        self.assertIn('"year": "2024"', page.replace('"year":"', '"year": "'))
+        readingroom.build("w", "W", "", [item(date="2024-03-02")])
+        self.assertEqual(self.data_of()[0]["year"], "2024")
+
+    def test_partial_dates_are_accepted(self):
+        """Month- and year-precision dates are real; refusing them forced
+        fabricated day-parts (hit live on the Anthropic room's data)."""
+        readingroom.build("w", "W", "", [
+            item(date="2025-04"), item("B", "https://e.com/b", date="2021")])
+        self.assertEqual([i["year"] for i in self.data_of()],
+                         ["2025", "2021"])
 
 
 class ReadingRoomValidationTest(unittest.TestCase):

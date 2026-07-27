@@ -79,12 +79,16 @@ class PageDetailsTest(unittest.TestCase):
     parsed from both generations of room page (window.DATA and const DATA)."""
 
     def setUp(self):
+        from server import readingroom
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         for attr, sub in (("STORE_DIR", "data"), ("PAGES_DIR", "pages")):
             p = mock.patch.object(reading, attr, base / sub)
             p.start()
             self.addCleanup(p.stop)
+        p = mock.patch.object(readingroom, "ROOMS_DIR", base / "rooms")
+        p.start()
+        self.addCleanup(p.stop)
         (base / "pages").mkdir()
         self.addCleanup(self.tmp.cleanup)
 
@@ -138,11 +142,15 @@ class PageDetailsTest(unittest.TestCase):
 
 class ReadingPagesTest(unittest.TestCase):
     def setUp(self):
+        from server import readingroom
         self.tmp = tempfile.TemporaryDirectory()
         self.pages = Path(self.tmp.name) / "reading"
-        patcher = mock.patch.object(reading, "PAGES_DIR", self.pages)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for target, attr, val in (
+                (reading, "PAGES_DIR", self.pages),
+                (readingroom, "ROOMS_DIR", Path(self.tmp.name) / "rooms")):
+            p = mock.patch.object(target, attr, val)
+            p.start()
+            self.addCleanup(p.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def test_missing_dir_is_empty(self):
@@ -157,8 +165,10 @@ class ReadingPagesTest(unittest.TestCase):
         out = reading.list_pages()
         self.assertEqual(
             out,
-            [{"name": "a-list", "title": "a-list", "url": "/reading/a-list.html"},
-             {"name": "b-list", "title": "Second Queue", "url": "/reading/b-list.html"}])
+            [{"name": "a-list", "title": "a-list",
+              "url": "/reading/a-list.html", "native": False},
+             {"name": "b-list", "title": "Second Queue",
+              "url": "/reading/b-list.html", "native": False}])
 
 
 if __name__ == "__main__":

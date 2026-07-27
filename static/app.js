@@ -11939,8 +11939,11 @@ function fdOpenInterview(id) {
   const view = fdView(id);
   if (!mod || !view) return;
   let panel = view.querySelector(":scope > .fd");
-  if (!panel) { fdMount(id); panel = view.querySelector(":scope > .fd"); }
-  if (!panel) return;
+  // Created directly rather than via fdMount: a READY module has no front
+  // door to mount, but its interview is still how another instance gets
+  // built (the Reader's New-room card). fdMount(id) on Back/finish
+  // unmounts cleanly either way.
+  if (!panel) { panel = el("div", "fd"); view.prepend(panel); }
   view.classList.add("fd-on");
   panel.innerHTML = "";
 
@@ -12099,6 +12102,7 @@ function readerShow(view) {
   const home = view === "home";
   const stage = view === "stage";
   $("#reader-home").style.display = home ? "" : "none";
+  $("#reader-room").style.display = view === "room" ? "" : "none";
   $("#reader-docs").style.display = view === "docs" ? "" : "none";
   $("#reader-stage").style.display = stage ? "" : "none";
   const back = $("#reader-back");
@@ -12106,7 +12110,7 @@ function readerShow(view) {
   const scan = $("#reader-scan");
   if (scan) scan.style.display = view === "docs" ? "" : "none";
   const meta = $("#reader-meta");
-  if (meta && stage) meta.textContent = "";
+  if (meta && (stage || view === "room")) meta.textContent = "";
   if (meta && view === "docs") {
     const n = readerQueue.length;
     meta.textContent = n ? n + " to read" : "all read";
@@ -12280,8 +12284,10 @@ function renderReaderHome(pages) {
     host.appendChild(readerCard({
       title: p.title,
       sub: p.subtitle || "",
-      bits: ["reading room", prog, p.built ? "built " + p.built : ""],
-      open: () => readerStage(p.url, p.title, "home"),
+      bits: ["reading room", prog,
+        p.built ? "refreshed " + p.built : ""],
+      open: () => p.native ? openRoomNative(p)
+                           : readerStage(p.url, p.title, "home"),
       update: (btn) => updateRoom(p, btn),
     }));
   });
@@ -12293,6 +12299,251 @@ function renderReaderHome(pages) {
     bits: ["queue", n ? n + " to read" : "all read"],
     open: () => readerShow("docs"),
   }));
+  // The skill that builds a room is topic-agnostic — this is where another
+  // topic gets popped in. Same interview the front door runs on first use.
+  const add = readerCard({
+    title: "New room…",
+    sub: "Name a subject and why you care; Vira researches it and builds "
+      + "the room — talks, papers, posts and episodes, ranked.",
+    bits: ["interview → research → built"],
+    open: openNewRoom,
+  });
+  add.classList.add("rd-card-new");
+  host.appendChild(add);
+}
+
+async function openNewRoom() {
+  await loadFrontDoor();
+  fdOpenInterview("reader");
+  $("#view-reader")?.scrollIntoView({ block: "start" });
+}
+
+// ---------- the native room renderer ----------
+// A store-native room renders HERE, with the app's own components and
+// tokens — which is what makes every skin reach it for free. The legacy
+// iframe path survives only for pages not yet migrated. Ported from
+// reading-room.js (which still renders the standalone EXPORT); the "In
+// the vault" status is deliberately absent from chips and badges.
+let rmRoom = null;
+let rmDone = new Set();
+let rmState = null;
+
+const RM_PRIO_RANK = { P1: 0, P2: 1, P3: 2 };
+const RM_STATUS_LABEL = { MISSING: "unseen", PARTIAL: "secondhand" };
+
+async function openRoomNative(page) {
+  let data;
+  try {
+    data = await api("/api/reading/rooms/" + encodeURIComponent(page.name));
+  } catch {
+    readerStage(page.url, page.title, "home");   // honest fallback: the export
+    return;
+  }
+  rmRoom = data.room;
+  rmDone = new Set(data.done || []);
+  rmState = { q: "", prio: new Set(), status: new Set(), mode: new Set(),
+              person: "", year: "", sort: "prio", hideDone: false };
+  rmBuild();
+  readerShow("room");
+}
+
+function rmChip(label, key, val) {
+  const b = el("button", "fchip sm rm-chip", label);
+  b.addEventListener("click", () => {
+    const set = rmState[key];
+    set.has(val) ? set.delete(val) : set.add(val);
+    b.classList.toggle("on", set.has(val));
+    rmRender();
+  });
+  return b;
+}
+
+function rmSelect(opts, blank, onChange) {
+  const s = el("select", "rm-sel");
+  const o0 = el("option", null, blank);
+  o0.value = "";
+  s.appendChild(o0);
+  opts.forEach(([v, label]) => {
+    const o = el("option", null, label);
+    o.value = v;
+    s.appendChild(o);
+  });
+  s.addEventListener("change", () => onChange(s.value));
+  return s;
+}
+
+function rmBuild() {
+  const host = $("#reader-room");
+  if (!host || !rmRoom) return;
+  host.innerHTML = "";
+  const items = rmRoom.items || [];
+
+  const head = el("div", "rm-head");
+  const tw = el("div", "rm-titles");
+  tw.appendChild(el("h3", "rm-title", rmRoom.title));
+  if (rmRoom.subtitle) tw.appendChild(el("div", "rm-sub", rmRoom.subtitle));
+  head.appendChild(tw);
+  const full = el("a", "fchip sm newtab", "Open full tab");
+  full.href = "/reading/" + rmRoom.slug + ".html";
+  full.target = "_blank";
+  full.rel = "noopener";
+  full.style.textDecoration = "none";
+  head.appendChild(full);
+  host.appendChild(head);
+
+  const bar = el("div", "rm-bar");
+  const q = el("input", "rm-q");
+  q.type = "search";
+  q.placeholder = "Search titles, notes, people";
+  q.addEventListener("input", () => { rmState.q = q.value.trim(); rmRender(); });
+  bar.appendChild(q);
+
+  ["P1", "P2", "P3"].forEach((p) => bar.appendChild(rmChip(p, "prio", p)));
+  const present = {};
+  items.forEach((it) => { present[it.status] = 1; present[it.mode] = 1; });
+  [["MISSING", "Unseen"], ["PARTIAL", "Secondhand"]].forEach(([v, label]) => {
+    if (present[v]) bar.appendChild(rmChip(label, "status", v));
+  });
+  [["watch", "Watch"], ["listen", "Listen"], ["read", "Read"]]
+    .forEach(([v, label]) => {
+      if (present[v]) bar.appendChild(rmChip(label, "mode", v));
+    });
+
+  const freq = {};
+  items.forEach((it) => (it.people || []).forEach((p) => {
+    freq[p] = (freq[p] || 0) + 1;
+  }));
+  const people = Object.keys(freq)
+    .sort((a, b) => freq[b] - freq[a]).slice(0, 40);
+  if (people.length) {
+    bar.appendChild(rmSelect(
+      people.map((p) => [p, p + " (" + freq[p] + ")"]), "Anyone",
+      (v) => { rmState.person = v; rmRender(); }));
+  }
+  const years = [...new Set(items.map((it) => it.year).filter(Boolean))]
+    .sort().reverse();
+  if (years.length > 1) {
+    bar.appendChild(rmSelect(years.map((y) => [y, y]), "Any year",
+      (v) => { rmState.year = v; rmRender(); }));
+  }
+  const sort = rmSelect([["new", "Newest"], ["old", "Oldest"]], "Priority",
+    (v) => { rmState.sort = v || "prio"; rmRender(); });
+  bar.appendChild(sort);
+  const hide = el("button", "fchip sm rm-chip", "Hide done");
+  hide.addEventListener("click", () => {
+    rmState.hideDone = !rmState.hideDone;
+    hide.classList.toggle("on", rmState.hideDone);
+    rmRender();
+  });
+  bar.appendChild(hide);
+  const count = el("span", "hint rm-count", "");
+  bar.appendChild(count);
+  host.appendChild(bar);
+  host.appendChild(el("div", "rm-list"));
+  rmRender();
+}
+
+function rmMatches(it) {
+  const s = rmState;
+  if (s.hideDone && rmDone.has(it.id)) return false;
+  if (s.prio.size && !s.prio.has(it.prio)) return false;
+  if (s.status.size && !s.status.has(it.status)) return false;
+  if (s.mode.size && !s.mode.has(it.mode)) return false;
+  if (s.person && !(it.people || []).includes(s.person)) return false;
+  if (s.year && it.year !== s.year) return false;
+  if (s.q) {
+    const hay = (it.title + " " + (it.note || "") + " " + (it.why || "") + " "
+      + (it.venue || "") + " " + (it.people || []).join(" ")).toLowerCase();
+    if (!hay.includes(s.q.toLowerCase())) return false;
+  }
+  return true;
+}
+
+function rmRow(it) {
+  const row = el("div", "rm-item" + (rmDone.has(it.id) ? " done" : ""));
+  const check = el("button", "rm-check");
+  check.title = "Mark done";
+  check.setAttribute("aria-label", "Mark done");
+  check.addEventListener("click", async () => {
+    const now = !rmDone.has(it.id);
+    now ? rmDone.add(it.id) : rmDone.delete(it.id);   // optimistic
+    rmRender();
+    try {
+      await post("/api/reading/" + rmRoom.slug + "/done",
+                 { id: it.id, done: now });
+    } catch {
+      now ? rmDone.delete(it.id) : rmDone.add(it.id);
+      rmRender();
+      toast("Couldn't save that mark");
+    }
+  });
+  row.appendChild(check);
+
+  const body = el("div", "rm-body");
+  let name;
+  if (it.url) {
+    name = el("a", "rm-name", it.title);
+    name.href = it.url;
+    name.target = "_blank";
+    name.rel = "noopener";
+  } else name = el("span", "rm-name", it.title);
+  body.appendChild(name);
+
+  const meta = el("div", "rm-meta");
+  meta.appendChild(el("span", "rm-badge prio-" + (it.prio || "P2"), it.prio));
+  if (RM_STATUS_LABEL[it.status])
+    meta.appendChild(el("span", "rm-badge st-" + it.status,
+                        RM_STATUS_LABEL[it.status]));
+  meta.appendChild(el("span", "rm-badge", it.mode));
+  if (it.pay) meta.appendChild(el("span", "rm-badge pay", "$ paywall"));
+  const bits = [it.date, it.type, it.venue].filter(Boolean).join(" · ");
+  if (bits) meta.appendChild(el("span", "rm-bits", bits));
+  body.appendChild(meta);
+
+  if (it.note) body.appendChild(el("div", "rm-note", it.note));
+  if ((it.people || []).length) {
+    const ppl = el("div", "rm-people");
+    it.people.slice(0, 6).forEach((p) => {
+      const b = el("button", "rm-person", p);
+      b.addEventListener("click", () => {
+        rmState.person = p;
+        const sel = $("#reader-room .rm-sel");
+        if (sel) sel.value = p;
+        rmRender();
+      });
+      ppl.appendChild(b);
+    });
+    body.appendChild(ppl);
+  }
+  row.appendChild(body);
+  return row;
+}
+
+function rmRender() {
+  const host = $("#reader-room");
+  const list = host?.querySelector(".rm-list");
+  if (!list || !rmRoom) return;
+  const items = rmRoom.items || [];
+  const rows = items.filter(rmMatches);
+  const s = rmState;
+  if (s.sort === "new") {
+    rows.sort((x, y) => (y.date || "0").localeCompare(x.date || "0"));
+  } else if (s.sort === "old") {
+    rows.sort((x, y) => (x.date || "9999").localeCompare(y.date || "9999"));
+  } else {
+    rows.sort((x, y) => (RM_PRIO_RANK[x.prio] - RM_PRIO_RANK[y.prio])
+      || (x.date || "9999").localeCompare(y.date || "9999"));
+  }
+  const doneShown = rows.filter((it) => rmDone.has(it.id)).length;
+  const count = host.querySelector(".rm-count");
+  if (count) count.textContent = rows.length + " of " + items.length
+    + (doneShown ? " · " + doneShown + " done" : "");
+  list.innerHTML = "";
+  if (!rows.length) {
+    list.appendChild(el("div", "empty left", "Nothing matches. Loosen a filter."));
+    return;
+  }
+  rows.forEach((it) => list.appendChild(rmRow(it)));
 }
 
 async function loadReader(opts = {}) {

@@ -515,6 +515,17 @@ class RoutineTests(unittest.TestCase):
         self.assertIn("muse", ids)
         self.assertIn("intro-scout", ids)
         self.assertIn("pivot-scout", ids)
+        self.assertIn("room-scout", ids)
+
+    def test_room_scout_with_no_rooms_is_a_quiet_noop(self):
+        from server import readingroom
+        row = routines.get_routine("room-scout")
+        with mock.patch.object(readingroom, "refresh_all_prompt",
+                               return_value=""):
+            out = routines.dispatch(row)
+        self.assertEqual(out.get("internal"), "no_rooms")
+        row = routines.get_routine("room-scout")
+        self.assertEqual(row.get("last_status"), "done")
 
     def test_due_daily_at(self):
         r = {"enabled": True, "daily_at": "07:30", "last_run": None}

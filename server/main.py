@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1054,6 +1054,40 @@ def api_reading_pages():
     """Personal reading-room pages on disk, with what a Reader card needs:
     subtitle, item count, done count, built date (all best-effort)."""
     return {"pages": reading.page_details()}
+
+
+@app.get("/api/reading/rooms/{name}")
+def api_reading_room(name: str):
+    """A native room's full store — meta + items — plus its done-marks, for
+    the Reader's in-app renderer."""
+    room = readingroom.load_room(name)
+    if room is None:
+        raise HTTPException(404, "no such reading room")
+    try:
+        done = reading.get_done(name)
+    except ValueError:
+        done = []
+    return {"room": room, "done": done}
+
+
+@app.get("/reading/{slug}.html")
+def reading_room_page(slug: str):
+    """A room's standalone page. Native rooms render on demand from the
+    store (the shareable EXPORT — never the source of truth); a legacy page
+    still on disk is served as the file it is."""
+    room_html = None
+    try:
+        room_html = readingroom.export_html(slug)
+    except (KeyError, ValueError):
+        pass
+    if room_html is not None:
+        return HTMLResponse(room_html,
+                            headers={"Cache-Control": "no-cache"})
+    if reading.NAME_RE.match(slug):
+        p = ROOT / "static" / "reading" / f"{slug}.html"
+        if p.is_file():
+            return FileResponse(p, media_type="text/html")
+    raise HTTPException(404, "no such reading room")
 
 
 @app.get("/api/reading/rooms/{name}/update-prompt")
