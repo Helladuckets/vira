@@ -78,6 +78,8 @@ DEFAULTS = {
                                          # Text Message Forwarding on the paired iPhone)
     "send_verify_seconds": 8,            # how long to watch chat.db for an iMessage
                                          # delivery error before giving up (0 = off)
+    "evidence_retro_dir": "",            # Evidence Ledger's session-retro source;
+                                         # empty = ~/TC-IL/Sessions
 }
 
 

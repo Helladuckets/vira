@@ -6685,6 +6685,7 @@ function viewLoad(id) {
   if (id === "triage") loadTriageWindow().catch(() => {});
   if (id === "work") workTabLoad(workTab);
   if (id === "plans") loadPlans().catch(() => {});
+  if (id === "evidence") loadEvidence().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
@@ -7008,6 +7009,312 @@ async function openPlan(id) {
     body.innerHTML = "";
     body.appendChild(el("div", "empty left", "Plan unavailable: " + e.message));
   }
+}
+
+// ----- Evidence Ledger: build provenance mined into interview-ready
+// case studies (problem -> how you directed the agent -> what shipped).
+// Rung 1 (mine) is read on every load; rung 2 (compose) is one model call
+// per episode, spent only when the owner clicks Compose. -----
+
+let evCache = { cases: [], episodes: [], status: {} };
+let evShowArchived = !!lsGet("vira-evidence-show-archived", false);
+let evSweepPoll = null;
+
+async function loadEvidence() {
+  const statusEl = $("#ev-status");
+  try {
+    evCache = await api("/api/evidence");
+  } catch (e) {
+    if (statusEl) statusEl.textContent = "unavailable";
+    return;
+  }
+  renderEvidence();
+}
+
+function evStatusLine() {
+  const st = evCache.status || {};
+  if (!st.retro_dir_exists) return "no session retros found";
+  const c = st.cases || {};
+  const bits = [];
+  if (c.approved) bits.push(c.approved + " approved");
+  if (c.draft) bits.push(c.draft + (c.draft === 1 ? " draft" : " drafts"));
+  const uncomposed = (evCache.episodes || []).filter((e) => !e.composed).length;
+  if (uncomposed) bits.push(uncomposed + " not yet composed");
+  return bits.join(" · ") || "no episodes yet";
+}
+
+function renderEvidence() {
+  const statusEl = $("#ev-status");
+  if (statusEl) statusEl.textContent = evStatusLine();
+  const list = $("#ev-list");
+  if (!list) return;
+  list.innerHTML = "";
+
+  const cases = evCache.cases || [];
+  const approved = cases.filter((c) => c.status === "approved");
+  const drafts = cases.filter((c) => c.status === "draft");
+  const archived = cases.filter((c) => c.status === "archived");
+  const composedKeys = new Set(cases.filter((c) => c.status !== "archived")
+    .map((c) => c.episode_key));
+  const uncomposed = (evCache.episodes || []).filter((e) => !composedKeys.has(e.key));
+
+  if (!cases.length && !uncomposed.length) {
+    const st = evCache.status || {};
+    list.appendChild(el("div", "empty left", st.retro_dir_exists
+      ? "No episodes yet."
+      : `No session retros found at ${st.retro_dir || "the configured retro dir"}. ` +
+        "Set evidence_retro_dir in config.json to point at your session retros."));
+    return;
+  }
+
+  if (approved.length) {
+    list.appendChild(el("div", "ideas-sub", "Approved"));
+    approved.forEach((c) => list.appendChild(evCaseCard(c)));
+  }
+  if (drafts.length) {
+    list.appendChild(el("div", "ideas-sub", "Drafts"));
+    drafts.forEach((c) => list.appendChild(evCaseCard(c)));
+  }
+  if (uncomposed.length) {
+    list.appendChild(el("div", "ideas-sub", "Not yet composed"));
+    uncomposed.forEach((e) => list.appendChild(evEpisodeRow(e)));
+  }
+  appendEvArchivedFold(list, archived);
+}
+
+// Fold archived cases behind a click-to-expand subheader — the
+// appendParkedFold pattern, kept local since it's a one-line list rather
+// than the ideas row renderer. Choice persists across sessions.
+function appendEvArchivedFold(list, archived) {
+  if (!archived.length) return;
+  const head = el("div", "ideas-sub ideas-toggle" + (evShowArchived ? " open" : ""),
+    `Archived (${archived.length})`);
+  head.setAttribute("role", "button");
+  head.tabIndex = 0;
+  head.setAttribute("aria-expanded", evShowArchived ? "true" : "false");
+  const toggle = () => {
+    evShowArchived = !evShowArchived;
+    lsSet("vira-evidence-show-archived", evShowArchived);
+    renderEvidence();
+  };
+  head.addEventListener("click", toggle);
+  head.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  list.appendChild(head);
+  if (evShowArchived) archived.forEach((c) => list.appendChild(evCaseCard(c)));
+}
+
+function evEpisodeRow(ep) {
+  const box = el("div", "plan-item ev-episode");
+  const top = el("div", "plan-item-top");
+  top.appendChild(el("div", "plan-item-name ev-title", ep.goal || ep.key));
+  box.appendChild(top);
+  const meta = [ep.date, ep.time].filter(Boolean).join(" ");
+  if (meta) box.appendChild(el("div", "plan-item-meta", meta));
+  const row = el("div", "row-end");
+  const btn = el("button", "btn small primary", "Compose");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Composing…";
+    try {
+      await post("/api/evidence/compose", { episode: ep.key });
+      await loadEvidence();
+    } catch (e) {
+      alert("Compose failed: " + e.message);
+      btn.disabled = false;
+      btn.textContent = "Compose";
+    }
+  });
+  row.appendChild(btn);
+  box.appendChild(row);
+  return box;
+}
+
+function evProseBlock(label, text) {
+  const b = el("div", "ev-prose");
+  b.appendChild(el("div", "ev-prose-label", label));
+  b.appendChild(el("div", "ev-prose-body", text || ""));
+  return b;
+}
+
+async function evSetStatus(cid, status) {
+  try {
+    await put("/api/evidence/" + cid, { status });
+    await loadEvidence();
+  } catch (e) { alert("Update failed: " + e.message); }
+}
+
+function evReadView(c, onEdit) {
+  const wrap = el("div");
+  const top = el("div", "plan-item-top");
+  top.appendChild(el("div", "ev-title", c.title || "Untitled case"));
+  const delBtn = el("button", "idea-del", "×");
+  delBtn.title = "Delete";
+  delBtn.addEventListener("click", async () => {
+    if (!confirm("Delete this case study?")) return;
+    try { await del("/api/evidence/" + c.id); await loadEvidence(); }
+    catch (e) { alert("Delete failed: " + e.message); }
+  });
+  top.appendChild(delBtn);
+  wrap.appendChild(top);
+
+  wrap.appendChild(el("div", "plan-item-meta ev-status ev-status-" + c.status,
+    [c.status, c.updated ? "updated " + fmtTime(c.updated) : ""]
+      .filter(Boolean).join(" · ")));
+
+  wrap.appendChild(evProseBlock("Problem", c.problem));
+  wrap.appendChild(evProseBlock("How I directed the agent", c.direction));
+  wrap.appendChild(evProseBlock("What shipped", c.outcome));
+
+  if ((c.skills || []).length) {
+    const row = el("div", "p-chip-row ev-skills");
+    c.skills.forEach((s) => row.appendChild(el("span", "chip", s)));
+    wrap.appendChild(row);
+  }
+  if ((c.citations || []).length) {
+    const row = el("div", "p-chip-row ev-citations");
+    c.citations.forEach((ci) => row.appendChild(el("span", "chip ev-cite", ci)));
+    wrap.appendChild(row);
+  }
+
+  const actions = el("div", "row-end ev-actions");
+  const editBtn = el("button", "btn small", "Edit");
+  editBtn.addEventListener("click", onEdit);
+  actions.appendChild(editBtn);
+
+  const copyBtn = el("button", "btn small", "Copy");
+  copyBtn.addEventListener("click", async () => {
+    try {
+      const r = await api("/api/evidence/" + c.id + "/export");
+      await copyText(r.text);
+      toast("Copied to clipboard");
+    } catch (e) { alert("Copy failed: " + e.message); }
+  });
+  actions.appendChild(copyBtn);
+
+  if (c.status === "approved") {
+    const back = el("button", "btn small", "Back to draft");
+    back.addEventListener("click", () => evSetStatus(c.id, "draft"));
+    actions.appendChild(back);
+  } else if (c.status === "draft") {
+    const approve = el("button", "btn small primary", "Approve");
+    approve.addEventListener("click", () => evSetStatus(c.id, "approved"));
+    actions.appendChild(approve);
+    const archive = el("button", "btn small", "Archive");
+    archive.addEventListener("click", () => evSetStatus(c.id, "archived"));
+    actions.appendChild(archive);
+  } else if (c.status === "archived") {
+    const restore = el("button", "btn small", "Restore to draft");
+    restore.addEventListener("click", () => evSetStatus(c.id, "draft"));
+    actions.appendChild(restore);
+  }
+  wrap.appendChild(actions);
+  return wrap;
+}
+
+// Turns the three prose fields + skills into a textarea swap — the brief
+// loop editForm pattern (server validates/caps on save; this is just the
+// wording pass).
+function evEditForm(c, onCancel, onSave) {
+  const form = el("div", "hook-edit ev-edit-form");
+  form.appendChild(editLabel("Title", ""));
+  const title = el("input", "hook-input");
+  title.type = "text";
+  title.value = c.title || "";
+  form.appendChild(title);
+
+  const fields = [
+    ["Problem", "problem", c.problem],
+    ["How I directed the agent", "direction", c.direction],
+    ["What shipped", "outcome", c.outcome],
+  ];
+  const inputs = {};
+  fields.forEach(([label, key, val]) => {
+    form.appendChild(editLabel(label, ""));
+    const ta = el("textarea", "hook-input");
+    ta.rows = 3;
+    ta.value = val || "";
+    inputs[key] = ta;
+    form.appendChild(ta);
+  });
+
+  form.appendChild(editLabel("Skills", "comma-separated"));
+  const skillsInput = el("input", "hook-input");
+  skillsInput.type = "text";
+  skillsInput.value = (c.skills || []).join(", ");
+  form.appendChild(skillsInput);
+
+  const row = el("div", "row-end");
+  const cancel = el("button", "btn small", "Cancel");
+  cancel.addEventListener("click", onCancel);
+  row.appendChild(cancel);
+  const save = el("button", "btn small primary", "Save");
+  save.addEventListener("click", () => {
+    save.disabled = true;
+    save.textContent = "Saving…";
+    onSave({
+      title: title.value,
+      problem: inputs.problem.value,
+      direction: inputs.direction.value,
+      outcome: inputs.outcome.value,
+      skills: skillsInput.value.split(",").map((s) => s.trim()).filter(Boolean),
+    });
+  });
+  row.appendChild(save);
+  form.appendChild(row);
+  return form;
+}
+
+function evCaseCard(c) {
+  const box = el("div", "plan-item ev-item");
+  let editing = false;
+
+  const renderView = () => {
+    box.innerHTML = "";
+    box.classList.toggle("ev-editing", editing);
+    if (editing) box.appendChild(evEditForm(c, () => { editing = false; renderView(); }, saveEdit));
+    else box.appendChild(evReadView(c, () => { editing = true; renderView(); }));
+  };
+  const saveEdit = async (fields) => {
+    try {
+      const updated = await put("/api/evidence/" + c.id, fields);
+      Object.assign(c, updated);
+      editing = false;
+      renderView();
+      loadEvidence().catch(() => {});   // refresh status counts elsewhere in the list
+    } catch (e) {
+      alert("Save failed: " + e.message);
+      editing = true;
+      renderView();
+    }
+  };
+
+  renderView();
+  return box;
+}
+
+$("#ev-refresh")?.addEventListener("click", () => loadEvidence().catch(() => {}));
+$("#ev-compose-new")?.addEventListener("click", async () => {
+  try {
+    await post("/api/evidence/compose", {});
+    toast("Composing new case studies…");
+    evStartSweepPoll();
+  } catch (e) { alert("Compose failed: " + e.message); }
+});
+
+// Sweep composes in a server-side daemon thread with no per-episode
+// progress signal, so the poller just re-fetches until no uncomposed
+// episode remains (or the safety lifetime runs out).
+function evStartSweepPoll() {
+  evSweepPoll?.stop();
+  let ticks = 0;
+  evSweepPoll = startPoll(async (h) => {
+    await loadEvidence();
+    ticks += 1;
+    const uncomposed = (evCache.episodes || []).filter((e) => !e.composed).length;
+    if (!uncomposed || ticks > 24) h.stop();
+  }, 2500, 90000);
 }
 
 // ----- Brain: grounded chat over the vault -----
@@ -8362,6 +8669,8 @@ const WINDOWS = [
     icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
   { id: "plans", title: "Plans", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 12h6M9 15.5h6M9 8.5h3" },
+  { id: "evidence", title: "Evidence Ledger", w: 640,
+    icon: "M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6zM9 12l2 2 4-4" },
   // Radar folded into People as the Networking tab (2026-07-25). Reached
   // through PEOPLE_ALIAS, so #radar, the palette, saved dock slots and every
   // right-click integration still land on it — exactly as search/brain do

@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import queue
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                crmindex,
                data as crm,
                designstudio,
+               evidence,
                feedstate,
                find,
                frontdoor,
@@ -341,6 +343,71 @@ def api_plan_remove(pid: str):
 @app.get("/api/changelog")
 def api_changelog():
     return {"groups": changelog.groups()}
+
+
+# ----- Evidence Ledger (build provenance -> interview case studies) -----
+
+@app.get("/api/evidence")
+def api_evidence():
+    return {"cases": evidence.list_cases(), "episodes": evidence.mine(),
+            "status": evidence.status()}
+
+
+class EvidenceComposeReq(BaseModel):
+    episode: str | None = None
+    force: bool = False
+
+
+@app.post("/api/evidence/compose")
+def api_evidence_compose(req: EvidenceComposeReq):
+    if req.episode:
+        try:
+            return evidence.compose_episode(req.episode, force=req.force)
+        except KeyError:
+            raise HTTPException(404, "unknown episode")
+        except ValueError as e:
+            raise HTTPException(409, str(e))
+    threading.Thread(target=evidence.compose_new, daemon=True,
+                     name="evidence-compose-sweep").start()
+    return {"started": True}
+
+
+class EvidenceEditReq(BaseModel):
+    title: str | None = None
+    problem: str | None = None
+    direction: str | None = None
+    outcome: str | None = None
+    skills: list[str] | None = None
+    status: str | None = None
+
+
+@app.put("/api/evidence/{cid}")
+def api_evidence_update(cid: str, req: EvidenceEditReq):
+    try:
+        return evidence.update_case(cid, req.model_dump())
+    except KeyError:
+        raise HTTPException(404, "unknown case")
+
+
+@app.delete("/api/evidence/{cid}")
+def api_evidence_delete(cid: str):
+    try:
+        return evidence.delete_case(cid)
+    except KeyError:
+        raise HTTPException(404, "unknown case")
+
+
+@app.get("/api/evidence/export")
+def api_evidence_export_all():
+    return {"text": evidence.export_approved()}
+
+
+@app.get("/api/evidence/{cid}/export")
+def api_evidence_export_case(cid: str):
+    try:
+        return {"text": evidence.export_case(cid)}
+    except KeyError:
+        raise HTTPException(404, "unknown case")
 
 
 # ---------- applications (the job-application front door: fit-scored roles
