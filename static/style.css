@@ -1573,6 +1573,26 @@ body.nd-open .scroll-fade { transform: translateX(var(--nd-w)); }
 html:has(> body.nd-open),
 html:has(> body.nd-drag) { overflow: hidden; }
 body.nd-open, body.nd-drag { overflow: hidden; }
+/* ...and the HORIZONTAL clip cannot be conditional on those classes. The
+   classes come off the instant a drawer row is tapped, but #shell takes
+   ~220ms more to slide home — and for that window the document really is
+   402 + 310px wide with nothing clipping it (measured 2026-07-27:
+   scrollWidth 653px at t+42ms after the tap, decaying to 402 as the
+   transform settled). iOS sizes its layout viewport to the widest the
+   document has EVER been and never shrinks it back, so that one frame
+   leaves the whole app rendered slightly zoomed out until reload — the
+   "page resets to slightly wider than my phone on every switch" bug.
+   `clip`, not `hidden`: clip creates no scroll container, so the sticky
+   topbar, vertical scrolling, and every inner horizontal scroller are
+   untouched, and a clip/visible axis pair is legal (visible stays
+   visible on y). The <html> half stops <body>'s value propagating to the
+   viewport, exactly as the block comment above explains. The full
+   two-axis lock while the drawer is open/dragged stays above — this rule
+   only pins the x axis for every moment those classes are absent. */
+@media (max-width: 1099px) {
+  html { overflow-x: clip; }
+  body { overflow-x: clip; }
+}
 
 .nd-scrim {
   position: fixed; inset: 0; z-index: 900;
@@ -3462,3 +3482,21 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   opacity: 1;
 }
 .lp-tile.unconfigured .lp-ic { position: relative; overflow: visible; }
+
+/* iOS zooms the whole page when a focused text control's font-size is
+   under 16px, and the zoom PERSISTS until the user pinches back — so on
+   a phone, tapping any inline edit (a Queue idea, a loop, the compose
+   bar) read as "the app zooms in for no reason and stays zoomed" (owner
+   report, 2026-07-27). 16px is Apple's documented threshold; this floor
+   makes the whole class impossible for every current and future text
+   control. !important on purpose: the floor must outrank every sized
+   rule (14px .field inputs, 13px inline editors) and any future one, or
+   the zoom quietly returns with the next styled input. Checkboxes,
+   radios, ranges and file pickers never take text focus, so they keep
+   their size. Desktop is untouched. */
+@media (max-width: 1099px) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]),
+  textarea, select, [contenteditable="true"] {
+    font-size: 16px !important;
+  }
+}
