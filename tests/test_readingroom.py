@@ -68,6 +68,45 @@ class UpdatePromptTest(Base):
             readingroom.update_prompt("no-such-room")
 
 
+class DefinitionTest(Base):
+    DEF = {"subject": "Anthropic - the company and its people",
+           "why": "Articulate why it changed the arc.",
+           "people": "Dario Amodei, Boris Cherny",
+           "modes": ["watch", "read"], "depth": "exhaustive",
+           "notes": "Verify every URL. Keep YouTube query strings."}
+
+    def test_set_and_survive_a_rebuild(self):
+        self.build()
+        readingroom.set_definition("test-room", self.DEF)
+        self.assertEqual(readingroom.load_room("test-room")["definition"]
+                         ["subject"], self.DEF["subject"])
+        self.build()                       # a refresh rebuild
+        self.assertEqual(readingroom.load_room("test-room")["definition"],
+                         readingroom.clean_definition(self.DEF))
+
+    def test_bad_payloads_are_refused(self):
+        self.build()
+        for bad in ({"modes": ["skim"]}, {"depth": "bottomless"},
+                    {"modes": "not-a-mode"}):
+            with self.assertRaises(readingroom.BuildError):
+                readingroom.set_definition("test-room", {**self.DEF, **bad})
+        with self.assertRaises(KeyError):
+            readingroom.set_definition("nowhere", self.DEF)
+
+    def test_update_prompt_carries_the_standing_instructions(self):
+        self.build()
+        readingroom.set_definition("test-room", self.DEF)
+        p = readingroom.update_prompt("test-room")
+        self.assertIn("STANDING INSTRUCTIONS", p)
+        self.assertIn("Keep YouTube query strings.", p)
+        self.assertIn("Dario Amodei", p)
+
+    def test_no_definition_means_no_instruction_block(self):
+        self.build()
+        self.assertNotIn("STANDING INSTRUCTIONS",
+                         readingroom.update_prompt("test-room"))
+
+
 class RefreshAllTest(Base):
     def test_no_rooms_is_an_empty_prompt_not_an_error(self):
         self.assertEqual(readingroom.refresh_all_prompt(), "")

@@ -3270,35 +3270,65 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .reader-sec-t { color: var(--text-dim); min-width: 0; }
 .reader-stage { margin-top: 6px; }
 .section-head.sub { margin-bottom: 6px; }
-/* The shelf: one card per big topic — each reading room, plus My Documents. */
-.reader-home {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
-  gap: 10px; margin-top: 8px;
+/* The header: kicker, switcher title, subline, Details reveal. One surface —
+   the room UI is the Reader. */
+.rdr-head { margin-top: 6px; min-width: 0; }
+.rdr-kicker {
+  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--text-faint);
 }
-.rd-card {
-  border: 1px solid var(--line); border-radius: var(--radius, 10px);
-  background: var(--bg-card); padding: 12px 14px; cursor: pointer;
-  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+.rdr-title-row {
+  display: flex; gap: 10px; align-items: center; margin-top: 3px;
+  flex-wrap: wrap;
 }
-.rd-card:hover { border-color: var(--accent-line); background: var(--hover-wash); }
-.rd-card-name {
-  background: none; border: 0; padding: 0; text-align: left; cursor: pointer;
-  color: var(--text-head); font-size: 14.5px; font-weight: 600; min-width: 0;
+.rdr-switch {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  display: flex; gap: 8px; align-items: baseline; min-width: 0;
+  text-align: left;
 }
-.rd-card-name:hover { color: var(--accent); }
-.rd-card-sub {
-  font-size: 12px; color: var(--text-dim); line-height: 1.45; min-width: 0;
-  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
-  overflow: hidden;
+.rdr-switch-t {
+  color: var(--text-head); font-size: 17px; font-weight: 650;
+  letter-spacing: 0.01em;
 }
-.rd-card-foot {
+.rdr-switch:hover .rdr-switch-t { color: var(--accent); }
+.rdr-caret { color: var(--text-faint); font-size: 11px; }
+.rdr-sub {
+  font-size: 12px; color: var(--text-dim); line-height: 1.5;
+  margin-top: 4px; max-width: 760px;
+}
+.rdr-bits {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  margin-top: 7px;
+}
+.rdr-bit { font-size: 11px; color: var(--text-faint); }
+.rdr-details.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
+.rdr-defs {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-card); padding: 12px 14px; margin-top: 10px;
+}
+.rdr-def-p {
+  margin: 0 0 10px; font-size: 12px; color: var(--text-dim);
+  line-height: 1.55; max-width: 760px;
+}
+.rdr-def-form { display: flex; flex-direction: column; gap: 4px; }
+.rdr-def-label {
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-faint); margin-top: 8px;
+}
+.rdr-def-input {
+  background: var(--bg-raised); border: 1px solid var(--line);
+  color: var(--text); border-radius: var(--radius);
+  padding: 6px 9px; font-size: 12.5px; outline: none; resize: vertical;
+  font-family: inherit; line-height: 1.45;
+}
+.rdr-def-input:focus { border-color: var(--accent-line); }
+.rdr-def-acts {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
-  margin-top: auto; padding-top: 4px;
+  margin-top: 12px;
 }
-.rd-card-bit { font-size: 11px; color: var(--text-faint); }
-.rd-card-update { margin-left: auto; }
-.rd-card-new { border-style: dashed; background: none; }
-.rd-card-new:hover { background: var(--hover-wash); }
 
 /* The native room renderer — a store-backed room drawn with the app's own
    tokens, so every skin reaches it. The legacy iframe path keeps the old
@@ -3340,8 +3370,10 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .rm-item.done .rm-name { text-decoration: line-through; }
 .rm-check {
   flex: none; width: 20px; height: 20px; margin-top: 1px;
-  border: 1px solid var(--line); border-radius: 50%;
-  background: none; cursor: pointer; position: relative;
+  /* --line vanishes against the card bg — the outline must read at rest,
+     not only on hover (owner's report, 2026-07-27). */
+  border: 1.5px solid var(--line-warm-bright); border-radius: 50%;
+  background: var(--bg-raised); cursor: pointer; position: relative;
 }
 .rm-check::after {
   content: ""; position: absolute; inset: 4px;
@@ -3376,6 +3408,10 @@ a.rm-name:hover { color: var(--accent); }
   font-size: 11px; padding: 1px 7px; cursor: pointer;
 }
 .rm-person:hover { border-color: var(--accent-line); color: var(--accent); }
+.rm-person.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
 .reader-frame {
   width: 100%; border: 1px solid var(--line); border-radius: 2px;
   background: var(--bg-frame); height: calc(100dvh - 190px); display: block;

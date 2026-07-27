@@ -59,6 +59,7 @@ DATE_RE = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
 MODES = ("watch", "listen", "read")
 STATUSES = ("MISSING", "PARTIAL", "HAVE")
 PRIOS = ("P1", "P2", "P3")
+DEPTHS = ("core", "thorough", "exhaustive")
 
 MAX_ITEMS = 2000          # far above any real room; guards a runaway payload
 MAX_TEXT = 1200           # per free-text field
@@ -255,6 +256,59 @@ def list_rooms():
     return out
 
 
+def clean_definition(raw):
+    """The room's DEFINITION — the owner-visible spec of what this room
+    tracks and why: subject, ranking rule, people, modes, depth, standing
+    notes. It is what the Details reveal shows, what a refresh follows, and
+    what a FORK starts from ('switch the company name to OpenAI'). Same
+    field vocabulary as the front-door interview, deliberately — the
+    definition IS the interview's answers, kept editable."""
+    if not isinstance(raw, dict):
+        raise BuildError("definition must be an object")
+    d = {}
+    d["subject"] = _text(raw.get("subject"), "definition.subject", cap=200)
+    d["why"] = _text(raw.get("why"), "definition.why")
+    d["people"] = _text(raw.get("people"), "definition.people", cap=400)
+    modes = raw.get("modes") or []
+    if isinstance(modes, str):
+        modes = [m.strip() for m in modes.split(",") if m.strip()]
+    if not isinstance(modes, list):
+        raise BuildError("definition.modes must be a list")
+    bad = [m for m in modes if m not in MODES]
+    if bad:
+        raise BuildError(
+            f"definition.modes entries must be one of {'|'.join(MODES)}, "
+            f"got {bad}")
+    d["modes"] = modes
+    depth = _text(raw.get("depth"), "definition.depth", cap=20)
+    if depth and depth not in DEPTHS:
+        raise BuildError(
+            f"definition.depth must be one of {'|'.join(DEPTHS)}, "
+            f"got {depth!r}")
+    d["depth"] = depth
+    d["notes"] = _text(raw.get("notes"), "definition.notes")
+    return d
+
+
+def set_definition(slug, raw):
+    """Validate and write a room's definition in place. Items untouched.
+    Raises KeyError on an unknown room, BuildError on a bad payload."""
+    d = clean_definition(raw)
+    path = ROOMS_DIR / f"{slug}.json"
+    with locked(ROOT / "data" / "reading" / f"{slug}.build"):
+        room = load_room(slug)
+        if room is None:
+            raise KeyError(slug)
+        room["definition"] = d
+        room["updated"] = datetime.now(timezone.utc).astimezone() \
+            .isoformat(timespec="seconds")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(room, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        tmp.replace(path)
+    return d
+
+
 def _ping_additions(slug, title, new_titles):
     """Best-effort owner ping when a rebuild lands new items — the
     applications-module watch pattern: the diff is the signal, one ping per
@@ -301,6 +355,8 @@ def build(slug, title, subtitle, items, legacy_key=""):
         "updated": datetime.now(timezone.utc).astimezone()
                    .isoformat(timespec="seconds"),
         "legacy_key": legacy_key or (prev or {}).get("legacy_key") or "",
+        # A rebuild replaces the ITEMS; the owner's definition rides along.
+        "definition": (prev or {}).get("definition") or {},
         "items": clean,
     }
     ROOMS_DIR.mkdir(parents=True, exist_ok=True)
@@ -366,6 +422,22 @@ def update_prompt(slug):
         f"Subject, as the room states it: "
         f"{room.get('subtitle') or room['title']}",
         f"The room was last refreshed on {since} and holds {n} items.",
+    ]
+    d = room.get("definition") or {}
+    if any(d.get(k) for k in ("subject", "why", "people", "notes")):
+        lines += ["", "STANDING INSTRUCTIONS (owner-edited; these govern "
+                      "what belongs and how it ranks):"]
+        for label, key in (("Subject", "subject"),
+                           ("What the owner wants out of it", "why"),
+                           ("Prioritize these people", "people"),
+                           ("Notes", "notes")):
+            if d.get(key):
+                lines.append(f"- {label}: {d[key]}")
+        if d.get("modes"):
+            lines.append("- Include: " + ", ".join(d["modes"]))
+        if d.get("depth"):
+            lines.append(f"- Depth: {d['depth']}")
+    lines += [
         "",
         "Do this, in order:",
         f"1. Read the current room store at {path} — its `items` array is "

@@ -1090,6 +1090,27 @@ def reading_room_page(slug: str):
     raise HTTPException(404, "no such reading room")
 
 
+class RoomDefinitionReq(BaseModel):
+    subject: str = ""
+    why: str = ""
+    people: str = ""
+    modes: list = []
+    depth: str = ""
+    notes: str = ""
+
+
+@app.put("/api/reading/rooms/{name}/definition")
+def api_reading_room_definition(name: str, req: RoomDefinitionReq):
+    """Save a room's definition — the owner-visible spec of what it tracks
+    and why. Refreshes follow it; forking starts from it."""
+    try:
+        return {"definition": readingroom.set_definition(name, req.dict())}
+    except KeyError:
+        raise HTTPException(404, "no such reading room")
+    except readingroom.BuildError as e:
+        raise HTTPException(422, str(e))
+
+
 @app.get("/api/reading/rooms/{name}/update-prompt")
 def api_reading_room_update_prompt(name: str):
     """The refresh prompt for pasting into another session — no job launched.

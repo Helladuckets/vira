@@ -11906,8 +11906,9 @@ function fdField(q) {
     if (q.placeholder) input.placeholder = q.placeholder;
     if (q.default) input.value = q.default;
   }
-  if (input.tagName === "TEXTAREA" && q.placeholder) {
-    input.placeholder = q.placeholder;
+  if (input.tagName === "TEXTAREA") {
+    if (q.placeholder) input.placeholder = q.placeholder;
+    if (q.default) input.value = q.default;
   }
   input.id = "fdq-" + q.id;
   input.dataset.qid = q.id;
@@ -11934,10 +11935,16 @@ function fdReadAnswers(form) {
   return out;
 }
 
-function fdOpenInterview(id) {
-  const mod = fdGet(id);
+function fdOpenInterview(id, prefill) {
+  let mod = fdGet(id);
   const view = fdView(id);
   if (!mod || !view) return;
+  // A FORK prefills the interview from an existing room's definition —
+  // the ask fields keep their labels/help; only the defaults change.
+  if (prefill) {
+    mod = { ...mod, ask: (mod.ask || []).map((q) =>
+      prefill[q.id] !== undefined ? { ...q, default: prefill[q.id] } : q) };
+  }
   let panel = view.querySelector(":scope > .fd");
   // Created directly rather than via fdMount: a READY module has no front
   // door to mount, but its interview is still how another instance gets
@@ -12061,28 +12068,33 @@ function fdWatch() {
   }, 5000);
 }
 
-// ---------- reader: a shelf of cards, one per big topic ----------
-// The Reader's home is CARDS: every reading room (a researched, durable
-// tracker over one subject — the Anthropic room is the archetype) is a card,
-// and "My Documents" — everything Vira generates that is worth reading:
-// audit dossiers, saved plans, session retros, morning briefs — is one more
-// card beside them. A card opens its own surface; back returns to the shelf.
+// ---------- reader: one surface, the room UI itself ----------
+// NO CARDS (owner's call, 2026-07-27): the reading-room UI *is* the Reader.
+// The header names what you are in — a big-topic room ("Anthropic reading
+// room") or My Documents — and the title is a SWITCHER: click it to move
+// between rooms, My Documents, and creating/forking a room. A "Details"
+// reveal under the title answers the questions a room otherwise begs: what
+// is the corpus, how was it derived, what is it tracking — with Refresh,
+// editable standing instructions (Save), and Fork (start a new room from
+// this one's definition, e.g. swap the company name).
 //
 // Inside My Documents, THE QUEUE IS ACTIVE WORK. Marking something read takes
 // it OFF the list rather than greying it out, because the document is still
 // saved at its source. "Recently read" is a fold underneath, for undo.
 //
-// Rooms and dossiers are served HTML and open in the frame; plans and vault
-// documents are markdown and open in the shared note panel. Section progress
-// appears only where a document has anchors to count.
+// Native rooms render in-app (see the rm* renderer). Dossiers and legacy
+// room pages open in the frame; plans and vault documents open in the note
+// panel. Section progress appears only where a document has anchors.
 let readerPages = null;
 let readerQueue = [];
 let readerCounts = {};
 let readerDoneOpen = lsGet("vira-reader-done-open", false);
-// home | docs | stage. Stage remembers where it was entered from, so back
-// from a dossier returns to My Documents while back from a room goes home.
-let readerView = "home";
-let readerStageFrom = "home";
+// What is SELECTED (persists): "room:<name>" | "docs".
+// What is SHOWING: room | docs | stage (stage = a document opened on top).
+let readerSel = lsGet("vira-reader-sel", "");
+let readerView = "room";
+let readerStageFrom = "docs";
+let readerDefsOpen = false;
 
 const READER_KIND = {
   dossier: "dossier", plan: "plan", retro: "retro",
@@ -12099,37 +12111,29 @@ async function fetchReaderPages() {
 
 function readerShow(view) {
   readerView = view;
-  const home = view === "home";
   const stage = view === "stage";
-  $("#reader-home").style.display = home ? "" : "none";
   $("#reader-room").style.display = view === "room" ? "" : "none";
   $("#reader-docs").style.display = view === "docs" ? "" : "none";
   $("#reader-stage").style.display = stage ? "" : "none";
+  $("#reader-head").style.display = stage ? "none" : "";
+  $("#reader-defs").style.display =
+    (!stage && readerDefsOpen) ? "" : "none";
   const back = $("#reader-back");
-  if (back) back.style.display = home ? "none" : "";
+  if (back) back.style.display = stage ? "" : "none";
   const scan = $("#reader-scan");
   if (scan) scan.style.display = view === "docs" ? "" : "none";
   const meta = $("#reader-meta");
-  if (meta && (stage || view === "room")) meta.textContent = "";
-  if (meta && view === "docs") {
+  if (meta) {
     const n = readerQueue.length;
-    meta.textContent = n ? n + " to read" : "all read";
-  }
-  if (meta && home) {
-    const n = readerCounts.queued || 0;
-    const rooms = (readerPages || []).length;
-    meta.textContent = [rooms ? rooms + (rooms === 1 ? " room" : " rooms") : "",
-      n ? n + " to read" : ""].filter(Boolean).join(" · ");
+    meta.textContent = view === "docs"
+      ? (n ? n + " to read" : "all read") : "";
   }
 }
 
-function readerBackTarget() {
-  return readerView === "stage" ? readerStageFrom : "home";
-}
-
-// A served document (a room page, a dossier) opens in the frame.
-function readerStage(url, title, from) {
-  readerStageFrom = from || readerView || "home";
+// A served document (a dossier, a legacy room page) opens in the frame,
+// over the current selection; back returns to it.
+function readerStage(url, title) {
+  readerStageFrom = readerSel === "docs" ? "docs" : "room";
   const f = $("#reader-frame");
   if (f && f.getAttribute("src") !== url) f.src = url;
   const a = $("#reader-fulltab");
@@ -12145,7 +12149,7 @@ function openReaderItem(it) {
   if (it.missing) { toast("That document is no longer where it was saved."); return; }
   if (it.locator_kind === "plan") { openPlan(it.ref || it.locator); return; }
   if (it.locator_kind === "vault") { openNote(it.locator, it.title); return; }
-  readerStage(it.locator, it.title, "docs");
+  readerStage(it.locator, it.title);
 }
 
 async function completeReaderItem(it, done = true) {
@@ -12225,32 +12229,6 @@ function readerRow(it) {
   return row;
 }
 
-// One card on the shelf. Rooms carry progress (done of items), a built date,
-// and an Update action; the My Documents card carries the queue count.
-function readerCard(opts) {
-  const card = el("div", "rd-card");
-  const name = el("button", "rd-card-name", opts.title);
-  name.addEventListener("click", opts.open);
-  card.appendChild(name);
-  if (opts.sub) card.appendChild(el("div", "rd-card-sub", opts.sub));
-  const foot = el("div", "rd-card-foot");
-  (opts.bits || []).filter(Boolean).forEach((b) =>
-    foot.appendChild(el("span", "rd-card-bit", b)));
-  if (opts.update) {
-    const u = el("button", "reader-mini rd-card-update", "Update");
-    u.title = "Have Vira sweep for new material and rebuild this room — "
-      + "your progress marks survive";
-    u.addEventListener("click", (e) => { e.stopPropagation(); opts.update(u); });
-    foot.appendChild(u);
-  }
-  card.appendChild(foot);
-  card.addEventListener("click", (e) => {
-    if (e.target === card || e.target.classList.contains("rd-card-foot")
-        || e.target.classList.contains("rd-card-sub")) opts.open();
-  });
-  return card;
-}
-
 // Update = dispatch a session that re-researches the subject and rebuilds
 // the same slug (ids are URL-stable, so done-marks survive). On a passive
 // test instance the dispatch is refused — fall back to copying the prompt.
@@ -12273,49 +12251,219 @@ async function updateRoom(page, btn) {
   } finally { if (btn) btn.disabled = false; }
 }
 
-function renderReaderHome(pages) {
-  const host = $("#reader-home");
-  if (!host) return;
-  host.innerHTML = "";
-  pages.forEach((p) => {
-    const prog = (p.items != null)
-      ? (p.done || 0) + " of " + p.items + " done"
-      : (p.done ? p.done + " done" : "");
-    host.appendChild(readerCard({
-      title: p.title,
-      sub: p.subtitle || "",
-      bits: ["reading room", prog,
-        p.built ? "refreshed " + p.built : ""],
-      open: () => p.native ? openRoomNative(p)
-                           : readerStage(p.url, p.title, "home"),
-      update: (btn) => updateRoom(p, btn),
-    }));
-  });
-  const n = readerCounts.queued || 0;
-  host.appendChild(readerCard({
-    title: "My Documents",
-    sub: "What Vira writes for you — dossiers, plans, retros and briefs, "
-      + "wherever each one actually lives.",
-    bits: ["queue", n ? n + " to read" : "all read"],
-    open: () => readerShow("docs"),
-  }));
-  // The skill that builds a room is topic-agnostic — this is where another
-  // topic gets popped in. Same interview the front door runs on first use.
-  const add = readerCard({
-    title: "New room…",
-    sub: "Name a subject and why you care; Vira researches it and builds "
-      + "the room — talks, papers, posts and episodes, ranked.",
-    bits: ["interview → research → built"],
-    open: openNewRoom,
-  });
-  add.classList.add("rd-card-new");
-  host.appendChild(add);
+// ---- selection: which shelf the Reader is showing ----
+
+function readerCurPage() {
+  if (!readerSel.startsWith("room:")) return null;
+  const name = readerSel.slice(5);
+  return (readerPages || []).find((p) => p.name === name) || null;
 }
 
-async function openNewRoom() {
+function selectReader(sel) {
+  readerSel = sel;
+  lsSet("vira-reader-sel", sel);
+  readerDefsOpen = false;
+  renderReaderHead();
+  renderReaderDefs();
+  if (sel === "docs") { readerShow("docs"); return; }
+  const p = readerCurPage();
+  if (!p) { readerShow("docs"); return; }
+  if (p.native) openRoomNative(p);
+  else readerStage(p.url, p.title);   // pre-migration legacy page
+}
+
+async function openNewRoom(prefill) {
   await loadFrontDoor();
-  fdOpenInterview("reader");
+  fdOpenInterview("reader", prefill || null);
   $("#view-reader")?.scrollIntoView({ block: "start" });
+}
+
+// Fork: a new room from THIS room's definition — the whole point of
+// recording it. The interview opens prefilled; change the subject
+// ("swap the company name") and dispatch.
+function forkRoom(room) {
+  const d = (room && room.definition) || {};
+  openNewRoom({
+    subject: d.subject || room?.title || "",
+    why: d.why || "",
+    people: d.people || "",
+    modes: (d.modes && d.modes.length) ? d.modes : undefined,
+    depth: d.depth || undefined,
+  });
+}
+
+// ---- the header: kicker, switcher title, subline, Details toggle ----
+
+function renderReaderHead() {
+  const host = $("#reader-head");
+  if (!host) return;
+  host.innerHTML = "";
+  const page = readerCurPage();
+  const isDocs = readerSel === "docs";
+
+  host.appendChild(el("div", "rdr-kicker",
+    isDocs ? "The Reader · queue" : "The Reader · reading room"));
+
+  const titleRow = el("div", "rdr-title-row");
+  const sw = el("button", "rdr-switch");
+  sw.appendChild(el("span", "rdr-switch-t",
+    isDocs ? "My Documents" : (page?.title || "Reader")));
+  sw.appendChild(el("span", "rdr-caret", "▾"));
+  sw.title = "Switch — rooms, My Documents, new room";
+  sw.addEventListener("click", (e) => {
+    const r = sw.getBoundingClientRect();
+    const items = [{ head: "Reading rooms" }];
+    (readerPages || []).forEach((p) => items.push({
+      label: (readerSel === "room:" + p.name ? "✓ " : "") + p.title,
+      run: () => selectReader("room:" + p.name),
+    }));
+    items.push({ sep: true });
+    items.push({
+      label: (isDocs ? "✓ " : "") + "My Documents — what Vira writes for you",
+      run: () => selectReader("docs"),
+    });
+    items.push({ sep: true });
+    if (page?.native) items.push({
+      label: "Fork this room…",
+      run: () => forkRoom(rmRoom && rmRoom.slug === page.name ? rmRoom : page),
+    });
+    items.push({ label: "New room from scratch…", run: () => openNewRoom() });
+    showContextMenu(r.left, r.bottom + 4, items);
+    e.stopPropagation();
+  });
+  titleRow.appendChild(sw);
+
+  if (page) {
+    const full = el("a", "fchip sm newtab", "Open full tab");
+    full.href = page.url;
+    full.target = "_blank";
+    full.rel = "noopener";
+    full.style.textDecoration = "none";
+    titleRow.appendChild(full);
+  }
+  host.appendChild(titleRow);
+
+  const sub = isDocs
+    ? "Dossiers, plans, retros and briefs — wherever each one actually lives. "
+      + "Mark one read and it drops off; the document stays where it was saved."
+    : (page?.subtitle || "");
+  if (sub) host.appendChild(el("div", "rdr-sub", sub));
+
+  const bits = el("div", "rdr-bits");
+  if (page) {
+    const prog = (page.items != null)
+      ? (page.done || 0) + " of " + page.items + " done" : "";
+    [prog, page.built ? "refreshed " + page.built : "",
+     page.native ? "" : "legacy page"].filter(Boolean)
+      .forEach((b) => bits.appendChild(el("span", "rdr-bit", b)));
+  } else {
+    const n = readerCounts.queued || 0;
+    bits.appendChild(el("span", "rdr-bit",
+      n ? n + " to read" : "all read"));
+  }
+  const det = el("button", "fchip sm rdr-details" + (readerDefsOpen ? " on" : ""),
+    "Details");
+  det.title = "What this is, how it was derived, and its standing instructions";
+  det.addEventListener("click", () => {
+    readerDefsOpen = !readerDefsOpen;
+    det.classList.toggle("on", readerDefsOpen);
+    renderReaderDefs();
+    $("#reader-defs").style.display = readerDefsOpen ? "" : "none";
+  });
+  bits.appendChild(det);
+  host.appendChild(bits);
+}
+
+// ---- Details: the corpus, its derivation, and the standing instructions ----
+
+const READER_METHOD =
+  "How a room is built: Vira interviews you (subject, why, what to include, "
+  + "how deep), researches the public record — primary sources over "
+  + "writeups, diffed against your vault so nothing you have already "
+  + "consumed is re-recommended — and ranks every item against your 'why'. "
+  + "It refreshes on demand and weekly (the room scout); when a refresh "
+  + "lands new items, Vira pings you.";
+
+function renderReaderDefs() {
+  const host = $("#reader-defs");
+  if (!host) return;
+  host.innerHTML = "";
+  if (!readerDefsOpen) return;
+
+  if (readerSel === "docs") {
+    host.appendChild(el("p", "rdr-def-p",
+      "This queue registers every document Vira produces for you — audit "
+      + "dossiers, saved plans, session retros, morning briefs — as soft "
+      + "pointers. Nothing is copied: each entry opens the document where "
+      + "it actually lives, and marking it read only takes it off this "
+      + "list. Scan sweeps for documents made since the last look."));
+    return;
+  }
+  const page = readerCurPage();
+  const room = (rmRoom && page && rmRoom.slug === page.name) ? rmRoom : null;
+  if (!page) return;
+  const d = (room && room.definition) || {};
+
+  host.appendChild(el("p", "rdr-def-p", READER_METHOD));
+
+  const form = el("div", "rdr-def-form");
+  const fields = [
+    ["subject", "Subject — the corpus this room tracks", "input", d.subject],
+    ["why", "Why — the ranking rule (what P1 means here)", "textarea", d.why],
+    ["people", "People to track", "input", d.people],
+    ["notes", "Standing instructions for refreshes", "textarea", d.notes],
+  ];
+  const inputs = {};
+  fields.forEach(([key, label, kind, val]) => {
+    form.appendChild(el("label", "rdr-def-label", label));
+    const inp = el(kind === "textarea" ? "textarea" : "input", "rdr-def-input");
+    if (kind === "textarea") inp.rows = 3;
+    inp.value = val || "";
+    inputs[key] = inp;
+    form.appendChild(inp);
+  });
+  host.appendChild(form);
+
+  const acts = el("div", "rdr-def-acts");
+  const save = el("button", "fchip sm", "Save instructions");
+  save.title = "Saved onto the room; every refresh follows them";
+  save.addEventListener("click", async () => {
+    save.disabled = true;
+    try {
+      const body = {
+        subject: inputs.subject.value.trim(),
+        why: inputs.why.value.trim(),
+        people: inputs.people.value.trim(),
+        notes: inputs.notes.value.trim(),
+        modes: d.modes || [], depth: d.depth || "",
+      };
+      const r = await fetch("/api/reading/rooms/"
+        + encodeURIComponent(page.name) + "/definition", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      if (room) room.definition = (await r.json().catch(() => ({})))
+        .definition || body;
+      toast("Instructions saved — refreshes will follow them");
+    } catch (e2) { toast("Couldn't save: " + (e2.message || e2)); }
+    finally { save.disabled = false; }
+  });
+  acts.appendChild(save);
+
+  const refresh = el("button", "fchip sm", "Refresh now");
+  refresh.title = "Dispatch a session: sweep for new material, rebuild in "
+    + "place — your progress marks survive";
+  refresh.addEventListener("click", () => updateRoom(page, refresh));
+  acts.appendChild(refresh);
+
+  const fork = el("button", "fchip sm", "Fork as new room…");
+  fork.title = "Start a new room from this definition — change the subject "
+    + "and keep the method";
+  fork.addEventListener("click", () => forkRoom(room || page));
+  acts.appendChild(fork);
+  host.appendChild(acts);
 }
 
 // ---------- the native room renderer ----------
@@ -12336,7 +12484,7 @@ async function openRoomNative(page) {
   try {
     data = await api("/api/reading/rooms/" + encodeURIComponent(page.name));
   } catch {
-    readerStage(page.url, page.title, "home");   // honest fallback: the export
+    readerStage(page.url, page.title);   // honest fallback: the export
     return;
   }
   rmRoom = data.room;
@@ -12345,10 +12493,59 @@ async function openRoomNative(page) {
               person: "", year: "", sort: "prio", hideDone: false };
   rmBuild();
   readerShow("room");
+  renderReaderDefs();          // the definition arrived with the room
 }
 
-function rmChip(label, key, val) {
+// Every filter answers "what is this and how is it derived?" on
+// right-click — self-explanatory beats documented, but P1/secondhand/the
+// corpus itself genuinely need the answer (owner's ask, 2026-07-27).
+const RM_EXPLAIN = {
+  prio: ["Priority",
+    "Assigned when the room was researched, ranked against the room's "
+    + "'why' (see Details). P1 = load-bearing — you would be embarrassed "
+    + "to miss it. P2 = strongly worth the time. P3 = for completeness. "
+    + "Click to filter to a tier."],
+  status: ["Coverage",
+    "How much of this has already reached you, derived by diffing the "
+    + "research against your vault when the room was built. Unseen = "
+    + "never crossed your radar. Secondhand = you met it through "
+    + "summaries or references, not the original. When unsure, the "
+    + "builder chooses Secondhand — overclaiming is the costly error."],
+  mode: ["Mode",
+    "How you would consume it — watch, listen, or read — mapped from "
+    + "each item's type. Click to narrow to what fits the moment."],
+  person: ["People",
+    "Who authored or features in an item, extracted during research. "
+    + "Pick a name (or click one on an item) to see everything they "
+    + "touch; click it again to clear."],
+  year: ["Year", "Publication year, from each item's recorded date."],
+  sort: ["Sort",
+    "Priority (default) ranks P1 first, oldest first within a tier — "
+    + "the working order. Newest/Oldest sort purely by publication date."],
+  hide: ["Hide done",
+    "Hides what you have marked done. Marks are stored by Vira and "
+    + "synced, so they are the same on every device."],
+  q: ["Search",
+    "Matches titles, notes, why-lines, venues and people, within this "
+    + "room only."],
+  check: ["Mark done",
+    "Marks the item consumed — it stays in the room, struck through, "
+    + "and the mark syncs across your devices. Click again to undo."],
+};
+
+function rmExplain(x, y, key) {
+  const ex = RM_EXPLAIN[key];
+  if (!ex) return;
+  showContextMenu(x, y, [{ head: ex[0] + " — what is this?" }].concat(
+    // showContextMenu items are actions; prose rides as inert rows.
+    ex[1].match(/[^.]+\.(?:\s|$)/g).map((s) => ({
+      label: s.trim(), run: () => {},
+    }))));
+}
+
+function rmChip(label, key, val, expKey) {
   const b = el("button", "fchip sm rm-chip", label);
+  b.dataset.exp = expKey || key;
   b.addEventListener("click", () => {
     const set = rmState[key];
     set.has(val) ? set.delete(val) : set.add(val);
@@ -12358,8 +12555,9 @@ function rmChip(label, key, val) {
   return b;
 }
 
-function rmSelect(opts, blank, onChange) {
+function rmSelect(opts, blank, onChange, expKey) {
   const s = el("select", "rm-sel");
+  if (expKey) s.dataset.exp = expKey;
   const o0 = el("option", null, blank);
   o0.value = "";
   s.appendChild(o0);
@@ -12378,35 +12576,32 @@ function rmBuild() {
   host.innerHTML = "";
   const items = rmRoom.items || [];
 
-  const head = el("div", "rm-head");
-  const tw = el("div", "rm-titles");
-  tw.appendChild(el("h3", "rm-title", rmRoom.title));
-  if (rmRoom.subtitle) tw.appendChild(el("div", "rm-sub", rmRoom.subtitle));
-  head.appendChild(tw);
-  const full = el("a", "fchip sm newtab", "Open full tab");
-  full.href = "/reading/" + rmRoom.slug + ".html";
-  full.target = "_blank";
-  full.rel = "noopener";
-  full.style.textDecoration = "none";
-  head.appendChild(full);
-  host.appendChild(head);
-
+  // The header (title, subtitle, Details) lives in #reader-head now —
+  // this surface is just the bar and the list.
   const bar = el("div", "rm-bar");
+  bar.addEventListener("contextmenu", (e) => {
+    const t = e.target.closest("[data-exp]");
+    if (!t) return;
+    e.preventDefault();
+    rmExplain(e.clientX, e.clientY, t.dataset.exp);
+  });
   const q = el("input", "rm-q");
   q.type = "search";
   q.placeholder = "Search titles, notes, people";
+  q.dataset.exp = "q";
   q.addEventListener("input", () => { rmState.q = q.value.trim(); rmRender(); });
   bar.appendChild(q);
 
-  ["P1", "P2", "P3"].forEach((p) => bar.appendChild(rmChip(p, "prio", p)));
+  ["P1", "P2", "P3"].forEach((p) =>
+    bar.appendChild(rmChip(p, "prio", p, "prio")));
   const present = {};
   items.forEach((it) => { present[it.status] = 1; present[it.mode] = 1; });
   [["MISSING", "Unseen"], ["PARTIAL", "Secondhand"]].forEach(([v, label]) => {
-    if (present[v]) bar.appendChild(rmChip(label, "status", v));
+    if (present[v]) bar.appendChild(rmChip(label, "status", v, "status"));
   });
   [["watch", "Watch"], ["listen", "Listen"], ["read", "Read"]]
     .forEach(([v, label]) => {
-      if (present[v]) bar.appendChild(rmChip(label, "mode", v));
+      if (present[v]) bar.appendChild(rmChip(label, "mode", v, "mode"));
     });
 
   const freq = {};
@@ -12418,18 +12613,19 @@ function rmBuild() {
   if (people.length) {
     bar.appendChild(rmSelect(
       people.map((p) => [p, p + " (" + freq[p] + ")"]), "Anyone",
-      (v) => { rmState.person = v; rmRender(); }));
+      (v) => { rmState.person = v; rmRender(); }, "person"));
   }
   const years = [...new Set(items.map((it) => it.year).filter(Boolean))]
     .sort().reverse();
   if (years.length > 1) {
     bar.appendChild(rmSelect(years.map((y) => [y, y]), "Any year",
-      (v) => { rmState.year = v; rmRender(); }));
+      (v) => { rmState.year = v; rmRender(); }, "year"));
   }
   const sort = rmSelect([["new", "Newest"], ["old", "Oldest"]], "Priority",
-    (v) => { rmState.sort = v || "prio"; rmRender(); });
+    (v) => { rmState.sort = v || "prio"; rmRender(); }, "sort");
   bar.appendChild(sort);
   const hide = el("button", "fchip sm rm-chip", "Hide done");
+  hide.dataset.exp = "hide";
   hide.addEventListener("click", () => {
     rmState.hideDone = !rmState.hideDone;
     hide.classList.toggle("on", rmState.hideDone);
@@ -12439,7 +12635,14 @@ function rmBuild() {
   const count = el("span", "hint rm-count", "");
   bar.appendChild(count);
   host.appendChild(bar);
-  host.appendChild(el("div", "rm-list"));
+  const list = el("div", "rm-list");
+  list.addEventListener("contextmenu", (e) => {
+    const t = e.target.closest("[data-exp]");
+    if (!t) return;
+    e.preventDefault();
+    rmExplain(e.clientX, e.clientY, t.dataset.exp);
+  });
+  host.appendChild(list);
   rmRender();
 }
 
@@ -12464,6 +12667,7 @@ function rmRow(it) {
   const check = el("button", "rm-check");
   check.title = "Mark done";
   check.setAttribute("aria-label", "Mark done");
+  check.dataset.exp = "check";
   check.addEventListener("click", async () => {
     const now = !rmDone.has(it.id);
     now ? rmDone.add(it.id) : rmDone.delete(it.id);   // optimistic
@@ -12504,11 +12708,13 @@ function rmRow(it) {
   if ((it.people || []).length) {
     const ppl = el("div", "rm-people");
     it.people.slice(0, 6).forEach((p) => {
-      const b = el("button", "rm-person", p);
+      const b = el("button", "rm-person" + (rmState.person === p ? " on" : ""), p);
+      b.dataset.exp = "person";
       b.addEventListener("click", () => {
-        rmState.person = p;
-        const sel = $("#reader-room .rm-sel");
-        if (sel) sel.value = p;
+        // Toggle: clicking the active person clears the filter.
+        rmState.person = rmState.person === p ? "" : p;
+        const sel = $("#reader-room .rm-sel[data-exp='person']");
+        if (sel) sel.value = rmState.person;
         rmRender();
       });
       ppl.appendChild(b);
@@ -12556,8 +12762,6 @@ async function loadReader(opts = {}) {
   readerQueue = data.queue || [];
   readerCounts = data.counts || {};
 
-  renderReaderHome(pages);
-
   const list = $("#reader-list");
   if (list) {
     list.innerHTML = "";
@@ -12568,10 +12772,22 @@ async function loadReader(opts = {}) {
     } else readerQueue.forEach((it) => list.appendChild(readerRow(it)));
   }
   renderReaderDone(data.completed || [], (data.counts || {}).completed || 0);
-  readerShow(readerView);
+
+  // Resolve the selection: the saved one if it still exists, else the
+  // first room, else the queue. selectReader renders header + body.
+  let sel = readerSel;
+  if (sel.startsWith("room:")
+      && !pages.some((p) => "room:" + p.name === sel)) sel = "";
+  if (!sel) sel = pages.length ? "room:" + pages[0].name : "docs";
+  if (opts.keepView && readerView === "stage") {
+    renderReaderHead();
+    return;
+  }
+  selectReader(sel);
 }
 
-$("#reader-back")?.addEventListener("click", () => readerShow(readerBackTarget()));
+$("#reader-back")?.addEventListener("click", () =>
+  readerShow(readerStageFrom));
 
 // Recently read, folded away. Present for undo, not as a library — the
 // documents themselves are still wherever they were saved.
