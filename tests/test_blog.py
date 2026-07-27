@@ -153,6 +153,26 @@ class PublishTests(StoreBase):
         self.assertFalse((self.site / "lab" / "blog" / "leaky").exists())
         self.assertEqual(blog.get_post("leaky")["status"], "draft")
 
+    def test_domain_only_hits_are_excused_but_mixed_hits_are_not(self):
+        domain_only = ("  [text/pii-pattern] /tmp/x/index.html\n"
+                       "      'thedurham'  in: Part of thedurham.nyc\n")
+        mixed = domain_only + "      'Realname'  in: said Realname today\n"
+        fake = mock.Mock()
+        with mock.patch.object(blog.subprocess, "run",
+                               return_value=mock.Mock(returncode=1,
+                                                      stdout=domain_only,
+                                                      stderr="")):
+            ok, report = blog._anon_scan(self.root)
+        self.assertTrue(ok)
+        self.assertIn("accepted false positive", report)
+        with mock.patch.object(blog.subprocess, "run",
+                               return_value=mock.Mock(returncode=1,
+                                                      stdout=mixed,
+                                                      stderr="")):
+            ok, _ = blog._anon_scan(self.root)
+        self.assertFalse(ok)
+        del fake
+
     def test_scanner_unable_to_run_fails_closed(self):
         blog.add_post("Gate Down", "Body.")
         # The real _anon_scan with a nonexistent scanner module inside this
