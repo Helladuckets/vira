@@ -247,6 +247,53 @@ def build(slug, title, subtitle, items, legacy_key=""):
     }
 
 
+def update_prompt(slug):
+    """The dispatch prompt for refreshing an existing room in place.
+
+    A room is a durable tracker over a standing subject, so 'update' means:
+    carry every existing item forward (their ids are stable by URL — dropping
+    one orphans the owner's done-marks), sweep for what is NEW since the page
+    was last built, and rebuild the same slug. The session reads the current
+    items off the page file itself rather than having them inlined here — a
+    real room can hold hundreds of items and the file is the truth anyway.
+
+    Raises KeyError when no such room exists (the route turns that into 404)."""
+    from . import reading                      # lazy: reading imports nothing here
+    info = next((r for r in reading.page_details() if r["name"] == slug), None)
+    if info is None:
+        raise KeyError(slug)
+    path = PAGES_DIR / f"{slug}.html"
+    built = info.get("built") or "an unknown date"
+    n = info.get("items")
+    lines = [
+        f"You are refreshing the reading room \"{info['title']}\" so it stays "
+        "current. A reading room is a researched consumption queue — every "
+        "worthwhile talk, paper, post, interview and episode on one subject, "
+        "ranked and deduplicated.",
+        "",
+        f"Subject, as the room states it: {info.get('subtitle') or info['title']}",
+        f"The page was last built on {built}"
+        + (f" and holds {n} items." if n is not None else "."),
+        "",
+        "Do this, in order:",
+        f"1. Read the current page at {path} and extract its item array "
+        "(the DATA JSON embedded in the page). EVERY existing item must "
+        "carry forward into your rebuild — item ids are derived from URLs, "
+        "and a dropped item orphans the owner's done-marks.",
+        f"2. Research what is new on this subject since {built}: new talks, "
+        "papers, posts, podcast episodes, interviews. Real URLs only — never "
+        "invent an item you cannot link. If genuinely nothing new exists, "
+        "say so and stop; do not pad.",
+        "3. Merge: existing items unchanged (keep their titles, URLs, dates, "
+        "modes, priorities and notes exactly), new items appended with "
+        "honest mode/prio/why fields.",
+        f"4. Rebuild via the mcp__vira__create_reading_room tool with the SAME "
+        f"slug \"{slug}\" — the server keeps ids stable so progress survives.",
+        "5. Report what you added, in one short list.",
+    ]
+    return "\n".join(lines)
+
+
 def summary_line(res):
     """One line for the tool result the model reads back."""
     modes = ", ".join(f"{n} to {m}" for m, n in sorted(res["by_mode"].items()))

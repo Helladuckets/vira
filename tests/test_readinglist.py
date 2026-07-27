@@ -359,6 +359,29 @@ class PerSessionRetroTests(Base):
         self.assertEqual(len(readinglist.queue()), 1)
 
 
+class RoomShelfTests(Base):
+    """Rooms are cards in the Reader's home, not queue rows (owner's call,
+    2026-07-27). Legacy room rows stay registered but leave every view."""
+
+    def test_a_room_row_is_excluded_from_every_view(self):
+        readinglist.register("Anthropic reading room", "room",
+                             "/reading/anthropic-universe.html", "url")
+        it = readinglist.register("A dossier", "dossier", "/explainer/x/", "url")
+        self.assertEqual([i["kind"] for i in readinglist.queue()], ["dossier"])
+        readinglist.complete(it["id"])
+        self.assertEqual([i["kind"] for i in readinglist.completed()], ["dossier"])
+        c = readinglist.counts()
+        self.assertEqual((c["queued"], c["completed"], c["total"]), (0, 1, 1))
+
+    def test_backfill_no_longer_sweeps_rooms_in(self):
+        with mock.patch.object(readinglist, "_plans", return_value=[]), \
+             mock.patch.object(readinglist, "_vault_documents", return_value=[]), \
+             mock.patch.object(readinglist, "_rooms",
+                               side_effect=AssertionError("retired from backfill")):
+            out = readinglist.backfill()
+        self.assertEqual(out["added"], 0)
+
+
 class StoreTests(Base):
     def test_a_corrupt_store_does_not_take_the_queue_down(self):
         self.store.parent.mkdir(parents=True, exist_ok=True)

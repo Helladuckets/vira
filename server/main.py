@@ -33,6 +33,7 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                frontdoor,
                reading,
                readinglist,
+               readingroom,
                fixtures, ideas, ideatags, imessage, jobboards, jobfiles,
                joblog,
                journal,
@@ -1050,8 +1051,36 @@ def api_frontdoor_dismiss(module_id: str, req: DismissReq):
 
 @app.get("/api/reading/pages")
 def api_reading_pages():
-    """Personal reading-room pages on disk; the Reader launcher's list."""
-    return {"pages": reading.list_pages()}
+    """Personal reading-room pages on disk, with what a Reader card needs:
+    subtitle, item count, done count, built date (all best-effort)."""
+    return {"pages": reading.page_details()}
+
+
+@app.get("/api/reading/rooms/{name}/update-prompt")
+def api_reading_room_update_prompt(name: str):
+    """The refresh prompt for pasting into another session — no job launched.
+    The copy path also serves passive test instances, which cannot dispatch."""
+    try:
+        return {"prompt": readingroom.update_prompt(name), "cwd": str(ROOT)}
+    except (KeyError, ValueError):
+        raise HTTPException(404, "no such reading room")
+
+
+@app.post("/api/reading/rooms/{name}/update")
+def api_reading_room_update(name: str):
+    """Dispatch a session that re-researches the room's subject and rebuilds
+    the same slug — item ids are URL-stable, so done-marks survive. This is
+    what makes a room a live tracker rather than a frozen sweep."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — copy the prompt into a "
+                                 "session instead (update-prompt)")
+    try:
+        prompt = readingroom.update_prompt(name)
+    except (KeyError, ValueError):
+        raise HTTPException(404, "no such reading room")
+    jid = jobs.launch(prompt, cwd=str(ROOT), mode="interactive",
+                      meta={"kind": "room-update", "room": name})
+    return {"job_id": jid}
 
 
 class ReadingCompleteReq(BaseModel):

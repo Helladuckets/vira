@@ -12058,22 +12058,28 @@ function fdWatch() {
   }, 5000);
 }
 
-// ---------- reader: the focused-attention queue ----------
-// Everything Vira generates that is worth reading — audit dossiers, saved
-// plans, session retros, morning briefs — plus the personal reading rooms.
-// Each entry is a SOFT POINTER: the document keeps living wherever its
-// producer put it, and the Reader only holds title/kind/locator.
+// ---------- reader: a shelf of cards, one per big topic ----------
+// The Reader's home is CARDS: every reading room (a researched, durable
+// tracker over one subject — the Anthropic room is the archetype) is a card,
+// and "My Documents" — everything Vira generates that is worth reading:
+// audit dossiers, saved plans, session retros, morning briefs — is one more
+// card beside them. A card opens its own surface; back returns to the shelf.
 //
-// THE QUEUE IS ACTIVE WORK. Marking something read takes it OFF the list
-// rather than greying it out, because the document is still saved at its
-// source. "Recently read" is a fold underneath, for undo.
+// Inside My Documents, THE QUEUE IS ACTIVE WORK. Marking something read takes
+// it OFF the list rather than greying it out, because the document is still
+// saved at its source. "Recently read" is a fold underneath, for undo.
 //
 // Rooms and dossiers are served HTML and open in the frame; plans and vault
 // documents are markdown and open in the shared note panel. Section progress
 // appears only where a document has anchors to count.
 let readerPages = null;
 let readerQueue = [];
+let readerCounts = {};
 let readerDoneOpen = lsGet("vira-reader-done-open", false);
+// home | docs | stage. Stage remembers where it was entered from, so back
+// from a dossier returns to My Documents while back from a room goes home.
+let readerView = "home";
+let readerStageFrom = "home";
 
 const READER_KIND = {
   dossier: "dossier", plan: "plan", retro: "retro",
@@ -12088,28 +12094,54 @@ async function fetchReaderPages() {
   return readerPages;
 }
 
-function selectReaderPage(page, pill) {
-  const f = $("#reader-frame");
-  if (f && f.getAttribute("src") !== page.url) f.src = page.url;
-  const a = $("#reader-fulltab");
-  if (a) a.href = page.url;
-  document.querySelectorAll(".reader-pill")
-    .forEach((x) => x.classList.toggle("on", x === pill));
+function readerShow(view) {
+  readerView = view;
+  const home = view === "home";
+  const stage = view === "stage";
+  $("#reader-home").style.display = home ? "" : "none";
+  $("#reader-docs").style.display = view === "docs" ? "" : "none";
+  $("#reader-stage").style.display = stage ? "" : "none";
+  const back = $("#reader-back");
+  if (back) back.style.display = home ? "none" : "";
+  const scan = $("#reader-scan");
+  if (scan) scan.style.display = view === "docs" ? "" : "none";
+  const meta = $("#reader-meta");
+  if (meta && stage) meta.textContent = "";
+  if (meta && view === "docs") {
+    const n = readerQueue.length;
+    meta.textContent = n ? n + " to read" : "all read";
+  }
+  if (meta && home) {
+    const n = readerCounts.queued || 0;
+    const rooms = (readerPages || []).length;
+    meta.textContent = [rooms ? rooms + (rooms === 1 ? " room" : " rooms") : "",
+      n ? n + " to read" : ""].filter(Boolean).join(" · ");
+  }
 }
 
-// Open by locator kind. A served path goes in the frame (and lights the
-// matching room pill when there is one); markdown goes to the note panel,
-// which already knows how to render a plan and a vault note.
+function readerBackTarget() {
+  return readerView === "stage" ? readerStageFrom : "home";
+}
+
+// A served document (a room page, a dossier) opens in the frame.
+function readerStage(url, title, from) {
+  readerStageFrom = from || readerView || "home";
+  const f = $("#reader-frame");
+  if (f && f.getAttribute("src") !== url) f.src = url;
+  const a = $("#reader-fulltab");
+  if (a) a.href = url;
+  const t = $("#reader-stage-title");
+  if (t) t.textContent = title || "";
+  readerShow("stage");
+}
+
+// Open by locator kind. A served path goes in the frame; markdown goes to
+// the note panel, which already knows how to render a plan and a vault note.
 function openReaderItem(it) {
   if (it.missing) { toast("That document is no longer where it was saved."); return; }
   if (it.locator_kind === "plan") { openPlan(it.ref || it.locator); return; }
   if (it.locator_kind === "vault") { openNote(it.locator, it.title); return; }
-  const f = $("#reader-frame");
-  if (f) f.src = it.locator;
-  const a = $("#reader-fulltab");
-  if (a) a.href = it.locator;
-  document.querySelectorAll(".reader-pill").forEach((x) => x.classList.remove("on"));
-  $("#reader-stage")?.scrollIntoView({ block: "nearest" });
+  readerStage(it.locator, it.title, "docs");
 }
 
 async function completeReaderItem(it, done = true) {
@@ -12189,30 +12221,91 @@ function readerRow(it) {
   return row;
 }
 
+// One card on the shelf. Rooms carry progress (done of items), a built date,
+// and an Update action; the My Documents card carries the queue count.
+function readerCard(opts) {
+  const card = el("div", "rd-card");
+  const name = el("button", "rd-card-name", opts.title);
+  name.addEventListener("click", opts.open);
+  card.appendChild(name);
+  if (opts.sub) card.appendChild(el("div", "rd-card-sub", opts.sub));
+  const foot = el("div", "rd-card-foot");
+  (opts.bits || []).filter(Boolean).forEach((b) =>
+    foot.appendChild(el("span", "rd-card-bit", b)));
+  if (opts.update) {
+    const u = el("button", "reader-mini rd-card-update", "Update");
+    u.title = "Have Vira sweep for new material and rebuild this room — "
+      + "your progress marks survive";
+    u.addEventListener("click", (e) => { e.stopPropagation(); opts.update(u); });
+    foot.appendChild(u);
+  }
+  card.appendChild(foot);
+  card.addEventListener("click", (e) => {
+    if (e.target === card || e.target.classList.contains("rd-card-foot")
+        || e.target.classList.contains("rd-card-sub")) opts.open();
+  });
+  return card;
+}
+
+// Update = dispatch a session that re-researches the subject and rebuilds
+// the same slug (ids are URL-stable, so done-marks survive). On a passive
+// test instance the dispatch is refused — fall back to copying the prompt.
+async function updateRoom(page, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    const r = await post("/api/reading/rooms/" + encodeURIComponent(page.name)
+                         + "/update", {});
+    toast("Updating “" + page.title + "” — watch it run",
+          [["Open", () => openJob(r.job_id)]]);
+    openJob(r.job_id);
+  } catch (e) {
+    try {
+      const p = await api("/api/reading/rooms/" + encodeURIComponent(page.name)
+                          + "/update-prompt");
+      await copyText("cd " + p.cwd + "\n\n" + p.prompt);
+      toast("Can't dispatch from this instance — update prompt copied; "
+            + "paste it into a Claude session");
+    } catch { toast("Couldn't start the update: " + (e.message || e)); }
+  } finally { if (btn) btn.disabled = false; }
+}
+
+function renderReaderHome(pages) {
+  const host = $("#reader-home");
+  if (!host) return;
+  host.innerHTML = "";
+  pages.forEach((p) => {
+    const prog = (p.items != null)
+      ? (p.done || 0) + " of " + p.items + " done"
+      : (p.done ? p.done + " done" : "");
+    host.appendChild(readerCard({
+      title: p.title,
+      sub: p.subtitle || "",
+      bits: ["reading room", prog, p.built ? "built " + p.built : ""],
+      open: () => readerStage(p.url, p.title, "home"),
+      update: (btn) => updateRoom(p, btn),
+    }));
+  });
+  const n = readerCounts.queued || 0;
+  host.appendChild(readerCard({
+    title: "My Documents",
+    sub: "What Vira writes for you — dossiers, plans, retros and briefs, "
+      + "wherever each one actually lives.",
+    bits: ["queue", n ? n + " to read" : "all read"],
+    open: () => readerShow("docs"),
+  }));
+}
+
 async function loadReader(opts = {}) {
   if (opts.force) readerPages = null;
   const pages = await fetchReaderPages().catch(() => []);
-
-  // the room picker above the frame stays, for the rooms specifically
-  const bar = $("#reader-pages");
-  if (bar && pages.length && !bar.childElementCount) {
-    pages.forEach((p) => {
-      const b = el("button", "reader-pill", p.title);
-      b.addEventListener("click", () => selectReaderPage(p, b));
-      bar.appendChild(b);
-    });
-  }
 
   let data;
   try { data = await api("/api/reading/list"); }
   catch { data = { queue: [], completed: [], counts: {} }; }
   readerQueue = data.queue || [];
+  readerCounts = data.counts || {};
 
-  const meta = $("#reader-meta");
-  if (meta) {
-    const n = readerQueue.length;
-    meta.textContent = n ? n + (n === 1 ? " to read" : " to read") : "all read";
-  }
+  renderReaderHome(pages);
 
   const list = $("#reader-list");
   if (list) {
@@ -12224,11 +12317,10 @@ async function loadReader(opts = {}) {
     } else readerQueue.forEach((it) => list.appendChild(readerRow(it)));
   }
   renderReaderDone(data.completed || [], (data.counts || {}).completed || 0);
-
-  const f = $("#reader-frame");
-  if (f && !f.getAttribute("src") && pages.length)
-    selectReaderPage(pages[0], bar && bar.firstChild);
+  readerShow(readerView);
 }
+
+$("#reader-back")?.addEventListener("click", () => readerShow(readerBackTarget()));
 
 // Recently read, folded away. Present for undo, not as a library — the
 // documents themselves are still wherever they were saved.

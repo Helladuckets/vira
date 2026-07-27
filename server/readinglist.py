@@ -47,8 +47,12 @@ EXPLAINER_DIR = ROOT / "static" / "explainer"
 #   plan  -> a plans.py registry id, rendered through /api/plans/{id}
 LOCATOR_KINDS = ("url", "vault", "plan")
 
-# The kinds of thing that can sit in the queue. `room` is the original reading
-# room; the rest arrived with the 2026-07-27 widening.
+# The kinds of thing that can sit in the queue. `room` is legacy: reading
+# rooms were briefly flattened into the queue (2026-07-27, first cut of this
+# module) and the owner overruled it the same week — a room is a SHELF, a
+# card beside My Documents, not a row inside it. Rows already registered with
+# the kind stay valid (register() must not start refusing an old store), but
+# the queue views exclude them and the backfill no longer sweeps them in.
 KINDS = ("dossier", "plan", "retro", "brief", "room")
 
 MAX_ITEMS = 2000
@@ -294,21 +298,25 @@ def _decorate(it, *, with_progress=True):
 
 
 def queue():
-    """What is left to read, newest first. Completed entries are NOT here."""
-    live = [i for i in _load()["items"] if not i.get("completed")]
+    """What is left to read, newest first. Completed entries are NOT here,
+    and neither are rooms — a room is its own card in the Reader, tracked by
+    its own done-mark store, not a row in My Documents."""
+    live = [i for i in _load()["items"]
+            if not i.get("completed") and i.get("kind") != "room"]
     live.sort(key=lambda i: i.get("created") or i.get("added") or "", reverse=True)
     return [_decorate(i) for i in live]
 
 
 def completed(limit=50):
     """Recently finished, newest first — for an undo affordance, not a library."""
-    done = [i for i in _load()["items"] if i.get("completed")]
+    done = [i for i in _load()["items"]
+            if i.get("completed") and i.get("kind") != "room"]
     done.sort(key=lambda i: i.get("completed") or "", reverse=True)
     return [_decorate(i, with_progress=False) for i in done[:limit]]
 
 
 def counts():
-    items = _load()["items"]
+    items = [i for i in _load()["items"] if i.get("kind") != "room"]
     return {"queued": sum(1 for i in items if not i.get("completed")),
             "completed": sum(1 for i in items if i.get("completed")),
             "total": len(items)}
@@ -377,6 +385,9 @@ def _vault_documents():
 
 
 def _rooms():
+    """RETIRED from the backfill (2026-07-27, owner's call): rooms are cards
+    in the Reader's home, not queue rows. Kept as a named seam because a
+    future 'register a room's page itself' need would land here."""
     out = []
     for p in reading.list_pages():
         out.append({"title": p["title"], "kind": "room",
@@ -418,7 +429,7 @@ def backfill(source="backfill", days=FRESH_DAYS):
     seeing for the first time, so it can never re-file something the owner
     deliberately put back."""
     added = queued = 0
-    for row in (_explainer_dossiers() + _rooms() + _plans() + _vault_documents()):
+    for row in (_explainer_dossiers() + _plans() + _vault_documents()):
         before = find_by_locator(row["locator"], row["locator_kind"])
         try:
             it = register(row["title"], row["kind"], row["locator"],

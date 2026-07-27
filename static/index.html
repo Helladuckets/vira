@@ -447,22 +447,28 @@
             loading="lazy"></iframe>
   </section>
 
-  <!-- READER (launcher for personal reading-room pages under /reading/;
-       dock icon and tab remove themselves when no pages exist) -->
+  <!-- READER — a shelf of cards, one per big topic: each reading room is a
+       card, and "My Documents" (Vira's own dossiers/plans/retros/briefs) is
+       one more card beside them. A card opens its own surface; back returns
+       to the shelf. -->
   <section id="view-reader" class="view">
     <div class="section-head"><h2>Reader</h2>
+      <button class="fchip sm" id="reader-back" style="display:none">‹ Reader</button>
       <span class="hint" id="reader-meta" style="margin-left:auto"></span>
-      <button class="fchip sm" id="reader-scan" title="Look for documents that
-        have been made since the last scan">Scan</button>
+      <button class="fchip sm" id="reader-scan" style="display:none"
+        title="Look for documents that have been made since the last scan">Scan</button>
     </div>
-    <p class="hint ideas-hint">Everything worth reading, wherever it actually
-      lives — dossiers, plans, retros and briefs. Mark one read and it drops off
-      the list; the document stays exactly where it was saved.</p>
-    <div id="reader-list" class="list"></div>
-    <div id="reader-done" class="reader-done"></div>
-    <div id="reader-stage" class="reader-stage">
+    <div id="reader-home" class="reader-home"></div>
+    <div id="reader-docs" style="display:none">
+      <p class="hint ideas-hint">Everything Vira writes for you — dossiers,
+        plans, retros and briefs — wherever it actually lives. Mark one read and
+        it drops off the list; the document stays exactly where it was saved.</p>
+      <div id="reader-list" class="list"></div>
+      <div id="reader-done" class="reader-done"></div>
+    </div>
+    <div id="reader-stage" class="reader-stage" style="display:none">
       <div class="section-head sub">
-        <div class="reader-pages" id="reader-pages"></div>
+        <span class="hint" id="reader-stage-title"></span>
         <a class="fchip sm newtab" id="reader-fulltab" href="#" target="_blank"
            rel="noopener" style="margin-left:auto; text-decoration:none">Open full tab</a>
       </div>
