@@ -409,6 +409,18 @@ def _plans():
     return out
 
 
+def _sitedocs():
+    """Documents migrated off thedurham.nyc plus every plan the repointed
+    plan-mode hook has rendered since — static/docs/, served at /docs/.
+    sitedocs owns the registry/manifest read; lazy import breaks the cycle
+    (sitedocs imports this module for producer registration)."""
+    try:
+        from . import sitedocs
+        return sitedocs.registry_rows()
+    except Exception:
+        return []
+
+
 def _is_stale(created, days=FRESH_DAYS):
     """Older than the freshness window, so the sweep files it as already read."""
     try:
@@ -429,7 +441,8 @@ def backfill(source="backfill", days=FRESH_DAYS):
     seeing for the first time, so it can never re-file something the owner
     deliberately put back."""
     added = queued = 0
-    for row in (_explainer_dossiers() + _plans() + _vault_documents()):
+    for row in (_explainer_dossiers() + _plans() + _vault_documents()
+                + _sitedocs()):
         before = find_by_locator(row["locator"], row["locator_kind"])
         try:
             it = register(row["title"], row["kind"], row["locator"],

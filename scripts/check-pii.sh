@@ -10,7 +10,11 @@
 set -u
 
 ROOT="$(git rev-parse --show-toplevel)"
-PATTERNS_FILE="$ROOT/data/pii-patterns.txt"
+# PII_PATTERNS_FILE overrides the default location so OTHER repos can run
+# this guard at full strength (thedurham-nyc's pre-commit points it at this
+# instance's pattern file; ROOT still resolves to the CALLING repo, so the
+# scan covers that repo's staged diff).
+PATTERNS_FILE="${PII_PATTERNS_FILE:-$ROOT/data/pii-patterns.txt}"
 
 # Two modes: default scans STAGED additions (the pre-commit hook);
 # `--tree` scans every line of every tracked text file (publication

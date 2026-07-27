@@ -140,15 +140,21 @@ def _publish_plan(md):
     URL (or None on failure). Blocking."""
     if not PLAN_HOOK.is_file() or not md.strip():
         return None
+    # vira_plan_id tells the repointed hook to SKIP its vault-markdown write —
+    # _finalize_plan saves the markdown via plans.py, and a second copy under
+    # a different stem would just collide with that registry's naming.
     payload = json.dumps({"tool_name": "ExitPlanMode",
-                          "tool_input": {"plan": md}})
+                          "tool_input": {"plan": md, "vira_plan_id": True}})
     try:
         res = subprocess.run(["python3", str(PLAN_HOOK)], input=payload,
                              capture_output=True, text=True, timeout=300,
                              env=settings.strip_env())
     except Exception:  # noqa: BLE001 — publish is best-effort
         return None
-    m = re.search(r"https://\S+?/plans/\S+?\.html", res.stdout)
+    # Hook URLs are Vira-served now (http over the tailnet, /docs/plans/);
+    # the old https lab form still matches for a machine running the pre-
+    # repoint hook.
+    m = re.search(r"https?://\S+?/plans/\S+?\.html", res.stdout)
     return m.group(0) if m else None
 
 
