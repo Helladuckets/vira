@@ -3273,12 +3273,30 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 /* The header: kicker, switcher title, subline, Details reveal. One surface —
    the room UI is the Reader. */
 .rdr-head { margin-top: 6px; min-width: 0; }
-.rdr-kicker {
-  font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
-  color: var(--text-faint);
+/* Browser-style tabs: every shelf visible, the plus mints a new room.
+   The strip scrolls inside itself on a phone — it must never widen the
+   document (the iOS shrink-to-fit rule). */
+.rdr-tabs {
+  display: flex; gap: 2px; align-items: flex-end; min-width: 0;
+  overflow-x: auto; scrollbar-width: none;
+  border-bottom: 1px solid var(--line); padding: 0 2px;
 }
+.rdr-tabs::-webkit-scrollbar { display: none; }
+.rdr-tab {
+  background: none; border: 1px solid transparent; border-bottom: 0;
+  border-radius: var(--radius) var(--radius) 0 0;
+  color: var(--text-faint); font-size: 11.5px; letter-spacing: 0.03em;
+  padding: 6px 12px 5px; cursor: pointer; white-space: nowrap;
+  flex: none; margin-bottom: -1px;
+}
+.rdr-tab:hover { color: var(--text-dim); background: var(--hover-wash); }
+.rdr-tab.on {
+  color: var(--text-head); background: var(--bg-card);
+  border-color: var(--line);
+}
+.rdr-tab-plus { font-size: 13px; padding: 5px 10px 4px; }
 .rdr-title-row {
-  display: flex; gap: 10px; align-items: center; margin-top: 3px;
+  display: flex; gap: 10px; align-items: center; margin-top: 9px;
   flex-wrap: wrap;
 }
 .rdr-switch {
@@ -3291,7 +3309,11 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   letter-spacing: 0.01em;
 }
 .rdr-switch:hover .rdr-switch-t { color: var(--accent); }
-.rdr-caret { color: var(--text-faint); font-size: 11px; }
+.rdr-caret {
+  color: var(--text-faint); font-size: 11px;
+  transition: transform 0.18s ease;
+}
+.rdr-switch.open .rdr-caret { transform: rotate(180deg); }
 .rdr-sub {
   font-size: 12px; color: var(--text-dim); line-height: 1.5;
   margin-top: 4px; max-width: 760px;
@@ -3301,10 +3323,6 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   margin-top: 7px;
 }
 .rdr-bit { font-size: 11px; color: var(--text-faint); }
-.rdr-details.on {
-  border-color: var(--sel-line); color: var(--sel-text);
-  background: var(--sel-bg);
-}
 .rdr-defs {
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--bg-card); padding: 12px 14px; margin-top: 10px;
@@ -3336,10 +3354,10 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
    tokens, so every skin reaches it. The legacy iframe path keeps the old
    .reader-stage styles. */
 .reader-room { margin-top: 8px; }
+/* Not sticky (owner's call, 2026-07-27): the bar scrolls with the list. */
 .rm-bar {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
-  margin: 10px 0 8px; position: sticky; top: 0; z-index: 3;
-  background: var(--bg); padding: 6px 0;
+  margin: 10px 0 8px; padding: 6px 0;
 }
 .rm-q {
   flex: 1 1 170px; min-width: 140px; background: var(--bg-card);

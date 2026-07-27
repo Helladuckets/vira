@@ -12297,6 +12297,15 @@ function forkRoom(room) {
 
 // ---- the header: kicker, switcher title, subline, Details toggle ----
 
+function toggleReaderDefs() {
+  readerDefsOpen = !readerDefsOpen;
+  document.querySelector(".rdr-switch")?.classList
+    .toggle("open", readerDefsOpen);
+  // Display FIRST, then render: the definition boxes measure themselves.
+  $("#reader-defs").style.display = readerDefsOpen ? "" : "none";
+  renderReaderDefs();
+}
+
 function renderReaderHead() {
   const host = $("#reader-head");
   if (!host) return;
@@ -12304,46 +12313,35 @@ function renderReaderHead() {
   const page = readerCurPage();
   const isDocs = readerSel === "docs";
 
-  host.appendChild(el("div", "rdr-kicker",
-    isDocs ? "The Reader · queue" : "The Reader · reading room"));
+  // Rooms as TABS, browser-style (owner's call, 2026-07-27): every shelf
+  // visible at once, the plus mints a new one.
+  const tabs = el("div", "rdr-tabs");
+  (readerPages || []).forEach((p) => {
+    const t = el("button",
+      "rdr-tab" + (readerSel === "room:" + p.name ? " on" : ""), p.title);
+    t.addEventListener("click", () => selectReader("room:" + p.name));
+    tabs.appendChild(t);
+  });
+  const dt = el("button", "rdr-tab" + (isDocs ? " on" : ""),
+    "Vira's Documents");
+  dt.addEventListener("click", () => selectReader("docs"));
+  tabs.appendChild(dt);
+  const plus = el("button", "rdr-tab rdr-tab-plus", "+");
+  plus.title = "New room — name a subject, Vira researches and builds it";
+  plus.addEventListener("click", () => openNewRoom());
+  tabs.appendChild(plus);
+  host.appendChild(tabs);
 
+  // The title IS the Details toggle now — click it to open what this is,
+  // how it was derived, and the standing instructions.
   const titleRow = el("div", "rdr-title-row");
-  const sw = el("button", "rdr-switch");
+  const sw = el("button", "rdr-switch" + (readerDefsOpen ? " open" : ""));
   sw.appendChild(el("span", "rdr-switch-t",
     isDocs ? "Vira's Documents" : (page?.title || "Reader")));
   sw.appendChild(el("span", "rdr-caret", "▾"));
-  sw.title = "Switch — rooms, Vira's Documents, new room";
-  sw.addEventListener("click", (e) => {
-    const r = sw.getBoundingClientRect();
-    const items = [{ head: "Reading rooms" }];
-    (readerPages || []).forEach((p) => items.push({
-      label: (readerSel === "room:" + p.name ? "✓ " : "") + p.title,
-      run: () => selectReader("room:" + p.name),
-    }));
-    items.push({ sep: true });
-    items.push({
-      label: (isDocs ? "✓ " : "") + "Vira's Documents — what Vira writes for you",
-      run: () => selectReader("docs"),
-    });
-    items.push({ sep: true });
-    if (page?.native) items.push({
-      label: "Fork this room…",
-      run: () => forkRoom(rmRoom && rmRoom.slug === page.name ? rmRoom : page),
-    });
-    items.push({ label: "New room from scratch…", run: () => openNewRoom() });
-    showContextMenu(r.left, r.bottom + 4, items);
-    e.stopPropagation();
-  });
+  sw.title = "Details — what this is, how it was derived, its instructions";
+  sw.addEventListener("click", toggleReaderDefs);
   titleRow.appendChild(sw);
-
-  if (page) {
-    const full = el("a", "fchip sm newtab", "Open full tab");
-    full.href = page.url;
-    full.target = "_blank";
-    full.rel = "noopener";
-    full.style.textDecoration = "none";
-    titleRow.appendChild(full);
-  }
   host.appendChild(titleRow);
 
   const sub = isDocs
@@ -12364,17 +12362,6 @@ function renderReaderHead() {
     bits.appendChild(el("span", "rdr-bit",
       n ? n + " to read" : "all read"));
   }
-  const det = el("button", "fchip sm rdr-details" + (readerDefsOpen ? " on" : ""),
-    "Details");
-  det.title = "What this is, how it was derived, and its standing instructions";
-  det.addEventListener("click", () => {
-    readerDefsOpen = !readerDefsOpen;
-    det.classList.toggle("on", readerDefsOpen);
-    // Display FIRST, then render: the definition boxes measure themselves.
-    $("#reader-defs").style.display = readerDefsOpen ? "" : "none";
-    renderReaderDefs();
-  });
-  bits.appendChild(det);
   host.appendChild(bits);
 }
 
@@ -12497,6 +12484,14 @@ function renderReaderDefs() {
     + "and keep the method";
   fork.addEventListener("click", () => forkRoom(room || page));
   acts.appendChild(fork);
+
+  const full = el("a", "fchip sm newtab", "Open full tab");
+  full.href = page.url;
+  full.target = "_blank";
+  full.rel = "noopener";
+  full.style.textDecoration = "none";
+  full.title = "The standalone page — shareable, readable outside Vira";
+  acts.appendChild(full);
   host.appendChild(acts);
 }
 
@@ -12512,6 +12507,10 @@ let rmState = null;
 
 const RM_PRIO_RANK = { P1: 0, P2: 1, P3: 2 };
 const RM_STATUS_LABEL = { MISSING: "unseen", PARTIAL: "secondhand" };
+// Labels say what the item IS (video/audio/text), not what to do with it —
+// "Watch"/"Read" on a card read like buttons that open the thing (owner's
+// report, 2026-07-27). Data values stay watch|listen|read.
+const RM_MODE_LABEL = { watch: "video", listen: "audio", read: "text" };
 
 async function openRoomNative(page) {
   let data;
@@ -12545,14 +12544,13 @@ const RM_EXPLAIN = {
     + "never crossed your radar. Secondhand = you met it through "
     + "summaries or references, not the original. When unsure, the "
     + "builder chooses Secondhand — overclaiming is the costly error."],
-  mode: ["Mode",
-    "How you would consume it — watch, listen, or read — mapped from "
-    + "each item's type. Click to narrow to what fits the moment."],
+  mode: ["Format",
+    "What the item IS — video, audio, or text — mapped from its type. "
+    + "A filter, not a link: click to narrow to what fits the moment."],
   person: ["People",
     "Who authored or features in an item, extracted during research. "
     + "Pick a name (or click one on an item) to see everything they "
     + "touch; click it again to clear."],
-  year: ["Year", "Publication year, from each item's recorded date."],
   sort: ["Sort",
     "Priority (default) ranks P1 first, oldest first within a tier — "
     + "the working order. Newest/Oldest sort purely by publication date."],
@@ -12560,8 +12558,8 @@ const RM_EXPLAIN = {
     "Hides what you have marked done. Marks are stored by Vira and "
     + "synced, so they are the same on every device."],
   q: ["Search",
-    "Matches titles, notes, why-lines, venues and people, within this "
-    + "room only."],
+    "Matches titles, notes, why-lines, venues, people and dates — type "
+    + "a year to filter by it. This room only."],
   check: ["Mark done",
     "Marks the item consumed — it stays in the room, struck through, "
     + "and the mark syncs across your devices. Click again to undo."],
@@ -12644,7 +12642,7 @@ function rmBuild() {
   [["MISSING", "Unseen"], ["PARTIAL", "Secondhand"]].forEach(([v, label]) => {
     if (present[v]) bar.appendChild(rmChip(label, "status", v, "status"));
   });
-  [["watch", "Watch"], ["listen", "Listen"], ["read", "Read"]]
+  [["watch", "Video"], ["listen", "Audio"], ["read", "Text"]]
     .forEach(([v, label]) => {
       if (present[v]) bar.appendChild(rmChip(label, "mode", v, "mode"));
     });
@@ -12660,12 +12658,8 @@ function rmBuild() {
       people.map((p) => [p, p + " (" + freq[p] + ")"]), "Anyone",
       (v) => { rmState.person = v; rmRender(); }, "person"));
   }
-  const years = [...new Set(items.map((it) => it.year).filter(Boolean))]
-    .sort().reverse();
-  if (years.length > 1) {
-    bar.appendChild(rmSelect(years.map((y) => [y, y]), "Any year",
-      (v) => { rmState.year = v; rmRender(); }, "year"));
-  }
+  // No year dropdown (owner's call): sorting covers recency and the
+  // search matches dates, so typing "2021" filters by year.
   const sort = rmSelect([["new", "Newest"], ["old", "Oldest"]], "Priority",
     (v) => { rmState.sort = v || "prio"; rmRender(); }, "sort");
   bar.appendChild(sort);
@@ -12701,7 +12695,8 @@ function rmMatches(it) {
   if (s.year && it.year !== s.year) return false;
   if (s.q) {
     const hay = (it.title + " " + (it.note || "") + " " + (it.why || "") + " "
-      + (it.venue || "") + " " + (it.people || []).join(" ")).toLowerCase();
+      + (it.venue || "") + " " + (it.date || "") + " " + (it.year || "") + " "
+      + (it.people || []).join(" ")).toLowerCase();
     if (!hay.includes(s.q.toLowerCase())) return false;
   }
   return true;
@@ -12765,7 +12760,8 @@ function rmRow(it) {
   if (RM_STATUS_LABEL[it.status])
     foot.appendChild(fbadge(RM_STATUS_LABEL[it.status], "status", it.status,
                             "status", "st-" + it.status));
-  foot.appendChild(fbadge(it.mode, "mode", it.mode, "mode", ""));
+  foot.appendChild(fbadge(RM_MODE_LABEL[it.mode] || it.mode,
+                          "mode", it.mode, "mode", ""));
   if (it.pay) foot.appendChild(el("span", "rm-fbadge pay inert", "$ paywall"));
   (it.people || []).slice(0, 6).forEach((p) => {
     const b = el("button", "rm-person" + (rmState.person === p ? " on" : ""), p);
