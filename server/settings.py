@@ -73,6 +73,7 @@ DEFAULTS = {
     "companion_hub_url": "",             # URL the pairing QR points the phone at;
                                          # empty = auto-detect (tailnet, then LAN)
     "design_foundation_root": "~/workspace/design-foundation",  # design-system repo the studio edits; missing = dormant
+    "site_root": "",                     # thedurham-nyc checkout (sitedocs migration + blog publish); empty = dormant
     "whatsapp_bridge_port": 18377,       # linked-device sidecar, 127.0.0.1 only
     "whatsapp_poll_seconds": 5,          # watcher poll cadence against the sidecar
     "whatsapp_node_bin": "node",         # node binary for the sidecar (PATH or absolute)

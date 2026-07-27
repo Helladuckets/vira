@@ -58,6 +58,8 @@
   "_vault_root": "Notes vault the Brain window indexes (Obsidian or any folder of markdown; FTS + local nomic embeddings via Ollama; nothing leaves the machine at index time). Set it from Setup > Brain \u2014 point at an existing vault or start a fresh one there. Empty = the Brain stays dormant.",
   "vault_dirs": [],
   "_vault_dirs": "Vault subdirectories to index (recursive), plus root-level .md files always. Empty = the default set (wiki, Briefs, Sessions, retros, brain-retros).",
+  "site_root": "",
+  "_site_root": "Checkout of the owner's public site repo (e.g. ~/workspace/thedurham-nyc). Used by the sitedocs migration (documents moved off the site into /docs/) and the blog publish pipeline (posts render into the site repo and push). Empty = both stay dormant.",
   "judge_model": "opus",
   "_judge_model": "Model for fresh-eyes judge sessions (circuit judge stages and the Judge button on job history). Accepts sonnet | opus | haiku | fable.",
   "atlas_anchor_org": "",
