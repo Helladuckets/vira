@@ -3327,9 +3327,37 @@ function renderIdeaCount(shown, notes) {
   bits.push(filtered ? `${shown} of ${total} ideas` : `${total} ideas`);
   if (notes) bits.push(`${notes} note${notes === 1 ? "" : "s"} needing a session`);
   const st = ideaTagStatus;
-  if (st && st.pending) bits.push(`${st.pending} not tagged yet`);
   box.textContent = bits.join(" · ");
   box.classList.toggle("filtered", !!filtered);
+  // Naming a gap with no way to close it is a dead end: the tagger works
+  // through the backlog one batch per tick, so an owner who wants it now
+  // gets a button rather than a status line telling them to wait.
+  if (st && st.pending) {
+    box.append(" · " + st.pending + " not tagged yet ");
+    const go = el("button", "btn small", "Tag now");
+    go.title = "Tag the rest of the backlog now (a few at a time)";
+    go.addEventListener("click", () => runReindex(go, st.pending));
+    box.appendChild(go);
+  }
+}
+
+// Bounded catch-up: the server caps batches, and the button reports what
+// actually happened rather than claiming the whole backlog is done.
+async function runReindex(btn, pending) {
+  btn.disabled = true;
+  btn.textContent = "Tagging…";
+  try {
+    const r = await post("/api/ideas/reindex",
+                         { batches: Math.min(Math.ceil(pending / 12), 20) });
+    await loadIdeas();
+    const left = r.status?.pending || 0;
+    toast(left ? `Tagged ${r.tagged} — ${left} still to go`
+               : `Tagged ${r.tagged} — the backlog is fully tagged`);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Tag now";
+    toast("Tagging failed: " + e.message);
+  }
 }
 
 function renderIdeas() {

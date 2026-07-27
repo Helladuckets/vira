@@ -207,8 +207,15 @@ cmd_serve() {
   curl -sf -o /dev/null "http://127.0.0.1:$port/" || {
     echo "error: no response on :$port — see $dir/.test-instance.log" >&2; exit 1; }
   echo ""
-  echo "test instance up:  http://127.0.0.1:$port  (passive, cloned data)"
-  echo "stage view:        http://127.0.0.1:$port/stage.html   <- open THIS one"
+  # Printed as localhost, NOT 127.0.0.1, even though that is the bind
+  # address: Claude Code's Browser pane allows localhost URLs and BLOCKS
+  # the numeric loopback form outright ("Link to 127.0.0.1 was blocked"),
+  # so an agent session that copies the URL this script prints cannot open
+  # the instance it was just told to test. The health check above keeps
+  # using 127.0.0.1 because that is what uvicorn actually bound; browsers
+  # and curl resolve localhost to it by fallback (::1 first, then IPv4).
+  echo "test instance up:  http://localhost:$port  (passive, cloned data)"
+  echo "stage view:        http://localhost:$port/stage.html   <- open THIS one"
   echo "                   (Design Studio format: 1280 desktop canvas + 402x874 mobile side)"
   echo "log: $dir/.test-instance.log    stop: scripts/branch.sh stop $1"
 }
