@@ -7557,8 +7557,11 @@ async function loadDesignSkins() {
   row.appendChild(createGenreCard());
 }
 
-// The other half of the picker: skins you were shipped, and the studio that
-// makes new ones from reference images. It is its own full-width surface
+// The door to the Genre Studio, which is NOT part of the skins system and no
+// longer pretends to be: it composes a genre out of reference-image fragments
+// and its deliverable is a genre.json (2026-07-27 rebuild). This card is where
+// the door happens to hang today, not a statement about what the studio makes;
+// it moves when the studio gets a panel of its own. Its own full-width surface
 // (static/genre.html) — the matrix needs the room.
 function createGenreCard() {
   const card = el("div", "skin-card skin-new");
@@ -7568,7 +7571,7 @@ function createGenreCard() {
   card.appendChild(el("div", "skin-name", "Create a genre"));
   card.appendChild(el("div", "skin-meta", "genre studio"));
   card.appendChild(el("div", "skin-tag",
-    "Drop reference images and tune a new skin out of what they share."));
+    "Take reference images apart and build a genre out of the pieces."));
   const foot = el("div", "skin-foot");
   const b = el("button", "skin-apply", "Open studio");
   b.addEventListener("click", () => window.open("/genre.html", "_blank", "noopener"));
