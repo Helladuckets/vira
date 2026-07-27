@@ -61,6 +61,72 @@ function startPoll(fn, ms, maxMs) {
   return h;
 }
 
+// ---------- whole-card activation (the owner's rule, 2026-07-27) ----------
+// If a card or row can be opened or expanded, clicking ANYWHERE on it does
+// that — the way a person row in People opens the person. A small link or
+// a lone "Open" button as the only target is a smaller hit area than the
+// thing it belongs to, and on a phone it is a miss waiting to happen.
+//
+// Controls inside a card keep their own behaviour: this never fires for a
+// click that landed on a button, a form control, a link, a tag chip, or
+// anything else that already means something. Right-click is left alone so
+// the Vira-wide context menu still opens, and a click that ends a text
+// selection is a read, not an activation.
+const CARD_CONTROL_SEL =
+  "button, a, input, select, textarea, label, summary, [contenteditable], "
+  + ".tag-chip, .idea-status, .seg-btn";
+
+function cardAction(node, run, opts = {}) {
+  node.classList.add("card-actionable");
+  if (opts.hint) node.title = node.title || opts.hint;
+  node.addEventListener("click", (e) => {
+    if (e.button !== 0 || e.defaultPrevented) return;
+    if (e.target.closest(CARD_CONTROL_SEL)) return;
+    if (node._swallowClick) { node._swallowClick = false; return; }
+    const sel = window.getSelection?.();
+    if (sel && !sel.isCollapsed && node.contains(sel.anchorNode)) return;
+    run(e);
+  });
+  // Keyboard parity: a card that is clickable is reachable and operable.
+  if (!opts.noKeys) {
+    node.tabIndex = 0;
+    node.addEventListener("keydown", (e) => {
+      if (e.target !== node) return;
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); run(e); }
+    });
+  }
+  return node;
+}
+
+// longPress(node, run): the phone's answer to a right-click. Desktop has
+// the context menu, so this only arms for touch — a mouse held still is
+// not an intent, and treating it as one steals ordinary clicks. Movement,
+// lift, or a scroll cancels. The click that follows the press is swallowed
+// so a long press cannot also activate the card underneath it.
+const LONG_PRESS_MS = 500;
+
+function longPress(node, run, ms = LONG_PRESS_MS) {
+  let timer = null, sx = 0, sy = 0;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  node.addEventListener("pointerdown", (e) => {
+    if (e.pointerType !== "touch" || e.isPrimary === false) return;
+    sx = e.clientX; sy = e.clientY;
+    timer = setTimeout(() => {
+      timer = null;
+      node._swallowClick = true;
+      if (navigator.vibrate) navigator.vibrate(8);
+      run(e);
+    }, ms);
+  });
+  node.addEventListener("pointermove", (e) => {
+    if (timer && Math.hypot(e.clientX - sx, e.clientY - sy) > 8) cancel();
+  });
+  ["pointerup", "pointercancel", "pointerleave"].forEach((t) =>
+    node.addEventListener(t, cancel));
+  node.addEventListener("scroll", cancel, true);
+  return node;
+}
+
 // bindSheet: the modal-sheet chrome (open/close + Cancel wiring) every
 // sheet hand-rolled. Each sheet's field wiring stays its own; this is
 // only the scaffolding. A sheet answers Escape as well as Cancel, and on
@@ -2742,7 +2808,22 @@ const IDEA_STATUSES = [["proposed", "Proposed"],
 // stamp (edits, status flips, note stamps); the two "Date added" orderings key
 // on creation time — a deliberately different axis, spelled out so they don't
 // read as duplicates of "Last updated".
+// The tag axes beyond `project`, mirroring server/ideatags.py AXES. The
+// live list arrives with /api/ideas (tag_status.axes) so adding an axis
+// stays a server-side data edit; this is only the pre-load fallback.
+let IDEA_AXES = [["module", "Module"], ["subproject", "Sub-project"],
+                 ["theme", "Theme"], ["concept", "Concept"]];
+let ideaVocab = {};          // {axis: [[tag, count], ...]} commonest first
+let ideaTagStatus = null;    // {total, tagged, pending, vectors}
+// Free-text search over the whole queue and the active tag filters. Both
+// persist: a filtered queue you return to is the point of filtering.
+let ideaQuery = localStorage.getItem("vira-idea-q") || "";
+let ideaTagFilter = lsGet("vira-idea-tags", []);   // ["theme:mobile-layout"]
+const relatedCache = new Map();                    // idea id -> related rows
+
 const IDEA_SORTS = [["grouped", "Status (grouped)"],
+                    ["theme", "Theme (grouped)"],
+                    ["module", "Module (grouped)"],
                     ["updated", "Last updated"],
                     ["newest", "Date added (new→old)"],
                     ["oldest", "Date added (old→new)"],
@@ -2754,11 +2835,104 @@ if (!IDEA_SORTS.some(([v]) => v === ideaSort)) ideaSort = "grouped";
 const ideaTs = (s) => Date.parse(s || "") || 0;
 
 async function loadIdeas() {
-  const { items, projects } = await api("/api/ideas");
-  ideasCache = items || [];
-  projectsCache = projects || [];
+  const r = await api("/api/ideas");
+  ideasCache = r.items || [];
+  projectsCache = r.projects || [];
+  ideaVocab = r.vocab || {};
+  ideaTagStatus = r.tag_status || null;
+  if (ideaTagStatus?.axes?.length)
+    IDEA_AXES = ideaTagStatus.axes.map((a) => [a.id, a.label]);
+  relatedCache.clear();
   renderProjectControls();
   renderIdeas();
+}
+
+// ----- search + tag filtering (client-side over the whole loaded queue).
+// The backlog is small enough to filter in the browser, which is both
+// instant and structurally incapable of the silent truncation a paged
+// search endpoint invites: what the count says is what is on screen. -----
+
+// Punctuation is not a search term. "Visual Network." found nothing
+// while "Visual Network" matched, because the trailing period was being
+// matched literally - the search was reading typing as intent. Both
+// sides fold the same way now: lowercased, every run of
+// non-alphanumerics collapsed to one space. Hyphenation stops mattering
+// too, so "mobile-layout", "mobile layout" and "Mobile Layout" are one
+// query.
+function searchFold(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+// Everything one idea can be found BY, folded once per render pass.
+function ideaHaystack(it) {
+  if (it._hay) return it._hay;
+  const tags = Object.values(it.tags || {}).flat().join(" ");
+  it._hay = searchFold([it.text, it.note, it.project, it.source, tags]
+    .filter(Boolean).join("   "));
+  return it._hay;
+}
+
+// Every term must appear somewhere in the haystack (substring, so "read"
+// finds "reader"). A quoted "..." stays one phrase, not loose words.
+function ideaMatchesQuery(it, q) {
+  if (!q) return true;
+  const hay = ideaHaystack(it);
+  const terms = (q.match(/"[^"]+"|\S+/g) || [])
+    .map((x) => searchFold(x.replace(/^"|"$/g, ""))).filter(Boolean);
+  return terms.every((x) => hay.includes(x));
+}
+
+function ideaTagList(it) {
+  return IDEA_AXES.flatMap(([ax]) =>
+    ((it.tags || {})[ax] || []).map((t) => [ax, t]));
+}
+
+// Active tag filters are ANDed: picking "reader" then "mobile-layout"
+// means the ideas that are BOTH, which is how a filter earns its keep.
+function ideaMatchesTags(it) {
+  if (!ideaTagFilter.length) return true;
+  const own = new Set(ideaTagList(it).map(([ax, t]) => ax + ":" + t));
+  return ideaTagFilter.every((k) => own.has(k));
+}
+
+function toggleTagFilter(key) {
+  ideaTagFilter = ideaTagFilter.includes(key)
+    ? ideaTagFilter.filter((k) => k !== key) : ideaTagFilter.concat([key]);
+  lsSet("vira-idea-tags", ideaTagFilter);
+  renderIdeas();
+}
+
+function tagChip(ax, tag, opts = {}) {
+  const key = ax + ":" + tag;
+  const on = ideaTagFilter.includes(key);
+  const chip = el("button", "tag-chip tag-" + ax + (on ? " on" : ""));
+  chip.appendChild(el("span", "tag-ax", (IDEA_AXES.find(
+    ([a]) => a === ax) || [ax, ax])[1]));
+  chip.appendChild(el("span", "tag-val", tag));
+  if (opts.count) chip.appendChild(el("span", "tag-n", String(opts.count)));
+  chip.title = (on ? "Remove filter" : "Filter to") + " " + tag;
+  chip.addEventListener("click", (e) => { e.stopPropagation();
+                                          toggleTagFilter(key); });
+  if (opts.removable) {
+    // A wrong tag the owner cannot remove is the dead end that makes the
+    // whole tag layer untrustworthy. The correction lives on the idea
+    // (tags_drop), so a re-tag pass cannot silently undo it.
+    const x = el("span", "tag-x", "×");
+    x.title = "Remove this tag from the idea";
+    x.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const drop = (opts.item.tags_drop || []).concat([tag]);
+      try {
+        Object.assign(opts.item,
+                      await put("/api/ideas/" + opts.item.id,
+                                { tags_drop: drop }));
+        delete opts.item._hay;
+        renderIdeas();
+      } catch (err) { alert("Remove tag failed: " + err.message); }
+    });
+    chip.appendChild(x);
+  }
+  return chip;
 }
 
 // Populate a <select> with the known projects. `includeAll` prepends an
@@ -2820,10 +2994,16 @@ function ideaRow(it) {
   const proj = el("span", "badge idea-proj", it.project || "Vira");
   proj.title = "Project";
   top.appendChild(proj);
+  // Clicking the text does NOT edit (owner's call, 2026-07-27). A click on
+  // a card reads as "open this", and editing on a plain click means every
+  // attempt to read a long idea drops you into a textarea. Editing is a
+  // deliberate gesture on both surfaces: right-click on desktop (the
+  // Vira-wide menu already carries "Edit idea"), long-press on a phone.
+  // Nothing expands on an idea card yet, so a plain click does nothing.
   const text = el("div", "idea-text", it.text);
-  text.title = "Click to edit";
-  text.addEventListener("click", () => editIdea(box, it));
+  text.title = "Right-click (or long-press) to edit";
   top.appendChild(text);
+  longPress(box, () => editIdea(box, it));
 
   const del2 = el("button", "idea-del", "×");
   del2.title = "Delete";
@@ -2896,6 +3076,19 @@ function ideaRow(it) {
     box.appendChild(meta);
   }
 
+  // Derived tags (click to filter, × to correct) + the "what else is
+  // like this" opener. Every idea gets the Similar button, tagged or not:
+  // similarity runs on embeddings, so it works before the tagger arrives.
+  const tags = ideaTagList(it);
+  const tagRow = el("div", "idea-tags");
+  tags.forEach(([ax, t]) => tagRow.appendChild(
+    tagChip(ax, t, { removable: true, item: it })));
+  const sim = el("button", "idea-sim-btn", "Similar");
+  sim.title = "Ideas that look like this one";
+  sim.addEventListener("click", () => toggleSimilar(box, it, sim));
+  tagRow.appendChild(sim);
+  box.appendChild(tagRow);
+
   // Vira-proposed ideas carry the approval bar — nothing runs unapproved
   if (it.status === "proposed") {
     const bar = el("div", "idea-run idea-approve-bar");
@@ -2957,6 +3150,160 @@ function ideaRow(it) {
   return box;
 }
 
+// ----- "what else is like this" -----
+
+async function fetchRelated(id, opts = {}) {
+  if (!opts.force && relatedCache.has(id)) return relatedCache.get(id);
+  const r = await api(`/api/ideas/${id}/related?limit=${opts.limit || 8}`
+    + (opts.floor != null ? `&floor=${opts.floor}` : ""));
+  relatedCache.set(id, r);
+  return r;
+}
+
+// One related idea as a compact row: the text, why it scored, and a jump
+// to it. The reasons are the point — a similarity list you cannot audit is
+// one you will not act on.
+//
+// The WHOLE ROW is the target (owner's rule): in the run sheet it toggles
+// its checkbox, and everywhere else it opens the idea. The "Open" button
+// stays as a visible affordance, not as the only place a click counts.
+function relatedRow(r, opts = {}) {
+  const row = el("div", "rel-row");
+  let cb = null;
+  if (opts.check) {
+    cb = el("input", "rel-check");
+    cb.type = "checkbox";
+    cb.checked = !!opts.checked;
+    cb.dataset.ideaId = r.id;
+    cb.addEventListener("change", opts.onToggle || (() => {}));
+    row.appendChild(cb);
+  }
+  const main = el("div", "rel-main");
+  const txt = el("div", "rel-text", r.text);
+  main.appendChild(txt);
+  const why = el("div", "rel-why");
+  const bits = (r.reasons || []).slice(0, 3);
+  if (r.status && r.status !== "open") bits.unshift(r.status);
+  why.textContent = bits.join(" · ") || "similar wording";
+  if (opts.verdict) {
+    const v = el("span", "rel-verdict " + opts.verdict.verdict,
+                 opts.verdict.verdict === "fold" ? "fold in" : "keep separate");
+    why.prepend(v, document.createTextNode(" "));
+    if (opts.verdict.why) why.append(" — " + opts.verdict.why);
+  }
+  main.appendChild(why);
+  row.appendChild(main);
+  if (cb) {
+    cardAction(row, () => {
+      cb.checked = !cb.checked;
+      cb.dispatchEvent(new Event("change", { bubbles: true }));
+    }, { hint: "Fold this into the dispatch" });
+  } else {
+    const go = el("button", "btn small", "Open");
+    go.title = "Find this idea in the queue";
+    go.addEventListener("click", () => revealIdea(r.id));
+    row.appendChild(go);
+    cardAction(row, () => revealIdea(r.id), { hint: "Open this idea" });
+  }
+  return row;
+}
+
+// Jump to an idea: drop the filters that would hide it, then scroll and
+// flash it. Silently failing to reveal a row the owner just asked for is
+// the kind of dead end that makes a feature feel broken.
+function revealIdea(id) {
+  const it = ideasCache.find((x) => x.id === id);
+  if (it && ideaProject && (it.project || "") !== ideaProject) {
+    ideaProject = "";
+    localStorage.setItem("vira-idea-project", "");
+    renderProjectControls();
+  }
+  if (it && !ideaMatchesTags(it)) {
+    ideaTagFilter = [];
+    lsSet("vira-idea-tags", ideaTagFilter);
+  }
+  if (it && !ideaMatchesQuery(it, ideaQuery.trim())) setIdeaQuery("");
+  if (it && (it.status === "done" || it.status === "dropped")
+      && !ideaShowParked) {
+    ideaShowParked = true;
+    localStorage.setItem("vira-idea-show-parked", "1");
+  }
+  renderIdeas();
+  const node = document.querySelector(`.idea[data-idea-id="${id}"]`);
+  if (!node) { toast("That idea is no longer in the queue"); return; }
+  node.scrollIntoView({ block: "center", behavior: "smooth" });
+  node.classList.add("idea-flash");
+  setTimeout(() => node.classList.remove("idea-flash"), 1600);
+}
+
+async function toggleSimilar(box, it, btn) {
+  const open = box.querySelector(".idea-similar");
+  if (open) { open.remove(); btn.classList.remove("on"); return; }
+  btn.classList.add("on");
+  const panel = el("div", "idea-similar");
+  panel.appendChild(el("div", "rel-loading", "Looking…"));
+  box.appendChild(panel);
+  try {
+    const r = await fetchRelated(it.id);
+    panel.innerHTML = "";
+    if (!r.related?.length) {
+      panel.appendChild(el("div", "rel-loading",
+        "Nothing else in the queue looks like this one."));
+      return;
+    }
+    const head = el("div", "rel-head",
+      `${r.related.length} similar in the queue`);
+    if (r.basis === "text")
+      head.appendChild(el("span", "rel-basis",
+        "word overlap only — the embedding daemon is unreachable"));
+    panel.appendChild(head);
+    r.related.forEach((x) => panel.appendChild(relatedRow(x)));
+  } catch (e) {
+    panel.innerHTML = "";
+    panel.appendChild(el("div", "rel-loading", "Lookup failed: " + e.message));
+  }
+}
+
+// The nudge the owner asked for: after adding an idea, say so if they
+// have effectively had it before. Deliberately a dismissible card and
+// never a blocking dialog — a false positive must cost one glance.
+async function nudgeDuplicates(it) {
+  const box = $("#idea-dupnudge");
+  if (!box) return;
+  box.innerHTML = "";
+  let r;
+  try {
+    r = await fetchRelated(it.id, { force: true, limit: 4, floor: 0.5 });
+  } catch (e) { return; }
+  if (!r.related?.length) return;
+  const card = el("div", "dupnudge");
+  const head = el("div", "dupnudge-head");
+  const n = r.related.length;
+  head.appendChild(el("span", null, n === 1
+    ? "You already have an idea that reads like this one"
+    : `You already have ${n} ideas that read like this one`));
+  const x = el("button", "btn small", "Dismiss");
+  x.addEventListener("click", () => { box.innerHTML = ""; });
+  head.appendChild(x);
+  card.appendChild(head);
+  r.related.forEach((v) => card.appendChild(relatedRow(v)));
+  box.appendChild(card);
+}
+
+function setIdeaQuery(q) {
+  ideaQuery = q;
+  localStorage.setItem("vira-idea-q", q);
+  const inp = $("#idea-search");
+  if (inp && inp.value !== q) inp.value = q;
+}
+
+function clearIdeaFilters() {
+  setIdeaQuery("");
+  ideaTagFilter = [];
+  lsSet("vira-idea-tags", ideaTagFilter);
+  renderIdeas();
+}
+
 function editIdea(box, it) {
   const form = el("div", "idea-edit");
   const ta = el("textarea", "hook-input");
@@ -3010,10 +3357,155 @@ function sortedIdeas(source) {
   }
 }
 
-// Ideas visible under the current project filter ("" = all projects).
+// Ideas visible under the current project filter ("" = all projects),
+// the active tag filters, and the search box — in that order, all ANDed.
 function filteredIdeas() {
-  if (!ideaProject) return ideasCache;
-  return ideasCache.filter((i) => (i.project || "") === ideaProject);
+  const q = ideaQuery.trim();
+  return ideasCache.filter((i) =>
+    (!ideaProject || (i.project || "") === ideaProject)
+    && ideaMatchesTags(i) && ideaMatchesQuery(i, q));
+}
+
+// The tag filter is a DROPDOWN, not a bar of chips (owner's call,
+// 2026-07-27). A chip block for a converged vocabulary is a whole band of
+// vertical space above the list, and on a phone it pushed the queue itself
+// below the fold — the control was costing more room than the thing it
+// filtered. The button states what is active; the picker holds the rest.
+function tagLabel(key) {
+  const [ax, ...rest] = key.split(":");
+  return rest.join(":");
+}
+
+function renderTagButton() {
+  const btn = $("#idea-tagbtn");
+  if (!btn) return;
+  const n = ideaTagFilter.length;
+  btn.textContent = n === 0 ? "All tags"
+    : n === 1 ? tagLabel(ideaTagFilter[0])
+    : `${n} tags`;
+  btn.classList.toggle("on", n > 0);
+  btn.title = n ? "Filtering by " + ideaTagFilter.map(tagLabel).join(", ")
+                : "Filter the queue by tag";
+}
+
+// Counts are over what is ON SCREEN under the other filters, so a tag the
+// picker offers can never yield an empty list. Selected tags are always
+// listed even at zero, or unticking the one you just picked is impossible.
+function tagCounts(scoped) {
+  const counts = new Map();
+  scoped.forEach((it) => ideaTagList(it).forEach(([ax, tg]) => {
+    const k = ax + ":" + tg;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }));
+  ideaTagFilter.forEach((k) => { if (!counts.has(k)) counts.set(k, 0); });
+  return counts;
+}
+
+function openTagPicker(anchor) {
+  closeCtxPops();
+  const counts = tagCounts(filteredIdeas());
+  const pop = el("div", "ctx-pop tag-pop");
+  const search = el("input", "search tag-pop-search");
+  search.type = "search";
+  search.placeholder = "Filter tags…";
+  pop.appendChild(search);
+  const body = el("div", "tag-pop-body");
+  pop.appendChild(body);
+
+  const draw = () => {
+    const q = searchFold(search.value);
+    body.innerHTML = "";
+    let shown = 0;
+    IDEA_AXES.forEach(([ax, label]) => {
+      const rows = [...counts.entries()]
+        .filter(([k]) => k.startsWith(ax + ":"))
+        .filter(([k]) => !q || searchFold(tagLabel(k)).includes(q))
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      if (!rows.length) return;
+      body.appendChild(el("div", "tag-pop-ax", label));
+      rows.forEach(([k, n]) => {
+        const row = el("label", "tag-pop-row" +
+          (ideaTagFilter.includes(k) ? " on" : ""));
+        const cb = el("input", "tag-pop-check");
+        cb.type = "checkbox";
+        cb.checked = ideaTagFilter.includes(k);
+        cb.addEventListener("change", () => {
+          toggleTagFilter(k);          // re-renders the queue live
+          row.classList.toggle("on", cb.checked);
+        });
+        row.appendChild(cb);
+        row.appendChild(el("span", "tag-pop-name", tagLabel(k)));
+        row.appendChild(el("span", "tag-pop-n", String(n)));
+        body.appendChild(row);
+        shown += 1;
+      });
+    });
+    if (!shown) body.appendChild(el("div", "rel-loading", "No tags match."));
+  };
+  draw();
+  search.addEventListener("input", draw);
+
+  const foot = el("div", "tag-pop-foot");
+  const clear = el("button", "btn small", "Clear");
+  clear.addEventListener("click", () => {
+    ideaTagFilter = [];
+    lsSet("vira-idea-tags", ideaTagFilter);
+    renderIdeas();
+    draw();
+  });
+  const done = el("button", "btn small primary", "Done");
+  done.addEventListener("click", () => pop.remove());
+  foot.appendChild(clear);
+  foot.appendChild(done);
+  pop.appendChild(foot);
+
+  const r = anchor.getBoundingClientRect();
+  placeCtxPop(pop, Math.max(8, r.right - 260), r.bottom + 4);
+  search.focus();
+}
+
+// What the list is showing versus what exists, always stated. A filtered
+// view that does not say it is filtered reads as a shrinking backlog.
+function renderIdeaCount(shown, notes) {
+  const box = $("#idea-count");
+  if (!box) return;
+  const total = ideasCache.length;
+  const bits = [];
+  const filtered = shown !== total || ideaTagFilter.length || ideaQuery.trim();
+  bits.push(filtered ? `${shown} of ${total} ideas` : `${total} ideas`);
+  if (notes) bits.push(`${notes} note${notes === 1 ? "" : "s"} needing a session`);
+  const st = ideaTagStatus;
+  box.textContent = bits.join(" · ");
+  box.classList.toggle("filtered", !!filtered);
+  // Naming a gap with no way to close it is a dead end: the tagger works
+  // through the backlog one batch per tick, so an owner who wants it now
+  // gets a button rather than a status line telling them to wait.
+  if (st && st.pending) {
+    box.append(" · " + st.pending + " not tagged yet ");
+    const go = el("button", "btn small", "Tag now");
+    go.title = "Tag the rest of the backlog now (a few at a time)";
+    go.addEventListener("click", () => runReindex(go, st.pending));
+    box.appendChild(go);
+  }
+}
+
+// Bounded catch-up: the server caps batches, and the button reports what
+// actually happened rather than claiming the whole backlog is done.
+async function runReindex(btn, pending) {
+  btn.disabled = true;
+  btn.textContent = "Tagging…";
+  try {
+    const r = await post("/api/ideas/reindex",
+                         { batches: Math.min(Math.ceil(pending / 12), 20) });
+    await loadIdeas();
+    const left = r.status?.pending || 0;
+    toast(left ? `Tagged ${r.tagged} — ${left} still to go`
+               : `Tagged ${r.tagged} — the backlog is fully tagged`);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Tag now";
+    toast("Tagging failed: " + e.message);
+  }
 }
 
 function renderIdeas() {
@@ -3025,10 +3517,24 @@ function renderIdeas() {
   // squatting above the list in their own pinned lane.
   const notes = queueNotes();
   const scoped = filteredIdeas();
+  renderTagButton();
+  renderIdeaCount(scoped.length, notes.length);
   if (!scoped.length && !notes.length) {
-    list.appendChild(el("div", "empty left", ideasCache.length
-      ? "No ideas for " + ideaProject + " yet — add one above."
-      : "No ideas yet — add one above."));
+    const why = ideaQuery.trim() || ideaTagFilter.length
+      ? "Nothing matches this search." + (ideasCache.length
+        ? " " + ideasCache.length + " ideas are filtered out."
+        : "")
+      : (ideasCache.length
+        ? "No ideas for " + ideaProject + " yet — add one above."
+        : "No ideas yet — add one above.");
+    const empty = el("div", "empty left", why);
+    if (ideaQuery.trim() || ideaTagFilter.length) {
+      const reset = el("button", "btn small", "Clear filters");
+      reset.addEventListener("click", clearIdeaFilters);
+      empty.appendChild(document.createTextNode(" "));
+      empty.appendChild(reset);
+    }
+    list.appendChild(empty);
     return;
   }
   const isParked = (i) => i.status === "done" || i.status === "dropped";
@@ -3038,6 +3544,10 @@ function renderIdeas() {
   const isParkedW = (w) => w.kind === "idea" && isParked(w.it);
   const node = (w) => w.kind === "note"
     ? queueNoteRow(w.e, w.u) : ideaRow(w.it);
+  if (ideaSort === "theme" || ideaSort === "module") {
+    renderIdeasByTag(list, merged, ideaSort, node, isParkedW);
+    return;
+  }
   const flat = sortedIdeas(merged);
   if (flat) {
     // Completed items fold here too (collapsed by default), so the queue
@@ -3061,6 +3571,90 @@ function renderIdeas() {
     proposed.forEach((it) => list.appendChild(ideaRow(it)));
   }
   active.forEach((w) => list.appendChild(node(w)));
+  appendParkedFold(list, parked);
+}
+
+// Group the queue by one tag axis — the "show me everything about the
+// Reader" view. An idea files under its FIRST tag on the axis, so every row
+// appears exactly once and the buckets stay countable; to see every idea
+// carrying a tag regardless of position, use the tag filter (which is not
+// first-tag-only). Buckets order biggest first, untagged work last rather
+// than hidden.
+//
+// EVERY GROUP STARTS COLLAPSED (owner's call, 2026-07-27): the point of
+// grouping is to jump to the part you want, and a grouped list that opens
+// fully expanded is the ungrouped list with headings in it — you still
+// scroll past everything. So the first screen is the map: every group,
+// named and counted, one click from its contents. Which groups are open is
+// remembered per axis, so a queue you left open comes back that way.
+function openGroups(axis) {
+  return new Set(lsGet("vira-idea-groups-" + axis, []));
+}
+
+function setGroupOpen(axis, tag, open) {
+  const s = openGroups(axis);
+  if (open) s.add(tag); else s.delete(tag);
+  lsSet("vira-idea-groups-" + axis, [...s]);
+}
+
+function renderIdeasByTag(list, merged, axis, node, isParkedW) {
+  const label = (IDEA_AXES.find(([a]) => a === axis) || [axis, axis])[1];
+  const buckets = new Map();
+  const loose = [];
+  const parked = [];
+  merged.forEach((w) => {
+    if (isParkedW(w)) { parked.push(w.it); return; }
+    const tags = w.kind === "idea" ? ((w.it.tags || {})[axis] || []) : [];
+    if (!tags.length) { loose.push(w); return; }
+    const k = tags[0];
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(w);
+  });
+  const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
+  const open = openGroups(axis);
+  // A search narrows to what you were looking for, so hiding it behind a
+  // closed group would defeat the search: with a query live, every group
+  // holding a match opens.
+  const searching = !!ideaQuery.trim();
+
+  const group = (key, title, rows) => {
+    const isOpen = searching || open.has(key);
+    const head = el("div", "ideas-sub ideas-toggle" + (isOpen ? " open" : ""));
+    head.appendChild(el("span", "ideas-sub-tag", title));
+    head.appendChild(el("span", "ideas-sub-n", String(rows.length)));
+    head.setAttribute("role", "button");
+    head.tabIndex = 0;
+    head.setAttribute("aria-expanded", isOpen ? "true" : "false");
+    const toggle = () => { setGroupOpen(axis, key, !isOpen); renderIdeas(); };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+    });
+    list.appendChild(head);
+    if (isOpen) rows.sort(byUpdated).forEach((w) => list.appendChild(node(w)));
+  };
+
+  const ordered = [...buckets.entries()]
+    .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]));
+  if (ordered.length) {
+    const bar = el("div", "group-allbar");
+    const anyOpen = searching || ordered.some(([k]) => open.has(k))
+      || open.has("__none__");
+    const all = el("button", "btn small",
+                   anyOpen ? "Collapse all" : "Expand all");
+    all.addEventListener("click", () => {
+      lsSet("vira-idea-groups-" + axis, anyOpen
+        ? [] : ordered.map(([k]) => k).concat(loose.length ? ["__none__"] : []));
+      renderIdeas();
+    });
+    bar.appendChild(el("span", "tagbar-label",
+      `${ordered.length} ${label.toLowerCase()} groups`));
+    bar.appendChild(all);
+    list.appendChild(bar);
+  }
+  ordered.forEach(([tag, rows]) => group(tag, tag, rows));
+  if (loose.length)
+    group("__none__", `No ${label.toLowerCase()} tag`, loose);
   appendParkedFold(list, parked);
 }
 
@@ -3145,6 +3739,32 @@ function initIdeas() {
     });
   }
 
+  const tagBtn = $("#idea-tagbtn");
+  if (tagBtn && !tagBtn.dataset.wired) {
+    tagBtn.dataset.wired = "1";
+    tagBtn.addEventListener("click", () => openTagPicker(tagBtn));
+  }
+
+  const search = $("#idea-search");
+  if (search && !search.dataset.wired) {
+    search.dataset.wired = "1";
+    search.value = ideaQuery;
+    // Filtering is local, so it can run on every keystroke — one frame of
+    // debounce only to avoid re-rendering mid-word on a long list.
+    let t = null;
+    search.addEventListener("input", () => {
+      clearTimeout(t);
+      t = setTimeout(() => { setIdeaQuery(search.value); renderIdeas(); }, 80);
+    });
+    search.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); clearIdeaFilters(); }
+    });
+    $("#idea-search-clear")?.addEventListener("click", () => {
+      clearIdeaFilters();
+      search.focus();
+    });
+  }
+
   const filter = $("#idea-project-filter");
   if (filter && !filter.dataset.wired) {
     filter.dataset.wired = "1";
@@ -3194,6 +3814,8 @@ function initIdeas() {
       if (!projectsCache.includes(it.project)) projectsCache.push(it.project);
       renderProjectControls();
       renderIdeas();
+      // "You already had that idea" — asked the moment it is worth asking.
+      nudgeDuplicates(it).catch(() => {});
     } catch (e) { alert("Add failed: " + e.message); }
     finally { add.disabled = false; inp.focus(); }
   };
@@ -3339,7 +3961,22 @@ function ideaExtraBlock(extra) {
   return extra ? "\nAdditional instructions from the owner:\n" + extra + "\n" : "";
 }
 
-function ideaImplementPrompt(it, extra, cwd, perm) {
+// Backlog items the owner ticked to fold into THIS dispatch. Stated as
+// part of the same piece of work — the whole point is that the agent
+// does them together rather than leaving three near-identical tasks
+// behind it.
+function ideaFoldBlock(rows) {
+  if (!rows || !rows.length) return "";
+  return ["",
+    "The owner has folded these related backlog items INTO this task. They",
+    "are part of the same piece of work — handle them together, and say in",
+    "your report how each one was addressed:",
+    "",
+    ...rows.map((r, i) => `${i + 1}. ${r.text}`),
+    ""].join("\n");
+}
+
+function ideaImplementPrompt(it, extra, cwd, perm, fold) {
   // What each rung stops for. The owner is reachable in ALL of them — the
   // session holds open at the end of its turn, so a closing question is
   // something they can actually answer rather than shout into a dead log.
@@ -3366,6 +4003,7 @@ function ideaImplementPrompt(it, extra, cwd, perm) {
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
+    ideaFoldBlock(fold),
     ideaExtraBlock(extra),
     "Carry it out end to end:",
     "- First read the repo (its CLAUDE.md and the relevant modules) so your",
@@ -3388,7 +4026,7 @@ function ideaImplementPrompt(it, extra, cwd, perm) {
   ].join("\n");
 }
 
-function ideaPlanPrompt(it, extra, cwd) {
+function ideaPlanPrompt(it, extra, cwd, fold) {
   return [
     "You are Vira's planning agent, running headless and READ-ONLY inside the",
     "git repository at " + cwd + ". Research only — do NOT modify, create, or",
@@ -3397,6 +4035,7 @@ function ideaPlanPrompt(it, extra, cwd) {
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
+    ideaFoldBlock(fold),
     ideaExtraBlock(extra),
     "Read the repo (its CLAUDE.md and the relevant modules) so the plan is",
     "grounded in the real code, then produce a thorough, well-structured",
@@ -3462,8 +4101,80 @@ function ideaRunNote(mode) {
   return permMode($("#idea-run-perm").value).note
     + " Will not commit or push.";
 }
+// ----- the related-ideas block in the run sheet -----
+// The owner's ask, in one place: "there are 15 things like this — which
+// belong in this task?" Vira answers with a recommendation and reasons;
+// the checkboxes stay the owner's, because widening a dispatch is a scope
+// decision, not a retrieval one.
+
+function renderRunRelated() {
+  const wrap = $("#idea-run-related");
+  const list = $("#idea-run-related-list");
+  if (!wrap || !list || !ideaRunCtx) return;
+  const rows = ideaRunCtx.related || [];
+  wrap.style.display = rows.length ? "" : "none";
+  if (!rows.length) return;
+  const picked = ideaRunCtx.picked;
+  $("#idea-run-related-title").textContent =
+    `${rows.length} related idea${rows.length === 1 ? "" : "s"} in the queue`;
+  const n = picked.size;
+  $("#idea-run-related-note").textContent = n
+    ? `${n} folded into this ${ideaRunCtx.mode} — the agent will handle them together.`
+    : "Tick anything that belongs in this task, or let Vira sort them.";
+  list.innerHTML = "";
+  rows.forEach((r) => list.appendChild(relatedRow(r, {
+    check: true,
+    checked: picked.has(r.id),
+    verdict: (ideaRunCtx.verdicts || {})[r.id],
+    onToggle: (e) => {
+      if (e.target.checked) picked.add(r.id); else picked.delete(r.id);
+      renderRunRelated();
+    },
+  })));
+}
+
+async function loadRunRelated(it) {
+  try {
+    const r = await fetchRelated(it.id, { limit: 12 });
+    if (!ideaRunCtx || ideaRunCtx.it.id !== it.id) return;   // sheet moved on
+    ideaRunCtx.related = r.related || [];
+    renderRunRelated();
+  } catch (e) { /* the dispatch must not depend on the suggestion */ }
+}
+
+$("#idea-run-analyze").addEventListener("click", async (e) => {
+  if (!ideaRunCtx?.related?.length) return;
+  const btn = e.currentTarget;
+  btn.disabled = true;
+  btn.textContent = "Reading them…";
+  try {
+    const { verdicts } = await post(
+      `/api/ideas/${ideaRunCtx.it.id}/fold-analysis`,
+      { candidates: ideaRunCtx.related.map((r) => r.id) });
+    ideaRunCtx.verdicts = {};
+    (verdicts || []).forEach((v) => {
+      ideaRunCtx.verdicts[v.id] = v;
+      // Vira's recommendation PRE-TICKS; it never dispatches on its own.
+      if (v.verdict === "fold") ideaRunCtx.picked.add(v.id);
+      else ideaRunCtx.picked.delete(v.id);
+    });
+    renderRunRelated();
+    const n = (verdicts || []).filter((v) => v.verdict === "fold").length;
+    toast(n ? `Vira folded in ${n} — review before launching`
+            : "Vira kept them all separate");
+  } catch (err) {
+    toast("Analysis failed: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Have Vira sort these";
+  }
+});
+
 function openIdeaRun(it, mode) {
-  ideaRunCtx = { it, mode };
+  ideaRunCtx = { it, mode, related: [], picked: new Set(), verdicts: {} };
+  $("#idea-run-related").style.display = "none";
+  $("#idea-run-related-list").innerHTML = "";
+  loadRunRelated(it);
   $("#idea-run-mode").textContent = mode === "plan" ? "Plan" : "Implement";
   $("#idea-run-title").textContent =
     mode === "plan" ? "Plan this idea" : "Implement this idea";
@@ -3507,9 +4218,11 @@ $("#idea-run-go").addEventListener("click", async () => {
   localStorage.setItem("vira-idea-cwd", cwd);
   localStorage.setItem("vira-idea-model", model);
   if (mode !== "plan") lsSet("vira-idea-perm", perm);
+  const fold = (ideaRunCtx.related || [])
+    .filter((r) => ideaRunCtx.picked.has(r.id));
   const prompt = mode === "plan"
-    ? ideaPlanPrompt(it, extra, cwd)
-    : ideaImplementPrompt(it, extra, cwd, perm);
+    ? ideaPlanPrompt(it, extra, cwd, fold)
+    : ideaImplementPrompt(it, extra, cwd, perm, fold);
   // Plan runs read-only (the session gate denies writes) and Vira publishes
   // its markdown to the lab; Implement runs on the rung the owner picked.
   const permission_mode = perm === "autopilot" ? "bypassPermissions" : null;
@@ -3519,11 +4232,23 @@ $("#idea-run-go").addEventListener("click", async () => {
   const jid = await launchJob(prompt, cwd,
     { permission_mode, model, publish_plan, idea_id: it.id, mode: runMode });
   // stamp the idea so the dispatch is visible next time it's opened
+  const day = new Date().toISOString().slice(0, 10);
+  const job = " (job " + String(jid || "?").slice(0, 8) + ")";
   try {
-    const stamp = "dispatched " + mode + " " + new Date().toISOString().slice(0, 10)
-      + " (job " + String(jid || "?").slice(0, 8) + ")";
+    const stamp = "dispatched " + mode + " " + day
+      + (fold.length ? ` with ${fold.length} folded in` : "") + job;
     const note = (it.note ? it.note + " · " : "") + stamp;
     Object.assign(it, await put("/api/ideas/" + it.id, { note }));
+    // A folded idea is now being worked on somewhere else — say so on its
+    // own row, or it sits in the queue looking untouched and gets
+    // dispatched a second time.
+    await Promise.all(fold.map(async (r) => {
+      const t = ideasCache.find((x) => x.id === r.id);
+      if (!t) return;
+      const n = (t.note ? t.note + " · " : "")
+        + `folded into "${(it.text || "").slice(0, 48)}…" ${day}${job}`;
+      Object.assign(t, await put("/api/ideas/" + r.id, { note: n }));
+    }));
     renderIdeas();
   } catch (e) { /* stamping is best-effort */ }
 });
@@ -5735,6 +6460,11 @@ function subCard(m) {
     controls.appendChild(ok);
   }
   card.appendChild(controls);
+  // The whole card opens its history, the way a person row opens the
+  // person (owner's rule, 2026-07-27). The History button stays as the
+  // visible affordance; it is no longer the only place a click lands.
+  cardAction(card, () => hist.click(),
+             { hint: "Open this subscription's charge history" });
   return card;
 }
 
@@ -8538,6 +9268,13 @@ function appRow(r) {
     actions.appendChild(sess);
   }
   row.appendChild(actions);
+  // Clicking the row opens its dossier, same rule as everywhere else. The
+  // "Why" button remains the visible affordance; a role with no dossier
+  // read has nothing to expand, so its row stays inert.
+  const why = actions.querySelector(".app-cbtn");
+  if (why && why.textContent === "Why")
+    cardAction(row, () => why.click(),
+               { hint: "Open the fit read for this role" });
   return row;
 }
 

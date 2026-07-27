@@ -32,7 +32,8 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                find,
                frontdoor,
                reading,
-               fixtures, ideas, imessage, jobboards, jobfiles, joblog,
+               fixtures, ideas, ideatags, imessage, jobboards, jobfiles,
+               joblog,
                journal,
                judge,
                mail,
@@ -97,6 +98,8 @@ receipts_sweeper = receipts.Sweeper()
 vault_indexer = vault.VaultIndexer()
 ai_health_watcher = aihealth.Watcher()
 jobboards_poller = jobboards.Poller()
+idea_indexer = ideatags.Indexer(                  # backlog tags + vectors
+    settings.get("idea_tag_interval_min") or 10)
 
 
 @app.on_event("startup")
@@ -119,6 +122,7 @@ async def _startup():
     photos.start_background_build()
     indexer.start()
     text_indexer.start()
+    idea_indexer.start()       # keeps the backlog's tags/vectors current
     backup.start()
     mercury_poller.start()
     receipts_sweeper.start()
@@ -260,7 +264,16 @@ def api_ui_state_save(req: UiStateReq):
 
 @app.get("/api/ideas")
 def api_ideas():
-    return {"items": ideas.list_items(), "projects": ideas.list_projects()}
+    """Items carry their derived tags (owner corrections applied) plus the
+    vocabulary in use, so the Queue can search, filter and group in the
+    browser with no second round-trip — the whole backlog is small enough
+    that client-side filtering is both instant and incapable of the silent
+    truncation a paged search endpoint invites."""
+    items = ideas.list_items()
+    return {"items": ideatags.annotate(items),
+            "projects": ideas.list_projects(),
+            "vocab": ideatags.vocabulary(items),
+            "tag_status": ideatags.status(items)}
 
 
 class IdeaAddReq(BaseModel):
@@ -286,15 +299,70 @@ class IdeaUpdateReq(BaseModel):
     status: str | None = None
     note: str | None = None
     project: str | None = None
+    tags_add: dict | None = None
+    tags_drop: list[str] | None = None
 
 
 @app.put("/api/ideas/{idea_id}")
 def api_ideas_update(idea_id: str, req: IdeaUpdateReq):
     try:
-        return ideas.update(idea_id, text=req.text, status=req.status,
-                            note=req.note, project=req.project)
+        it = ideas.update(idea_id, text=req.text, status=req.status,
+                          note=req.note, project=req.project,
+                          tags_add=req.tags_add, tags_drop=req.tags_drop)
     except KeyError:
         raise HTTPException(404, "unknown idea")
+    return ideatags.annotate([it])[0]
+
+
+# ----- the derived layer: tags, similarity, and the fold-in question -----
+
+class ReindexReq(BaseModel):
+    batches: int | None = 1
+
+
+@app.post("/api/ideas/reindex")
+def api_ideas_reindex(req: ReindexReq):
+    """Tag/embed on demand. Bounded by `batches` (one model call each) so
+    a click can never turn into an unbounded spend."""
+    n = max(0, min(int(req.batches or 1), 20))
+    out = ideatags.refresh(batches=n)
+    items = ideas.list_items()
+    out["status"] = ideatags.status(items)
+    out["vocab"] = ideatags.vocabulary(items)
+    return out
+
+
+@app.get("/api/ideas/duplicates")
+def api_ideas_duplicates(floor: float = ideatags.DUP_FLOOR):
+    return {"pairs": ideatags.duplicates(floor=floor)}
+
+
+@app.get("/api/ideas/{idea_id}/related")
+def api_ideas_related(idea_id: str, limit: int = 15,
+                      floor: float = ideatags.RELATED_FLOOR,
+                      include_parked: bool = False):
+    try:
+        return ideatags.related(idea_id, limit=max(1, min(limit, 100)),
+                                floor=floor, include_parked=include_parked)
+    except KeyError:
+        raise HTTPException(404, "unknown idea")
+
+
+class FoldReq(BaseModel):
+    candidates: list[str] = []
+
+
+@app.post("/api/ideas/{idea_id}/fold-analysis")
+def api_ideas_fold(idea_id: str, req: FoldReq):
+    """"There are 15 things like this — which belong in this task?" The
+    answer is a recommendation with reasons; the owner's checkboxes still
+    decide, because widening a dispatch is a scope call."""
+    try:
+        return ideatags.fold_analysis(idea_id, (req.candidates or [])[:40])
+    except KeyError:
+        raise HTTPException(404, "unknown idea")
+    except Exception as e:  # noqa: BLE001 — a dead backend is a 503, not a 500
+        raise HTTPException(503, f"analysis unavailable: {e}")
 
 
 class ProjectAddReq(BaseModel):

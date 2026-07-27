@@ -60,6 +60,8 @@ DEFAULTS = {
                                          # (macOS only; AppleScript spoke, syncs to phone)
     "mercury_poll_hours": 6,             # subscriptions charge-poll cadence
     "receipts_sweep_days": 7,            # receipts-pass sweep cadence
+    "idea_tag_interval_min": 10,         # backlog tag/vector pass cadence
+                                         # (one model call per tick at most)
     "subs_notify_threshold_usd": 100,    # renewal ping floor ($/cycle; annuals always ping)
     "vault_root": "",                    # notes vault for the Brain index; empty = dormant
                                          # (set via Setup > Brain or config.json)

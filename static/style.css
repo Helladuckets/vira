@@ -563,6 +563,170 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .idea-edit { margin-bottom: 8px; }
 .ideas-tabs { margin-bottom: 12px; }
 
+/* ---------- Queue search, tags and similarity ----------
+   Layout and weight only; every color reads an existing token, so the
+   whole layer re-skins with the rest of the app. */
+.idea-searchwrap { position: relative; flex: 1 1 220px; min-width: 0; }
+.idea-searchwrap .search { width: 100%; padding-right: 26px; }
+.idea-searchwrap .search::-webkit-search-cancel-button { display: none; }
+.idea-search-clear {
+  position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+  background: none; border: 0; cursor: pointer; padding: 0 6px;
+  color: var(--text-faint); font-size: 15px; line-height: 1;
+}
+.idea-search-clear:hover { color: var(--text); }
+
+.tagbar-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint); margin-right: 2px;
+}
+
+/* The tag filter dropdown: a button that names the active filters, and a
+   multi-select panel. Replaces the chip block, which cost a whole band of
+   vertical space above the list. */
+.tagbtn { cursor: pointer; text-align: left; min-width: 96px; }
+.tagbtn::after { content: " \25be"; color: var(--text-faint); }
+.tagbtn.on { border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg); }
+.tag-pop { width: 268px; max-width: calc(100vw - 24px); }
+.tag-pop-search { width: 100%; margin-bottom: 6px; }
+.tag-pop-body { max-height: 46vh; overflow-y: auto; }
+.tag-pop-ax {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint); margin: 8px 0 3px;
+}
+.tag-pop-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 4px 5px; border-radius: var(--radius); font-size: 12px;
+  color: var(--text-dim);
+}
+.tag-pop-row:hover { background: var(--hover-wash); color: var(--text); }
+.tag-pop-row.on { color: var(--sel-text); background: var(--sel-bg); }
+.tag-pop-check { flex: none; accent-color: var(--accent); }
+.tag-pop-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tag-pop-n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.tag-pop-foot {
+  display: flex; justify-content: flex-end; gap: 6px;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line);
+}
+
+/* Grouped sorts: the expand/collapse-all strip above the group headers. */
+.group-allbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin: 4px 0 2px;
+}
+
+/* Any card or row whose whole surface activates its primary action. The
+   cue is a cursor and a hover wash, never a border that would fight the
+   card's own state colors. */
+.card-actionable { cursor: pointer; }
+.card-actionable:focus-visible { outline: 1px solid var(--sel-line);
+  outline-offset: 1px; }
+.sub-card.card-actionable:hover, .app-row.card-actionable:hover {
+  border-color: var(--accent-line);
+}
+.idea-count { font-size: 11px; color: var(--text-faint); margin: 6px 0 10px; }
+.idea-count.filtered { color: var(--text-dim); }
+
+/* One tag: axis label + value, hairline-bordered per axis voice. */
+.tag-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: none; cursor: pointer; font: inherit;
+  font-size: 10.5px; line-height: 1;
+  padding: 3px 7px; border-radius: var(--radius);
+  border: 1px solid var(--line); color: var(--text-dim);
+}
+.tag-chip:hover { border-color: var(--accent-line); color: var(--text); }
+.tag-chip.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
+.tag-ax {
+  font-size: 8.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text-faint);
+}
+.tag-val { letter-spacing: .01em; }
+.tag-n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.tag-x { color: var(--text-faint); padding-left: 1px; font-size: 12px; }
+.tag-x:hover { color: var(--red); }
+.tag-module { border-color: var(--accent-line); }
+.tag-subproject { border-color: var(--steel-line); }
+.tag-theme { border-color: var(--amber-line); }
+.tag-theme .tag-ax, .tag-theme .tag-val { color: var(--oxidized); }
+.tag-subproject .tag-val { color: var(--steel); }
+.tag-concept { border-color: var(--line); }
+
+.idea-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px;
+  align-items: center; }
+.idea-sim-btn {
+  background: none; border: 1px dashed var(--line); cursor: pointer;
+  color: var(--text-faint); font: inherit; font-size: 10.5px;
+  padding: 3px 8px; border-radius: var(--radius); margin-left: auto;
+}
+.idea-sim-btn:hover, .idea-sim-btn.on {
+  border-style: solid; border-color: var(--steel-line); color: var(--steel);
+}
+.ideas-sub-tag { color: var(--text-dim); text-transform: none;
+  letter-spacing: .01em; font-size: 12px; }
+.ideas-sub-n { color: var(--text-faint); margin-left: 6px; }
+
+/* A row revealed by "Open" on a similarity hit, so the jump is visible. */
+@keyframes idea-flash {
+  0%, 100% { border-color: var(--line); }
+  25%, 60% { border-color: var(--sel-line); }
+}
+.idea-flash { animation: idea-flash 1.5s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .idea-flash { animation: none; border-color: var(--sel-line); }
+}
+
+.idea-similar, .dupnudge {
+  margin-top: 9px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.dupnudge { margin: 10px 0 0; border-color: var(--amber-line); }
+.dupnudge-head, .rel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; font-size: 11px; color: var(--text-dim);
+  margin-bottom: 7px; flex-wrap: wrap;
+}
+.rel-basis { color: var(--text-faint); font-size: 10px; }
+.rel-loading { font-size: 11px; color: var(--text-faint); }
+.rel-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 6px 4px; border-top: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.rel-row.card-actionable:hover { background: var(--hover-wash); }
+.rel-row:first-of-type { border-top: 0; }
+.rel-main { flex: 1 1 auto; min-width: 0; }   /* the shrinkable column */
+.rel-text {
+  font-size: 12px; color: var(--text); line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.rel-why { font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+.rel-check { margin-top: 3px; flex: none; accent-color: var(--accent); }
+.rel-verdict {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 1px 5px; border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+.rel-verdict.fold { color: var(--green); border-color: var(--green-line); }
+.rel-verdict.separate { color: var(--steel); border-color: var(--steel-line); }
+
+.run-related {
+  margin: 4px 0 12px; padding: 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.run-related-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; font-size: 12px; color: var(--text); flex-wrap: wrap;
+}
+.run-related-list { max-height: 40vh; overflow-y: auto; margin-top: 6px; }
+
 /* ---------- Work window (Queue | Dispatch | Live | Record) ----------
    Layout only — every color reads the existing tokens. */
 .work-subhead { display: flex; align-items: center; gap: 8px;
@@ -591,8 +755,9 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .dispatch-ctl .idea-sort { max-width: 240px; }
 .ideas-sortbar {
   display: flex; align-items: center; justify-content: flex-end;
-  gap: 8px; margin-bottom: 10px;
+  gap: 8px; margin-bottom: 10px; flex-wrap: wrap;
 }
+.sb-pair { display: flex; align-items: center; gap: 6px; flex: none; }
 .ideas-sortbar label {
   font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
   color: var(--text-faint);

@@ -50,7 +50,10 @@ def _load():
     would clobber their writes. Migration (stamping project-less items with
     the default) is applied in memory and persists on the next mutation."""
     try:
-        s = json.loads(STORE.read_text())
+        # encoding pinned on BOTH ends (see _save): the store is written
+        # ensure_ascii=False, so it genuinely holds non-ASCII owner prose
+        # — read with the platform default it would mojibake on Windows.
+        s = json.loads(STORE.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         s = {"items": [], "projects": []}
     if not isinstance(s, dict) or "items" not in s:
@@ -65,7 +68,8 @@ def _load():
 def _save(s):
     STORE.parent.mkdir(parents=True, exist_ok=True)
     tmp = STORE.with_name(STORE.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
+    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False),
+                   encoding="utf-8")
     tmp.replace(STORE)
 
 
@@ -130,7 +134,16 @@ def add(text, status="open", source="manual", note="", project=None):
     return item
 
 
-def update(idea_id, text=None, status=None, note=None, project=None):
+def update(idea_id, text=None, status=None, note=None, project=None,
+           tags_add=None, tags_drop=None):
+    """`tags_add` / `tags_drop` are the owner's CORRECTIONS to the derived
+    tags (server/ideatags.py), and they live here rather than in the tag
+    sidecar on purpose: the sidecar is rewritten whenever an idea is
+    re-tagged, so a correction stored there would be silently reverted by
+    the next pass. Overlaid at read time — the contactcard.py pattern.
+
+    A dropped tag is also removed from tags_add (and vice versa), so the
+    two lists can never disagree about one tag."""
     with _lock, locked(STORE):
         s = _load()
         for it in s["items"]:
@@ -148,6 +161,18 @@ def update(idea_id, text=None, status=None, note=None, project=None):
                     if p:
                         it["project"] = p
                         _register_project(s, p)
+                if tags_add is not None:
+                    it["tags_add"] = {a: list(v) for a, v in
+                                      (tags_add or {}).items() if v}
+                if tags_drop is not None:
+                    it["tags_drop"] = list(tags_drop or [])
+                dropped = set(it.get("tags_drop") or [])
+                if dropped and it.get("tags_add"):
+                    it["tags_add"] = {
+                        a: [t for t in v if t not in dropped]
+                        for a, v in it["tags_add"].items()}
+                    it["tags_add"] = {a: v for a, v in it["tags_add"].items()
+                                      if v}
                 it["updated"] = _now()
                 _save(s)
                 return it
