@@ -313,10 +313,19 @@ build and run. Part of <a href="https://thedurham.nyc">thedurham.nyc</a>.</foote
 
 # --- publish -----------------------------------------------------------------
 
+# The ONE canonical accepted false positive, straight from the site's share
+# card rules: 'thedurham' on the site's own domain — a post published TO
+# thedurham.nyc naming its own home is not a leak. Nothing else is excused.
+_ACCEPTED_TOKENS = {"thedurham"}
+_HIT_TOKEN = re.compile(r"^\s*'([^']+)'\s+in:", re.MULTILINE)
+
+
 def _anon_scan(directory: Path) -> tuple[bool, str]:
     """The anonymization gate — greps text AND OCRs imagery for real
     identifiers. FAILS CLOSED: any inability to run the scanner blocks the
-    publish the same as a hit. Patched in tests."""
+    publish the same as a hit. A blocked run is excused ONLY when every
+    single hit token is in _ACCEPTED_TOKENS (the site's own domain); one
+    unexcused token keeps the gate shut. Patched in tests."""
     py = ROOT / ".venv" / "bin" / "python"
     if not py.exists():
         py = Path(sys.executable)
@@ -326,8 +335,14 @@ def _anon_scan(directory: Path) -> tuple[bool, str]:
             cwd=str(ROOT), capture_output=True, text=True, timeout=300)
     except Exception as e:  # noqa: BLE001 — a broken gate is a closed gate
         return False, f"scanner failed to run: {e!r}"
-    ok = res.returncode == 0
-    return ok, (res.stdout + res.stderr).strip()
+    report = (res.stdout + res.stderr).strip()
+    if res.returncode == 0:
+        return True, report
+    tokens = {t.lower() for t in _HIT_TOKEN.findall(report)}
+    if tokens and tokens <= _ACCEPTED_TOKENS:
+        return True, ("accepted false positive only (site's own domain): "
+                      + ", ".join(sorted(tokens)))
+    return False, report
 
 
 def _site() -> Path:
