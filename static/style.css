@@ -3323,6 +3323,8 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
   color: var(--text); border-radius: var(--radius);
   padding: 6px 9px; font-size: 12.5px; outline: none; resize: vertical;
   font-family: inherit; line-height: 1.45;
+  min-height: 34px; overflow: hidden;   /* auto-sized to content (JS);
+    hidden overflow keeps the corner grip off a scrollbar */
 }
 .rdr-def-input:focus { border-color: var(--accent-line); }
 .rdr-def-acts {
@@ -3334,10 +3336,6 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
    tokens, so every skin reaches it. The legacy iframe path keeps the old
    .reader-stage styles. */
 .reader-room { margin-top: 8px; }
-.rm-head { display: flex; gap: 10px; align-items: flex-start; }
-.rm-titles { min-width: 0; flex: 1 1 auto; }
-.rm-title { margin: 0; font-size: 16px; color: var(--text-head); }
-.rm-sub { font-size: 12px; color: var(--text-dim); margin-top: 3px; }
 .rm-bar {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
   margin: 10px 0 8px; position: sticky; top: 0; z-index: 3;
@@ -3385,23 +3383,31 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 .rm-body { min-width: 0; flex: 1 1 auto; }
 .rm-name { color: var(--text); font-size: 13.5px; text-decoration: none; }
 a.rm-name:hover { color: var(--accent); }
-.rm-meta {
-  display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
-  margin-top: 4px;
+.rm-bits { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
+.rm-note { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
+/* The bottom row: the filter echoes + the names, one small clickable band.
+   Toggling one here is the same act as toggling the top bar's chip. */
+.rm-foot {
+  display: flex; gap: 5px; align-items: center; flex-wrap: wrap;
+  margin-top: 6px;
 }
-.rm-badge {
+.rm-fbadge {
+  background: none; cursor: pointer;
   font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase;
   padding: 1px 6px; border-radius: var(--radius);
   border: 1px solid var(--line); color: var(--text-faint);
 }
-.rm-badge.prio-P1 { border-color: var(--accent-line); color: var(--accent); }
-.rm-badge.prio-P2 { border-color: var(--steel-line); color: var(--steel); }
-.rm-badge.st-MISSING { border-color: var(--red-line); color: var(--red); }
-.rm-badge.st-PARTIAL { border-color: var(--amber-line); color: var(--accent); }
-.rm-badge.pay { border-color: var(--amber-line); color: var(--accent); }
-.rm-bits { font-size: 11px; color: var(--text-faint); }
-.rm-note { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-.rm-people { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.rm-fbadge:hover { border-color: var(--accent-line); color: var(--accent); }
+.rm-fbadge.prio-P1 { border-color: var(--accent-line); color: var(--accent); }
+.rm-fbadge.prio-P2 { border-color: var(--steel-line); color: var(--steel); }
+.rm-fbadge.st-MISSING { border-color: var(--red-line); color: var(--red); }
+.rm-fbadge.st-PARTIAL { border-color: var(--amber-line); color: var(--accent); }
+.rm-fbadge.pay { border-color: var(--amber-line); color: var(--accent); }
+.rm-fbadge.inert { cursor: default; }
+.rm-fbadge.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
 .rm-person {
   background: none; border: 1px solid var(--line);
   border-radius: var(--radius); color: var(--text-dim);

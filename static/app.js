@@ -12367,14 +12367,22 @@ function renderReaderHead() {
   det.addEventListener("click", () => {
     readerDefsOpen = !readerDefsOpen;
     det.classList.toggle("on", readerDefsOpen);
-    renderReaderDefs();
+    // Display FIRST, then render: the definition boxes measure themselves.
     $("#reader-defs").style.display = readerDefsOpen ? "" : "none";
+    renderReaderDefs();
   });
   bits.appendChild(det);
   host.appendChild(bits);
 }
 
 // ---- Details: the corpus, its derivation, and the standing instructions ----
+
+// Grow a definition box to its content (manual corner-resize still works —
+// input events after a manual resize re-fit from the new floor).
+function rdrAutosize(inp) {
+  inp.style.height = "auto";
+  inp.style.height = Math.min(inp.scrollHeight + 2, 320) + "px";
+}
 
 const READER_METHOD =
   "How a room is built: Vira interviews you (subject, why, what to include, "
@@ -12408,21 +12416,28 @@ function renderReaderDefs() {
 
   const form = el("div", "rdr-def-form");
   const fields = [
-    ["subject", "Subject — the corpus this room tracks", "input", d.subject],
-    ["why", "Why — the ranking rule (what P1 means here)", "textarea", d.why],
-    ["people", "People to track", "input", d.people],
-    ["notes", "Standing instructions for refreshes", "textarea", d.notes],
+    ["subject", "Subject — the corpus this room tracks", d.subject],
+    ["why", "Why — the ranking rule (what P1 means here)", d.why],
+    ["people", "People to track", d.people],
+    ["notes", "Standing instructions for refreshes", d.notes],
   ];
   const inputs = {};
-  fields.forEach(([key, label, kind, val]) => {
+  fields.forEach(([key, label, val]) => {
     form.appendChild(el("label", "rdr-def-label", label));
-    const inp = el(kind === "textarea" ? "textarea" : "input", "rdr-def-input");
-    if (kind === "textarea") inp.rows = 3;
+    // All four are textareas: every field gets the corner grip, and
+    // auto-sizing to content kills the scrollbar-under-the-grip glitch.
+    const inp = el("textarea", "rdr-def-input");
+    inp.rows = 1;
     inp.value = val || "";
+    inp.addEventListener("input", () => rdrAutosize(inp));
     inputs[key] = inp;
     form.appendChild(inp);
   });
   host.appendChild(form);
+  // Sized synchronously — callers show the panel BEFORE rendering, because
+  // a hidden textarea reports scrollHeight 0 (and rAF never fires in a
+  // hidden document, which is exactly the state a background pane is in).
+  Object.values(inputs).forEach((inp) => rdrAutosize(inp));
 
   const acts = el("div", "rdr-def-acts");
   const save = el("button", "fchip sm", "Save instructions");
@@ -12546,6 +12561,8 @@ function rmExplain(x, y, key) {
 function rmChip(label, key, val, expKey) {
   const b = el("button", "fchip sm rm-chip", label);
   b.dataset.exp = expKey || key;
+  b.dataset.k = key;
+  b.dataset.v = val;
   b.addEventListener("click", () => {
     const set = rmState[key];
     set.has(val) ? set.delete(val) : set.add(val);
@@ -12553,6 +12570,15 @@ function rmChip(label, key, val, expKey) {
     rmRender();
   });
   return b;
+}
+
+// Keep the top bar's chips honest when a filter is toggled from a card's
+// bottom row — one state, two places it can be flipped from.
+function rmSyncBar() {
+  document.querySelectorAll("#reader-room .rm-chip[data-k]").forEach((c) => {
+    const set = rmState[c.dataset.k];
+    if (set instanceof Set) c.classList.toggle("on", set.has(c.dataset.v));
+  });
 }
 
 function rmSelect(opts, blank, onChange, expKey) {
@@ -12693,34 +12719,48 @@ function rmRow(it) {
   } else name = el("span", "rm-name", it.title);
   body.appendChild(name);
 
-  const meta = el("div", "rm-meta");
-  meta.appendChild(el("span", "rm-badge prio-" + (it.prio || "P2"), it.prio));
-  if (RM_STATUS_LABEL[it.status])
-    meta.appendChild(el("span", "rm-badge st-" + it.status,
-                        RM_STATUS_LABEL[it.status]));
-  meta.appendChild(el("span", "rm-badge", it.mode));
-  if (it.pay) meta.appendChild(el("span", "rm-badge pay", "$ paywall"));
+  // The card reads top-down: name, then date · type · venue, then the
+  // description. The filter echoes live at the BOTTOM with the names
+  // (owner's call, 2026-07-27) — small, clickable the same way the top
+  // bar is, un-clickable the same way too.
   const bits = [it.date, it.type, it.venue].filter(Boolean).join(" · ");
-  if (bits) meta.appendChild(el("span", "rm-bits", bits));
-  body.appendChild(meta);
-
+  if (bits) body.appendChild(el("div", "rm-bits", bits));
   if (it.note) body.appendChild(el("div", "rm-note", it.note));
-  if ((it.people || []).length) {
-    const ppl = el("div", "rm-people");
-    it.people.slice(0, 6).forEach((p) => {
-      const b = el("button", "rm-person" + (rmState.person === p ? " on" : ""), p);
-      b.dataset.exp = "person";
-      b.addEventListener("click", () => {
-        // Toggle: clicking the active person clears the filter.
-        rmState.person = rmState.person === p ? "" : p;
-        const sel = $("#reader-room .rm-sel[data-exp='person']");
-        if (sel) sel.value = rmState.person;
-        rmRender();
-      });
-      ppl.appendChild(b);
+
+  const foot = el("div", "rm-foot");
+  const fbadge = (label, key, val, expKey, tone) => {
+    const set = rmState[key];
+    const b = el("button",
+      "rm-fbadge" + (tone ? " " + tone : "") + (set.has(val) ? " on" : ""),
+      label);
+    b.dataset.exp = expKey;
+    b.addEventListener("click", () => {
+      set.has(val) ? set.delete(val) : set.add(val);
+      rmSyncBar();
+      rmRender();
     });
-    body.appendChild(ppl);
-  }
+    return b;
+  };
+  foot.appendChild(fbadge(it.prio, "prio", it.prio, "prio",
+                          "prio-" + (it.prio || "P2")));
+  if (RM_STATUS_LABEL[it.status])
+    foot.appendChild(fbadge(RM_STATUS_LABEL[it.status], "status", it.status,
+                            "status", "st-" + it.status));
+  foot.appendChild(fbadge(it.mode, "mode", it.mode, "mode", ""));
+  if (it.pay) foot.appendChild(el("span", "rm-fbadge pay inert", "$ paywall"));
+  (it.people || []).slice(0, 6).forEach((p) => {
+    const b = el("button", "rm-person" + (rmState.person === p ? " on" : ""), p);
+    b.dataset.exp = "person";
+    b.addEventListener("click", () => {
+      // Toggle: clicking the active person clears the filter.
+      rmState.person = rmState.person === p ? "" : p;
+      const sel = $("#reader-room .rm-sel[data-exp='person']");
+      if (sel) sel.value = rmState.person;
+      rmRender();
+    });
+    foot.appendChild(b);
+  });
+  body.appendChild(foot);
   row.appendChild(body);
   return row;
 }
