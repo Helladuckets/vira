@@ -514,6 +514,7 @@ class RoutineTests(unittest.TestCase):
         ids = {r["id"] for r in routines.list_routines()}
         self.assertIn("muse", ids)
         self.assertIn("intro-scout", ids)
+        self.assertIn("pivot-scout", ids)
 
     def test_due_daily_at(self):
         r = {"enabled": True, "daily_at": "07:30", "last_run": None}

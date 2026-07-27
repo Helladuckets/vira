@@ -79,6 +79,18 @@ SEEDS = [
                        "graph (edges, degrees, clusters, edge narration).",
     },
     {
+        "id": "pivot-scout",
+        "name": "Pivot scout — refresh reconnect targets",
+        "kind": "custom",
+        "every_hours": 168,
+        "enabled": True,
+        "notify": False,
+        "model": "",
+        "prompt": "__refresh_reconnect__",   # internal dispatch, no session
+        "description": "Weekly re-rank of dormant contacts against the "
+                       "live job-search target picture.",
+    },
+    {
         "id": "system-map",
         "name": "System map — refresh from the change log",
         "kind": "digest",
@@ -315,6 +327,13 @@ def dispatch(r):
         _stamp(r["id"], last_run=_now_iso(), last_job=None,
                last_run_id=None, last_status="done")
         return {"internal": "refresh_atlas"}
+    if (r.get("prompt") or "") == "__refresh_reconnect__":
+        from . import reconnect
+        threading.Thread(target=reconnect.refresh, daemon=True,
+                         name="vira-pivot-scout").start()
+        _stamp(r["id"], last_run=_now_iso(), last_job=None,
+               last_run_id=None, last_status="done")
+        return {"internal": "refresh_reconnect"}
     prompt = _muse_prompt() if r["kind"] == "muse" else (r.get("prompt") or "")
     if prompt == "__module_map__":       # composed fresh per run, like muse
         from . import modulemap

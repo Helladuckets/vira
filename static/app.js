@@ -7377,6 +7377,7 @@ $("#note-back")?.addEventListener("click", closeNote);
 // ----- Radar: who to talk to + who to put in a room together -----
 
 let radarGroupingsGen = null;
+let radarReconnectGen = null;
 
 // The move a grouping proposes, in the owner's words rather than the
 // engine's enum.
@@ -7413,6 +7414,31 @@ async function loadRadar() {
     row.addEventListener("click", () => openPerson(p.person_id));
     people.appendChild(row);
   });
+  const rec = r.reconnect || {};
+  const recCompanies = (rec.picture && rec.picture.companies) || [];
+  radarReconnectGen = rec.generated || null;
+  $("#radar-rec-meta").textContent = rec.generated
+    ? "curated " + fmtTime(rec.generated)
+      + (recCompanies.length ? " · targets: " + recCompanies.join(", ") : "")
+    : "";
+  const recBox = $("#radar-reconnect");
+  recBox.innerHTML = "";
+  if (!rec.generated) {
+    recBox.appendChild(el("div", "empty left",
+      "Not scanned yet — Rescan ranks your quiet contacts against the "
+      + "roles you're chasing."));
+  } else if (!recCompanies.length) {
+    recBox.appendChild(el("div", "empty left",
+      "No active job-search universe to score against yet — build out "
+      + "Applications first, then Rescan here."));
+  } else if (!(rec.targets || []).length) {
+    recBox.appendChild(el("div", "empty left",
+      "No dormant contact currently clears the bar for the roles you're "
+      + "chasing."));
+  } else {
+    (rec.targets || []).forEach((t) => recCard(recBox, t));
+  }
+
   radarGroupingsGen = r.generated || null;
   $("#radar-groupings-meta").textContent = r.generated
     ? "curated " + fmtTime(r.generated) : "not yet scanned";
@@ -7423,6 +7449,58 @@ async function loadRadar() {
       "No groupings on deck — Rescan looks for shared ground across your "
       + "most active contacts, and for what they have been sending you."));
   (r.groupings || []).forEach((g) => groupingCard(box, g));
+}
+
+function recCard(box, t) {
+  const card = el("div", "grp-card");
+  const head = el("div", "grp-head");
+  const name = el("span", "grp-name click", t.name || t.person_id);
+  name.addEventListener("click", () => openPerson(t.person_id));
+  head.appendChild(name);
+  const dis = el("button", "idea-del", "×");
+  dis.title = "Dismiss this reconnect target";
+  dis.addEventListener("click", async () => {
+    await post("/api/reconnect/dismiss", { key: t.key });
+    card.remove();
+    toast("Dismissed", [["Undo", async () => {
+      await post("/api/reconnect/dismiss", { key: t.key, restore: true });
+      loadRadar();
+    }]]);
+  });
+  head.appendChild(dis);
+  card.appendChild(head);
+
+  const sub = [t.company, t.title,
+    t.days != null ? `quiet ${t.days}d` : "no recorded contact"]
+    .filter(Boolean).join(" · ");
+  if (sub) card.appendChild(el("div", "rec-sub", sub));
+
+  // the deterministic half without its curation pass — say so, so a raw
+  // card reads as "rescan" rather than as a dim engine
+  if (t.curated === false) {
+    const raw = el("span", "grp-raw", "raw match");
+    raw.title = "The curation pass did not run for this batch — Rescan to "
+      + "get the why-them read and a drafted opener.";
+    card.appendChild(raw);
+  }
+
+  if (t.why) card.appendChild(el("div", "grp-why", t.why));
+  if ((t.reasons || []).length)
+    card.appendChild(el("div", "radar-why", t.reasons.join(" · ")));
+
+  if (t.opener) {
+    const op = el("div", "grp-opener");
+    op.appendChild(el("span", "grp-opener-label", "opener"));
+    op.appendChild(el("span", null, t.opener));
+    const copy = el("button", "brief-act", "copy");
+    copy.addEventListener("click", () => {
+      navigator.clipboard?.writeText(t.opener);
+      toast("Opener copied");
+    });
+    op.appendChild(copy);
+    card.appendChild(op);
+  }
+  box.appendChild(card);
 }
 
 function groupingCard(box, g) {
@@ -7509,6 +7587,26 @@ function groupingCard(box, g) {
 }
 
 $("#radar-refresh")?.addEventListener("click", () => loadRadar());
+$("#radar-rec-refresh")?.addEventListener("click", async () => {
+  const btn = $("#radar-rec-refresh");
+  btn.disabled = true;
+  btn.textContent = "scanning…";
+  const was = radarReconnectGen;
+  try { await post("/api/reconnect/refresh", {}); } catch { /* best-effort */ }
+  let tries = 0;
+  startPoll(async (h) => {
+    tries += 1;
+    try {
+      const r = await api("/api/radar");
+      if ((r.reconnect && r.reconnect.generated) !== was || tries > 24) {
+        h.stop();
+        btn.disabled = false;
+        btn.textContent = "Rescan";
+        loadRadar();
+      }
+    } catch { /* keep polling */ }
+  }, 10000);
+});
 $("#radar-groupings-refresh")?.addEventListener("click", async () => {
   const btn = $("#radar-groupings-refresh");
   btn.disabled = true;

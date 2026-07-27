@@ -897,5 +897,11 @@ def dismiss(key, restore=False):
 
 def compose(limit=PEOPLE_LIMIT):
     """The Radar window payload."""
-    return {"people": priority_people(limit), **list_groupings(),
+    try:
+        from . import reconnect
+        rec = reconnect.list_targets()
+    except Exception:  # noqa: BLE001 — the pivot lens is an optional layer
+        rec = {"generated": None, "targets": [], "picture": {}}
+    return {"people": priority_people(limit), "reconnect": rec,
+            **list_groupings(),
             "as_of": dt.datetime.now().isoformat(timespec="seconds")}
