@@ -1,6 +1,8 @@
 """The provider-agnostic session backend: routing, sandbox mapping, the
-codex argv contract, and a full best-effort run against a FAKE codex binary
-that speaks the real JSONL event protocol (shapes verified live 2026-07-28).
+codex argv contract, a full best-effort run against a FAKE codex binary
+that speaks the real JSONL event protocol (shapes verified live
+2026-07-28), and the ledger round-trip that keeps a FINISHED session
+honest about which engine answered it.
 """
 import asyncio
 import json
@@ -12,7 +14,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import agentbackend, models, session
+from server import agentbackend, jobfiles, joblog, models, session
 
 
 class RoutingTest(unittest.TestCase):
@@ -259,6 +261,87 @@ class CliExecRunTest(unittest.TestCase):
             text, ok = asyncio.run(agentbackend.run_cliexec(runner))
         self.assertFalse(ok)
         self.assertIn("not found", "".join(runner.out))
+
+
+class LedgerReplayTest(unittest.TestCase):
+    """Which engine answered must survive the trip out of the live registry.
+
+    A running job carries `provider` on its live snapshot; a finished one is
+    replayed from the ledger. On 2026-07-28 the ledger row did not persist
+    the field, so a done OpenAI session that had reported "best-effort —
+    sandboxed, no cards" while live re-read as "interactive (gated)" about
+    forty minutes later, with no code change in between — the terminal
+    banner claiming the containment was the opposite of what actually ran.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = Path(self.tmp.name) / "jobs-log.json"
+        for p in (mock.patch.object(jobfiles, "JOBS_DIR",
+                                    Path(self.tmp.name) / "jobs"),
+                  mock.patch.object(joblog, "STORE", self.store)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _replay(self, jid):
+        """The snapshot /api/jobs/{id} serves once a job is off the registry."""
+        from server.main import _job_from_disk
+        return _job_from_disk(jid)
+
+    def test_finished_openai_job_replays_as_best_effort(self):
+        joblog.record_launch({"id": "oai000000001", "cwd": "/tmp",
+                              "prompt": "Reply naming your model.",
+                              "mode": "interactive", "model": "gpt-5.6-sol",
+                              "provider": "openai"})
+        joblog.record_finish("oai000000001", "done", "I'm Codex.")
+        # persisted on the row itself, not just the live spec
+        self.assertEqual(joblog.get_record("oai000000001")["provider"],
+                         "openai")
+        snap = self._replay("oai000000001")
+        self.assertFalse(snap["live"])            # off the live registry
+        self.assertEqual(snap["provider"], "openai")
+        self.assertEqual(agentbackend.sessions_quality(snap["provider"]),
+                         "best_effort")
+
+    def test_legacy_row_without_provider_falls_back_to_the_model(self):
+        # Rows written BEFORE the ledger persisted the field — exactly the
+        # shape job 91d5895ed914 had on disk. The model id still names the
+        # engine, so the replay must not regrade the session as gated.
+        joblog.record_launch({"id": "old000000001", "cwd": "/tmp",
+                              "prompt": "p", "mode": "interactive",
+                              "model": "gpt-5.6-sol", "provider": "openai"})
+        raw = json.loads(self.store.read_text(encoding="utf-8"))
+        raw["jobs"][0].pop("provider", None)   # isolate the replay fallback
+        self.store.write_text(json.dumps(raw), encoding="utf-8")
+        snap = self._replay("old000000001")
+        self.assertEqual(snap["provider"], "openai")
+        self.assertEqual(agentbackend.sessions_quality(snap["provider"]),
+                         "best_effort")
+
+    def test_anthropic_job_stays_gated(self):
+        # The other half of honesty: the fallback must not flip the gated
+        # default to best-effort for a session that really was gated.
+        joblog.record_launch({"id": "ant000000001", "cwd": "/tmp",
+                              "prompt": "p", "mode": "interactive",
+                              "model": "claude-opus-5",
+                              "provider": "anthropic"})
+        snap = self._replay("ant000000001")
+        self.assertEqual(snap["provider"], "anthropic")
+        self.assertEqual(agentbackend.sessions_quality(snap["provider"]),
+                         "gated")
+
+    def test_unnamed_model_replays_as_the_gated_default(self):
+        # A launch that named no model at all still has to answer the
+        # question — "" would fall through the banner's ladder the same way
+        # a missing key did.
+        joblog.record_launch({"id": "bare00000001", "cwd": "/tmp",
+                              "prompt": "p", "mode": "interactive"})
+        raw = json.loads(self.store.read_text(encoding="utf-8"))
+        raw["jobs"][0].pop("provider", None)   # isolate the replay fallback
+        self.store.write_text(json.dumps(raw), encoding="utf-8")
+        snap = self._replay("bare00000001")
+        self.assertEqual(snap["provider"], "anthropic")
 
 
 if __name__ == "__main__":

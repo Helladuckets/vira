@@ -19,7 +19,8 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (actions, admission, aihealth, applecontacts, applications,
+from . import (actions, admission, agentbackend, aihealth, applecontacts,
+               applications,
                atlas,
                backup, brief,
                briefstate, changelog,
@@ -1910,6 +1911,15 @@ def _job_from_disk(jid):
         "started": _epoch(r.get("started")),
         "finished": _epoch(r.get("finished")),
         "permission_mode": r.get("permission_mode"),
+        # A replayed job must still name the engine that answered it — the
+        # live snapshot carries `provider`, so the ledger replay has to as
+        # well or the terminal banner regrades a finished best-effort
+        # session as gated the moment it leaves the live registry. Rows
+        # written before the ledger persisted it fall back to the model's
+        # own provider, the same heuristic the launch used to pick it.
+        "provider": (r.get("provider")
+                     or agentbackend.provider_of_model(r.get("model"))
+                     or "anthropic"),
         "model": r.get("model"), "publish_plan": r.get("publish_plan"),
         "idea_id": r.get("idea_id"), "session_id": r.get("session_id", ""),
         "mode": r.get("mode"), "awaiting": None, "live": False,

@@ -4582,11 +4582,15 @@ function ccModelLabel(m) {
 }
 
 // The engine badge on job terminals: which harness answers, on whose login.
+// `id` is the resolved provider — the ONE answer to "which engine answered"
+// that every part of the terminal reads, so the status bar and the This-run
+// box can never disagree. A replayed job whose row predates the ledger's
+// provider field has no j.provider, and the model id names it instead.
 function providerBadge(j) {
   const p = j.provider || providerOfModel(j.model_used || j.model)
     || "anthropic";
-  if (p === "openai") return { legend: "Codex", auth: "OpenAI" };
-  return { legend: "Claude Code", auth: "Claude Max" };
+  if (p === "openai") return { id: p, legend: "Codex", auth: "OpenAI" };
+  return { id: p, legend: "Claude Code", auth: "Claude Max" };
 }
 let _instCfg = null;
 async function instanceConfig() {
@@ -4725,7 +4729,7 @@ function renderCCBanner(host, j, defModel, inst) {
   const model = ccModelLabel(j.model_used || j.model) || defModel;
   const badge = providerBadge(j);
   const mode = j.publish_plan ? "plan (read-only)"
-    : j.provider === "openai" ? (j.mode || "run") + " (best-effort — sandboxed, no cards)"
+    : badge.id === "openai" ? (j.mode || "run") + " (best-effort — sandboxed, no cards)"
     : j.mode === "autopilot" ? "autopilot"
     : j.mode === "acceptedits" ? "auto-edits (commands gated)"
     : j.mode === "interactive" ? "interactive (gated)"
