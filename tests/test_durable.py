@@ -193,5 +193,53 @@ class DiskFallbackTests(unittest.TestCase):
         self.assertIsNone(_job_from_disk("nope"))
 
 
+class PendingRouteTests(unittest.TestCase):
+    """GET /api/sessions/pending — the feed behind the app-wide decision
+    cards. Every row must name its session the way every other job surface
+    does, or the card cannot say who is asking."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.jobs_root = Path(self.tmp.name) / "jobs"
+        self.store = Path(self.tmp.name) / "jobs-log.json"
+        for p in (mock.patch.object(jobfiles, "JOBS_DIR", self.jobs_root),
+                  mock.patch.object(joblog, "STORE", self.store)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _register(self, reg, jid, pending):
+        jdir = write_job_dir(self.jobs_root, jid)
+        st = json.loads((jdir / "state.json").read_text(encoding="utf-8"))
+        st["pending"] = pending
+        (jdir / "state.json").write_text(json.dumps(st), encoding="utf-8")
+        spec = json.loads((jdir / "job.json").read_text(encoding="utf-8"))
+        h = session.DetachedJob(jid, jdir, spec)
+        h.last_state = st
+        reg.sessions[jid] = h
+
+    def test_rows_carry_the_card_and_the_session_name(self):
+        from server import main
+        reg = session.Sessions()
+        self._register(reg, "pend00000001", [
+            {"req_id": "q1", "kind": "ask", "question": "Fold or keep?",
+             "options": ["Fold", "Keep"], "created": 1.0}])
+        joblog.record_launch({"id": "pend00000001", "prompt": "tidy the queue",
+                              "cwd": "/tmp", "mode": "interactive"})
+        with mock.patch.object(main, "jobs", reg):
+            payload = main.api_sessions_pending()
+        (row,) = payload["pending"]
+        self.assertEqual(row["job_id"], "pend00000001")
+        self.assertEqual(row["card"]["req_id"], "q1")
+        self.assertTrue(row["title"])
+        self.assertIn("command", row)
+        json.dumps(payload)
+
+    def test_no_live_sessions_is_an_empty_list_not_an_error(self):
+        from server import main
+        with mock.patch.object(main, "jobs", session.Sessions()):
+            self.assertEqual(main.api_sessions_pending(), {"pending": []})
+
+
 if __name__ == "__main__":
     unittest.main()

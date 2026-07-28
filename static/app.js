@@ -4962,7 +4962,13 @@ const activeTerms = {};   // jid -> JobTerm currently rendering that job
 function onSessionEvent(ev) {
   if (ev.id && activeTerms[ev.id]) activeTerms[ev.id].schedule();
   if (ev.kind === "status") refreshJobs().catch(() => {});
+  // Any session movement can raise or resolve a decision, wherever the
+  // owner happens to be in the app. Coalesced, because a busy turn pokes
+  // several times a second and the payload is a poke, not the state.
+  clearTimeout(alertPoke);
+  alertPoke = setTimeout(() => refreshAlerts(), 150);
 }
+let alertPoke = null;
 
 function createJobTerm(jid, refs) {
   // refs: { banner, output, pending, composebar, say, send, stopBtn,
@@ -5086,11 +5092,15 @@ function createJobTerm(jid, refs) {
       activeTerms[this.jid] = this;
       this.schedule();
       this.poll = startPoll(() => this.schedule(), 800);
+      // this job's cards live in the terminal now, not in the app-wide
+      // cascade — and they come back to it when the terminal closes
+      renderAlerts();
     },
     stop() {
       this.poll?.stop();
       this.poll = null;
       if (activeTerms[this.jid] === this) delete activeTerms[this.jid];
+      renderAlerts();
     },
   };
   // Compose bar: Send queues a steering message (delivered at the next turn
@@ -5246,6 +5256,168 @@ function openSession(jid) {
   else openJobPanel(jid);
 }
 function openJob(jid) { openSession(jid); }
+
+// ==================== the decision layer ====================
+// A session blocked on a decision used to be visible in exactly one place:
+// inside its own terminal. So a card raised while the owner was reading the
+// brief, or while Vira was not on screen at all, reached nobody — the same
+// silent-stall failure the ask_owner card was built to end (2026-07-25),
+// one layer up. Decisions now surface app-wide, over whatever module is
+// open, from a server-authoritative list.
+//
+// Three rules the shape follows:
+//  - It is NOT a modal. A decision is urgent, not blocking: the owner can
+//    park a card and keep working, which is what "minimize" means here.
+//  - A parked card is never lost. It stays in the waiting list (the drawer
+//    on a phone, the topbar button at the desk) until it is answered or the
+//    session stops asking.
+//  - It never double-renders. A card whose own terminal is on screen is
+//    already in front of the owner; showing it twice would put two live
+//    copies of the same picker on screen, fighting over focus and keys.
+//
+// The card bodies are the EXISTING permissionCard/askCard — same DOM, same
+// server-authoritative resolution — so answering from here and answering
+// from the terminal are the same act, and both copies drop on the next
+// snapshot.
+
+let alertRows = [];        // [{job_id, title, card}] — oldest decision first
+let alertFront = null;     // req_id pinned to the front of the cascade
+let alertKey = "";         // rebuild guard (see below)
+const alertMin = new Set(lsGet("vira-alerts-min", []));
+
+// Parked cards persist across a reload: re-popping something the owner
+// deliberately set aside would make "minimize" mean "hide until you blink".
+const saveAlertMin = () => lsSet("vira-alerts-min", [...alertMin]);
+
+// Everything still waiting, whether parked or not — the count and the list.
+const alertWaiting = () => alertRows;
+// What the cascade actually shows: not parked, and not already on screen in
+// its own terminal.
+const alertVisible = () => alertRows.filter(
+  (r) => !alertMin.has(r.card.req_id) && !activeTerms[r.job_id]);
+
+const alertKind = (c) =>
+  c.kind === "ask" ? "a question" : "approval: " + (c.tool || "a tool call");
+
+async function refreshAlerts() {
+  let rows;
+  try {
+    rows = (await api("/api/sessions/pending")).pending || [];
+  } catch {
+    return;   // a failed poll must never clear a decision off the screen
+  }
+  alertRows = rows;
+  const live = new Set(rows.map((r) => r.card.req_id));
+  let dropped = false;
+  [...alertMin].forEach((id) => {
+    if (!live.has(id)) { alertMin.delete(id); dropped = true; }
+  });
+  if (dropped) saveAlertMin();
+  if (alertFront && !live.has(alertFront)) alertFront = null;
+  renderAlerts();
+}
+
+function alertPark(reqId) {
+  alertMin.add(reqId);
+  saveAlertMin();
+  if (alertFront === reqId) alertFront = null;
+  renderAlerts();
+}
+
+// Bring one waiting decision back to the front. If its terminal is open the
+// card lives there, so the honest answer is to raise that window rather
+// than mint a second copy of it.
+function alertRaise(reqId) {
+  alertMin.delete(reqId);
+  saveAlertMin();
+  alertFront = reqId;
+  const row = alertRows.find((r) => r.card.req_id === reqId);
+  if (row && activeTerms[row.job_id]) openSession(row.job_id);
+  renderAlerts();
+}
+
+function alertRaiseAll() {
+  if (!alertMin.size) return;
+  alertMin.clear();
+  saveAlertMin();
+  renderAlerts();
+}
+
+function alertCard(row) {
+  const { card: p, job_id: jid } = row;
+  const box = el("div", "alert-card" + (p.kind === "ask" ? " ask" : ""));
+  const head = el("div", "alert-head");
+  const main = el("div", "alert-head-main");
+  main.appendChild(el("div", "alert-kicker",
+    (p.kind === "ask" ? "Vira is asking" : "Vira needs approval")));
+  main.appendChild(el("div", "alert-title", row.title || jid));
+  head.appendChild(main);
+  const open = el("button", "alert-act", "open");
+  open.title = "Open this session's terminal";
+  open.addEventListener("click", () => openSession(jid));
+  head.appendChild(open);
+  const min = el("button", "alert-act alert-min", "minimize");
+  min.title = "Park this — it stays in the waiting list until you answer";
+  min.addEventListener("click", () => alertPark(p.req_id));
+  head.appendChild(min);
+  box.appendChild(head);
+  box.appendChild(p.kind === "ask" ? askCard(jid, p) : permissionCard(jid, p));
+  return box;
+}
+
+function renderAlerts() {
+  const layer = $("#alerts");
+  const waiting = alertWaiting();
+  // count + dot surfaces first, so they are right even when the cascade
+  // itself is empty (every card parked, or every terminal already open)
+  const btn = $("#alerts-btn");
+  if (btn) {
+    btn.hidden = !waiting.length;
+    btn.textContent = waiting.length + " waiting";
+    btn.classList.toggle("parked", waiting.length > 0 && !alertVisible().length);
+  }
+  $("#brand-btn")?.classList.toggle("has-alerts", waiting.length > 0);
+  if (document.body.classList.contains("nd-open")) renderNavDrawer();
+  if (!layer) return;
+
+  const vis = alertVisible();
+  if (!vis.length) {
+    layer.hidden = true;
+    layer.innerHTML = "";
+    alertKey = "";
+    return;
+  }
+  // Front is the pinned card if it is still showing, else the oldest — the
+  // one that has been blocking longest.
+  const front = vis.find((r) => r.card.req_id === alertFront) || vis[0];
+  const behind = vis.filter((r) => r !== front);
+  // Rebuild only when the set or the ordering changes. A blind repaint on
+  // every poll would wipe a half-typed deny reason or "other" answer and
+  // re-steal focus every few seconds.
+  const key = [front.card.req_id, ...behind.map((r) => r.card.req_id)].join("|");
+  if (key === alertKey) return;
+  alertKey = key;
+
+  layer.innerHTML = "";
+  layer.hidden = false;
+  const stack = el("div", "alert-stack");
+  // Multiple decisions cascade: the ones behind peek above the front card,
+  // tucked and inset like a stack of paper. Two peek; anything past that is
+  // a count, because a phone cannot spend the height.
+  behind.slice(0, 2).reverse().forEach((r, i) => {
+    const peek = el("div", "alert-peek");
+    peek.style.setProperty("--peek", String(behind.slice(0, 2).length - i));
+    peek.appendChild(el("span", "alert-peek-title", r.title || r.job_id));
+    peek.appendChild(el("span", "alert-peek-kind", alertKind(r.card)));
+    peek.addEventListener("click", () => alertRaise(r.card.req_id));
+    stack.appendChild(peek);
+  });
+  stack.appendChild(alertCard(front));
+  if (behind.length > 2)
+    stack.appendChild(el("div", "alert-more",
+      (behind.length - 2) + " more waiting"));
+  layer.appendChild(stack);
+}
 
 // ----- the Record tab: the durable job ledger + the change log, merged -----
 
@@ -11211,6 +11383,26 @@ function renderNavDrawer() {
     r.addEventListener("click", () => openApp(id));
     list.appendChild(r);
   };
+  // Waiting on you leads the drawer: a parked decision is a session that
+  // has stopped working until it hears back, so it outranks navigation.
+  const waiting = alertWaiting();
+  if (waiting.length) {
+    list.appendChild(el("div", "nd-sec-head alert",
+      "Waiting on you (" + waiting.length + ")"));
+    waiting.forEach((r) => {
+      const w = el("button", "nd-row nd-alert"
+        + (alertMin.has(r.card.req_id) ? " parked" : ""));
+      const main = el("span", "nd-alert-main");
+      main.appendChild(el("span", "nd-label", r.title || r.job_id));
+      main.appendChild(el("span", "nd-alert-kind", alertKind(r.card)));
+      w.appendChild(main);
+      w.addEventListener("click", () => {
+        closeLaunchpad();
+        alertRaise(r.card.req_id);
+      });
+      list.appendChild(w);
+    });
+  }
   if (bar.length) list.appendChild(el("div", "nd-sec-head", "In the bar"));
   bar.forEach(row);
   if (rest.length) list.appendChild(el("div", "nd-sec-head", "All apps"));
@@ -14865,6 +15057,12 @@ async function boot() {
   refreshJobs().catch(() => {});
   startStream();
   startPoll(() => refreshJobs(), 15000);
+  // Decisions raised while Vira was closed are waiting the moment it opens:
+  // the list is server-side, so the first fetch pops whatever is pending.
+  // The stream is the fast path; this poll is what survives a dead stream.
+  refreshAlerts();
+  startPoll(() => refreshAlerts(), 5000);
+  $("#alerts-btn")?.addEventListener("click", alertRaiseAll);
   startPoll(() => {
     // the sent log lives in Setup's Notifications card now; the node
     // exists only while that card is on screen

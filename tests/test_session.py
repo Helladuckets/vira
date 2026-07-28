@@ -87,6 +87,95 @@ class DetachedSnapshotTests(unittest.TestCase):
                   "mode", "awaiting"):
             self.assertIn(k, row)
 
+
+class PendingAllTests(unittest.TestCase):
+    """The app-wide decision list behind the floating approval/question
+    cards: every unanswered card across every live session, oldest first."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_cards_from_every_session_oldest_first(self):
+        reg = make_registry()
+        make_detached(reg, self.tmp.name, jid="a" * 12, pending=[
+            {"req_id": "r2", "tool": "Bash", "summary": "ls", "created": 3.0}])
+        make_detached(reg, self.tmp.name, jid="b" * 12, pending=[
+            {"req_id": "r1", "kind": "ask", "question": "which?",
+             "created": 1.0},
+            {"req_id": "r3", "tool": "Write", "summary": "w", "created": 9.0}])
+        rows = reg.pending_all()
+        self.assertEqual([r["card"]["req_id"] for r in rows],
+                         ["r1", "r2", "r3"])
+        self.assertEqual([r["job_id"] for r in rows],
+                         ["b" * 12, "a" * 12, "b" * 12])
+        json.dumps(rows)                          # JSON-safe end to end
+
+    def test_a_finished_session_contributes_nothing(self):
+        reg = make_registry()
+        make_detached(reg, self.tmp.name, jid="c" * 12, status="done",
+                      pending=[{"req_id": "r1", "tool": "Bash",
+                                "created": 1.0}])
+        self.assertEqual(reg.pending_all(), [])
+
+    def test_malformed_cards_are_skipped_not_rendered(self):
+        # a card with no req_id cannot be answered, so it must never reach
+        # the owner as something to click
+        reg = make_registry()
+        make_detached(reg, self.tmp.name, jid="e" * 12,
+                      pending=["nonsense", {"tool": "Bash"},
+                               {"req_id": "ok", "tool": "Bash",
+                                "created": 1.0}])
+        self.assertEqual([r["card"]["req_id"] for r in reg.pending_all()],
+                         ["ok"])
+
+    def test_state_is_read_fresh_from_disk(self):
+        # the supervisor's cache does not run on a passive instance, and a
+        # decision list that silently stops updating is the one thing this
+        # surface must not do
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name, jid="f" * 12, pending=[])
+        self.assertEqual(reg.pending_all(), [])
+        st = json.loads((h.dir / "state.json").read_text(encoding="utf-8"))
+        st["pending"] = [{"req_id": "late", "tool": "Bash", "created": 1.0}]
+        (h.dir / "state.json").write_text(json.dumps(st), encoding="utf-8")
+        self.assertEqual([r["card"]["req_id"] for r in reg.pending_all()],
+                         ["late"])
+
+    def test_the_read_does_not_disturb_the_supervisor_cache(self):
+        # _poll_once detects a status transition by comparing its cached
+        # status against a fresh read; refreshing that cache from here would
+        # swallow the very event it is watching for
+        reg = make_registry()
+        h = make_detached(reg, self.tmp.name, jid="g" * 12)
+        st = json.loads((h.dir / "state.json").read_text(encoding="utf-8"))
+        st["status"] = "done"
+        (h.dir / "state.json").write_text(json.dumps(st), encoding="utf-8")
+        reg.pending_all()
+        self.assertEqual(h.last_state["status"], "running")
+
+    def test_legacy_fallback_sessions_are_not_listed(self):
+        # a legacy subprocess run has no gate and cannot be answered
+        reg = make_registry()
+        reg.sessions["leg"] = session.Session({"id": "leg",
+                                               "status": "running"})
+        self.assertEqual(reg.pending_all(), [])
+
+    def test_shape_carries_what_the_card_needs_to_name_its_session(self):
+        reg = make_registry()
+        make_detached(reg, self.tmp.name, jid="h" * 12, pending=[
+            {"req_id": "r1", "tool": "Bash", "created": 1.0}])
+        (row,) = reg.pending_all()
+        for k in ("job_id", "mode", "provider", "cwd", "card"):
+            self.assertIn(k, row)
+        self.assertEqual(row["mode"], "interactive")
+
+
+class ControlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
     def test_controls_append_to_control_file(self):
         reg = make_registry()
         h = make_detached(reg, self.tmp.name,

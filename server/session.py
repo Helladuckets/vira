@@ -664,6 +664,51 @@ class Sessions:
                         "awaiting": d["awaiting"]})
             return sorted(rows, key=lambda j: j["started"], reverse=True)
 
+    def pending_all(self):
+        """Every unanswered decision card across every live session, oldest
+        first — the whole "waiting on you" set in one read.
+
+        This is what makes a decision reachable from anywhere in the app
+        instead of only from inside its own terminal. A card that nobody is
+        looking at is a session quietly stalled, which is the failure the
+        ask_owner card was built to end (2026-07-25); a card only rendered
+        in one window is the same failure one layer up.
+
+        Scoped to the REGISTRY, never a scan of data/jobs: only a session
+        this server supervises can be answered (permission/answer both go
+        through _require_live), and a card that cannot be actioned is worse
+        than no card at all.
+
+        state.json is read FRESH rather than off `last_state` — the cached
+        copy is refreshed by the supervisor, which does not run on a passive
+        instance, and a decision list that silently stops updating is the
+        one thing this surface must not do. The read is deliberately
+        side-effect free (it does NOT touch `last_state`): the supervisor
+        detects status transitions by comparing its cached status against a
+        fresh read, so refreshing the cache from here could swallow the
+        transition event it is watching for.
+        """
+        with self.lock:
+            handles = [x for x in self.sessions.values()
+                       if x.kind == "detached"]
+        rows = []
+        for h in handles:
+            st = jobfiles.read_json(h.dir / "state.json") or {}
+            if st.get("status") != "running":
+                continue
+            for card in st.get("pending") or []:
+                if not isinstance(card, dict) or not card.get("req_id"):
+                    continue
+                rows.append({
+                    "job_id": h.id,
+                    "mode": h.spec.get("mode"),
+                    "provider": h.spec.get("provider", "anthropic"),
+                    "cwd": h.spec.get("cwd", ""),
+                    "card": card,
+                })
+        rows.sort(key=lambda r: r["card"].get("created", 0))
+        return rows
+
     # ----- session controls (control.jsonl appends; the runner tails) -----
 
     def _require_live(self, jid):

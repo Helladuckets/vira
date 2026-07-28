@@ -1332,6 +1332,115 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .term-composebar.replying .term-stop { border-color: var(--line-warm);
   color: var(--term-fg); }
 
+/* ---------- the decision layer (app-wide approval / question cards) -------
+   A live session's decision, floating over whatever module is open. It sits
+   at 4100: above every panel, sheet and floating window (whose z-index
+   climbs by one per focus with no ceiling, which is why the reorganize
+   ghost sits at 4200) — a decision that a window can cover is a decision
+   that gets missed. Deliberately NOT a scrim: parking a card and carrying
+   on working is the point. */
+.alert-layer {
+  position: fixed; z-index: 4100;
+  left: 12px; right: 12px; bottom: calc(var(--mdock-h) + 12px);
+  pointer-events: none;
+}
+.alert-layer[hidden] { display: none; }
+/* the drawer already lists everything waiting, and the customize sheet is a
+   deliberate mode — a card floating over either is clutter, not urgency */
+body.nd-open .alert-layer, body.lp-open .alert-layer { display: none; }
+.alert-stack { pointer-events: auto; display: flex; flex-direction: column;
+  max-height: min(72dvh, 640px); }
+/* the cards behind peek above the front one, tucked and inset — a cascade,
+   so several waiting decisions read as several, not as one */
+.alert-peek {
+  border: 1px solid var(--term-line); border-bottom: 0;
+  border-radius: 3px 3px 0 0; background: var(--term-chrome);
+  margin: 0 calc(var(--peek, 1) * 7px) -2px;
+  padding: 6px 12px 7px; display: flex; align-items: baseline; gap: 8px;
+  cursor: pointer; min-width: 0; overflow: hidden;
+  font-family: var(--mono); font-size: 11px;
+}
+.alert-peek:hover { background: var(--term-bg); }
+.alert-peek-title { color: var(--term-fg); flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-peek-kind { color: var(--term-dim); flex: none; }
+.alert-card {
+  background: var(--term-bg); border: 1px solid var(--accent);
+  border-radius: 3px; box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  display: flex; flex-direction: column; min-height: 0;
+  animation: alert-in 220ms ease both;
+}
+@keyframes alert-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+.alert-head {
+  flex: none; display: flex; align-items: center; gap: 10px; min-width: 0;
+  padding: 9px 10px 9px 14px; border-bottom: 1px solid var(--term-line);
+  background: var(--term-chrome);
+}
+/* min-width: 0, or an unbreakable session name shoves the buttons off the
+   card — the documented flex trap; the flexible column is what must give */
+.alert-head-main { flex: 1 1 auto; min-width: 0; }
+.alert-kicker { font-family: var(--mono); font-size: 9.5px;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--accent); }
+.alert-title { color: var(--term-fg); font-size: 12.5px; margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alert-act {
+  flex: none; background: none; border: 1px solid var(--term-line);
+  border-radius: 2px; color: var(--term-mut); cursor: pointer;
+  font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  text-transform: uppercase; padding: 5px 8px;
+}
+.alert-act:hover { color: var(--term-fg); border-color: var(--line-warm); }
+/* the card body is the SAME perm/ask card the terminal renders; it only
+   loses the terminal stack's own padding and glow border here */
+.alert-card > .perm-card {
+  border: 0; background: none; animation: none; border-radius: 0;
+  overflow-y: auto; min-height: 0; padding: 12px 14px;
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+}
+/* an ask card lays its own rows out edge to edge */
+.alert-card > .perm-card.ask-card { padding: 0; }
+.alert-more { flex: none; text-align: center; color: var(--term-dim);
+  font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
+  text-transform: uppercase; padding: 7px 0 0; }
+/* Where the waiting count lives is a per-width decision, the way the layout
+   button is desktop-only: at the desk it is a topbar count, on a phone the
+   brand wears a dot and the drawer carries the list. A "3 waiting" button in
+   a 402px topbar wraps to a second line and pushes the bar out of shape. */
+.alerts-btn { display: none; }
+@media (min-width: 1100px) { .alerts-btn { display: inline-block; } }
+.alerts-btn[hidden] { display: none; }
+.alerts-btn { color: var(--accent); }
+.alerts-btn.parked { color: var(--text-dim); }
+.brand.has-alerts { position: relative; }
+.brand.has-alerts::after {
+  content: ""; position: absolute; top: 3px; right: 0;
+  width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+}
+.nd-sec-head.alert { color: var(--accent); }
+.nd-alert { align-items: flex-start; }
+.nd-alert-main { flex: 1; min-width: 0; display: flex;
+  flex-direction: column; gap: 2px; }
+/* a session name is free text — clamp it, or one long title owns the drawer */
+.nd-alert .nd-label { display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; }
+.nd-alert-kind { font-family: var(--mono); font-size: 10.5px;
+  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.nd-alert.parked .nd-label { color: var(--text-dim); }
+@media (prefers-reduced-motion: reduce) {
+  .alert-card { animation: none; }
+}
+@media (min-width: 1100px) {
+  /* at the desk it docks bottom-right at a width that fits an ask card's
+     option rows without wrapping them. 96px clears the dock, which is
+     centred and can be wide enough to reach under this corner. */
+  .alert-layer { left: auto; right: 18px; bottom: 96px; width: 420px; }
+  .alert-stack { max-height: min(72dvh, 720px); }
+}
+
 /* ---------- universal dark scrollbar (every Vira module) ---------- */
 html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 ::-webkit-scrollbar { width: 11px; height: 11px; }
