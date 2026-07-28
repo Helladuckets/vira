@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -638,6 +639,131 @@ class InstallCommandTest(unittest.TestCase):
 
     def test_unknown_provider_is_empty(self):
         self.assertEqual(models.install_command("nosuch"), "")
+
+
+def _fake_login_cli(tmp):
+    """A stub login binary speaking the real flow's protocol (verified live
+    2026-07-28): print the OAuth URL, wait on stdin for the pasted code,
+    exit 0 on the right one. Plain .py payload + a platform shim — a
+    shebang is a POSIX mechanism, and Windows CreateProcess reads the
+    extension, not the first line."""
+    import stat
+    import sys as _sys
+    impl = Path(tmp) / "login_impl.py"
+    impl.write_text(encoding="utf-8", data=(
+        "import sys\n"
+        "print('Opening browser to sign in...')\n"
+        "print('If the browser did not open, visit: "
+        "https://example.com/oauth?code=1')\n"
+        "sys.stdout.flush()\n"
+        "line = sys.stdin.readline().strip()\n"
+        "if line != 'goodcode':\n"
+        "    print('Invalid code.')\n"
+        "    sys.exit(1)\n"
+        "sys.exit(0)\n"))
+    if os.name == "nt":
+        script = Path(tmp) / "claude.cmd"
+        script.write_text(encoding="utf-8", data=(
+            "@echo off\r\n"
+            f'"{_sys.executable}" "{impl}" %*\r\n'))
+    else:
+        script = Path(tmp) / "claude"
+        script.write_text(encoding="utf-8", data=(
+            "#!/bin/sh\n"
+            f'exec "{_sys.executable}" "{impl}" "$@"\n'))
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    return script
+
+
+class LoginDriverTest(unittest.TestCase):
+    """The driven sign-in: the card round trip that replaced the
+    copy-a-command-into-a-terminal flow (owner's ruling, 2026-07-28)."""
+
+    def setUp(self):
+        self._saved = dict(models._login)
+        os.environ.pop("VIRA_PASSIVE", None)
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        proc = models._login.get("proc")
+        if proc and proc.poll() is None:
+            models._login_kill(proc)
+        models._login.clear()
+        models._login.update(self._saved)
+
+    def _wait(self, cond, secs=8):
+        deadline = time.time() + secs
+        while time.time() < deadline:
+            if cond():
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_full_flow_url_code_connected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = _fake_login_cli(tmp)
+            with mock.patch.object(models, "find_binary",
+                                   return_value=str(cli)):
+                st = models.login_start("anthropic")
+                self.assertTrue(st["running"])
+                self.assertTrue(self._wait(
+                    lambda: models.login_status("anthropic")["url"]))
+                st = models.login_status("anthropic")
+                self.assertIn("https://example.com/oauth", st["url"])
+                models.login_code("anthropic", "goodcode")
+                self.assertTrue(self._wait(
+                    lambda: not models.login_status("anthropic")["running"]))
+                with mock.patch.object(models, "probe",
+                                       return_value={"connected": True}):
+                    st = models.login_status("anthropic")
+                self.assertTrue(st["connected"])
+                self.assertEqual(st["error"], "")
+
+    def test_bad_code_surfaces_the_cli_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = _fake_login_cli(tmp)
+            with mock.patch.object(models, "find_binary",
+                                   return_value=str(cli)):
+                models.login_start("anthropic")
+                self.assertTrue(self._wait(
+                    lambda: models.login_status("anthropic")["url"]))
+                models.login_code("anthropic", "wrong")
+                self.assertTrue(self._wait(
+                    lambda: not models.login_status("anthropic")["running"]))
+                st = models.login_status("anthropic")
+                self.assertFalse(st["connected"])
+                self.assertTrue(st["error"])
+
+    def test_code_with_nothing_running_refuses(self):
+        with self.assertRaises(ValueError):
+            models.login_code("anthropic", "abc")
+
+    def test_passive_refuses(self):
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(RuntimeError):
+                models.login_start("anthropic")
+
+    def test_api_only_provider_refuses(self):
+        # google/xai have no login flow — the key path is their connect.
+        with self.assertRaises(ValueError):
+            models.login_start("google")
+
+    def test_absent_binary_refuses(self):
+        with mock.patch.object(models, "find_binary", return_value=""):
+            with self.assertRaises(ValueError):
+                models.login_start("anthropic")
+
+    def test_timeout_reaps_the_flow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = _fake_login_cli(tmp)
+            with mock.patch.object(models, "find_binary",
+                                   return_value=str(cli)):
+                models.login_start("anthropic")
+                with models._login_lock:
+                    models._login["started"] -= models.LOGIN_TIMEOUT + 10
+                st = models.login_status("anthropic")
+                self.assertFalse(st["running"])
+                self.assertIn("timed out", st["error"])
 
 
 if __name__ == "__main__":
