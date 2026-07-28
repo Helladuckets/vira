@@ -209,6 +209,84 @@ class CapabilityTest(unittest.TestCase):
         self.assertFalse(models.PROVIDERS["xai"]["can"]["sessions"])
 
 
+class CliConfigModelTest(unittest.TestCase):
+    """Source 3: read the id out of the provider's OWN config rather than
+    pinning it here, so codex's model and Vira's picker cannot disagree."""
+
+    def _write(self, body):
+        d = tempfile.mkdtemp()
+        p = Path(d) / "config.toml"
+        p.write_text(body, encoding="utf-8")
+        self.addCleanup(lambda: p.unlink(missing_ok=True))
+        return p
+
+    def _as_openai(self, path):
+        row = dict(models.PROVIDERS["openai"]["cli_config"], path=str(path))
+        return mock.patch.dict(models.PROVIDERS["openai"],
+                               {"cli_config": row})
+
+    def test_reads_the_top_level_model_key(self):
+        p = self._write('model = "gpt-9-turbo"\napproval_policy = "never"\n')
+        with self._as_openai(p):
+            self.assertEqual(models.cli_default_model("openai"), "gpt-9-turbo")
+            self.assertEqual([m["id"] for m in models.cli_models("openai")],
+                             ["gpt-9-turbo"])
+
+    def test_a_key_inside_a_section_is_not_the_top_level_one(self):
+        # [marketplaces.x] tables follow the real file; a naive grep for
+        # `model =` anywhere would happily read one of those instead.
+        p = self._write('model = "real"\n\n[plugin.other]\nmodel = "wrong"\n')
+        with self._as_openai(p):
+            self.assertEqual(models.cli_default_model("openai"), "real")
+
+    def test_a_missing_or_empty_config_is_empty_not_a_crash(self):
+        with self._as_openai(Path("/nope/config.toml")):
+            self.assertEqual(models.cli_default_model("openai"), "")
+            self.assertEqual(models.cli_models("openai"), [])
+        p = self._write('approval_policy = "never"\nmodel = ""\n')
+        with self._as_openai(p):
+            self.assertEqual(models.cli_default_model("openai"), "")
+
+    def test_a_provider_with_aliases_never_reads_a_config(self):
+        # Anthropic's aliases are already generation-free; reading a file
+        # would only add a way for them to go stale.
+        self.assertEqual(models.cli_default_model("anthropic"), "")
+        self.assertEqual([m["id"] for m in models.cli_models("anthropic")],
+                         ["sonnet", "opus", "haiku", "fable"])
+
+
+class DefaultApiModelTest(unittest.TestCase):
+    """An empty api_model resolves from the live list at call time — the
+    newest model of the tier the CLI alias names."""
+
+    def setUp(self):
+        models._models_cache.clear()
+        self.addCleanup(models._models_cache.clear)
+
+    def _live(self, ids):
+        return mock.patch.object(
+            models, "_live_models",
+            return_value=([{"id": i, "label": i} for i in ids], "ok"))
+
+    def test_picks_the_newest_model_of_the_requested_tier(self):
+        # Live lists are newest-first, so the first tier match is newest.
+        with self._live(["c-haiku-9", "c-sonnet-9", "c-sonnet-8"]):
+            self.assertEqual(
+                models.default_api_model("anthropic", tier="sonnet"),
+                "c-sonnet-9")
+
+    def test_falls_back_to_the_newest_model_when_no_tier_matches(self):
+        with self._live(["c-opus-9", "c-haiku-9"]):
+            self.assertEqual(models.default_api_model("anthropic", tier="fable"),
+                             "c-opus-9")
+            self.assertEqual(models.default_api_model("anthropic"), "c-opus-9")
+
+    def test_no_live_list_resolves_to_nothing_rather_than_a_guess(self):
+        with self._live([]):
+            self.assertEqual(models.default_api_model("anthropic", tier="opus"),
+                             "")
+
+
 class CatalogTest(unittest.TestCase):
     """What a model dropdown is allowed to offer. The bug this guards is a
     hardcoded menu: it goes stale the week a model ships, and it offers
@@ -220,15 +298,30 @@ class CatalogTest(unittest.TestCase):
         self.addCleanup(models._models_cache.clear)
         self.addCleanup(models._options_cache.update, at=0.0, payload=None)
 
-    def test_no_key_falls_back_to_the_curated_list(self):
+    def test_no_key_means_an_empty_api_list_not_a_stale_one(self):
+        # The whole point of MODEL SOURCES: with nothing to verify against,
+        # the API picker comes back EMPTY and says what would fill it. It
+        # used to fall back to a curated list, which is how "Opus 4.8" sat
+        # on screen months after it was real.
         with mock.patch.object(models, "api_key", return_value=""):
             cat = models.catalog("anthropic")
         self.assertFalse(cat["api_live"])
+        self.assertEqual(cat["api"], [])
         self.assertIn("no API key", cat["api_detail"])
-        self.assertIn("claude-sonnet-5", [m["id"] for m in cat["api"]])
+        self.assertIn("connect one", cat["api_detail"])
         # CLI aliases are what the binary accepts — never the API ids.
         self.assertEqual([m["id"] for m in cat["cli"]],
                          ["sonnet", "opus", "haiku", "fable"])
+
+    def test_no_shipped_model_id_names_a_generation(self):
+        # The ratchet: any literal model id reintroduced into PROVIDERS is
+        # a name only an admin edit and a push can ever refresh. Aliases
+        # (tier words) are the only spellings allowed to be hardcoded.
+        allowed = {"sonnet", "opus", "haiku", "fable"}
+        for pid, spec in models.PROVIDERS.items():
+            self.assertEqual(spec["models"]["api"], [], pid)
+            for mid, _ in spec["models"]["cli"]:
+                self.assertIn(mid, allowed, f"{pid} pins a model id: {mid}")
 
     def test_live_list_wins_and_carries_display_names(self):
         rows = [{"id": "claude-fable-5", "display_name": "Claude Fable 5"},
@@ -244,14 +337,17 @@ class CatalogTest(unittest.TestCase):
                          ["claude-fable-5", "claude-opus-9"])
         self.assertEqual(cat["api"][1]["label"], "Claude Opus 9")
 
-    def test_a_failed_live_call_is_a_fallback_not_a_crash(self):
+    def test_a_failed_live_call_is_an_honest_empty_not_a_crash(self):
         with mock.patch.object(models, "api_key", return_value="sk-x"), \
              mock.patch.object(models.urllib.request, "urlopen",
                                side_effect=OSError("network down")):
             cat = models.catalog("anthropic")
         self.assertFalse(cat["api_live"])
         self.assertIn("live list unavailable", cat["api_detail"])
-        self.assertTrue(cat["api"])          # the picker still has options
+        # No crash, and no invented options either — the CLI aliases still
+        # stand, and the UI's custom-id hatch covers the rest.
+        self.assertEqual(cat["api"], [])
+        self.assertTrue(cat["cli"])
 
     def test_the_live_answer_is_cached_not_refetched_per_dropdown(self):
         calls = {"n": 0}
@@ -403,11 +499,14 @@ class ApiOnlyProviderTest(unittest.TestCase):
         self.assertFalse(r["connected"])
         self.assertEqual(r["login_cmd"], "")
 
-    def test_models_fall_back_to_the_api_list(self):
+    def test_an_api_only_provider_offers_no_cli_models(self):
+        # It has no aliases and no CLI config to read, so there is nothing
+        # verifiable to list. Empty is the honest answer; the live list is
+        # what fills this provider's picker, and that needs the key.
         with mock.patch.object(models, "find_binary", return_value=""), \
              mock.patch.object(models, "api_key", return_value="k"):
             r = models.probe("google")
-        self.assertTrue(r["models"])          # api list stands in for cli
+        self.assertEqual(r["models"], [])
 
     def test_gemini_shape_unwraps_names_and_filters_embedders(self):
         rows = [
@@ -462,20 +561,38 @@ class ApiOnlyDraftRoutingTest(unittest.TestCase):
     def test_google_routes_to_its_api_even_when_backend_says_cli(self):
         from server import suggest
         with mock.patch.object(models, "api_key", return_value="k"), \
+             mock.patch.object(models, "default_api_model",
+                               return_value="gemini-next"), \
              mock.patch.object(suggest, "_call_google_api",
                                return_value="hi") as call:
             text, backend = suggest._run("p", self._cfg("google"))
         self.assertEqual((text, backend), ("hi", "api"))
         call.assert_called_once()
+        # Vira ships no model id, so the call runs on whatever the key's
+        # own live list resolved to — never a spelling from DEFAULTS.
+        self.assertEqual(call.call_args[0][1], "gemini-next")
 
     def test_xai_routes_to_its_api(self):
         from server import suggest
         with mock.patch.object(models, "api_key", return_value="k"), \
+             mock.patch.object(models, "default_api_model",
+                               return_value="grok-next"), \
              mock.patch.object(suggest, "_call_xai_api",
                                return_value="yo") as call:
             text, backend = suggest._run("p", self._cfg("xai"))
         self.assertEqual((text, backend), ("yo", "api"))
         call.assert_called_once()
+
+    def test_an_unresolvable_api_model_fails_by_name(self):
+        # A key that works but a list that cannot be read: better to say so
+        # than to guess an id that was current when this shipped.
+        from server import aihealth, suggest
+        with mock.patch.object(models, "api_key", return_value="k"), \
+             mock.patch.object(models, "default_api_model", return_value=""), \
+             mock.patch.object(aihealth, "note_failure"):
+            with self.assertRaises(RuntimeError) as ctx:
+                suggest._run("p", self._cfg("google"))
+        self.assertIn("no API model set", str(ctx.exception))
 
     def test_missing_key_raises_a_named_error(self):
         from server import aihealth, suggest

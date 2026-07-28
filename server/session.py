@@ -105,10 +105,18 @@ EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 # rather than the day someone notices. Read-only means reads.
 READ_ONLY_EXCLUDE = {"Task", "WebSearch"} | viratools.WRITE_TOOLS
 
-# UI/circuit model keywords -> ids the CLI actually accepts. The short
-# aliases (sonnet/opus/haiku) are CLI-native; fable is new enough that the
-# full id is the safe spelling.
-MODEL_ALIASES = {"fable": "claude-fable-5"}
+# UI/circuit model keywords -> ids the CLI actually accepts.
+#
+# EMPTY, and it should stay that way. This table used to widen `fable` to
+# `claude-fable-5` back when the alias was too young for the CLI to know
+# it — which quietly turned a tier keyword into a GENERATION PIN: every
+# circuit stage and routine that says "fable" would still be running Fable
+# 5 the week Fable 6 shipped, with nothing on screen to say so. The CLI
+# resolves the bare alias itself (verified 2026-07-28: `claude --print
+# --model fable` answers, and `claude --help` documents fable/opus/sonnet
+# as aliases for the latest of each tier). A widening entry here is a
+# stale name by another name — see models.py MODEL SOURCES.
+MODEL_ALIASES = {}
 
 
 def resolve_model(m):

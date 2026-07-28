@@ -4680,7 +4680,12 @@ function fillModelSelect(sel, list, current, firstLabel) {
     sel.appendChild(o);
   });
   if (cur && !(list || []).some((m) => m.id === cur)) {
-    const o = el("option", null, cur + " (from your config)");
+    // A saved id nothing can vouch for. It stays SELECTABLE — the picker
+    // must never silently move what the app runs on — but it is labelled
+    // unverified rather than blandly "(from your config)", because that
+    // read as normal for months while the saved value was a name the CLI
+    // hard-rejects. The label is the only warning the owner ever gets.
+    const o = el("option", null, cur + " (saved — unverified)");
     o.value = cur;
     sel.appendChild(o);
   }
@@ -7144,16 +7149,25 @@ function backendBlock(card) {
        ["API model", "api"]].forEach(([label, kind]) => {
         if (!p.config_keys[kind]) return;   // API-only providers have no CLI
         const f = el("label", "field", label);
+        // "" is a real choice on both backends, not an absence: on the CLI
+        // it means the provider's own configured model, on the API it means
+        // "newest of the cli tier, resolved from the live list at call
+        // time". Naming it is what stops an empty box reading as broken.
         const sel = fillModelSelect(el("select"), p[kind],
-                                    cfg[p.config_keys[kind]]);
+                                    cfg[p.config_keys[kind]],
+                                    kind === "cli"
+                                      ? "Let " + p.label + " choose"
+                                      : "Newest of the tier above");
         f.appendChild(sel);
         g.appendChild(f);
         picks.push({ key: p.config_keys[kind], sel });
       });
       if (p.cli_detail)
         g.appendChild(el("p", "hint", "CLI models: " + p.cli_detail));
-      g.appendChild(el("p", "hint", "API models: " + p.api_detail
-        + (p.api_live ? "" : " — showing Vira's own list")));
+      // No "showing Vira's own list" tail any more — there IS no such
+      // list. A curated fallback is exactly what kept stale names on
+      // screen, so an unverifiable API list is empty and says why.
+      g.appendChild(el("p", "hint", "API models: " + p.api_detail));
       mbox.appendChild(g);
     });
     rosterBlock(card, cat);
@@ -9809,7 +9823,13 @@ function appApply(r) {
       "Dispatching anyway overrides that call for this one role."
     : "";
   cut.style.display = r.cut ? "" : "none";
-  $("#app-run-model").value = localStorage.getItem("vira-app-model") || "";
+  // From the catalog, like every other model menu. This sheet kept a
+  // hand-written <option> list until 2026-07-28 and so went on offering
+  // "Opus 4.8" long after that was a real model — the failure mode the
+  // catalog exists to prevent, in the one picker it had never reached.
+  modelCatalog().then((cat) => fillModelSelect(
+    $("#app-run-model"), sessionModels(cat),
+    localStorage.getItem("vira-app-model") || "", "Default (config)"));
   $("#app-run-extra").value = "";
   appRunSheet.open();
   $("#app-run-extra").focus();
