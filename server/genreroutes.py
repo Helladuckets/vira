@@ -1,7 +1,11 @@
 """HTTP surface for the Genre Studio.
 
-Kept apart from genrestudio.py so the engine stays a pure, importable,
-testable module — every route here is a thin wrapper over one engine call.
+Kept apart from genrestudio.py so the engine stays a pure, importable, testable
+module - every route here is a thin wrapper over one engine call.
+
+There is no install route any more. The studio's deliverable is a genre.json
+(GET /{gid}/manifest); turning one into a skin is a downstream consumer's job,
+and this surface no longer knows skins exist.
 """
 from __future__ import annotations
 
@@ -9,7 +13,7 @@ import threading
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from . import genregen, genrestudio as gs
@@ -30,14 +34,34 @@ class GenReq(BaseModel):
     aspect: str = "4:3"
 
 
+class CheckReq(BaseModel):
+    on: bool = True
+
+
 class PatchReq(BaseModel):
     name: str | None = None
-    knobs: dict | None = None
-    sel: dict | None = None
-    picks: dict | None = None
-    overrides: dict | None = None
-    weights: dict[str, float] | None = None      # {ref_id: gain}
+    sel: dict | None = None                      # {ref_id: {row: [fragments]}}
+    own: dict | None = None                      # {row: [fragments typed by hand]}
+    accent: str | None = None                    # a marked swatch; "" clears
     gen_prompt: str | None = None                # owner's words; "" = auto
+
+
+def _state_or_404(gid: str):
+    try:
+        return gs.state(gid)
+    except FileNotFoundError:
+        raise HTTPException(404, "no such genre patch")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+def update_patch_or_404(gid: str, fn):
+    try:
+        return gs.update_patch(gid, fn)
+    except FileNotFoundError:
+        raise HTTPException(404, "no such genre patch")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("")
@@ -53,12 +77,7 @@ def create(req: NewReq):
 
 @router.get("/{gid}")
 def get_state(gid: str):
-    try:
-        return gs.state(gid)
-    except FileNotFoundError:
-        raise HTTPException(404, "no such genre patch")
-    except ValueError as e:
-        raise HTTPException(400, str(e))
+    return _state_or_404(gid)
 
 
 @router.delete("/{gid}")
@@ -70,48 +89,41 @@ def delete(gid: str):
     return {"ok": True}
 
 
+def _clean_cell(val) -> list:
+    """Fragments arrive from the browser, so they are bounded here rather than
+    trusted - the same caps the vision pass is held to."""
+    out = []
+    for v in (val if isinstance(val, list) else []):
+        if isinstance(v, (str, int, float)):
+            s = str(v).strip()[:gs.MAX_FRAGMENT]
+            if s and s not in out:
+                out.append(s)
+    return out[:gs.MAX_PER_ROW * gs.MAX_REFS]
+
+
 @router.post("/{gid}/patch")
 def patch(gid: str, req: PatchReq):
-    """Every dial writes through here — knob positions, per-cell selection,
-    manual conflict picks, direct edits of the resolved column, and per-
-    reference gain. Partial: only the fields present are touched."""
+    """Every edit writes through here. Partial: only the fields present are
+    touched, and inside `sel` only the cells named."""
     def fn(p):
         if req.name is not None:
             p["name"] = req.name[:80]
-        if req.knobs:
-            p.setdefault("knobs", {}).update(
-                {k: v for k, v in req.knobs.items() if k in gs.KNOB_DEFAULTS})
         if req.sel is not None:
             for rid, cells in req.sel.items():
-                p.setdefault("sel", {}).setdefault(rid, {}).update(cells)
-        if req.picks is not None:
-            p.setdefault("picks", {}).update(req.picks)
-            for k, v in list(req.picks.items()):
-                if v is None:
-                    p["picks"].pop(k, None)
-        if req.overrides is not None:
-            p.setdefault("overrides", {}).update(req.overrides)
-            for k, v in list(req.overrides.items()):
-                if v is None:
-                    p["overrides"].pop(k, None)
-        if req.weights:
-            for r in p.get("refs") or []:
-                if r["id"] in req.weights:
-                    r["weight"] = max(0.0, min(1.0, float(req.weights[r["id"]])))
+                if not isinstance(cells, dict):
+                    continue
+                cell = p.setdefault("sel", {}).setdefault(rid, {})
+                for key, val in cells.items():
+                    cell[key] = _clean_cell(val)
+        if req.own is not None:
+            for key, val in req.own.items():
+                p.setdefault("own", {})[key] = _clean_cell(val)
+        if req.accent is not None:
+            p["accent"] = req.accent if gs.is_hex(req.accent) else None
         if req.gen_prompt is not None:
             p["gen_prompt"] = req.gen_prompt[:4000]
-    try:
-        update_patch_or_404(gid, fn)
-        return gs.state(gid)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-def update_patch_or_404(gid: str, fn):
-    try:
-        return gs.update_patch(gid, fn)
-    except FileNotFoundError:
-        raise HTTPException(404, "no such genre patch")
+    update_patch_or_404(gid, fn)
+    return _state_or_404(gid)
 
 
 @router.post("/{gid}/reference")
@@ -122,7 +134,7 @@ def add_reference(gid: str, req: RefReq):
         raise HTTPException(404, "no such genre patch")
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True, "ref": ref, "state": gs.state(gid)}
+    return {"ok": True, "ref": ref, "state": _state_or_404(gid)}
 
 
 @router.delete("/{gid}/reference/{rid}")
@@ -131,7 +143,15 @@ def drop_reference(gid: str, rid: str):
         p["refs"] = [r for r in p.get("refs") or [] if r.get("id") != rid]
         p.get("sel", {}).pop(rid, None)
     update_patch_or_404(gid, fn)
-    return gs.state(gid)
+    return _state_or_404(gid)
+
+
+@router.post("/{gid}/reference/{rid}/check")
+def check_reference(gid: str, rid: str, req: CheckReq):
+    """Take everything this image offers, or drop all of it - the sculpting
+    gesture that keeps pre-checked fragments cheap to undo."""
+    update_patch_or_404(gid, lambda p: gs.check_all(p, rid, req.on))
+    return _state_or_404(gid)
 
 
 @router.get("/{gid}/reference/{rid}/image")
@@ -149,20 +169,20 @@ def ref_image(gid: str, rid: str):
     return FileResponse(path)
 
 
-@router.post("/{gid}/reference/{rid}/enrich")
-def enrich(gid: str, rid: str):
-    """Rung 2 — the optional vision pass for one reference."""
+@router.post("/{gid}/reference/{rid}/read")
+def read_one(gid: str, rid: str):
+    """Rung 2 - reconstruct one image's prompt and split it into fragments."""
     try:
-        out = gs.enrich_reference(gid, rid)
+        out = gs.read_reference(gid, rid)
     except FileNotFoundError:
         raise HTTPException(404, "not found")
     if not out.get("ok"):
-        return {"ok": False, "error": out.get("error"), "state": gs.state(gid)}
-    return {"ok": True, "state": gs.state(gid)}
+        return {"ok": False, "error": out.get("error"), "state": _state_or_404(gid)}
+    return {"ok": True, "state": _state_or_404(gid)}
 
 
-@router.post("/{gid}/enrich-all")
-def enrich_all(gid: str):
+@router.post("/{gid}/read-all")
+def read_all(gid: str):
     """Fire rung 2 across every reference in the background; the client polls
     state. One model call per image, so this is the expensive button."""
     try:
@@ -174,7 +194,7 @@ def enrich_all(gid: str):
     def work():
         for rid in ids:
             try:
-                gs.enrich_reference(gid, rid)
+                gs.read_reference(gid, rid)
             except Exception:                     # one bad image never stops the rest
                 continue
     threading.Thread(target=work, daemon=True).start()
@@ -184,8 +204,8 @@ def enrich_all(gid: str):
 @router.post("/{gid}/generate")
 def generate_image(gid: str, req: GenReq):
     """The combined column's button: compose the recipe into a prompt (or use
-    the owner's own words) and render a NEW reference image. Synchronous — the
-    UI holds a busy state; the take lands in the patch's generation history."""
+    the owner's own words) and render a new image. Synchronous - the UI holds a
+    busy state; the take lands in the patch's history."""
     try:
         patch = gs.load_patch(gid)
     except (FileNotFoundError, ValueError):
@@ -197,7 +217,7 @@ def generate_image(gid: str, req: GenReq):
         raise HTTPException(502, str(e))
     entry = gs.record_generation(gid, prompt, png)
     return {"ok": True, "generation": entry, "prompt": prompt,
-            "state": gs.state(gid)}
+            "state": _state_or_404(gid)}
 
 
 @router.get("/{gid}/generation/{genid}/image")
@@ -216,14 +236,27 @@ def generation_image(gid: str, genid: str):
     return FileResponse(path)
 
 
-@router.post("/{gid}/install")
-def install(gid: str):
-    """Write the patch out as a real skin so it joins the picker."""
+@router.post("/{gid}/generation/{genid}/promote")
+def promote(gid: str, genid: str):
+    """Close the loop - a take becomes a reference and is decomposed in turn."""
     try:
-        return gs.install(gid)
-    except FileNotFoundError:
-        raise HTTPException(404, "no such genre patch")
-    except PermissionError as e:
-        raise HTTPException(403, str(e))
+        ref = gs.promote_take(gid, genid)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e) or "no such take")
     except ValueError as e:
         raise HTTPException(400, str(e))
+    return {"ok": True, "ref": ref, "state": _state_or_404(gid)}
+
+
+@router.get("/{gid}/manifest")
+def manifest(gid: str):
+    """The deliverable, as a downloadable genre.json."""
+    try:
+        m = gs.export_manifest(gs.load_patch(gid))
+    except FileNotFoundError:
+        raise HTTPException(404, "no such genre patch")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    slug = gs.slugify(m["genre"])
+    return JSONResponse(m, headers={
+        "Content-Disposition": f'attachment; filename="{slug}.genre.json"'})

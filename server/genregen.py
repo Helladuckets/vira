@@ -1,19 +1,17 @@
 """Genre Studio image generation — the combined column's Generate button.
 
-The reframe this module completes (owner, 2026-07-24): the studio is a GENRE
-MAKER, not a skin wizard. The matrix composes a genre out of up to six
-references — this palette piece from one, the dark ground from another, the
-prose from a third, the SUBJECT from a fourth — and the far column is the
-COMBINED recipe. This module turns that recipe into a new reference image,
-regenerable for as long as the owner keeps turning the dials. The skin is
-downstream: one consumer of a finished genre, applied through the existing
-skins system and tuned in the Design Studio.
+The studio is a GENRE MAKER, not a skin wizard (owner, 2026-07-24, rebuilt
+2026-07-27). The matrix composes a genre out of fragments taken from up to six
+references — this one's palette, that one's light, another's subject — and the
+far column is the COMBINED recipe. This module turns that recipe into a new
+image, regenerable for as long as the owner keeps sculpting, and that take can
+be promoted back into the matrix as a reference.
 
 Two halves, deliberately separated:
 
-* ``compose_prompt`` is PURE — resolved rows in, one flowing paragraph out.
-  It is the exact reverse of the tcil-image pipeline (which reconstructs the
-  prompt an image implies); here the opted-in aspects reconstruct the image a
+* ``compose_prompt`` is PURE — the checked fragments in, one flowing paragraph
+  out. It is the exact reverse of the tcil-image pipeline (which reconstructs
+  the prompt an image implies); here the kept fragments reconstruct the image a
   prompt implies. It is also the City X Axis poster's own "Prompt Recipe —
   fixed subject, swappable slots" executed by machine: subject is the core,
   medium/style/palette/lighting/mood are the slots, covenants are the nevers.
@@ -86,94 +84,91 @@ def status() -> dict:
 def compose_prompt(patch: dict) -> str:
     """The combined column, written out as one flowing image prompt.
 
-    PURE: resolve() the patch, walk the rows, speak only what resolved —
-    an empty row contributes nothing rather than a hedge. Colours are named
-    (hueprint's names) beside their hex so the generator gets both the word
-    and the value. The owner's own words win: a non-empty ``gen_prompt`` on
-    the patch replaces all of this verbatim."""
+    PURE: read the checked fragments, walk the rows in recipe order, speak only
+    what is there — an empty row contributes nothing rather than a hedge, which
+    is what keeps a two-fragment genre from reading like a form with blanks.
+    Colours are named (hueprint's names) beside their hex so the generator gets
+    both the word and the value. The owner's own words win outright: a non-empty
+    ``gen_prompt`` on the patch replaces all of this verbatim.
+
+    Rows the images NAMED (open rows) ride at the end under their own labels —
+    a genre that needed a row nobody anticipated must not lose it here."""
     override = (patch.get("gen_prompt") or "").strip()
     if override:
         return override
 
     from . import genrestudio as gs
-    rows = gs.resolve(patch)["rows"]
+    rows = gs.combined(patch)
 
-    def val(key):
-        v = rows.get(key, {}).get("resolved")
-        return None if v in (None, [], "") else v
+    def vals(key):
+        return [c["value"] for c in rows.get(key, {}).get("chips", [])]
 
-    def listing(v):
-        return [str(x) for x in (v if isinstance(v, list) else [v])]
+    def joined(key):
+        return ", ".join(vals(key))
+
+    def named(h):
+        return f"{gs.color_name(str(h)).lower()} ({h})" if gs.is_hex(h) else str(h)
 
     parts = []
 
-    # core: the subject slot
-    subject = val("subject")
-    vantage = val("vantage")
-    core = str(subject) if subject else "an abstract composition"
-    if vantage:
-        core += f", seen from {vantage}"
-    parts.append(core.strip().capitalize())
+    # the core: subject, then how it is framed
+    subject = joined("subject")
+    core = subject or "an abstract composition"
+    if vals("vantage"):
+        core += f", seen from {joined('vantage')}"
+    if vals("composition"):
+        core += f", {joined('composition')}"
+    parts.append(core.strip())
 
-    # rendering slots
-    medium = val("medium")
-    if medium:
-        parts.append(f"rendered as {medium}")
-    style = val("style")
-    if style:
-        parts.append("in a " + ", ".join(listing(style)) + " register")
-    era = val("era")
-    if era:
-        parts.append(f"with a {era} feel")
+    # how it is made
+    if vals("medium"):
+        parts.append(f"rendered as {joined('medium')}")
+    if vals("technique"):
+        parts.append(joined("technique"))
+    if vals("style"):
+        parts.append(f"in a {joined('style')} register")
+    if vals("era"):
+        parts.append(f"with a {joined('era')} feel")
 
-    # palette: ground + accent + the role ramp, named beside their hex
-    def named(h):
-        return f"{gs.color_name(str(h)).lower()} ({h})"
-    ground = val("ground")
-    if ground:
-        parts.append(f"the ground is {named(ground)}")
-    accent = val("accent")
-    if accent:
+    # colour: the accent named first when one is marked, so the generator hears
+    # which swatch carries the signal rather than treating the set as flat
+    swatches = [h for h in vals("palette") if gs.is_hex(h)]
+    accent = patch.get("accent") if gs.is_hex(patch.get("accent")) else ""
+    if accent and accent in swatches:
         parts.append(f"the accent is {named(accent)}")
-    ramp = val("palette")
-    if ramp:
-        parts.append("palette: " + ", ".join(named(h) for h in listing(ramp)))
+    if swatches:
+        swatches = sorted(set(swatches), key=gs.luminance)
+        parts.append("palette: " + ", ".join(named(h) for h in swatches))
 
-    # light + air
-    lighting = val("lighting")
-    if lighting:
-        parts.append("lighting: " + ", ".join(listing(lighting)))
-    mood = val("mood")
-    if mood:
-        parts.append("mood: " + ", ".join(listing(mood)))
+    # light and air
+    if vals("lighting"):
+        parts.append("lighting: " + joined("lighting"))
+    if vals("texture"):
+        parts.append("surface: " + joined("texture"))
+    if vals("mood"):
+        parts.append("mood: " + joined("mood"))
+    if vals("lettering"):
+        parts.append("lettering: " + joined("lettering"))
+    if vals("text_in_image"):
+        parts.append('visible text reading "' + joined("text_in_image") + '"')
 
-    # grammar that reads in an image
-    if val("fills") == "none":
-        parts.append("no filled shapes — pure line work on the ground")
-    density = val("density")
-    if density:
-        parts.append(f"{density} mark density")
-    glass = val("glass")
-    if glass:
-        parts.append("surface: " + ", ".join(listing(glass)))
-    text_in = val("text_in_image")
-    if text_in:
-        parts.append(f'visible text reading "{text_in}"')
+    # rows these images named for themselves
+    for key, spec in rows.items():
+        if spec.get("open") and vals(key):
+            parts.append(f"{spec.get('label') or key}: {joined(key)}")
 
-    body = ", ".join(parts)
+    body = ", ".join(p for p in parts if p)
     sentence = (body[0].upper() + body[1:]) if body else "An abstract composition"
 
-    # the prose thesis rides as its own sentences — the genre's voice
-    thesis = val("thesis")
+    # the thesis rides as its own sentences — the genre's voice, not a slot
     tail = ""
-    if thesis:
-        tail = " " + " ".join(s.rstrip(".") + "." for s in listing(thesis))
+    if vals("thesis"):
+        tail = " " + " ".join(s.rstrip(".") + "." for s in vals("thesis"))
 
     # covenants are hard constraints
-    cov = val("covenants")
     never = ""
-    if cov:
-        never = " Never: " + "; ".join(listing(cov)) + "."
+    if vals("covenants"):
+        never = " Never: " + "; ".join(vals("covenants")) + "."
 
     return (sentence.rstrip(".") + "." + tail + never +
             " One cohesive reference image, edge to edge.").strip()
