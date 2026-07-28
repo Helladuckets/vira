@@ -40,7 +40,8 @@ import uuid
 from datetime import date
 from pathlib import Path
 
-from . import ideas, jobfiles, joblog, plans, settings, viratools, worktree
+from . import (agentbackend, ideas, jobfiles, joblog, plans, settings,
+               viratools, worktree)
 from .suggest import config
 
 try:
@@ -419,7 +420,7 @@ class Sessions:
 
     def launch(self, prompt, cwd=None, permission_mode=None, model=None,
                publish_plan=False, idea_id=None, mode=None,
-               read_only=False, meta=None):
+               read_only=False, meta=None, provider=None):
         """Start a run; returns the job id. `mode` is one of MODES — the
         permission ladder (interactive / acceptedits / autopilot); when
         absent it derives from the legacy permission_mode param, else the
@@ -438,7 +439,15 @@ class Sessions:
             cwd = str(Path(cwd).expanduser())
             if not Path(cwd).is_dir():
                 cwd = None
-        live = SDK_AVAILABLE
+        # Which engine drives this session: an explicit provider wins, else
+        # the model names it, else the gated default (anthropic). A
+        # CLI-exec provider runs the detached runner even without the SDK.
+        prov = agentbackend.session_provider(model=model, provider=provider)
+        if not agentbackend.sessions_quality(prov):
+            raise ValueError(
+                f"{prov} cannot host live agent sessions yet — pick an "
+                "Anthropic or OpenAI model")
+        live = SDK_AVAILABLE or agentbackend.uses_cli_exec({"provider": prov})
         # Branch-first placement, decided HERE rather than asked of the model.
         # A session that can write lands in its own worktree; the gate then
         # refuses any write aimed back at the live checkout. Read-only and
@@ -478,7 +487,10 @@ class Sessions:
                 "finished": None,
                 "permission_mode": ("bypassPermissions" if mode == "autopilot"
                                     else permission_mode),
-                "model": resolve_model(model), "publish_plan": publish_plan,
+                "model": (resolve_model(model) if prov == "anthropic"
+                          else (model or "").strip() or None),
+                "provider": prov,
+                "publish_plan": publish_plan,
                 "idea_id": idea_id, "session_id": "",
                 "mode": mode, "awaiting": None, "live": live,
                 "read_only": bool(read_only), "meta": meta or {},
@@ -524,11 +536,17 @@ class Sessions:
         jid = data["id"]
         jdir = jobfiles.job_dir(jid)
         jdir.mkdir(parents=True, exist_ok=True)
+        prov = data.get("provider") or "anthropic"
         spec = {
             "id": jid, "prompt": data["prompt"], "cwd": data["cwd"],
             "model": data["model"],
+            "provider": prov,
+            # A launch that names no model runs the PROVIDER's configured
+            # default, not anthropic's.
             "model_resolved": (data["model"]
-                               or resolve_model(config()["cli_model"])),
+                               or (resolve_model(config()["cli_model"])
+                                   if prov == "anthropic"
+                                   else agentbackend.default_model(prov))),
             "permission_mode": data["permission_mode"],
             "publish_plan": data["publish_plan"],
             "idea_id": data["idea_id"], "mode": data["mode"],
@@ -597,6 +615,7 @@ class Sessions:
             "finished": st.get("finished"),
             "permission_mode": spec.get("permission_mode"),
             "model": spec.get("model"),
+            "provider": spec.get("provider", "anthropic"),
             "publish_plan": spec.get("publish_plan"),
             "idea_id": spec.get("idea_id"),
             "session_id": st.get("session_id", ""),

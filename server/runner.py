@@ -27,11 +27,16 @@ import time
 import uuid
 from pathlib import Path
 
-from . import jobfiles, joblog, viratools, worktree
+from . import agentbackend, jobfiles, joblog, viratools, worktree
 from .session import (EDIT_TOOLS, OUTPUT_CAP, READ_ONLY_EXCLUDE,
                       _extract_plan_md, _finalize_plan, _mark_idea,
                       _plan_ref, _sdk_env, _tool_preview, _tool_summary)
 
+# The SDK is required only by the gated (Anthropic) path. A best-effort
+# CLI-exec session must still run on a machine without it, so a failed
+# import is recorded rather than fatal; the SDK path reports it loudly the
+# moment a job actually needs it.
+SDK_IMPORT_ERROR = None
 try:
     from claude_agent_sdk import (
         AssistantMessage,
@@ -45,9 +50,11 @@ try:
         ThinkingBlock,
         ToolUseBlock,
     )
-except Exception as e:  # noqa: BLE001 — the server checked, but be loud
-    print(f"[runner] claude-agent-sdk unavailable: {e}", flush=True)
-    sys.exit(78)  # EX_CONFIG
+except Exception as e:  # noqa: BLE001 — tolerated for CLI-exec jobs
+    SDK_IMPORT_ERROR = e
+    AssistantMessage = ClaudeAgentOptions = ClaudeSDKClient = None
+    PermissionResultAllow = PermissionResultDeny = ResultMessage = None
+    SystemMessage = TextBlock = ThinkingBlock = ToolUseBlock = None
 
 HEARTBEAT = 2.0
 CONTROL_POLL = 0.25
@@ -59,7 +66,14 @@ RESULT_KEEP = 20_000
 _END = object()
 
 
+class _EngineDone(Exception):
+    """Control-flow only: the CLI-exec engine ran to completion inside
+    run_session's try block, and the shared epilogue should proceed."""
+
+
 class Runner:
+    END = _END                       # exposed for agentbackend's inbox loop
+
     def __init__(self, jdir):
         self.dir = Path(jdir)
         self.spec = json.loads((self.dir / "job.json").read_text())
@@ -79,6 +93,7 @@ class Runner:
         self.auto_allow = (set(self.spec.get("auto_allow") or [])
                            | set(viratools.TOOL_NAMES))
         self.client = None
+        self.exec_proc = None            # the CLI-exec child, when that path runs
         self.closing = False
         self.interrupted = False
         self.reply_window = float(self.spec.get("reply_window") or 43200)
@@ -172,6 +187,13 @@ class Runner:
                 await self.client.interrupt()
             except Exception as e:  # noqa: BLE001 — surface, don't crash
                 self.append(f"[vira] interrupt failed: {e}\n")
+        elif self.exec_proc is not None:
+            # The CLI-exec path has no in-band interrupt; ending the child
+            # ends the turn (the runner's loop then finalizes as aborted).
+            try:
+                self.exec_proc.terminate()
+            except ProcessLookupError:
+                pass
 
     def deny_pending(self, why):
         # Permission futures resolve to (allow, scope, reason); an ask future
@@ -455,6 +477,14 @@ class Runner:
         ok = False
         try:
             self.append(spec.get("branch_note") or "")
+            if agentbackend.uses_cli_exec(spec):
+                # Best-effort engine: the provider's own CLI, inside this
+                # same harness — inbox, reply window, epilogue all shared.
+                result_text, ok = await agentbackend.run_cliexec(self)
+                raise _EngineDone
+            if SDK_IMPORT_ERROR is not None:
+                raise RuntimeError(
+                    f"claude-agent-sdk unavailable: {SDK_IMPORT_ERROR}")
             # The owner channel: a tool the session can call when it needs a
             # DECISION, not a permission. Bound per-process because a runner
             # supervises exactly one session, so there is no ambiguity about
@@ -538,6 +568,8 @@ class Runner:
                         self.finished_cleanly = False
                         self.append("[vira] reply delivered\n")
                         await client.query(reply)
+        except _EngineDone:
+            pass                     # CLI-exec engine finished; epilogue below
         except Exception as e:  # noqa: BLE001 — session surface, report all
             self.append(f"\n[vira] session failed: {e}\n")
             self.state["error"] = str(e)[:500]

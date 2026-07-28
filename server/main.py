@@ -1820,13 +1820,17 @@ class RunReq(BaseModel):
     # "interactive" out of the box). Every rung is steerable — the mode
     # decides what the gate stops, never whether the owner can talk.
     mode: str | None = None
+    # Which engine drives the session ("anthropic" | "openai"); absent, the
+    # model names it, else the gated default. server/agentbackend.py.
+    provider: str | None = None
 
 
 @app.post("/api/actions/run")
 def api_run(req: RunReq):
     try:
         jid = jobs.launch(req.prompt, req.cwd, req.permission_mode, req.model,
-                          req.publish_plan, req.idea_id, req.mode)
+                          req.publish_plan, req.idea_id, req.mode,
+                          provider=req.provider)
     except ValueError as e:
         raise HTTPException(429, str(e))
     return {"job_id": jid}
@@ -2495,6 +2499,8 @@ class ConfigReq(BaseModel):
     openai_api_model: str | None = None
     google_api_model: str | None = None
     xai_api_model: str | None = None
+    # The curated picker roster (Cursor-style); [] restores "everything".
+    model_roster: list[str] | None = None
 
 
 @app.post("/api/config")

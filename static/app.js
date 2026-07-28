@@ -4096,10 +4096,12 @@ function copyIdeaPrompt(it) {
 
 let ideaRunCtx = null;
 function ideaRunNote(mode) {
+  const q = sessionQualityNote($("#idea-run-model")?.value);
   if (mode === "plan")
-    return "Read-only in the repo (gate-enforced). Saves the plan to your vault and opens it in the Plans window.";
+    return "Read-only in the repo (gate-enforced). Saves the plan to your "
+      + "vault and opens it in the Plans window." + q;
   return permMode($("#idea-run-perm").value).note
-    + " Will not commit or push.";
+    + " Will not commit or push." + q;
 }
 // ----- the related-ideas block in the run sheet -----
 // The owner's ask, in one place: "there are 15 things like this — which
@@ -4205,6 +4207,10 @@ function openIdeaRun(it, mode) {
 }
 const ideaRunSheet = bindSheet("#idea-run-sheet", "#idea-run-cancel");
 $("#idea-run-perm").addEventListener("change", () => {
+  if (ideaRunCtx) $("#idea-run-note").textContent = ideaRunNote(ideaRunCtx.mode);
+});
+// Picking an OpenAI model changes what "session" means — restate the note.
+$("#idea-run-model").addEventListener("change", () => {
   if (ideaRunCtx) $("#idea-run-note").textContent = ideaRunNote(ideaRunCtx.mode);
 });
 
@@ -4562,15 +4568,25 @@ function renderTermLine(line) {
   return div;
 }
 
-// Friendly label for a CLI model id/alias, matching Claude Code's welcome line.
+// Friendly label for a CLI model id/alias, matching the welcome line.
+// Generation-free on purpose: the aliases resolve to the newest tier model,
+// so a pinned number here would lie the week a new generation ships.
 function ccModelLabel(m) {
   if (!m) return null;
   m = String(m).toLowerCase();
-  if (m.includes("opus")) return "Opus 4.8";
-  if (m.includes("haiku")) return "Haiku 4.5";
-  if (m.includes("sonnet")) return "Sonnet 5";
-  if (m.includes("fable")) return "Fable 5";
+  if (m.includes("opus")) return "Opus";
+  if (m.includes("haiku")) return "Haiku";
+  if (m.includes("sonnet")) return "Sonnet";
+  if (m.includes("fable")) return "Fable";
   return m;
+}
+
+// The engine badge on job terminals: which harness answers, on whose login.
+function providerBadge(j) {
+  const p = j.provider || providerOfModel(j.model_used || j.model)
+    || "anthropic";
+  if (p === "openai") return { legend: "Codex", auth: "OpenAI" };
+  return { legend: "Claude Code", auth: "Claude Max" };
 }
 let _instCfg = null;
 async function instanceConfig() {
@@ -4597,10 +4613,49 @@ function modelCatalog(refresh) {
   return _modelCat;
 }
 
-// Live agent sessions are Claude Agent SDK, so a circuit stage can only
-// run on the session-capable provider's aliases.
+// Every model a live session can run on THIS install: each session-capable
+// provider's list (Anthropic's aliases always offered — the gated default —
+// plus any connected best-effort provider). Labels carry the provider name
+// whenever more than one is on offer, so "gpt-5.1-codex" reads as OpenAI's.
 function sessionModels(cat) {
-  return ((cat.providers || []).find((p) => p.sessions) || {}).cli || [];
+  const provs = (cat.providers || []).filter((p) =>
+    p.sessions && (p.connected || p.id === "anthropic"));
+  const multi = provs.length > 1;
+  const out = [];
+  provs.forEach((p) => {
+    const list = (p.cli && p.cli.length ? p.cli : p.api) || [];
+    list.forEach((m) => out.push({
+      id: m.id,
+      label: (multi ? p.label + " · " : "") + (m.label || m.id),
+    }));
+  });
+  // The owner's curated roster (Config > Models): when set, pickers offer
+  // exactly that set — the Cursor pattern. The custom-model hatch stays.
+  const roster = cat.roster || [];
+  if (roster.length) {
+    const kept = out.filter((m) => roster.includes(m.id));
+    if (kept.length) return kept;
+  }
+  return out;
+}
+
+// The server's provider_of_model heuristic, mirrored: which engine a model
+// id will run its session on. Drives the honest best-effort note.
+function providerOfModel(mid) {
+  const m = String(mid || "").toLowerCase();
+  if (!m) return "";
+  if (/^(gpt|o1|o3|o4|codex)/.test(m)) return "openai";
+  if (m.startsWith("gemini")) return "google";
+  if (m.startsWith("grok")) return "xai";
+  return "anthropic";
+}
+
+// "" for the gated default; a plain-language caveat for best-effort engines.
+function sessionQualityNote(mid) {
+  if (providerOfModel(mid) === "openai")
+    return " OpenAI sessions run best-effort: no per-tool approval cards — "
+      + "containment is Codex's own sandbox, inside the branch worktree.";
+  return "";
 }
 
 // Fill a <select> from a catalog list. A configured value the catalog does
@@ -4625,7 +4680,33 @@ function fillModelSelect(sel, list, current, firstLabel) {
     o.value = cur;
     sel.appendChild(o);
   }
+  // The escape hatch: any future model on any provider is reachable the
+  // day it ships, before any catalog update (type the id the provider
+  // documents). Belt to the live-list union's suspenders.
+  const custom = el("option", null, "Custom model…");
+  custom.value = "__custom__";
+  sel.appendChild(custom);
   sel.value = cur;
+  sel.dataset.prev = cur;
+  if (!sel.dataset.customArmed) {
+    sel.dataset.customArmed = "1";
+    sel.addEventListener("change", () => {
+      if (sel.value !== "__custom__") { sel.dataset.prev = sel.value; return; }
+      const v = (prompt("Model id, exactly as the provider names it:") || "")
+        .trim();
+      if (v) {
+        const o = el("option", null, v + " (custom)");
+        o.value = v;
+        sel.insertBefore(o, sel.querySelector("option[value='__custom__']"));
+        sel.value = v;
+      } else {
+        sel.value = sel.dataset.prev || "";
+      }
+      // Re-announce so callers' own change listeners see the final value;
+      // the guard above makes the second pass a no-op.
+      sel.dispatchEvent(new Event("change"));
+    });
+  }
   return sel;
 }
 
@@ -4642,13 +4723,15 @@ const CC_MASCOT = `<svg class="cc-mascot" viewBox="0 0 48 44" aria-hidden="true"
 // The classic Claude Code welcome box, rendered once per job open.
 function renderCCBanner(host, j, defModel, inst) {
   const model = ccModelLabel(j.model_used || j.model) || defModel;
+  const badge = providerBadge(j);
   const mode = j.publish_plan ? "plan (read-only)"
+    : j.provider === "openai" ? (j.mode || "run") + " (best-effort — sandboxed, no cards)"
     : j.mode === "autopilot" ? "autopilot"
     : j.mode === "acceptedits" ? "auto-edits (commands gated)"
     : j.mode === "interactive" ? "interactive (gated)"
     : (j.permission_mode === "bypassPermissions" ? "implement" : "run");
   host.innerHTML = `<div class="cc-banner">
-    <span class="cc-legend">Claude Code</span><span class="cc-legend-r">Vira</span>
+    <span class="cc-legend"></span><span class="cc-legend-r">Vira</span>
     <div class="cc-cols">
       <div class="cc-left">
         ${CC_MASCOT}
@@ -4665,7 +4748,8 @@ function renderCCBanner(host, j, defModel, inst) {
       </div>
     </div></div>
     <div class="cc-firstcmd"><span class="cc-fc-chev">&gt;</span><span data-command></span></div>`;
-  host.querySelector("[data-model]").textContent = model + " · Claude Max";
+  host.querySelector(".cc-legend").textContent = badge.legend;
+  host.querySelector("[data-model]").textContent = model + " · " + badge.auth;
   host.querySelector("[data-cwd]").textContent = j.cwd || "~";
   host.querySelector("[data-mode]").textContent = "Mode: " + mode;
   host.querySelector("[data-model2]").textContent = "Model: " + model;
@@ -4925,7 +5009,13 @@ function createJobTerm(jid, refs) {
       r.statusbar.innerHTML = "";
       r.statusbar.appendChild(el("span", "cc-chev", "»"));
       const modeLbl = j.publish_plan ? "plan" : (j.mode || "run");
-      let line = " " + st + " · " + modelLbl + " · Claude Max · " + modeLbl;
+      // the title-bar wordmark names the engine that is actually answering
+      const brandEl = r.statusbar.closest(".term-window")
+        ?.querySelector("[data-brand]");
+      if (brandEl) brandEl.textContent =
+        providerBadge(j).legend === "Codex" ? "codex" : "claude";
+      let line = " " + st + " · " + modelLbl + " · "
+        + providerBadge(j).auth + " · " + modeLbl;
       if (j.session_id) line += " · session " + j.session_id.slice(0, 8);
       if (j.live === false) line += " · from the ledger";
       r.statusbar.appendChild(document.createTextNode(line));
@@ -5083,7 +5173,7 @@ function openJobWindow(jid) {
       <line x1="16" y1="16" x2="7.2" y2="24.8"/><line x1="16" y1="16" x2="24.8" y2="7.2"/>
       <line x1="16" y1="16" x2="10.6" y2="4.4"/><line x1="16" y1="16" x2="21.4" y2="27.6"/>
       <line x1="16" y1="16" x2="27.6" y2="10.6"/><line x1="16" y1="16" x2="4.4" y2="21.4"/>
-    </g></svg><span>claude</span>`;
+    </g></svg><span data-brand>claude</span>`;
   bar.appendChild(brand);
   const led = el("span", "term-dot");
   bar.appendChild(led);
@@ -6920,7 +7010,13 @@ function provCard(card, pr, st, ai) {
   card.appendChild(el("p", "hint", pr.detail));
   if (!pr.can.sessions)
     card.appendChild(el("p", "hint",
-      "Drafts, dossiers and the brief — live agent sessions need Anthropic."));
+      "Drafts, dossiers and the brief — live agent sessions need Anthropic "
+      + "or OpenAI."));
+  else if (pr.sessions_quality === "best_effort")
+    card.appendChild(el("p", "hint",
+      "Drafts, dossiers, the brief, and live agent sessions (best-effort: "
+      + "no per-tool approval cards — the provider's own sandbox contains "
+      + "them)."));
 
   const row = el("div", "setup-row");
   if (pr.connected) {
@@ -7050,11 +7146,92 @@ function backendBlock(card) {
         g.appendChild(f);
         picks.push({ key: p.config_keys[kind], sel });
       });
+      if (p.cli_detail)
+        g.appendChild(el("p", "hint", "CLI models: " + p.cli_detail));
       g.appendChild(el("p", "hint", "API models: " + p.api_detail
         + (p.api_live ? "" : " — showing Vira's own list")));
       mbox.appendChild(g);
     });
+    rosterBlock(card, cat);
   }).catch(() => {});
+}
+
+// ---- the model roster (the Cursor pattern, owner's ask 2026-07-28) ----
+// One flat searchable list of every model this install can reach, each
+// with a toggle. What is ON here is what every picker offers (run sheet,
+// circuit stages, Apply). Empty roster = uncurated = everything on, so a
+// brand-new model arrives enabled unless the owner has curated.
+
+function rosterBlock(card, cat) {
+  const sec = el("section", "setup-adv");
+  sec.appendChild(el("div", "setup-sub", "Model roster"));
+  sec.appendChild(el("p", "hint",
+    "What the model pickers offer, across every connected AI. Toggle off "
+    + "the ones you never reach for; changes save as you make them."));
+  const search = el("input");
+  search.className = "search";
+  search.placeholder = "search models";
+  sec.appendChild(search);
+  const list = el("div", "mr-list");
+  sec.appendChild(list);
+  card.appendChild(sec);
+
+  const all = [];
+  (cat.providers || []).filter((p) => p.connected).forEach((p) => {
+    const seen = new Set();
+    [...(p.cli || []), ...(p.api || [])].forEach((m) => {
+      if (seen.has(m.id)) return;
+      seen.add(m.id);
+      all.push({ id: m.id, label: m.label || m.id, prov: p.label });
+    });
+  });
+  const allIds = all.map((m) => m.id);
+  let roster = new Set((cat.roster || []).filter((id) => true));
+  const isOn = (id) => (roster.size ? roster.has(id) : true);
+
+  let saveT = null;
+  const save = () => {
+    clearTimeout(saveT);
+    saveT = setTimeout(() => {
+      // Everything back on is stored as [] — "uncurated" — so future
+      // models arrive enabled instead of needing a toggle each.
+      const body = allIds.every((id) => roster.has(id)) ? []
+        : Array.from(roster);
+      post("/api/config", { model_roster: body })
+        .then(() => modelCatalog(true))
+        .catch(() => toast("Roster save failed"));
+    }, 400);
+  };
+
+  const render = () => {
+    const q = search.value.trim().toLowerCase();
+    list.replaceChildren();
+    all.forEach((m) => {
+      if (q && !(m.id + " " + m.label + " " + m.prov)
+        .toLowerCase().includes(q)) return;
+      const row = el("div", "mr-row");
+      const name = el("div", "mr-name",
+        m.label === m.id ? m.id : m.label + " · " + m.id);
+      row.appendChild(name);
+      row.appendChild(el("span", "mr-prov", m.prov));
+      const tog = el("button", "mr-tog" + (isOn(m.id) ? " on" : ""));
+      tog.setAttribute("aria-label",
+        (isOn(m.id) ? "disable " : "enable ") + m.id);
+      tog.onclick = () => {
+        if (!roster.size) roster = new Set(allIds);   // leaving "all on"
+        if (roster.has(m.id)) roster.delete(m.id);
+        else roster.add(m.id);
+        save();
+        render();
+      };
+      row.appendChild(tog);
+      list.appendChild(row);
+    });
+    if (!list.children.length)
+      list.appendChild(el("p", "hint", "No models match."));
+  };
+  search.addEventListener("input", render);
+  render();
 }
 
 function cardDisk(card, step, st) {

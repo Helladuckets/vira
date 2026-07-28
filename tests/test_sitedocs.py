@@ -147,7 +147,12 @@ class MigrateTests(Base):
         self.assertFalse(self.vault_plans.exists())
 
     def test_missing_site_reports_error(self):
-        out = sitedocs.migrate(site=None, docs_dir=self.docs)
+        # site=None means "use the configured site_root" — which EXISTS on
+        # the owner's machine (and on any worktree whose data/ was cloned by
+        # branch.sh serve), so the config fallback must be pinned shut or
+        # this test asserts against whatever the host happens to have.
+        with mock.patch.object(sitedocs, "site_root", return_value=None):
+            out = sitedocs.migrate(site=None, docs_dir=self.docs)
         self.assertIn("error", out)
 
     def test_orphan_html_migrates_with_stem_title(self):
