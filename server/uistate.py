@@ -36,6 +36,9 @@ KEYS = ("vira-desktop", "vira-dock-order", "vira-dock-hidden",
         # which setup steps have already opened their module,
         # so a reload never re-opens what the owner closed
         "vira-setup-opened",
+        # the first-run welcome (connect your go-to AI) fires once per
+        # install, not once per browser — so its seen-flag syncs
+        "vira-firstrun-done",
         # the active desktop layout template ({mode, grown, active}) —
         # Perimeter arranges the modules around a central stage; carried to
         # any origin like the rest of the arrangement

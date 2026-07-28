@@ -2493,6 +2493,8 @@ class ConfigReq(BaseModel):
     api_model: str | None = None
     openai_cli_model: str | None = None
     openai_api_model: str | None = None
+    google_api_model: str | None = None
+    xai_api_model: str | None = None
 
 
 @app.post("/api/config")

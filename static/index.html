@@ -380,9 +380,11 @@
             title="Subscription keyframe picker"></iframe>
   </section>
 
-  <!-- SETUP (first-run onboarding: contacts in, dossiers built, Brain wired) -->
+  <!-- CONFIG (the status dashboard: AI, data sources, channels, system).
+       The id stays "setup" — saved layouts, deep links and the gear all
+       address it — only the surface changed (2026-07-28). -->
   <section id="view-setup" class="view">
-    <div class="section-head"><h2>Setup</h2>
+    <div class="section-head"><h2>Config</h2>
       <span class="hint" id="setup-mode" style="margin-left:auto"></span>
     </div>
     <div id="setup-body"></div>
@@ -693,9 +695,18 @@
   </div>
 </div>
 
-<!-- Settings sheet retired 2026-07-21: config now lives in the Setup window
+<!-- Settings sheet retired 2026-07-21: config now lives in the Config window
      (the gear button opens it). Backend, mail, WhatsApp, notifications and
      updates are cards in that one surface. -->
+
+<!-- First-run welcome (2026-07-28): connect your go-to AI. Shown once per
+     install (flag rides /api/ui-state); re-run from Config > System. -->
+<div id="firstrun" hidden>
+  <div class="fr-scrim"></div>
+  <div class="fr-card" role="dialog" aria-modal="true" aria-label="Welcome to Vira">
+    <div id="fr-body"></div>
+  </div>
+</div>
 
 <script src="/app.js"></script>
 <script src="/atlas.js"></script>

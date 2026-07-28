@@ -523,7 +523,8 @@ def set_provider(pid, api_key=None, model=None):
                "ai_backend": "cli" if rec and rec["auth"] == provider.SIGNED_IN
                              else "api"}
     if model:
-        updates["openai_cli_model" if pid == "openai" else "cli_model"] = model
+        ck = provider.PROVIDERS[pid]["config_keys"]
+        updates[ck.get("cli") or ck["api"]] = model
     config_set(**updates)
     return {"provider": rec, "backend": updates["ai_backend"]}
 
@@ -615,6 +616,7 @@ def steps():
                  else "No model backend connected yet."),
                 unlocks="everything Vira writes for you",
                 providers=providers,
+                active_id=active["id"] if active else "",
                 sessions=bool(active and active["can"]["sessions"])))
         elif sid == "disk":
             if not store_rows:

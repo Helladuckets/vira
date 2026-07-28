@@ -6659,12 +6659,13 @@ async function loadSetup() {
 // sublines and the cards' first paint. Update is the un-fetched (local sha)
 // call; the slow network fetch only runs when the owner opens the card.
 async function loadSetupExtra() {
-  const [notify, companion, update] = await Promise.all([
+  const [notify, companion, update, config] = await Promise.all([
     api("/api/notify").then((r) => r.config).catch(() => null),
     api("/api/companion/status").catch(() => null),
     api("/api/update").catch(() => null),
+    api("/api/config").catch(() => null),
   ]);
-  return { notify, companion, update };
+  return { notify, companion, update, config };
 }
 
 function pollSetup() {
@@ -6742,12 +6743,6 @@ function launchUnlocked(flow) {
 
 // ---- shared card helpers ----------------------------------------------
 
-function setupCard(title) {
-  const card = el("div", "setup-card");
-  card.appendChild(el("div", "setup-card-title", title));
-  return card;
-}
-
 // One source-registry row as a tile (server/sources.py shapes the rows;
 // the platform fork happened server-side, so this just renders what came).
 // chips override the state wording per card — the disk card says
@@ -6779,72 +6774,122 @@ async function setupAct(btn, fn, okMsg) {
   }
 }
 
-// ---- render ------------------------------------------------------------
+// ---- render: the Config dashboard --------------------------------------
+// Config is a boring status board, not a wizard (owner's call, 2026-07-28):
+// grouped rows, each showing its live derived state, each expanding in place
+// to the card that configures it. No sequence, no numbered rail — the
+// first-run sequence lives in the welcome overlay (openFirstrun), which this
+// dashboard buries under System > Welcome setup.
 
 function renderSetup(flow, st) {
   const body = $("#setup-body");
   if (!body) return;
   const mode = $("#setup-mode");
   if (mode) mode.textContent = flow.complete
-    ? "all set" : `${flow.done} of ${flow.total} done`;
+    ? "all set" : `${flow.done} of ${flow.total} configured`;
 
-  const steps = flow.steps;
-  // Active is a step OR a manage entry the owner clicked; otherwise the first
-  // unfinished step — which is what makes re-entry land in the right place
-  // with nothing persisted. Skipped steps (sources that cannot exist on this
-  // platform) stay visible in the rail but never claim the pane.
-  let active = steps.find((s) => s.id === setupActive)
-    || SETUP_MANAGE.find((m) => m.id === setupActive);
-  if (!active)
-    active = steps.find((s) => s.state !== "done" && s.state !== "skipped")
-      || steps[0];
-  const activeId = active.id;
+  const byId = {};
+  flow.steps.forEach((s) => { byId[s.id] = s; });
+  const ai = byId.ai || { providers: [], active_id: "" };
+  const cfg = (setupExtra && setupExtra.config) || {};
+
+  // One row per AI provider, then the defaults row.
+  const aiRows = (ai.providers || []).map((pr) => ({
+    id: "prov-" + pr.id,
+    title: pr.sub_name,
+    state: pr.connected ? "done" : "todo",
+    tag: pr.id === ai.active_id ? "go-to" : "",
+    sub: pr.detail,
+    render: (card) => provCard(card, pr, st, ai),
+  }));
+  aiRows.push({
+    id: "models",
+    title: "Models & backend",
+    state: "manage",
+    sub: cfg.ai_backend
+      ? `${cfg.ai_backend === "cli" ? "subscription login" : "API"} · ${cfg.cli_model || ""}`
+      : "default models per provider",
+    render: (card) => backendBlock(card),
+  });
+
+  const stepRow = (id) => {
+    const s = byId[id];
+    if (!s) return null;
+    return {
+      id,
+      title: s.title,
+      state: s.state,
+      sub: s.state === "skipped" ? "not on this machine"
+        : (s.blocker ? "blocked — " + s.blocker : s.detail),
+      render: (card) => {
+        ({ disk: cardDisk, contacts: cardContacts, dossiers: cardDossiers,
+           brain: cardBrain, mail: cardMail }[id] || cardMail)(card, s, st);
+        if (s.unlocks && s.state !== "done")
+          card.appendChild(el("p", "setup-unlocks", "Unlocks " + s.unlocks));
+      },
+    };
+  };
+  const manageRow = (id) => {
+    const m = SETUP_MANAGE.find((x) => x.id === id);
+    return { id, title: m.title, state: "manage", sub: manageSubline(id),
+             render: (card) => m.render(card, st) };
+  };
+
+  const groups = [
+    { title: "AI", rows: aiRows },
+    { title: "Your data",
+      rows: ["disk", "contacts", "dossiers", "brain", "mail"]
+        .map(stepRow).filter(Boolean) },
+    { title: "Channels", rows: [manageRow("channels")] },
+    { title: "Notifications", rows: [manageRow("notifications")] },
+    { title: "System", rows: [
+      manageRow("updates"),
+      { id: "welcome", title: "Welcome setup", state: "manage",
+        sub: "re-run the first-run connect flow",
+        run: () => openFirstrun() },
+    ] },
+  ];
 
   body.replaceChildren();
-  const wrap = el("div", "setup-wrap");
-
-  // rail: numbered guided steps, then the un-numbered manage entries — the
-  // full table of contents of everything configurable, so a set-up Vira's
-  // Setup window IS the "what's my setup" reminder.
-  const rail = el("div", "setup-rail");
-  const railRow = (id, cls, title, sub) => {
-    const row = el("button", "setup-step" + (id === activeId ? " on" : "") + cls);
-    row.appendChild(el("span", "setup-dot"));
-    const txt = el("div", "setup-step-txt");
-    txt.appendChild(el("div", "setup-step-title", title));
-    if (sub) txt.appendChild(el("div", "setup-step-sub", sub));
-    row.appendChild(txt);
-    row.onclick = () => { leaveManageCard(); setupActive = id; renderSetup(flow, st); };
-    rail.appendChild(row);
-  };
-  steps.forEach((s, i) => {
-    const sub = s.state === "skipped" ? "not on this machine"
-      : s.blocker || (s.state === "done" ? "done" : s.unlocks);
-    railRow(s.id, " s-" + s.state, `${i + 1}. ${s.title}`, sub);
+  const wrap = el("div", "dash");
+  groups.forEach((g) => {
+    const sec = el("section", "dash-group");
+    sec.appendChild(el("div", "dash-group-title", g.title));
+    g.rows.forEach((r) => sec.appendChild(dashRow(r, flow, st)));
+    wrap.appendChild(sec);
   });
-  rail.appendChild(el("div", "setup-rail-div", "Manage"));
-  SETUP_MANAGE.forEach((m) =>
-    railRow(m.id, " s-manage", m.title, manageSubline(m.id)));
-  wrap.appendChild(rail);
-
-  // pane: the active card only
-  const pane = el("div", "setup-pane");
-  const card = setupCard(active.title);
-  const mgr = SETUP_MANAGE.find((m) => m.id === activeId);
-  if (mgr) {
-    mgr.render(card, st);
-  } else {
-    if (active.blocker)
-      card.appendChild(el("p", "hint setup-warn", "Blocked — " + active.blocker));
-    ({ ai: cardAi, disk: cardDisk, contacts: cardContacts,
-       dossiers: cardDossiers, brain: cardBrain, mail: cardMail
-     }[activeId] || cardMail)(card, active, st);
-    if (active.unlocks)
-      card.appendChild(el("p", "setup-unlocks", "Unlocks " + active.unlocks));
-  }
-  pane.appendChild(card);
-  wrap.appendChild(pane);
   body.appendChild(wrap);
+}
+
+// A dashboard row: status dot + title + live subline, expanding in place to
+// its configuration card. One expanded at a time (setupActive), so the
+// channel/notify pollers never run for an off-screen card.
+function dashRow(r, flow, st) {
+  const item = el("div", "dash-item");
+  const open = setupActive === r.id && r.render;
+  const row = el("button",
+    "setup-step dash-row s-" + r.state + (open ? " on" : ""));
+  row.appendChild(el("span", "setup-dot"));
+  const txt = el("div", "setup-step-txt");
+  const t = el("div", "setup-step-title", r.title);
+  if (r.tag) t.appendChild(el("span", "dash-tag", r.tag));
+  txt.appendChild(t);
+  if (r.sub) txt.appendChild(el("div", "setup-step-sub", r.sub));
+  row.appendChild(txt);
+  if (r.render) row.appendChild(el("span", "dash-chev" + (open ? " open" : "")));
+  row.onclick = () => {
+    if (r.run) { r.run(); return; }
+    leaveManageCard();
+    setupActive = open ? null : r.id;
+    renderSetup(flow, st);
+  };
+  item.appendChild(row);
+  if (open) {
+    const card = el("div", "setup-card dash-card");
+    r.render(card);
+    item.appendChild(card);
+  }
+  return item;
 }
 
 // ---- step cards --------------------------------------------------------
@@ -6860,73 +6905,88 @@ function keyStoreSentence(st) {
   return "Stored in Vira's locked, owner-only secrets store.";
 }
 
-function cardAi(card, step, st) {
-  card.appendChild(el("p", "hint",
-    "Vira runs on your model, under your own login. Connect one and " +
-    "everything Vira writes for you — replies in your voice, dossiers, " +
-    "the daily brief — comes from it."));
-  (step.providers || []).forEach((pr) => {
-    const tile = el("div", "setup-prov" + (pr.connected ? " on" : ""));
-    const head = el("div", "setup-prov-head");
-    head.appendChild(el("span", "setup-prov-name", pr.label));
-    head.appendChild(el("span", "setup-prov-state",
-      pr.connected ? (pr.auth === "signed_in" ? "signed in" : "API key")
-        : pr.present ? "not signed in" : "not found"));
-    tile.appendChild(head);
-    tile.appendChild(el("div", "hint", pr.detail));
-    if (!pr.can.sessions)
-      tile.appendChild(el("div", "hint setup-warn",
-        "Drafts, dossiers and the brief only — live agent sessions need " +
-        "Anthropic."));
-
-    const row = el("div", "setup-row");
-    if (pr.connected) {
-      const use = el("button", "btn primary", "Use " + pr.label);
-      use.onclick = () => setupAct(use,
-        () => api("/api/onboard/ai", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: pr.id }),
-        }), (r) => `Using ${r.provider.label}`);
-      row.appendChild(use);
-    } else if (pr.present) {
-      // The login flow is interactive and belongs to the owner — Vira shows
-      // the command rather than running an auth flow on their behalf.
-      const cmd = el("code", "setup-cmd", pr.login_cmd);
-      cmd.title = "click to copy";
-      cmd.onclick = () => { copyText(pr.login_cmd); toast("Command copied"); };
-      row.appendChild(cmd);
-      const rb = el("button", "btn", "Recheck");
-      rb.onclick = () => loadSetup();
-      row.appendChild(rb);
-    }
-    const kb = el("button", "btn", pr.has_key ? "Replace API key" : "Use an API key");
-    kb.onclick = () => {
-      if (tile.querySelector(".setup-key")) return;
-      const krow = el("div", "setup-row setup-key");
-      const inp = el("input");
-      inp.type = "password";
-      inp.className = "search";
-      inp.placeholder = pr.label + " API key";
-      inp.autocomplete = "off";
-      const save = el("button", "btn primary", "Save");
-      save.onclick = () => setupAct(save,
-        () => api("/api/onboard/ai", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: pr.id, api_key: inp.value }),
-        }), () => "Key saved");
-      krow.appendChild(inp);
-      krow.appendChild(save);
-      krow.appendChild(el("span", "hint", keyStoreSentence(st)));
-      tile.appendChild(krow);
-      inp.focus();
-    };
-    row.appendChild(kb);
-    tile.appendChild(row);
-    card.appendChild(tile);
+// POST /api/onboard/ai — the one connect call both surfaces (this dashboard
+// and the first-run welcome) route through.
+function aiConnect(bodyObj) {
+  return api("/api/onboard/ai", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(bodyObj),
   });
+}
 
+// One provider's configuration card — the expanded body of its dashboard row.
+function provCard(card, pr, st, ai) {
+  card.appendChild(el("p", "hint", pr.detail));
+  if (!pr.can.sessions)
+    card.appendChild(el("p", "hint",
+      "Drafts, dossiers and the brief — live agent sessions need Anthropic."));
+
+  const row = el("div", "setup-row");
+  if (pr.connected) {
+    if (pr.id === ai.active_id) {
+      card.appendChild(el("p", "hint setup-ok",
+        "This is Vira's go-to AI — drafts, dossiers and the brief run on it."));
+    } else {
+      const use = el("button", "btn primary", "Make it Vira's go-to AI");
+      use.onclick = () => setupAct(use,
+        () => aiConnect({ provider: pr.id }),
+        (r) => `Vira now runs on ${r.provider.label}`);
+      row.appendChild(use);
+    }
+  } else if (pr.present && pr.login_cmd) {
+    // The login flow is interactive and belongs to the owner — Vira shows
+    // the command rather than running an auth flow on their behalf.
+    const cmd = el("code", "setup-cmd", pr.login_cmd);
+    cmd.title = "click to copy";
+    cmd.onclick = () => { copyText(pr.login_cmd); toast("Command copied"); };
+    row.appendChild(cmd);
+    const rb = el("button", "btn", "Recheck");
+    rb.onclick = () => loadSetup();
+    row.appendChild(rb);
+  } else if (pr.install_cmd) {
+    card.appendChild(el("p", "hint",
+      `Sign in with your ${pr.sub_name} subscription by installing its ` +
+      "command line, or paste an API key below."));
+    const cmd = el("code", "setup-cmd", pr.install_cmd);
+    cmd.title = "click to copy";
+    cmd.onclick = () => { copyText(pr.install_cmd); toast("Command copied"); };
+    row.appendChild(cmd);
+    const rb = el("button", "btn", "Recheck");
+    rb.onclick = () => loadSetup();
+    row.appendChild(rb);
+  }
+  card.appendChild(row);
+
+  // The key path, on every provider: browser to the exact console page,
+  // paste, save to the platform's secret store.
+  const krow = el("div", "setup-row setup-key");
+  if (pr.key_url) {
+    const kl = el("button", "btn", "Get a key at " + urlHost(pr.key_url));
+    kl.onclick = () => window.open(pr.key_url, "_blank", "noopener");
+    krow.appendChild(kl);
+  }
+  const inp = el("input");
+  inp.type = "password";
+  inp.className = "search";
+  inp.placeholder = pr.has_key ? "replace the API key on file"
+    : pr.label + " API key";
+  inp.autocomplete = "off";
+  const save = el("button", "btn primary", "Connect");
+  save.onclick = () => setupAct(save,
+    () => aiConnect({ provider: pr.id, api_key: inp.value }),
+    () => "Key saved — " + pr.label + " connected");
+  krow.appendChild(inp);
+  krow.appendChild(save);
+  card.appendChild(krow);
+  card.appendChild(el("p", "hint", keyStoreSentence(st)));
+}
+
+function urlHost(u) {
+  try { return new URL(u).host.replace(/^www\./, ""); } catch { return u; }
+}
+
+function backendBlock(card) {
   // Backend + default models. Always on screen, never behind a disclosure
   // twisty: this is live config, not trivia. Every draft, dossier and
   // brief runs through the backend picked here, and an agent session that
@@ -6941,7 +7001,7 @@ function cardAi(card, step, st) {
     + "here. Agent sessions — cockpit runs, circuits, loops — start on the "
     + "CLI model unless the run or circuit stage names its own."));
   const seg = el("div", "seg"); seg.id = "backend-seg";
-  [["cli", "Max plan (claude CLI)"], ["api", "API"]].forEach(([v, label]) => {
+  [["cli", "Subscription login (CLI)"], ["api", "API"]].forEach(([v, label]) => {
     const b = el("button", "seg-btn", label); b.dataset.v = v;
     b.onclick = () => seg.querySelectorAll(".seg-btn")
       .forEach((x) => x.classList.toggle("on", x === b));
@@ -6982,6 +7042,7 @@ function cardAi(card, step, st) {
       g.appendChild(head);
       [["CLI model (subscription login)", "cli"],
        ["API model", "api"]].forEach(([label, kind]) => {
+        if (!p.config_keys[kind]) return;   // API-only providers have no CLI
         const f = el("label", "field", label);
         const sel = fillModelSelect(el("select"), p[kind],
                                     cfg[p.config_keys[kind]]);
@@ -7352,6 +7413,254 @@ function cardUpdates(card) {
   // Deferred past card attach (see cardChannels) — a detached #upd-current
   // miss left the card stuck on "Checking…" until a manual check.
   setTimeout(() => refreshUpdateStatus(false).catch(() => {}), 0);
+}
+
+
+// ---------- the first-run welcome: connect your go-to AI ----------------
+// Fires once per install (flag synced through /api/ui-state), on a fresh
+// Vira with no AI connected. It asks for exactly ONE thing — pick your
+// favorite AI and connect it — and then gets out of the way; everything
+// else lives in the Config dashboard. Re-run from Config > System.
+
+let frAi = null;                 // the ai step record (providers + active_id)
+
+function frMarkDone() {
+  uiPush("vira-firstrun-done", lsSet("vira-firstrun-done", true));
+}
+
+// setupAct swallows failures (right for the dashboard, which re-renders from
+// the world) — the welcome needs to KNOW, because success advances a screen.
+async function frAct(btn, fn) {
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "working…";
+  try {
+    return (await fn()) || true;
+  } catch (e) {
+    toast(e.message || "failed");
+    return null;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+}
+
+async function maybeFirstrun() {
+  if (lsGet("vira-firstrun-done", false)) return;
+  let flow;
+  try { flow = await api("/api/onboard/steps"); } catch { return; }
+  const ai = (flow.steps || []).find((s) => s.id === "ai");
+  if (!ai) return;
+  if (ai.state === "done") {
+    // An existing install adopts the flag silently — the welcome is for
+    // strangers, not for someone whose Vira already runs.
+    frMarkDone();
+    return;
+  }
+  frAi = ai;
+  openFirstrun();
+}
+
+function openFirstrun() {
+  const fr = $("#firstrun");
+  if (!fr) return;
+  fr.hidden = false;
+  document.body.classList.add("fr-open");
+  if (frAi) { frPick(); return; }
+  // The re-run path has no step record yet, and fetching one probes the
+  // CLIs (seconds, cold) — say so instead of showing an empty card.
+  const b = frBody();
+  if (b) {
+    b.appendChild(el("div", "fr-kicker", "Welcome to Vira"));
+    b.appendChild(el("p", "fr-sub", "Looking at what's on this machine…"));
+  }
+  frRefresh();
+}
+
+function closeFirstrun() {
+  frMarkDone();
+  const fr = $("#firstrun");
+  if (fr) fr.hidden = true;
+  document.body.classList.remove("fr-open");
+}
+
+async function frRefresh(pid) {
+  const flow = await api("/api/onboard/steps").catch(() => null);
+  if (!flow) return;
+  frAi = (flow.steps || []).find((s) => s.id === "ai") || frAi;
+  if (pid) frConnect(pid);
+  else frPick();
+}
+
+function frBody() {
+  const b = $("#fr-body");
+  if (b) b.replaceChildren();
+  return b;
+}
+
+function frFoot(b, backTo) {
+  const foot = el("div", "fr-foot");
+  if (backTo) {
+    const back = el("button", "fr-link", "Back");
+    back.onclick = () => frPick();
+    foot.appendChild(back);
+  }
+  const skip = el("button", "fr-link dim", "Skip for now");
+  skip.onclick = () => closeFirstrun();
+  foot.appendChild(skip);
+  b.appendChild(foot);
+}
+
+// Screen 1 — pick your AI.
+function frPick() {
+  const b = frBody();
+  if (!b) return;
+  b.appendChild(el("div", "fr-kicker", "Welcome to Vira"));
+  b.appendChild(el("h1", "fr-title", "Connect your go-to AI"));
+  b.appendChild(el("p", "fr-sub",
+    "Vira runs on the AI you already use — your account, your login. " +
+    "Pick your favorite; one is plenty."));
+  const tiles = el("div", "fr-tiles");
+  (frAi?.providers || []).forEach((pr) => {
+    const t = el("button", "fr-tile" + (pr.connected ? " on" : ""));
+    t.appendChild(el("div", "fr-tile-name", pr.sub_name));
+    t.appendChild(el("div", "fr-tile-by", "by " + pr.label));
+    const state = pr.connected ? "connected"
+      : pr.present ? "found on this machine" : "";
+    if (state) t.appendChild(el("div", "fr-tile-state", state));
+    t.onclick = () => frConnect(pr.id);
+    tiles.appendChild(t);
+  });
+  b.appendChild(tiles);
+  b.appendChild(el("p", "fr-note",
+    "Everything else — contacts, mail, your notes — is optional and lives " +
+    "in Config, whenever you want it."));
+  frFoot(b);
+}
+
+// Screen 2 — the connect flow for one provider, next click always obvious.
+function frConnect(pid) {
+  if (!frAi) { frRefresh(pid); return; }
+  const pr = (frAi.providers || []).find((p) => p.id === pid);
+  const b = frBody();
+  if (!b || !pr) return;
+  b.appendChild(el("div", "fr-kicker", pr.label));
+
+  if (pr.connected) {
+    b.appendChild(el("h1", "fr-title", pr.sub_name + " is ready"));
+    b.appendChild(el("p", "fr-sub", pr.detail));
+    const use = el("button", "btn primary fr-big", "Use " + pr.sub_name);
+    use.onclick = async () => {
+      if (await frAct(use, () => aiConnect({ provider: pr.id })))
+        frFinish(pr);
+    };
+    b.appendChild(use);
+    frFoot(b, true);
+    return;
+  }
+
+  b.appendChild(el("h1", "fr-title", "Connect " + pr.sub_name));
+
+  if (pr.present && pr.login_cmd) {
+    b.appendChild(el("p", "fr-sub",
+      `The ${pr.sub_name} command line is already on this machine. Sign in ` +
+      "with your subscription — copy this into a terminal and follow the " +
+      "browser prompt:"));
+    b.appendChild(frCmd(pr.login_cmd));
+    b.appendChild(frCheckBtn(pid, "I signed in — check"));
+    b.appendChild(el("div", "fr-or", "or use an API key"));
+  } else if (pr.install_cmd) {
+    b.appendChild(el("p", "fr-sub",
+      `Have a ${pr.sub_name} subscription? Install its command line, sign ` +
+      "in, and Vira runs on your plan:"));
+    b.appendChild(frCmd(pr.install_cmd));
+    const row = el("div", "fr-row");
+    if (pr.install_url) {
+      const link = el("button", "btn", "About " + pr.sub_name);
+      link.onclick = () => window.open(pr.install_url, "_blank", "noopener");
+      row.appendChild(link);
+    }
+    row.appendChild(frCheckBtn(pid, "Installed — check again", true));
+    b.appendChild(row);
+    b.appendChild(el("div", "fr-or", "or use an API key"));
+  } else {
+    b.appendChild(el("p", "fr-sub",
+      pr.sub_name + " connects with an API key — one page, one paste:"));
+  }
+
+  // The key path: open the exact console page in the browser, paste, done.
+  const steps = el("ol", "fr-steps");
+  const s1 = el("li");
+  const kb = el("button", "btn", "Open " + urlHost(pr.key_url));
+  kb.onclick = () => window.open(pr.key_url, "_blank", "noopener");
+  s1.appendChild(kb);
+  s1.appendChild(el("span", "fr-stephint", " — create a key, copy it"));
+  steps.appendChild(s1);
+  const s2 = el("li");
+  const krow = el("div", "fr-row");
+  const inp = el("input");
+  inp.type = "password";
+  inp.className = "search";
+  inp.placeholder = "paste your " + pr.label + " API key";
+  inp.autocomplete = "off";
+  const save = el("button", "btn primary", "Connect");
+  save.onclick = async () => {
+    if (!inp.value.trim()) { toast("Paste the key first"); return; }
+    if (await frAct(save,
+        () => aiConnect({ provider: pr.id, api_key: inp.value })))
+      frFinish(pr);
+  };
+  krow.appendChild(inp);
+  krow.appendChild(save);
+  s2.appendChild(krow);
+  steps.appendChild(s2);
+  b.appendChild(steps);
+  b.appendChild(el("p", "fr-note",
+    "The key lands in your device's secure secrets store, never in a file."));
+  frFoot(b, true);
+}
+
+function frCmd(cmd) {
+  const c = el("code", "setup-cmd fr-cmd", cmd);
+  c.title = "click to copy";
+  c.onclick = () => { copyText(cmd); toast("Command copied"); };
+  return c;
+}
+
+function frCheckBtn(pid, label, plain) {
+  const rb = el("button", "btn" + (plain ? "" : " primary"), label);
+  rb.onclick = async () => {
+    rb.disabled = true;
+    rb.textContent = "checking…";
+    await frRefresh(pid);
+    const pr = (frAi?.providers || []).find((p) => p.id === pid);
+    if (!pr || !pr.connected) toast("Not signed in yet — try again after the login finishes");
+  };
+  return rb;
+}
+
+// Screen 3 — connected.
+function frFinish(pr) {
+  const b = frBody();
+  if (!b) return;
+  b.appendChild(el("div", "fr-kicker", "Connected"));
+  b.appendChild(el("h1", "fr-title", "Vira is alive"));
+  b.appendChild(el("p", "fr-sub",
+    `Everything Vira writes for you — replies in your voice, dossiers, the ` +
+    `daily brief — now runs on ${pr.label}, under your own account.`));
+  b.appendChild(el("p", "fr-note",
+    "The rest is optional: contacts, mail, and your notes plug in from " +
+    "Config whenever you like."));
+  const row = el("div", "fr-row");
+  const go = el("button", "btn primary fr-big", "Take me to Vira");
+  go.onclick = () => closeFirstrun();
+  const cfg = el("button", "btn", "Open Config");
+  cfg.onclick = () => { closeFirstrun(); openApp("setup"); };
+  row.appendChild(go);
+  row.appendChild(cfg);
+  b.appendChild(row);
+  confettiAt(b);
+  loadSetup().catch(() => {});      // the dashboard behind it goes green
 }
 
 
@@ -9498,7 +9807,7 @@ $("#app-run-copy").addEventListener("click", async () => {
 const WINDOWS = [
   { id: "launchpad", title: "Launchpad", w: 720,
     icon: "M4.5 4.5h5.8v5.8H4.5zM13.7 4.5h5.8v5.8h-5.8zM4.5 13.7h5.8v5.8H4.5zM13.7 13.7h5.8v5.8h-5.8z" },
-  { id: "setup", title: "Setup", w: 560, defaultOpen: true, focusFirst: true,
+  { id: "setup", title: "Config", w: 560, defaultOpen: true, focusFirst: true,
     icon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.8 5.8l1.8 1.8M16.4 16.4l1.8 1.8M18.2 5.8l-1.8 1.8M7.6 16.4l-1.8 1.8" },
   { id: "feed", title: "Incoming", w: 440, defaultOpen: true,
     icon: "M3 13l3.5-7h11L21 13M3 13v6h18v-6M3 13h5l2 3h4l2-3h5" },
@@ -14365,6 +14674,7 @@ async function boot() {
   (fdState?.modules || []).forEach((m) => { if (!m.ready) fdMount(m.id); });
   if ((fdState?.modules || []).some((m) => !m.ready && m.run)) fdWatch();
   firstRunLanding();
+  maybeFirstrun();   // the welcome overlay, once per install, fresh AI-less installs only
   renderPeopleSort();
   loadBrief().catch(() => {});
   loadFeed().catch(() => {});

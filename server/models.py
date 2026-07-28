@@ -49,6 +49,12 @@ PROVIDERS = {
         "status_cmd": ["auth", "status"],
         "login_args": ["auth", "login"],
         "api_env": "VIRA_ANTHROPIC_KEY",
+        # Where a browser gets the owner unstuck: the exact key-console page,
+        # and the install page for the subscription CLI. The first-run flow
+        # opens these in the default browser so "get a key" is one click.
+        "key_url": "https://console.anthropic.com/settings/keys",
+        "install_url": "https://claude.com/claude-code",
+        "install_cmd": "npm install -g @anthropic-ai/claude-code",
         # What each backend accepts. CLI entries are the aliases the binary
         # resolves itself (session.MODEL_ALIASES widens the young ones);
         # API entries are the fallback for when the live models call can't
@@ -78,6 +84,9 @@ PROVIDERS = {
         "status_cmd": ["login", "status"],
         "login_args": ["login"],
         "api_env": "VIRA_OPENAI_KEY",
+        "key_url": "https://platform.openai.com/api-keys",
+        "install_url": "https://openai.com/codex",
+        "install_cmd": "npm install -g @openai/codex",
         "models": {
             "cli": [("gpt-5.1-codex", "GPT-5.1 Codex"), ("gpt-5.1", "GPT-5.1")],
             "api": [("gpt-5.1", "GPT-5.1"), ("gpt-5.1-codex", "GPT-5.1 Codex")],
@@ -86,6 +95,49 @@ PROVIDERS = {
         "config_keys": {"cli": "openai_cli_model", "api": "openai_api_model"},
         # codex exec serves every suggest.complete path (drafts, dossiers,
         # the brief narrative). It cannot host live agent sessions.
+        "can": {"draft": True, "sessions": False},
+    },
+    # The API-only rows. Both have CLIs that may exist on a machine (gemini,
+    # grok) — presence is probed and shown — but Vira talks to them through
+    # their APIs: neither exposes the cheap auth-status probe the two rows
+    # above rely on, so status_cmd is None and auth derives from the key.
+    "google": {
+        "label": "Google",
+        "sub_name": "Gemini",
+        "bin": "gemini",
+        "paths": ["/opt/homebrew/bin/gemini", "~/.local/bin/gemini"],
+        "status_cmd": None,
+        "login_args": [],
+        "api_env": "VIRA_GOOGLE_KEY",
+        "key_url": "https://aistudio.google.com/apikey",
+        "install_url": "",
+        "models": {
+            "cli": [],                 # no CLI draft path — API only
+            "api": [("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                    ("gemini-2.5-flash", "Gemini 2.5 Flash")],
+        },
+        "models_url": ("https://generativelanguage.googleapis.com"
+                       "/v1beta/models?pageSize=200"),
+        "config_keys": {"api": "google_api_model"},
+        "can": {"draft": True, "sessions": False},
+    },
+    "xai": {
+        "label": "xAI",
+        "sub_name": "Grok",
+        "bin": "grok",
+        "paths": ["~/.grok/bin/grok", "/opt/homebrew/bin/grok"],
+        "status_cmd": None,
+        "login_args": [],
+        "api_env": "VIRA_XAI_KEY",
+        "key_url": "https://console.x.ai",
+        "install_url": "",
+        "models": {
+            "cli": [],
+            "api": [("grok-4", "Grok 4"),
+                    ("grok-3-mini", "Grok 3 Mini")],
+        },
+        "models_url": "https://api.x.ai/v1/models",
+        "config_keys": {"api": "xai_api_model"},
         "can": {"draft": True, "sessions": False},
     },
 }
@@ -130,8 +182,8 @@ def login_command(pid, binary=None):
     wrong home, so the card must route through sandbox.sh (Anthropic's
     documented flow) or carry the HOME prefix explicitly."""
     spec = PROVIDERS.get(pid)
-    if not spec:
-        return ""
+    if not spec or not spec.get("login_args"):
+        return ""                     # API-only providers have no login flow
     if binary is None:
         binary = find_binary(pid)
     if not binary:
@@ -174,6 +226,11 @@ def _probe_auth(pid, binary):
     otherwise look for the obvious negative tells and treat anything else
     from a zero exit as signed in."""
     spec = PROVIDERS[pid]
+    if not spec.get("status_cmd"):
+        # No cheap way to ask this CLI about its login; the API key is the
+        # auth that matters, and the caller folds it in right after this.
+        return LOGGED_OUT, (f"{spec['bin']} CLI found — Vira talks to "
+                            f"{spec['sub_name']} through an API key")
     try:
         res = subprocess.run([binary] + spec["status_cmd"],
                              capture_output=True, text=True, timeout=20,
@@ -231,9 +288,13 @@ def probe(pid):
         "auth": auth,
         "detail": detail,
         "has_key": bool(key),
-        "models": [m for m, _ in spec["models"]["cli"]],
+        "models": [m for m, _ in
+                   (spec["models"]["cli"] or spec["models"]["api"])],
         "can": dict(spec["can"]),
         "login_cmd": login_cmd,
+        "key_url": spec.get("key_url", ""),
+        "install_url": spec.get("install_url", ""),
+        "install_cmd": spec.get("install_cmd", ""),
         "connected": auth in (SIGNED_IN, KEY),
         "action": _action_for(spec, binary, auth, login_cmd),
     }
@@ -242,6 +303,9 @@ def probe(pid):
 def _action_for(spec, binary, auth, login_cmd):
     if auth in (SIGNED_IN, KEY):
         return ""
+    if not spec.get("login_args"):     # API-only: no login flow exists
+        return (f"{spec['label']}: paste a {spec['sub_name']} API key "
+                f"to connect.")
     if not binary:
         return (f"{spec['label']}: install the {spec['bin']} CLI to sign in "
                 f"with a {spec['sub_name']} subscription, or paste an API key.")
@@ -317,13 +381,33 @@ def _shape_models(pid, rows):
             if mid:
                 out.append({"id": mid,
                             "label": str(r.get("display_name") or mid)})
-    else:
+    elif pid == "google":
+        # Gemini's list nests ids as "models/<id>" and mixes in embedders;
+        # only rows that can generateContent belong in a chat picker.
+        for r in rows:
+            methods = r.get("supportedGenerationMethods") or []
+            if methods and "generateContent" not in methods:
+                continue
+            mid = str(r.get("name") or "").split("/")[-1]
+            if not mid or any(t in mid for t in _NOT_CHAT):
+                continue
+            out.append({"id": mid,
+                        "label": str(r.get("displayName") or mid)})
+    elif pid == "openai":
         chat = [r for r in rows
                 if str(r.get("id", "")).startswith(("gpt", "o1", "o3", "o4",
                                                     "codex"))
                 and not any(t in str(r.get("id", "")) for t in _NOT_CHAT)]
         chat.sort(key=lambda r: r.get("created") or 0, reverse=True)
         out = [{"id": str(r["id"]), "label": str(r["id"])} for r in chat]
+    else:
+        # xAI and future OpenAI-compatible providers: small catalogs, so
+        # allow-by-default minus the non-chat modalities.
+        kept = [r for r in rows
+                if str(r.get("id", ""))
+                and not any(t in str(r.get("id", "")) for t in _NOT_CHAT)]
+        kept.sort(key=lambda r: r.get("created") or 0, reverse=True)
+        out = [{"id": str(r["id"]), "label": str(r["id"])} for r in kept]
     return out[:MODELS_CAP]
 
 
@@ -336,14 +420,18 @@ def _fetch_models(pid, key):
     if not url:
         return [], "no models endpoint"
     headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"}
-               if pid == "anthropic" else {"authorization": f"Bearer {key}"})
+               if pid == "anthropic" else
+               {"x-goog-api-key": key} if pid == "google" else
+               {"authorization": f"Bearer {key}"})
     try:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=MODELS_TIMEOUT) as r:
             payload = json.loads(r.read())
     except Exception as e:  # noqa: BLE001 — never raise out of a lookup
         return [], f"live list unavailable ({str(e)[:100]})"
-    rows = payload.get("data") if isinstance(payload, dict) else None
+    # Anthropic/OpenAI/xAI answer under "data"; Gemini under "models".
+    rows = (payload.get("data") or payload.get("models")
+            if isinstance(payload, dict) else None)
     if not isinstance(rows, list):
         return [], "unexpected models response"
     got = _shape_models(pid, rows)
