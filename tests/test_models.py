@@ -351,5 +351,108 @@ class ActiveProviderTest(unittest.TestCase):
             self.assertEqual(models.auth_mode("anthropic"), "key")
 
 
+class ApiOnlyProviderTest(unittest.TestCase):
+    """Google and xAI: no login flow, no CLI draft path — key connects."""
+
+    def setUp(self):
+        models._bin_cache.clear()
+
+    def tearDown(self):
+        models._bin_cache.clear()
+
+    def test_registered_with_key_urls_everywhere(self):
+        for pid, spec in models.PROVIDERS.items():
+            self.assertTrue(spec.get("key_url"), f"{pid} has no key_url")
+        self.assertIn("google", models.PROVIDERS)
+        self.assertIn("xai", models.PROVIDERS)
+
+    def test_key_alone_connects(self):
+        with mock.patch.object(models, "find_binary", return_value=""), \
+             mock.patch.object(models, "api_key", return_value="k"):
+            r = models.probe("google")
+        self.assertEqual(r["auth"], models.KEY)
+        self.assertTrue(r["connected"])
+        self.assertTrue(r["key_url"].startswith("https://"))
+
+    def test_keyless_action_says_paste_a_key_not_install(self):
+        with mock.patch.object(models, "find_binary", return_value=""), \
+             mock.patch.object(models, "api_key", return_value=""):
+            r = models.probe("xai")
+        self.assertIn("API key", r["action"])
+        self.assertNotIn("install", r["action"])
+
+    def test_a_present_cli_is_not_treated_as_signed_in(self):
+        # The grok/gemini CLIs exist on some machines, but neither exposes
+        # a cheap auth probe — presence must not read as connected.
+        with mock.patch.object(models, "find_binary", return_value="/x/grok"), \
+             mock.patch.object(models, "api_key", return_value=""):
+            r = models.probe("xai")
+        self.assertEqual(r["auth"], models.LOGGED_OUT)
+        self.assertFalse(r["connected"])
+        self.assertEqual(r["login_cmd"], "")
+
+    def test_models_fall_back_to_the_api_list(self):
+        with mock.patch.object(models, "find_binary", return_value=""), \
+             mock.patch.object(models, "api_key", return_value="k"):
+            r = models.probe("google")
+        self.assertTrue(r["models"])          # api list stands in for cli
+
+    def test_gemini_shape_unwraps_names_and_filters_embedders(self):
+        rows = [
+            {"name": "models/gemini-2.5-pro", "displayName": "Gemini 2.5 Pro",
+             "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/text-embedding-004", "displayName": "Embed",
+             "supportedGenerationMethods": ["embedContent"]},
+            {"name": "models/gemini-2.5-flash-image", "displayName": "Img",
+             "supportedGenerationMethods": ["generateContent"]},
+        ]
+        got = models._shape_models("google", rows)
+        self.assertEqual([m["id"] for m in got], ["gemini-2.5-pro"])
+        self.assertEqual(got[0]["label"], "Gemini 2.5 Pro")
+
+    def test_xai_shape_keeps_grok_ids(self):
+        rows = [{"id": "grok-4", "created": 2}, {"id": "grok-3-mini", "created": 1}]
+        got = models._shape_models("xai", rows)
+        self.assertEqual([m["id"] for m in got], ["grok-4", "grok-3-mini"])
+
+
+class ApiOnlyDraftRoutingTest(unittest.TestCase):
+    """suggest._run: an API-only provider always takes the API path, and a
+    missing key fails honestly instead of silently switching providers."""
+
+    def _cfg(self, pid):
+        from server import suggest
+        cfg = dict(suggest.DEFAULTS)
+        cfg.update(ai_provider=pid, ai_backend="cli")
+        return cfg
+
+    def test_google_routes_to_its_api_even_when_backend_says_cli(self):
+        from server import suggest
+        with mock.patch.object(models, "api_key", return_value="k"), \
+             mock.patch.object(suggest, "_call_google_api",
+                               return_value="hi") as call:
+            text, backend = suggest._run("p", self._cfg("google"))
+        self.assertEqual((text, backend), ("hi", "api"))
+        call.assert_called_once()
+
+    def test_xai_routes_to_its_api(self):
+        from server import suggest
+        with mock.patch.object(models, "api_key", return_value="k"), \
+             mock.patch.object(suggest, "_call_xai_api",
+                               return_value="yo") as call:
+            text, backend = suggest._run("p", self._cfg("xai"))
+        self.assertEqual((text, backend), ("yo", "api"))
+        call.assert_called_once()
+
+    def test_missing_key_raises_a_named_error(self):
+        from server import aihealth, suggest
+        with mock.patch.object(models, "api_key", return_value=""), \
+             mock.patch.object(aihealth, "note_failure") as note:
+            with self.assertRaises(RuntimeError) as ctx:
+                suggest._run("p", self._cfg("google"))
+        self.assertIn("API key", str(ctx.exception))
+        note.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -19,15 +19,20 @@ from . import settings
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 
 DEFAULTS = {
-    "ai_provider": "anthropic",   # "anthropic" | "openai" (see server/models.py)
+    "ai_provider": "anthropic",   # any server/models.py PROVIDERS id
     "ai_backend": "cli",          # "cli" (subscription login) | "api" (key)
     "cli_model": "sonnet",
     "api_model": "claude-sonnet-5",
     "api_key_env": "VIRA_ANTHROPIC_KEY",
     "openai_cli_model": "gpt-5.1-codex",
     "openai_api_model": "gpt-5.1",
+    "google_api_model": "gemini-2.5-pro",
+    "xai_api_model": "grok-4",
     "timeout": 120,
 }
+
+# Providers with no CLI draft path — their backend is always the API.
+API_ONLY = ("google", "xai")
 
 
 def config():
@@ -158,10 +163,49 @@ def _call_openai_api(prompt, model, timeout, key):
     return "".join(out) or payload.get("output_text", "")
 
 
+def _call_google_api(prompt, model, timeout, key):
+    body = json.dumps({
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{model}:generateContent",
+        data=body, method="POST",
+        headers={"content-type": "application/json", "x-goog-api-key": key})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.loads(r.read())
+    for cand in payload.get("candidates") or []:
+        parts = (cand.get("content") or {}).get("parts") or []
+        return "".join(p.get("text", "") for p in parts)
+    return ""
+
+
+def _call_xai_api(prompt, model, timeout, key):
+    """xAI is OpenAI-compatible chat completions, different host."""
+    body = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.x.ai/v1/chat/completions", data=body, method="POST",
+        headers={"content-type": "application/json",
+                 "authorization": "Bearer " + key})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        payload = json.loads(r.read())
+    choices = payload.get("choices") or []
+    if choices:
+        return (choices[0].get("message") or {}).get("content", "")
+    return ""
+
+
 def _provider_models(cfg, pid):
     """(cli_model, api_model) for the provider in play."""
     if pid == "openai":
         return cfg["openai_cli_model"], cfg["openai_api_model"]
+    if pid == "google":
+        return "", cfg["google_api_model"]
+    if pid == "xai":
+        return "", cfg["xai_api_model"]
     return cfg["cli_model"], cfg["api_model"]
 
 
@@ -183,15 +227,27 @@ def _run(prompt, cfg):
     # The key may come from the env (existing installs) or the Keychain
     # (pasted in Setup by someone with no shell profile to edit).
     key = provider.api_key(pid)
-    if backend == "api" and not key:
-        backend = "cli"
-    if backend == "cli":
-        backend = aihealth.preferred_backend("cli", key)
+    if pid in API_ONLY:
+        # No CLI to fall back to: the API is the only path, and a missing
+        # key fails honestly rather than silently switching providers.
+        backend = "api"
+    else:
+        if backend == "api" and not key:
+            backend = "cli"
+        if backend == "cli":
+            backend = aihealth.preferred_backend("cli", key)
     cli_model, api_model = _provider_models(cfg, pid)
     try:
         if backend == "api":
+            if not key:
+                raise RuntimeError(
+                    f"{pid} needs an API key — connect it in Config")
             if pid == "openai":
                 return _call_openai_api(prompt, api_model, cfg["timeout"], key), backend
+            if pid == "google":
+                return _call_google_api(prompt, api_model, cfg["timeout"], key), backend
+            if pid == "xai":
+                return _call_xai_api(prompt, api_model, cfg["timeout"], key), backend
             return _call_api(prompt, api_model, cfg["timeout"], key), backend
         if pid == "openai":
             return _call_codex_cli(prompt, cli_model, cfg["timeout"]), backend
