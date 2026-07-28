@@ -20,9 +20,36 @@ it. Adding xAI or a local runtime is a data edit, not new branching.
 Everything here is deterministic and free — the same contract as
 aihealth.probe(). No model call, no token spend, and nothing raises: a
 probe that crashes the caller is worse than one that says "unknown".
+
+MODEL SOURCES — the one rule (2026-07-28)
+-----------------------------------------
+**Vira offers a model name only if it can verify that name right now.**
+Exactly three sources can be verified, and every picker in the app is fed
+from them:
+
+  1. **An ALIAS the provider's own CLI resolves** (`opus`, `sonnet`,
+     `haiku`, `fable`). An alias names a TIER, never a generation, so it
+     is right the week Opus 5 ships and no one has to edit anything.
+  2. **The LIVE `/v1/models` list**, when a key is on file. The provider
+     is the authority on its own catalog.
+  3. **A value read out of the provider's OWN CONFIG on this machine**
+     (`cli_config` below — codex keeps its model in ~/.codex/config.toml).
+     Reading it is a probe like find_binary, not a pin.
+
+Anything else is a guess with a shelf life, and a guess renders exactly
+like a fact. That is how "Opus 4.8" and "GPT-5.6 Sol" stayed on screen
+long after both were stale: they lived in curated fallback lists that
+only an admin edit and a push could ever refresh. Those lists are gone.
+Where nothing is verifiable the picker says so and offers the custom-id
+hatch — an honest empty beats a confident wrong name.
+
+So: do NOT reintroduce a hardcoded model id here, in suggest.DEFAULTS, in
+config.example.json, or as an <option> in index.html. If a picker looks
+empty, the fix is a key or an alias, never a literal.
 """
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -55,22 +82,13 @@ PROVIDERS = {
         "key_url": "https://console.anthropic.com/settings/keys",
         "install_url": "https://claude.com/claude-code",
         "install_cmd": "npm install -g @anthropic-ai/claude-code",
-        # What each backend accepts. CLI entries are the aliases the binary
-        # resolves itself (session.MODEL_ALIASES widens the young ones);
-        # API entries are the fallback for when the live models call can't
-        # run. Both carry the label the UI shows, so a dropdown never has
-        # to guess a marketing name from an id.
+        # What each backend accepts. The CLI entries are ALIASES the binary
+        # resolves itself — generation-free by construction, so they cannot
+        # rot. The API list is deliberately EMPTY: see MODEL SOURCES below.
         "models": {
-            # Generation-FREE labels (2026-07-28): each alias resolves to
-            # the newest model of its tier at the CLI, so a pinned "Sonnet
-            # 5" label starts lying the week Sonnet 6 ships. The live list
-            # (catalog unions it in when a key exists) carries real names.
             "cli": [("sonnet", "Sonnet (latest)"), ("opus", "Opus (latest)"),
-                    ("haiku", "Haiku (latest)"), ("fable", "Fable")],
-            "api": [("claude-sonnet-5", "Sonnet 5"),
-                    ("claude-opus-4-8", "Opus 4.8"),
-                    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
-                    ("claude-fable-5", "Fable 5")],
+                    ("haiku", "Haiku (latest)"), ("fable", "Fable (latest)")],
+            "api": [],
         },
         "models_url": "https://api.anthropic.com/v1/models?limit=100",
         # The data/config.json keys each dropdown writes (suggest.DEFAULTS).
@@ -91,17 +109,14 @@ PROVIDERS = {
         "key_url": "https://platform.openai.com/api-keys",
         "install_url": "https://openai.com/codex",
         "install_cmd": "npm install -g @openai/codex",
-        "models": {
-            # Names verified against the live codex CLI 2026-07-28 — a
-            # ChatGPT-account codex REJECTS stale generation names outright
-            # ("gpt-5.1-codex is not supported"), so this list rots louder
-            # than Anthropic's alias list does. The live union + the empty
-            # default (= codex's own configured model) are the real guards.
-            "cli": [("gpt-5.6-sol", "GPT-5.6 Sol"),
-                    ("gpt-5.6-terra", "GPT-5.6 Terra")],
-            "api": [("gpt-5.6-sol", "GPT-5.6 Sol"),
-                    ("gpt-5.6-terra", "GPT-5.6 Terra")],
-        },
+        # codex has no model ALIASES — it takes real ids, which rot loudly
+        # (a ChatGPT-account codex hard-rejects a stale generation name:
+        # "gpt-5.1-codex is not supported"). So its CLI list is read from
+        # codex's own config instead of pinned here: whatever codex is set
+        # to run is what Vira offers, and it updates when codex does.
+        "models": {"cli": [], "api": []},
+        "cli_config": {"path": "~/.codex/config.toml", "key": "model",
+                       "label": "codex's own configured model"},
         "models_url": "https://api.openai.com/v1/models",
         "config_keys": {"cli": "openai_cli_model", "api": "openai_api_model"},
         # codex exec serves drafts AND, since 2026-07-28, live agent
@@ -124,11 +139,9 @@ PROVIDERS = {
         "api_env": "VIRA_GOOGLE_KEY",
         "key_url": "https://aistudio.google.com/apikey",
         "install_url": "",
-        "models": {
-            "cli": [],                 # no CLI draft path — API only
-            "api": [("gemini-2.5-pro", "Gemini 2.5 Pro"),
-                    ("gemini-2.5-flash", "Gemini 2.5 Flash")],
-        },
+        # No CLI draft path, and no curated API list: a key is required to
+        # use this provider at all, and a key means the live list works.
+        "models": {"cli": [], "api": []},
         "models_url": ("https://generativelanguage.googleapis.com"
                        "/v1beta/models?pageSize=200"),
         "config_keys": {"api": "google_api_model"},
@@ -144,11 +157,7 @@ PROVIDERS = {
         "api_env": "VIRA_XAI_KEY",
         "key_url": "https://console.x.ai",
         "install_url": "",
-        "models": {
-            "cli": [],
-            "api": [("grok-4", "Grok 4"),
-                    ("grok-3-mini", "Grok 3 Mini")],
-        },
+        "models": {"cli": [], "api": []},
         "models_url": "https://api.x.ai/v1/models",
         "config_keys": {"api": "xai_api_model"},
         "can": {"draft": True, "sessions": False},
@@ -182,6 +191,53 @@ def find_binary(pid):
     with _lock:
         _bin_cache[pid] = found
     return found
+
+
+# A top-level `key = "value"` in a TOML file — i.e. before the first
+# [section] header. Deliberately not a TOML parser: the one key we want is
+# always top-level, tomllib is 3.11+ while this ships on 3.10, and a
+# dependency for one line would have to be declared and installed
+# everywhere (preflight's `deps` check exists because of exactly that).
+_TOML_TOP = re.compile(r'^\s*([A-Za-z_][\w-]*)\s*=\s*["\']([^"\']*)["\']')
+
+
+def cli_default_model(pid):
+    """The model this provider's CLI is itself configured to run, or "".
+
+    Source 3 of the three verifiable ones (see MODEL SOURCES): rather than
+    pinning codex's model ids in PROVIDERS — where they rot silently and
+    only a push can fix them — read the id out of codex's own config. It
+    is the same class of probe as find_binary: look, don't assume."""
+    spec = (PROVIDERS.get(pid) or {}).get("cli_config")
+    if not spec:
+        return ""
+    try:
+        text = Path(spec["path"]).expanduser().read_text(encoding="utf-8",
+                                                         errors="replace")
+    except OSError:
+        return ""                       # no config yet, or unreadable
+    for line in text.splitlines():
+        if line.lstrip().startswith("["):
+            break                       # past the top-level table
+        m = _TOML_TOP.match(line)
+        if m and m.group(1) == spec["key"] and m.group(2).strip():
+            return m.group(2).strip()
+    return ""
+
+
+def cli_models(pid):
+    """The CLI list for a provider: its aliases, or — for a CLI that has
+    no aliases — whatever that CLI is configured to run today."""
+    spec = PROVIDERS.get(pid)
+    if not spec:
+        return []
+    listed = [{"id": i, "label": lb} for i, lb in spec["models"]["cli"]]
+    if listed:
+        return listed
+    found = cli_default_model(pid)
+    if found and spec.get("cli_config"):
+        return [{"id": found, "label": spec["cli_config"]["label"]}]
+    return []
 
 
 def login_command(pid, binary=None):
@@ -301,8 +357,7 @@ def probe(pid):
         "auth": auth,
         "detail": detail,
         "has_key": bool(key),
-        "models": [m for m, _ in
-                   (spec["models"]["cli"] or spec["models"]["api"])],
+        "models": [m["id"] for m in cli_models(pid)],
         "can": dict(spec["can"]),
         "sessions_quality": _sessions_quality(pid, spec["can"]["sessions"]),
         "login_cmd": login_cmd,
@@ -465,7 +520,8 @@ def _fetch_models(pid, key):
 def _live_models(pid, refresh=False):
     key = api_key(pid)
     if not key:
-        return [], "no API key on file"
+        return [], ("no API key on file — connect one and this list comes "
+                    "from the provider itself")
     now = time.monotonic()
     with _lock:
         hit = _models_cache.get(pid)
@@ -484,26 +540,55 @@ def catalog(pid, refresh=False):
     CLI has a "list models" subcommand to ask, and an alias is the
     spelling that keeps working across releases. When a key is on file the
     LIVE model list is unioned in after the aliases: the CLIs accept full
-    model ids too, so a brand-new model is pickable the day it ships
-    instead of waiting for a curated-list edit. The API list IS the live
-    answer, falling back to the curated one."""
+    model ids too, so a brand-new model is pickable the day it ships.
+
+    The API list IS the live answer, and there is no fallback. A curated
+    fallback is what put stale names on screen for months (MODEL SOURCES),
+    so an unverifiable API list comes back EMPTY with a detail line saying
+    what would fill it. The custom-id hatch in the UI covers the gap."""
     spec = PROVIDERS.get(pid)
     if not spec:
         return {"cli": [], "api": [], "api_live": False,
                 "api_detail": "", "cli_detail": ""}
     live, detail = _live_models(pid, refresh)
-    curated = [{"id": i, "label": lb} for i, lb in spec["models"]["api"]]
-    cli = [{"id": i, "label": lb} for i, lb in spec["models"]["cli"]]
-    cli_detail = "aliases the CLI resolves to its newest models"
+    cli = cli_models(pid)
+    if spec["models"]["cli"]:
+        cli_detail = "aliases the CLI resolves to its newest models"
+    elif cli:
+        cli_detail = f"read from {spec['cli_config']['path']}"
+    else:
+        cli_detail = ""
     if cli and live:
         known = {m["id"] for m in cli}
         cli = cli + [m for m in live if m["id"] not in known]
         cli_detail += f" + {len(live)} live ids from your API key"
     return {"cli": cli,
-            "api": live or curated,
+            "api": live,
             "api_live": bool(live),
             "api_detail": detail,
-            "cli_detail": cli_detail if cli else ""}
+            "cli_detail": cli_detail}
+
+
+def default_api_model(pid, tier=""):
+    """Which model an API call runs on when the owner has picked none.
+
+    Vira ships NO default api_model — a shipped id is the thing that goes
+    stale (MODEL SOURCES). So the default is derived at call time from the
+    key's own live list: the newest model of the requested tier, else the
+    newest model there is. Returns "" when nothing is verifiable, and the
+    caller raises a named error rather than guessing a spelling."""
+    live, _ = _live_models(pid)
+    if not live:
+        return ""
+    tier = (tier or "").strip().lower()
+    if tier:
+        # The live list is newest-first, so the first tier match is the
+        # newest of that tier — "sonnet" tracks Sonnet across generations
+        # exactly the way the CLI alias does.
+        for m in live:
+            if tier in m["id"].lower():
+                return m["id"]
+    return live[0]["id"]
 
 
 def options(refresh=False):

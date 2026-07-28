@@ -21,16 +21,20 @@ CONFIG_PATH = Path(__file__).resolve().parent.parent / "data" / "config.json"
 DEFAULTS = {
     "ai_provider": "anthropic",   # any server/models.py PROVIDERS id
     "ai_backend": "cli",          # "cli" (subscription login) | "api" (key)
+    # cli_model is an ALIAS, so it names a tier and never a generation.
     "cli_model": "sonnet",
-    "api_model": "claude-sonnet-5",
+    # Every api_model default is EMPTY on purpose (models.py MODEL SOURCES):
+    # a shipped model id is the thing that goes stale, and it goes stale in
+    # the one place only an admin edit and a push could fix. Empty resolves
+    # at call time from the key's own live list — the newest model of the
+    # tier cli_model names. An empty CLI model means the same for codex: run
+    # whatever ~/.codex/config.toml is set to.
+    "api_model": "",
     "api_key_env": "VIRA_ANTHROPIC_KEY",
-    # Empty = codex's own configured default model (~/.codex/config.toml).
-    # A pinned name here breaks the day OpenAI retires the generation — a
-    # ChatGPT-account codex hard-rejects stale names (verified 2026-07-28).
     "openai_cli_model": "",
-    "openai_api_model": "gpt-5.6-sol",
-    "google_api_model": "gemini-2.5-pro",
-    "xai_api_model": "grok-4",
+    "openai_api_model": "",
+    "google_api_model": "",
+    "xai_api_model": "",
     # The curated model roster (the Cursor pattern, owner's ask 2026-07-28):
     # the model ids enabled for pickers across every provider. EMPTY means
     # "everything the catalog offers" — so a fresh install shows all, and a
@@ -253,6 +257,14 @@ def _run(prompt, cfg):
             if not key:
                 raise RuntimeError(
                     f"{pid} needs an API key — connect it in Config")
+            if not api_model:
+                # Nothing picked: derive it from the key's own live list
+                # rather than falling back to a spelling shipped months ago.
+                api_model = provider.default_api_model(pid, tier=cli_model)
+                if not api_model:
+                    raise RuntimeError(
+                        f"no API model set for {pid}, and its model list "
+                        f"could not be read — pick one in Config > Models")
             if pid == "openai":
                 return _call_openai_api(prompt, api_model, cfg["timeout"], key), backend
             if pid == "google":
