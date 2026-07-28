@@ -16,10 +16,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from server import reading, readinglist
+from server import plans, reading, readinglist, settings
 
 
 class Base(unittest.TestCase):
+    """Every source the sweep READS is rooted at one tmp fixture directory.
+
+    Patching the store is not isolation. backfill() reads four producers, and
+    any one of them left pointing at the checkout sweeps the owner's real
+    documents into the assertions — which is what happened: `1 != 25` in a
+    checkout with 24 real documents, green in a fresh worktree and in CI,
+    because those have nothing on disk to leak. Rooting the sources beats
+    mocking them out: the real code path still runs, it just runs over a
+    directory this test made."""
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -27,14 +37,34 @@ class Base(unittest.TestCase):
         self.store = root / "reading-list.json"
         self.readdir = root / "reading"
         self.static = root / "static"
+        self.docs = self.static / "docs"
+        self.vault = root / "vault"
         (self.static / "explainer").mkdir(parents=True)
+        self.docs.mkdir(parents=True)
+        self.vault.mkdir()
         for p in (mock.patch.object(readinglist, "STORE", self.store),
                   mock.patch.object(readinglist, "ROOT", root),
                   mock.patch.object(readinglist, "EXPLAINER_DIR",
                                     self.static / "explainer"),
-                  mock.patch.object(reading, "STORE_DIR", self.readdir)):
+                  mock.patch.object(readinglist, "DOCS_DIR", self.docs),
+                  mock.patch.object(plans, "REG_PATH", root / "plans.json"),
+                  mock.patch.object(reading, "STORE_DIR", self.readdir),
+                  # the only setting these paths read is vault_root; anything
+                  # else answers empty, which every reader treats as dormant
+                  mock.patch.object(settings, "get", side_effect=self._setting)):
             p.start()
             self.addCleanup(p.stop)
+
+    def _setting(self, key):
+        return str(self.vault) if key == "vault_root" else ""
+
+    def session_note(self, *names):
+        """Vault retros, where _vault_documents() looks for them."""
+        d = self.vault / "Sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        for n in names:
+            (d / f"{n}.md").write_text("## a\n## b\n", encoding="utf-8")
+        return d
 
     def dossier(self, name, title, sections=()):
         d = self.static / "explainer" / name
@@ -172,15 +202,12 @@ class SectionTests(Base):
         self.assertTrue(readinglist.queue()[0]["missing"])
 
     def test_markdown_headings_become_sections(self):
-        vault = Path(self.tmp.name) / "vault"
-        (vault / "Sessions").mkdir(parents=True)
-        (vault / "Sessions" / "r.md").write_text(
+        (self.vault / "Sessions").mkdir(parents=True)
+        (self.vault / "Sessions" / "r.md").write_text(
             "# Title\n\n## Shipped\ntext\n\n## Drift\ntext\n", encoding="utf-8")
-        with mock.patch.object(readinglist.settings, "get",
-                               side_effect=lambda k: str(vault) if k == "vault_root" else ""):
-            it = readinglist.register("r", "retro", "Sessions/r.md", "vault")
-            self.assertEqual([s["id"] for s in readinglist.sections(it)],
-                             ["shipped", "drift"])
+        it = readinglist.register("r", "retro", "Sessions/r.md", "vault")
+        self.assertEqual([s["id"] for s in readinglist.sections(it)],
+                         ["shipped", "drift"])
 
     def test_progress_counts_marks_against_the_sections(self):
         loc = self.dossier("audit", "Audit",
@@ -194,32 +221,31 @@ class SectionTests(Base):
 
 class VaultContainmentTests(Base):
     def test_a_locator_escaping_the_vault_resolves_to_nothing(self):
-        vault = Path(self.tmp.name) / "vault"
-        (vault / "Sessions").mkdir(parents=True)
-        secret = Path(self.tmp.name) / "secret.md"
+        (self.vault / "Sessions").mkdir(parents=True)
+        secret = Path(self.tmp.name) / "secret.md"     # a sibling of the vault
         secret.write_text("## a\n## b\n", encoding="utf-8")
-        with mock.patch.object(readinglist.settings, "get",
-                               side_effect=lambda k: str(vault) if k == "vault_root" else ""):
-            it = readinglist.register("esc", "retro", "../secret.md", "vault")
-            self.assertIsNone(readinglist.source_path(it))
-            self.assertEqual(readinglist.sections(it), [])
-            self.assertTrue(readinglist.queue()[0]["missing"])
+        it = readinglist.register("esc", "retro", "../secret.md", "vault")
+        self.assertIsNone(readinglist.source_path(it))
+        self.assertEqual(readinglist.sections(it), [])
+        self.assertTrue(readinglist.queue()[0]["missing"])
 
     def test_no_vault_configured_is_dormant_not_broken(self):
-        with mock.patch.object(readinglist.settings, "get", return_value=""):
+        with mock.patch.object(settings, "get", return_value=""):
             it = readinglist.register("r", "retro", "Sessions/r.md", "vault")
             self.assertIsNone(readinglist.source_path(it))
             self.assertEqual(readinglist._vault_documents(), [])
 
 
 class BackfillTests(Base):
-    def setUp(self):
-        super().setUp()
-        for p in (mock.patch.object(readinglist, "_rooms", return_value=[]),
-                  mock.patch.object(readinglist, "_plans", return_value=[]),
-                  mock.patch.object(readinglist, "_vault_documents", return_value=[])):
-            p.start()
-            self.addCleanup(p.stop)
+    def test_an_empty_fixture_root_sweeps_nothing(self):
+        """The leak detector, and the reason the other sources are rooted
+        rather than mocked out. A sweep over an empty fixture must find nothing
+        — in a fresh worktree, in CI, and in the live checkout whose real
+        static/docs/ holds dozens of documents. A source that reads the
+        checkout instead of the fixture fails here first, and fails loudly."""
+        self.assertEqual(readinglist.backfill(),
+                         {"added": 0, "queued_new": 0,
+                          "queued": 0, "completed": 0, "total": 0})
 
     def test_backfill_finds_dossiers_and_reads_their_titles(self):
         self.dossier("audit", "Where we stand - end-of-week audit")
@@ -258,14 +284,6 @@ class BackfillTests(Base):
 class FreshnessTests(Base):
     """A first sweep over months of history must not hand back a 186-item
     "focused attention" list. Anything older than the window is filed as read."""
-
-    def setUp(self):
-        super().setUp()
-        for p in (mock.patch.object(readinglist, "_rooms", return_value=[]),
-                  mock.patch.object(readinglist, "_plans", return_value=[]),
-                  mock.patch.object(readinglist, "_vault_documents", return_value=[])):
-            p.start()
-            self.addCleanup(p.stop)
 
     def _aged(self, name, days):
         loc = self.dossier(name, name.title())
@@ -314,16 +332,6 @@ class PerSessionRetroTests(Base):
     """The provenance system writes a retro PER SESSION, so one busy night can
     produce fifty. Those are the raw material; the aggregates are the read."""
 
-    def _vault(self, *names):
-        vault = Path(self.tmp.name) / "vault"
-        (vault / "Sessions").mkdir(parents=True, exist_ok=True)
-        for n in names:
-            (vault / "Sessions" / f"{n}.md").write_text(
-                "## a\n## b\n", encoding="utf-8")
-        return mock.patch.object(
-            readinglist.settings, "get",
-            side_effect=lambda k: str(vault) if k == "vault_root" else "")
-
     def test_a_timestamped_retro_is_raw_material(self):
         for name in ("2026-07-25 0205 vira", "2026-07-25 0205 vira (3)",
                      "2026-07-16 1124 vira — journal-pid-verification"):
@@ -337,10 +345,8 @@ class PerSessionRetroTests(Base):
     def test_a_busy_night_does_not_flood_the_queue(self):
         names = [f"2026-07-25 020{n} vira" for n in range(5)]
         names += ["2026-07-25 day vira", "2026-07-25 cross-project"]
-        with self._vault(*names), \
-             mock.patch.object(readinglist, "_rooms", return_value=[]), \
-             mock.patch.object(readinglist, "_plans", return_value=[]), \
-             mock.patch.object(readinglist, "_is_stale", return_value=False):
+        self.session_note(*names)
+        with mock.patch.object(readinglist, "_is_stale", return_value=False):
             out = readinglist.backfill()
         self.assertEqual(out["added"], 7)
         self.assertEqual(out["queued_new"], 2)      # only the two aggregates
@@ -348,10 +354,8 @@ class PerSessionRetroTests(Base):
                          ["2026-07-25 cross-project", "2026-07-25 day vira"])
 
     def test_a_per_session_retro_stays_findable_and_restorable(self):
-        with self._vault("2026-07-25 0205 vira"), \
-             mock.patch.object(readinglist, "_rooms", return_value=[]), \
-             mock.patch.object(readinglist, "_plans", return_value=[]), \
-             mock.patch.object(readinglist, "_is_stale", return_value=False):
+        self.session_note("2026-07-25 0205 vira")
+        with mock.patch.object(readinglist, "_is_stale", return_value=False):
             readinglist.backfill()
         done = readinglist.completed()
         self.assertEqual(len(done), 1)
@@ -374,9 +378,7 @@ class RoomShelfTests(Base):
         self.assertEqual((c["queued"], c["completed"], c["total"]), (0, 1, 1))
 
     def test_backfill_no_longer_sweeps_rooms_in(self):
-        with mock.patch.object(readinglist, "_plans", return_value=[]), \
-             mock.patch.object(readinglist, "_vault_documents", return_value=[]), \
-             mock.patch.object(readinglist, "_rooms",
+        with mock.patch.object(readinglist, "_rooms",
                                side_effect=AssertionError("retired from backfill")):
             out = readinglist.backfill()
         self.assertEqual(out["added"], 0)

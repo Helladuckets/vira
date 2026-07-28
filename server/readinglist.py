@@ -39,7 +39,12 @@ from .filelock import locked
 
 ROOT = Path(__file__).resolve().parent.parent
 STORE = ROOT / "data" / "reading-list.json"
+
+# Every directory the sweep READS, named here rather than reached for inline —
+# a source that resolves its own path is a source a test cannot point
+# somewhere else. See _sources().
 EXPLAINER_DIR = ROOT / "static" / "explainer"
+DOCS_DIR = ROOT / "static" / "docs"
 
 # What a locator means, and therefore who resolves it.
 #   url   -> a path this server already serves (the dossiers under static/)
@@ -413,12 +418,30 @@ def _sitedocs():
     """Documents migrated off thedurham.nyc plus every plan the repointed
     plan-mode hook has rendered since — static/docs/, served at /docs/.
     sitedocs owns the registry/manifest read; lazy import breaks the cycle
-    (sitedocs imports this module for producer registration)."""
+    (sitedocs imports this module for producer registration).
+
+    DOCS_DIR is passed EXPLICITLY. registry_rows() falls back to sitedocs's own
+    module-level path when it is not, and that fallback is invisible from here
+    — which is exactly how this sweep spent a fortnight reading the owner's
+    real documents out from under every test that thought it had isolated it."""
     try:
         from . import sitedocs
-        return sitedocs.registry_rows()
+        return sitedocs.registry_rows(DOCS_DIR)
     except Exception:
         return []
+
+
+def _sources():
+    """Every producer the sweep reads, declared in one place.
+
+    A source listed here must take its root from THIS module (DOCS_DIR,
+    EXPLAINER_DIR) or from settings — never from a path its own module resolved
+    at import time. Otherwise a test that patches everything it knows about
+    still sweeps the live checkout, and the failure looks like a bad assertion
+    rather than a missing seam. tests/test_readinglist.py roots all of these at
+    one fixture directory and keeps a guard test that an empty root finds
+    nothing; a new source that skips the seam fails that test on sight."""
+    return _explainer_dossiers() + _plans() + _vault_documents() + _sitedocs()
 
 
 def _is_stale(created, days=FRESH_DAYS):
@@ -441,8 +464,7 @@ def backfill(source="backfill", days=FRESH_DAYS):
     seeing for the first time, so it can never re-file something the owner
     deliberately put back."""
     added = queued = 0
-    for row in (_explainer_dossiers() + _plans() + _vault_documents()
-                + _sitedocs()):
+    for row in _sources():
         before = find_by_locator(row["locator"], row["locator_kind"])
         try:
             it = register(row["title"], row["kind"], row["locator"],
