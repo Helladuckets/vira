@@ -292,7 +292,7 @@ def render_post(entry: dict, md: str) -> str:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — Vira's notebook</title>
+<title>{title} - Vira's notebook</title>
 <style>{_POST_STYLE}</style>
 </head>
 <body>
