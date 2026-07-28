@@ -4620,7 +4620,7 @@ function modelCatalog(refresh) {
 // Every model a live session can run on THIS install: each session-capable
 // provider's list (Anthropic's aliases always offered — the gated default —
 // plus any connected best-effort provider). Labels carry the provider name
-// whenever more than one is on offer, so "gpt-5.1-codex" reads as OpenAI's.
+// whenever more than one is on offer, so a codex model reads as OpenAI's.
 function sessionModels(cat) {
   const provs = (cat.providers || []).filter((p) =>
     p.sessions && (p.connected || p.id === "anthropic"));

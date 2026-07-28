@@ -9,7 +9,7 @@ into a downstream prompt — the out->in handoff, verbatim from the
 breadboard export semantics.
 
 This is how "Fable writes the plan, Sonnet executes it" happens: stage
-`plan` runs read-only on claude-fable-5, stage `build` (needs: plan) runs
+`plan` runs read-only on `fable`, stage `build` (needs: plan) runs
 autopilot on sonnet with the plan wired into its prompt, and stage
 `judge` (mode: judge) spawns a FRESH session that grades the build — with
 an optional GRADE GATE: verdict below min_grade relaunches the target
