@@ -33,8 +33,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASELINE="$ROOT/scripts/preflight-baseline.txt"
 cd "$ROOT" || exit 2
 
-CHECKS=(base deps encoding pii)
-PRE_MERGE=(base deps encoding pii)
+CHECKS=(base deps encoding pii ci)
+PRE_MERGE=(base deps encoding pii ci)
 
 SLUG="${PREFLIGHT_SLUG:-}"
 fails=0
@@ -150,6 +150,69 @@ check_pii() {
     say "        Full strength needs data/pii-patterns.txt (gitignored by design)."
   else
     ok pii "clean [$mode]"
+  fi
+}
+
+# ------------------------------------------------------------------ ci ----
+desc_ci="the branch's own CI run is not red (the Windows job is the only Windows machine)"
+incident_ci="2026-07-28: two branches merged hours apart, each shipping a POSIX
+      assumption that only Windows could catch — an executable #! test helper
+      (WinError 193) and a strict '>' against a clock whose resolution is 15.6ms
+      there. Both suites were green on the Mac, both CI runs were red, and the
+      merge gate never looked: it checked base/deps/encoding/pii and nothing
+      else. Red CI blocked nothing, so red CI changed nothing."
+fix_ci="gh run view --log-failed <run-id>, fix on the branch, push, re-run this"
+check_ci() {
+  # Deliberately NOT a blocker in three cases, because a check that cries
+  # wolf gets ignored and then the real signal is ignored with it: CI cannot
+  # grade itself, an unpushed commit is a legitimate local state, and a run
+  # still in flight has no verdict yet. Only a real FAILING conclusion stops
+  # a merge.
+  local sha target to json st cc rid
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    ok ci "running inside CI — skipped (a run cannot grade itself)"; return 0
+  fi
+  command -v gh >/dev/null 2>&1 || {
+    warn ci "gh is not installed — CI status unknown"; return 0; }
+
+  if [[ -n "$SLUG" ]] && git show-ref --verify --quiet "refs/heads/claude/$SLUG"; then
+    target="claude/$SLUG"
+  else
+    target="HEAD"
+  fi
+  sha="$(git rev-parse "$target" 2>/dev/null)" || {
+    warn ci "cannot resolve $target — CI status unknown"; return 0; }
+
+  # A network call is the one thing here that can hang, and a wedged merge
+  # gate is worse than an unchecked one. macOS has no timeout(1) by default.
+  to=""
+  if   command -v timeout  >/dev/null 2>&1; then to="timeout 20"
+  elif command -v gtimeout >/dev/null 2>&1; then to="gtimeout 20"; fi
+
+  json=$($to gh run list --commit "$sha" --limit 1 \
+           --json status,conclusion,databaseId 2>/dev/null)
+  if [[ -z "$json" || "$json" == "[]" ]]; then
+    warn ci "CI has not run on ${sha:0:9} (${target#refs/heads/}) — push it to get a verdict"
+    return 0
+  fi
+  st=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0].get("status") or "")' 2>/dev/null)
+  cc=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0].get("conclusion") or "")' 2>/dev/null)
+  rid=$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0].get("databaseId") or "")' 2>/dev/null)
+
+  if [[ "$st" != "completed" ]]; then
+    warn ci "CI is still ${st:-pending} on ${sha:0:9} — no verdict yet, merging on your judgement"
+    say  "        watch: gh run watch $rid"
+  elif [[ "$cc" == "success" ]]; then
+    ok ci "CI green on ${sha:0:9} (run $rid)"
+  elif [[ "$cc" == "skipped" || "$cc" == "neutral" ]]; then
+    ok ci "CI $cc on ${sha:0:9} — nothing to grade"
+  else
+    bad ci "CI is $cc on ${sha:0:9} (run $rid)"
+    $to gh run view "$rid" --json jobs \
+      --jq '.jobs[] | select(.conclusion != "success") | "        \(.conclusion)\t\(.name)"' \
+      2>/dev/null | head -6
+    say "        fix: gh run view --log-failed $rid"
+    say "        the Windows job is the ONLY Windows machine — a green Mac suite is not evidence."
   fi
 }
 
