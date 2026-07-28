@@ -1863,6 +1863,20 @@ def api_jobs():
     return {"jobs": _ensure_names(jobs.recent())}
 
 
+@app.get("/api/sessions/pending")
+def api_sessions_pending():
+    """Every decision a live session is blocked on, oldest first — the feed
+    behind the app-wide decision cards. Titles come from the same ledger
+    naming as every other job surface, so the card names the session the
+    way the Live tab and the terminal bar do."""
+    rows = jobs.pending_all()
+    named = _ensure_names([{"id": r["job_id"]} for r in rows])
+    for row, name in zip(rows, named):
+        row["title"] = name["title"]
+        row["command"] = name["command"]
+    return {"pending": rows}
+
+
 @app.get("/api/jobs/history")
 def api_jobs_history(limit: int = 100):
     """The durable ledger (data/jobs-log.json), newest-first — every job

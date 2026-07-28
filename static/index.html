@@ -49,6 +49,8 @@
   <button class="brand" id="brand-btn" title="Launchpad"><svg class="brand-solar" viewBox="0 0 14 14" aria-hidden="true"><circle cx="7" cy="7" r="5.5" fill="none" stroke="currentColor" stroke-width="1"/><circle cx="7" cy="7" r="1.2" fill="currentColor"/></svg>VIRA</button>
   <span class="inst-badge" id="inst-badge" hidden>TEST</span>
   <div class="topbar-sub" id="status-line">connecting…</div>
+  <button class="icon-btn alerts-btn" id="alerts-btn"
+          title="Decisions waiting on you — click to bring them back" hidden></button>
   <button class="icon-btn" id="layout-btn" title="Layout templates" hidden>layout</button>
   <button class="icon-btn" id="settings-btn" title="Settings">config</button>
 </header>
@@ -698,6 +700,13 @@
 <!-- Settings sheet retired 2026-07-21: config now lives in the Config window
      (the gear button opens it). Backend, mail, WhatsApp, notifications and
      updates are cards in that one surface. -->
+
+<!-- The decision layer: approval and question cards from any live session,
+     floating over whatever module is open. A body-level fixed layer on
+     purpose — it belongs to the app, not to a view, and it must not ride
+     the nav drawer's page slide. Not a modal: minimize parks a card in the
+     waiting list (the drawer on a phone, the topbar count at the desk). -->
+<div id="alerts" class="alert-layer" hidden></div>
 
 <!-- First-run welcome (2026-07-28): connect your go-to AI. Shown once per
      install (flag rides /api/ui-state); re-run from Config > System. -->
