@@ -445,7 +445,7 @@ def write_index(docs_dir: Path | None = None) -> None:
 
     parts = ["<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>",
              "<meta name='viewport' content='width=device-width, initial-scale=1'>",
-             "<title>Documents — Vira</title>",
+             "<title>Documents - Vira</title>",
              f"<style>{_INDEX_STYLE}</style></head><body><main>",
              "<h1>Documents</h1>",
              f"<p class='sub'>{len(rows)} documents migrated into Vira from "
