@@ -2887,6 +2887,22 @@ function ideaTagList(it) {
     ((it.tags || {})[ax] || []).map((t) => [ax, t]));
 }
 
+// Has this idea already been planned, with a LINK to show for it?
+//
+// A finished Plan run stamps the note with a reopenable `[plan <id>: <title>]`
+// token (server/session._plan_ref), or — on an install carrying the lab hook
+// but no saved plan — a published URL. Both are exactly what appendLinkified
+// turns into the clickable in the meta line, so this asks the same question
+// the reader sees answered: is the plan one click away from here?
+//
+// Deliberately NOT true for "plan produced … see terminal" (the finalize
+// failed, there is no artifact) — that idea still wants a Plan button.
+const IDEA_PLAN_LINK = /\[plan pl_[a-z0-9]+:|plan published .*https?:\/\//;
+
+function ideaHasPlan(it) {
+  return IDEA_PLAN_LINK.test(it.note || "");
+}
+
 // Active tag filters are ANDed: picking "reader" then "mobile-layout"
 // means the ideas that are BOTH, which is how a filter earns its keep.
 function ideaMatchesTags(it) {
@@ -3133,16 +3149,23 @@ function ideaRow(it) {
   // Run this idea as a headless Vira job (only worth offering on live items)
   if (it.status === "open" || it.status === "on-hold") {
     const run = el("div", "idea-run");
-    const plan = el("button", "idea-run-btn plan", "Plan");
-    plan.title = "Draft a full implementation plan and publish it to the lab";
-    plan.addEventListener("click", () => openIdeaRun(it, "plan"));
+    // An idea whose note already carries a link to its plan does NOT get a
+    // Plan button: the plan is right there in the meta line, one click away,
+    // and offering to make another one is the app failing to notice its own
+    // output (owner's call, 2026-07-28). Re-planning stays reachable through
+    // the right-click menu, which relabels itself to "Plan again with Vira".
+    if (!ideaHasPlan(it)) {
+      const plan = el("button", "idea-run-btn plan", "Plan");
+      plan.title = "Draft a full implementation plan and publish it to the lab";
+      plan.addEventListener("click", () => openIdeaRun(it, "plan"));
+      run.appendChild(plan);
+    }
     const impl = el("button", "idea-run-btn implement", "Implement");
     impl.title = "Let Vira actually implement this in the target repo";
     impl.addEventListener("click", () => openIdeaRun(it, "implement"));
-    const copy = el("button", "idea-run-btn copy", "Copy");
+    const copy = el("button", "idea-run-btn copy", "Export prompt");
     copy.title = "Copy this idea as a prompt for another Claude Code session";
     copy.addEventListener("click", () => copyIdeaPrompt(it));
-    run.appendChild(plan);
     run.appendChild(impl);
     run.appendChild(copy);
     box.appendChild(run);
@@ -10630,7 +10653,11 @@ document.addEventListener("contextmenu", (e) => {
   if (idea) {
     items.push({ label: "Edit idea", run: () => editIdea(ideaBox, idea) });
     if (idea.status === "open" || idea.status === "on-hold") {
-      items.push({ label: "Plan with Vira", run: () => openIdeaRun(idea, "plan") });
+      // The card drops its Plan button once a plan exists; this is where
+      // re-planning stays reachable, saying plainly that it makes another.
+      items.push({ label: ideaHasPlan(idea) ? "Plan again with Vira"
+                                            : "Plan with Vira",
+                   run: () => openIdeaRun(idea, "plan") });
       items.push({ label: "Implement with Vira",
                    run: () => openIdeaRun(idea, "implement") });
       items.push({ label: "Mark done", run: async () => {
