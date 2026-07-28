@@ -38,6 +38,10 @@ class Base(unittest.TestCase):
         self.vault_plans = root / "vault" / "plans"
         self.store = root / "reading-list.json"
         for p in (mock.patch.object(sitedocs, "DOCS_DIR", self.docs),
+                  # readinglist holds its OWN pointer at the docs dir and hands
+                  # it to registry_rows() explicitly, so the sweep cannot fall
+                  # back to the checkout. The two move together or not at all.
+                  mock.patch.object(readinglist, "DOCS_DIR", self.docs),
                   mock.patch.object(readinglist, "STORE", self.store)):
             p.start()
             self.addCleanup(p.stop)
