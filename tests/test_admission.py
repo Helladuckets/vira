@@ -22,6 +22,7 @@ import asyncio
 import threading
 import time
 import unittest
+from unittest import mock
 
 from server import admission, loopwatch
 
@@ -122,6 +123,32 @@ class GateTests(unittest.TestCase):
         self.assertEqual(st["admitted"], 1)
         self.assertIn("peak_wait_s", st)
         self.assertEqual(st["slowest_path"], "a")
+
+    def test_a_coarse_clock_still_names_the_path(self):
+        """Windows CI caught this and macOS could not: time.monotonic() has
+        ~15.6ms granularity on Windows before Python 3.13, so a fast path
+        measures a hold of exactly 0.0 and a strict `>` left slowest_path
+        empty while admitted counted up — a diagnostic contradicting itself.
+        Pinned with a frozen clock so the platform stops being what decides
+        whether this is tested."""
+        gate = admission.CpuGate(slots=1, max_wait=5)
+        with mock.patch.object(admission.time, "monotonic", return_value=1.0):
+            with gate.slot("frozen"):
+                pass
+        st = gate.stats()
+        self.assertEqual(st["peak_hold_s"], 0.0)
+        self.assertEqual(st["slowest_path"], "frozen")
+
+    def test_the_slower_path_still_wins(self):
+        """The counterpart: naming the first holder must not pin it there."""
+        gate = admission.CpuGate(slots=1, max_wait=5)
+        with gate.slot("quick"):
+            pass
+        with gate.slot("slow"):
+            time.sleep(0.05)
+        with gate.slot("quick2"):
+            pass
+        self.assertEqual(gate.stats()["slowest_path"], "slow")
 
 
 class LoopWatchTests(unittest.TestCase):
