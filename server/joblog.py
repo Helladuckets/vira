@@ -37,6 +37,7 @@ Record shape:
   { "id": job id, "session_id": claude session id ("" until init arrives),
     "transcript": absolute path to the CLI's session jsonl ("" until known),
     "prompt": full initial prompt, "cwd": str, "model": str|None,
+    "provider": which engine answered (anthropic|openai|…),
     "permission_mode": str|None, "publish_plan": bool, "idea_id": str|None,
     "mode": str|None, "status": running|done|error|orphaned,
     "command": human first-command line, "title": short editable name,
@@ -222,6 +223,12 @@ def record_launch(job):
         "id": job["id"], "session_id": "", "transcript": "",
         "prompt": job["prompt"], "cwd": job["cwd"],
         "model": job.get("model"),
+        # Which engine actually answered. Recorded at launch because the
+        # live registry is the ONLY other place that knows it — once a job
+        # ages out, a row without this reads as the gated Anthropic default
+        # and the terminal banner calls a best-effort OpenAI session
+        # "interactive (gated)", the exact opposite of what happened.
+        "provider": job.get("provider") or "anthropic",
         "permission_mode": job.get("permission_mode"),
         "publish_plan": bool(job.get("publish_plan")),
         "idea_id": job.get("idea_id"),
