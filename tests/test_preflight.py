@@ -18,6 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PREFLIGHT = ROOT / "scripts" / "preflight.sh"
 DEPS = ROOT / "scripts" / "preflight_deps.py"
+BASH = shutil.which("bash") or "/bin/bash"
 
 posix_only = unittest.skipUnless(os.name == "posix", "bash script")
 
@@ -217,6 +218,112 @@ class BaseCheck(unittest.TestCase):
         r = self._preflight("legacy")
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("base is almost certainly dead", r.stdout)
+
+
+@posix_only
+class CiCheck(unittest.TestCase):
+    """2026-07-28: red CI blocked nothing, so red CI changed nothing — two
+    branches merged with a failing Windows job hours apart. This check is the
+    close. Its hard part is not detecting failure, it is NOT crying wolf: a
+    run in flight, an unpushed commit, and CI grading itself are all normal
+    states that must never block a merge, or the gate gets routed around and
+    the real red goes with it. gh is stubbed so these are offline and exact."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "repo"
+        (self.root / "scripts").mkdir(parents=True)
+        shutil.copy(PREFLIGHT, self.root / "scripts" / "preflight.sh")
+        self.bin = Path(self.tmp.name) / "bin"
+        self.bin.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=str(self.root))
+        for k, v in (("user.email", "t@example.com"), ("user.name", "T")):
+            subprocess.run(["git", "config", k, v], cwd=str(self.root))
+        (self.root / "a.txt").write_text("one\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=str(self.root))
+        subprocess.run(["git", "commit", "-qm", "base"], cwd=str(self.root))
+
+    def _stub_gh(self, payload):
+        """A fake gh that answers `run list` with `payload` and `run view`
+        with one failing job line."""
+        (self.bin / "runs.json").write_text(payload, encoding="utf-8")
+        gh = self.bin / "gh"
+        gh.write_text(
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            f'  *"run list"*) cat {self.bin / "runs.json"} ;;\n'
+            '  *"run view"*) printf "        failure\\ttest-windows\\n" ;;\n'
+            "esac\n", encoding="utf-8")
+        gh.chmod(0o755)
+
+    def _run(self, path=None):
+        env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+        env["PATH"] = (f"{self.bin}:{os.environ['PATH']}" if path is None
+                       else path)
+        # bash by absolute path: one case deliberately empties PATH, and
+        # resolving the interpreter through it would fail the test for the
+        # wrong reason.
+        return subprocess.run(
+            [BASH, str(self.root / "scripts" / "preflight.sh"), "ci"],
+            cwd=str(self.root), capture_output=True, text=True, env=env)
+
+    def test_a_red_run_blocks_and_names_the_failing_job(self):
+        self._stub_gh('[{"status":"completed","conclusion":"failure",'
+                      '"databaseId":42}]')
+        r = self._run()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("CI is failure", r.stdout)
+        self.assertIn("test-windows", r.stdout)
+        self.assertIn("--log-failed 42", r.stdout)
+
+    def test_a_green_run_passes(self):
+        self._stub_gh('[{"status":"completed","conclusion":"success",'
+                      '"databaseId":7}]')
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("CI green", r.stdout)
+
+    def test_a_run_still_in_flight_warns_but_does_not_block(self):
+        self._stub_gh('[{"status":"in_progress","conclusion":null,'
+                      '"databaseId":9}]')
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("WARN", r.stdout)
+        self.assertIn("no verdict yet", r.stdout)
+
+    def test_an_unpushed_commit_warns_but_does_not_block(self):
+        """Working locally before a first push is normal, not an error."""
+        self._stub_gh("[]")
+        r = self._run()
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("has not run", r.stdout)
+
+    def test_missing_gh_warns_but_does_not_block(self):
+        """A check that cannot run says so; it does not fail the merge."""
+        r = self._run(path=str(self.bin))          # empty dir: no gh anywhere
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("gh is not installed", r.stdout)
+
+    def test_inside_ci_the_check_skips_itself(self):
+        """A run cannot grade itself — otherwise --all is circular in CI."""
+        self._stub_gh('[{"status":"completed","conclusion":"failure",'
+                      '"databaseId":42}]')
+        env = dict(os.environ)
+        env["PATH"] = f"{self.bin}:{os.environ['PATH']}"
+        env["GITHUB_ACTIONS"] = "true"
+        r = subprocess.run(
+            ["bash", str(self.root / "scripts" / "preflight.sh"), "ci"],
+            cwd=str(self.root), capture_output=True, text=True, env=env)
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("cannot grade itself", r.stdout)
+
+    def test_ci_is_in_the_pre_merge_gate(self):
+        """The whole point: it has to run where merges happen."""
+        src = PREFLIGHT.read_text(encoding="utf-8")
+        m = re.search(r"^PRE_MERGE=\(([^)]*)\)", src, re.M)
+        self.assertIsNotNone(m)
+        self.assertIn("ci", m.group(1).split())
 
 
 @posix_only
