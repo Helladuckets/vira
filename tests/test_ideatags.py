@@ -509,10 +509,24 @@ class RouteTests(StoreCase):
         self.assertEqual(r.status_code, 503)
 
     def test_reindex_is_bounded(self):
-        with mock.patch.object(ideatags, "refresh",
+        """The cap is on the pass, wherever the pass runs. It moved
+        out-of-process (ideatags.run_pass) so a 20-batch reindex cannot
+        freeze the server it was clicked in, but a click must still never
+        turn into unbounded model spend."""
+        with mock.patch.object(ideatags, "run_pass",
                                return_value={"tagged": 0}) as m:
             self.client.post("/api/ideas/reindex", json={"batches": 999})
         self.assertEqual(m.call_args.kwargs["batches"], 20)
+
+    def test_reindex_does_not_run_the_pass_in_this_process(self):
+        """The regression guard for the 2026-07-27 stalls: the heaviest
+        thing the Queue can ask for must not execute in the server's own
+        interpreter, where it competes with the event loop for the GIL."""
+        with mock.patch.object(ideatags, "run_pass",
+                               return_value={"tagged": 0}), \
+             mock.patch.object(ideatags, "refresh") as inproc:
+            self.client.post("/api/ideas/reindex", json={"batches": 3})
+        inproc.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -14,11 +14,13 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import (actions, aihealth, applecontacts, applications, atlas,
+from . import (actions, admission, aihealth, applecontacts, applications,
+               atlas,
                backup, brief,
                briefstate, changelog,
                circuits,
@@ -38,6 +40,7 @@ from . import (actions, aihealth, applecontacts, applications, atlas,
                joblog,
                journal,
                judge,
+               loopwatch,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
@@ -77,6 +80,19 @@ app = FastAPI(title="Vira")
 _REVALIDATE = (".js", ".css", ".html", ".svg", ".png", ".ico", ".webmanifest")
 
 
+@app.exception_handler(admission.Full)
+async def _cpu_gate_full(request: Request, exc: admission.Full):
+    """The CPU gate turned a request away. 503 + Retry-After, and a body
+    that says WHY — a stall the client cannot name is the failure mode this
+    whole change exists to end (see server/admission.py)."""
+    return JSONResponse(
+        status_code=503,
+        headers={"Retry-After": "5"},
+        content={"error": "server busy", "detail": str(exc),
+                 "waited_s": round(exc.waited, 2), "queue_depth": exc.depth,
+                 "path": request.url.path})
+
+
 @app.middleware("http")
 async def _static_no_cache(request, call_next):
     resp = await call_next(request)
@@ -106,6 +122,10 @@ idea_indexer = ideatags.Indexer(                  # backlog tags + vectors
 
 @app.on_event("startup")
 async def _startup():
+    # Before the passive check on purpose: a test instance stalls the same
+    # way a live one does, and the watchdog neither acts on the world nor
+    # costs anything while the loop is healthy.
+    loopwatch.watcher.start()
     if os.environ.get("VIRA_PASSIVE"):
         # Passive test instance (scripts/branch.sh serve, run-taurid.sh):
         # UI + API only, over its own data snapshot. No pollers, no
@@ -271,11 +291,12 @@ def api_ideas():
     browser with no second round-trip — the whole backlog is small enough
     that client-side filtering is both instant and incapable of the silent
     truncation a paged search endpoint invites."""
-    items = ideas.list_items()
-    return {"items": ideatags.annotate(items),
-            "projects": ideas.list_projects(),
-            "vocab": ideatags.vocabulary(items),
-            "tag_status": ideatags.status(items)}
+    with admission.cpu("ideas.list"):
+        items = ideas.list_items()
+        return {"items": ideatags.annotate(items),
+                "projects": ideas.list_projects(),
+                "vocab": ideatags.vocabulary(items),
+                "tag_status": ideatags.status(items)}
 
 
 class IdeaAddReq(BaseModel):
@@ -327,27 +348,41 @@ def api_ideas_reindex(req: ReindexReq):
     """Tag/embed on demand. Bounded by `batches` (one model call each) so
     a click can never turn into an unbounded spend."""
     n = max(0, min(int(req.batches or 1), 20))
-    out = ideatags.refresh(batches=n)
-    items = ideas.list_items()
-    out["status"] = ideatags.status(items)
-    out["vocab"] = ideatags.vocabulary(items)
+    # Out-of-process, exactly like the background tick. A 20-batch reindex
+    # is the single heaviest thing the Queue can ask for, and running it on
+    # a worker thread put 20 model calls' worth of parsing and scoring
+    # inside the server's own interpreter — the click that could freeze the
+    # app for everyone (see ideatags.run_pass).
+    out = ideatags.run_pass(batches=n)
+    with admission.cpu("ideas.reindex.status"):
+        items = ideas.list_items()
+        out["status"] = ideatags.status(items)
+        out["vocab"] = ideatags.vocabulary(items)
     return out
 
 
 @app.get("/api/ideas/duplicates")
 def api_ideas_duplicates(floor: float = ideatags.DUP_FLOOR):
-    return {"pairs": ideatags.duplicates(floor=floor)}
+    with admission.cpu("ideas.duplicates"):
+        return {"pairs": ideatags.duplicates(floor=floor)}
 
 
 @app.get("/api/ideas/{idea_id}/related")
 def api_ideas_related(idea_id: str, limit: int = 15,
                       floor: float = ideatags.RELATED_FLOOR,
                       include_parked: bool = False):
-    try:
-        return ideatags.related(idea_id, limit=max(1, min(limit, 100)),
-                                floor=floor, include_parked=include_parked)
-    except KeyError:
+    items = ideas.list_items()
+    target = next((i for i in items if i["id"] == idea_id), None)
+    if not target:
         raise HTTPException(404, "unknown idea")
+    # The Ollama wait happens BEFORE the gate, the scoring inside it. A
+    # request blocked on the network must not sit on a CPU slot.
+    ideatags.ensure_vector(target)
+    with admission.cpu("ideas.related"):
+        return ideatags.related(idea_id, items=items,
+                                limit=max(1, min(limit, 100)),
+                                floor=floor, include_parked=include_parked,
+                                embed=False)
 
 
 class FoldReq(BaseModel):
@@ -2427,6 +2462,21 @@ def api_health_ai():
     """Latest deterministic health probe + recent state transitions. No model
     call — safe to poll cheaply from the client."""
     return {"latest": aihealth.last_state(), "history": aihealth.history()}
+
+
+@app.get("/api/health/loop")
+def api_health_loop():
+    """Event-loop responsiveness: current lag, every stall recorded since
+    boot with the thread stacks caught mid-stall, the CPU admission gate's
+    counters, and the background tagger's state.
+
+    This endpoint is the answer to a specific hole. On 2026-07-27 the
+    server went dark for stretches of 15 to 90 seconds and left NOTHING
+    behind — uvicorn's access log carries no timestamps, so the gap in it
+    was unreadable, and diagnosing it took a live reproduction days later.
+    A stall now names itself, in the log and here."""
+    return {**loopwatch.watcher.snapshot(),
+            "idea_indexer": idea_indexer.state()}
 
 
 @app.post("/api/health/ai/recheck")

@@ -187,9 +187,15 @@ def _ollama(endpoint, payload, timeout=180):
         return None
 
 
-def ollama_embed(texts):
-    """List of unit vectors, or None when Ollama is unreachable."""
-    r = _ollama("/api/embed", {"model": EMBED_MODEL, "input": texts})
+def ollama_embed(texts, timeout=None):
+    """List of unit vectors, or None when Ollama is unreachable.
+
+    The 180s default suits a background backfill. A request path must pass
+    a short timeout: the daemon serializes, so an embed queued behind a
+    caption inherits the caption's runtime, and a handler that waits three
+    minutes has already lost the user."""
+    r = _ollama("/api/embed", {"model": EMBED_MODEL, "input": texts},
+                **({"timeout": timeout} if timeout else {}))
     if not r or "embeddings" not in r:
         return None
     out = []

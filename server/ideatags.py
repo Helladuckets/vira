@@ -40,19 +40,22 @@ import base64
 import hashlib
 import json
 import re
+import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import ideas, jsonstore, localmodels, suggest
+from . import ideas, jsonstore, localmodels, settings, suggest
 
 try:
     import numpy as np
 except ImportError:  # minimal install: token overlap still works
     np = None
 
-STORE = Path(__file__).resolve().parent.parent / "data" / "idea-index.json"
+ROOT = Path(__file__).resolve().parent.parent
+STORE = ROOT / "data" / "idea-index.json"
 
 # The tag axes, beyond the owner-curated `project`. A table, so adding an
 # axis is a data edit: id, the label the UI shows, how many tags one idea
@@ -83,6 +86,7 @@ AXIS_IDS = tuple(a["id"] for a in AXES)
 TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,31}$")
 BATCH = 12                 # ideas per model call
 VOCAB_SHOWN = 60           # tags per axis handed to the tagger
+FOREGROUND_EMBED_S = 8     # ceiling on an embed a request is waiting on
 
 # Similarity fusion. Cosine dominates when vectors exist because it is the
 # only signal that catches two ideas that share no words; tags carry the
@@ -124,6 +128,37 @@ def _read():
 
 def _write(s):
     jsonstore.write_atomic(STORE, s, indent=1, ensure_ascii=False)
+
+
+def _update(fn):
+    """Locked read-modify-write over the sidecar, returning the state as
+    written.
+
+    Read-then-write without the lock was survivable while the only writers
+    were threads in one process racing over a few seconds. It stopped being
+    survivable when the maintenance pass moved OUT of the server (see
+    Indexer): the pass and a foreground /related embed are now separate
+    processes, and two unsynchronized read-modify-write cycles across a
+    process boundary lose whichever finishes first — silently, in a derived
+    store nobody reads directly. filelock is the discipline the JSON stores
+    already carry for exactly this (server/filelock.py names the durable
+    runners as the original case); this is ideatags joining it.
+
+    fn(state) mutates in place, or returns a replacement. The slow part of
+    a pass — the Ollama round-trip, the model call — stays OUTSIDE the
+    lock; only the merge of its result is serialized, or one process's
+    180-second embed would block every other writer for 180 seconds."""
+    def apply(s):
+        if not isinstance(s, dict) or not isinstance(s.get("entries"), dict):
+            s = {"entries": {}}
+        out = fn(s)
+        # Only a dict replaces the state. `fn` is usually an in-place
+        # mutator whose return value is incidental (_prune returns a bool),
+        # and jsonstore.mutate would happily write that bool to the file.
+        return out if isinstance(out, dict) else s
+
+    return jsonstore.mutate(STORE, apply, {"entries": {}},
+                            indent=1, ensure_ascii=False)
 
 
 def _prune(s, live_ids):
@@ -244,10 +279,17 @@ def _embed_text(it):
     return f"{it.get('project') or ''}: {it.get('text') or ''}"[:2000]
 
 
-def embed_pending(items=None, limit=200):
+def embed_pending(items=None, limit=200, timeout=None):
     """Fill in missing/stale vectors. Deterministic and local (Ollama on
     this machine) — no model backend involved, so it runs on any install
-    where the daemon is up and simply reports 0 where it is not."""
+    where the daemon is up and simply reports 0 where it is not.
+
+    `timeout` bounds the Ollama round-trip. The default (None -> the
+    localmodels default of 180s) is right for the background pass, which
+    nothing waits on. A REQUEST must pass something short: Ollama
+    serializes, so a foreground embed queued behind a background caption
+    can sit for minutes, and the caller has a person watching a spinner.
+    See related(), which is the one request path that embeds."""
     items = ideas.list_items() if items is None else items
     if np is None:
         return {"embedded": 0, "reason": "numpy missing"}
@@ -261,14 +303,19 @@ def embed_pending(items=None, limit=200):
             break
     if not todo:
         return {"embedded": 0}
-    vecs = localmodels.ollama_embed([_embed_text(it) for it in todo])
+    vecs = localmodels.ollama_embed([_embed_text(it) for it in todo],
+                                    timeout=timeout)
     if not vecs:
         return {"embedded": 0, "reason": "ollama unreachable"}
-    for it, v in zip(todo, vecs):
-        e = s["entries"].setdefault(it["id"], {})
-        e["vec"] = _pack(v)
-        e["vhash"] = _hash(_embed_text(it))
-    _write(s)     # never prunes: `items` may be a single idea (see _prune)
+    # Merge under the lock, with the slow call already done. Never prunes:
+    # `items` may be a single idea (see _prune).
+    def merge(st):
+        for it, v in zip(todo, vecs):
+            e = st["entries"].setdefault(it["id"], {})
+            e["vec"] = _pack(v)
+            e["vhash"] = _hash(_embed_text(it))
+
+    _update(merge)
     return {"embedded": len(todo)}
 
 
@@ -424,8 +471,21 @@ def score_pairs(target, others, s=None, space=None):
     return out
 
 
+def ensure_vector(target, timeout=FOREGROUND_EMBED_S):
+    """Embed one idea if its vector is missing or stale. Split out of
+    related() so a REQUEST can do the waiting-on-Ollama part outside the
+    CPU admission gate — a slot held for eight seconds of network wait is
+    a slot not doing the scoring the gate exists to schedule.
+
+    Returns True when a vector is now current."""
+    e = _read()["entries"].get(target["id"]) or {}
+    if e.get("vhash") == _hash(_embed_text(target)):
+        return True
+    return bool(embed_pending([target], timeout=timeout).get("embedded"))
+
+
 def related(idea_id, items=None, limit=15, floor=RELATED_FLOOR,
-            include_parked=False):
+            include_parked=False, embed=True):
     """Ideas worth considering alongside this one. Done/dropped ideas are
     excluded by default — folding a finished idea into a new task is
     noise — but stay reachable, because "we already built that" is
@@ -438,9 +498,21 @@ def related(idea_id, items=None, limit=15, floor=RELATED_FLOOR,
     # the one case that matters most — "did I already have this idea?",
     # asked seconds after typing it — is the one case with no vector, and
     # would fall back to word overlap and quietly find nothing.
-    e = _read()["entries"].get(idea_id) or {}
-    if e.get("vhash") != _hash(_embed_text(target)):
-        embed_pending([target])
+    #
+    # BOUNDED, because this is a request. Ollama serializes, so an embed
+    # issued while the daemon is mid-caption waits for the caption; on the
+    # inherited 180s default that turned the Queue's Similar panel into a
+    # spinner that sat on "Looking..." for over a minute (2026-07-27) while
+    # holding a worker thread the whole time. Past FOREGROUND_EMBED_S the
+    # answer degrades to tags and token overlap, which is a real answer —
+    # and `basis` in the response says which one the caller got, so a
+    # thinner list never passes itself off as "nothing is similar".
+    #
+    # `embed=False` is for callers that already ran ensure_vector outside
+    # their CPU gate (the route does); the default keeps the CLI and the
+    # tests on the one-call path.
+    if embed:
+        ensure_vector(target)
     pool = items if include_parked else [
         i for i in items if i.get("status") not in ("done", "dropped")]
     rows = [r for r in score_pairs(target, pool) if r["score"] >= floor]
@@ -555,17 +627,22 @@ def tag_pending(items=None, batches=1):
             errs.append(str(e)[:200])
             break
         by_id = {it["id"]: it for it in batch}
-        s = _read()                       # re-read: the pass is slow and a
-        for row in (parsed.get("tags") or []):   # runner may have written
-            it = by_id.get(row.get("id"))
-            if not it:
-                continue
-            e = s["entries"].setdefault(it["id"], {})
-            e["tags"] = _clean_tags(row)
-            e["hash"] = _hash(it.get("text") or "")
-            e["tagged"] = _now()
-            done += 1
-        _write(s)     # pruning belongs to refresh() alone (see _prune)
+        rows = [r for r in (parsed.get("tags") or [])
+                if by_id.get(r.get("id"))]
+
+        # Merge under the lock, with the model call already done. The
+        # re-read inside it is the point: the pass is slow, and the server
+        # (or a runner) may have written the store while it ran.
+        def merge(st, rows=rows, by_id=by_id):
+            for row in rows:
+                it = by_id[row["id"]]
+                e = st["entries"].setdefault(it["id"], {})
+                e["tags"] = _clean_tags(row)
+                e["hash"] = _hash(it.get("text") or "")
+                e["tagged"] = _now()
+
+        s = _update(merge)    # pruning belongs to refresh() alone (see _prune)
+        done += len(rows)
         # Later batches see the tags the earlier ones just minted, so the
         # vocabulary converges within a single run instead of only across
         # runs.
@@ -583,9 +660,8 @@ def refresh(batches=1):
     items = ideas.list_items()
     emb = embed_pending(items)
     tag = tag_pending(items, batches=batches) if batches else {"tagged": 0}
-    s = _read()
-    if _prune(s, {it["id"] for it in items}):
-        _write(s)
+    live = {it["id"] for it in items}
+    _update(lambda st: _prune(st, live))
     return {"embedded": emb.get("embedded", 0),
             "embed_reason": emb.get("reason"),
             **{k: v for k, v in tag.items()}}
@@ -677,33 +753,112 @@ def fold_analysis(idea_id, candidate_ids, items=None):
 
 # ---------- background pass ----------
 
+PASS_TIMEOUT_S = 900       # a maintenance pass that runs this long is stuck
+
+
+def run_pass(batches=1, timeout=PASS_TIMEOUT_S):
+    """Run one maintenance pass in a SEPARATE PROCESS and return its result.
+
+    THE PASS USED TO RUN IN THE SERVER, and that is what made a background
+    chore able to darken the whole app. CPython gives a process one
+    interpreter: a thread doing Python work holds the GIL, and the event
+    loop is just another contender for it. So `refresh()` on this thread —
+    unpacking 144 float16 vectors, hashing every idea, scoring, serializing
+    a 340KB sidecar — competed directly with uvicorn's ability to accept a
+    connection or answer a request. Measured on the live instance
+    2026-07-28: enough concurrent Python work and EVERY endpoint goes dark
+    at once, async ones included, with the loop thread parked in the GIL
+    wait (server/loopwatch.py carries the numbers).
+
+    A child process has its own GIL. The pass can take as long as it likes
+    and the server does not feel it — no throttle to tune, no fairness to
+    get right, and no way for a future heavier pass to quietly become a
+    stall again. The cost is a fork and an interpreter start per tick,
+    every ten minutes, which is nothing next to the model call the pass
+    makes anyway.
+
+    Safe because the stores were already built for it: jsonstore's whole
+    discipline is fresh-read-per-operation with mutations serialized
+    through filelock, written for the detached job runners that share these
+    same files (server/filelock.py). _update() is ideatags finally joining
+    that discipline — without it, two processes racing a read-modify-write
+    would silently lose one side's tags.
+
+    The child is the module's own CLI, so the in-process path stays the
+    tested one and there is no second implementation to drift."""
+    cmd = [sys.executable, "-m", "server.ideatags", "refresh", str(batches)]
+    try:
+        res = subprocess.run(cmd, cwd=str(ROOT), capture_output=True,
+                             text=True, timeout=timeout,
+                             env=settings.strip_env())
+    except subprocess.TimeoutExpired:
+        return {"error": f"pass exceeded {timeout}s", "timeout": True}
+    except OSError as e:
+        return {"error": f"could not spawn pass: {e}"[:200]}
+    if res.returncode != 0:
+        return {"error": (res.stderr or "pass failed").strip()[:400],
+                "returncode": res.returncode}
+    out = res.stdout or ""
+    try:
+        return json.loads(out)
+    except (ValueError, TypeError):
+        pass
+    # An import that chatters on stdout would otherwise turn a good pass
+    # into a reported failure, so fall back to the last JSON object.
+    lo, hi = out.find("{"), out.rfind("}")
+    if lo >= 0 and hi > lo:
+        try:
+            return json.loads(out[lo:hi + 1])
+        except ValueError:
+            pass
+    # A pass that ran but printed something unreadable is a real failure,
+    # not a silent zero — say so rather than reporting 0 tagged and
+    # letting the backlog look finished.
+    return {"error": "pass produced no JSON", "stdout": out[:400]}
+
+
 class Indexer(threading.Thread):
     """Keeps the derived layer close behind the store. Vectors every tick
     (local, seconds); tagging one batch per tick, because it is a model
     call and a backlog that tags itself over an hour is fine — nothing
     waits on it. Started outside VIRA_PASSIVE only, like every other
-    worker; a test clone tags on demand through the route instead."""
+    worker; a test clone tags on demand through the route instead.
+
+    This thread now only SUPERVISES: the pass itself runs out-of-process
+    (see run_pass), so the thread spends its life in subprocess.run and
+    time.sleep, both of which release the GIL. It cannot starve a read."""
 
     def __init__(self, interval_min=None):
-        super().__init__(daemon=True)
+        super().__init__(daemon=True, name="vira-idea-indexer")
         self.interval = max(60.0, float(interval_min or 10) * 60.0)
         self.last = None
+        self.last_run = None
+        self.runs = 0
 
     def run(self):
         while True:
             try:
-                # refresh() is a no-op when nothing is stale, and costs no
-                # model call in that case — so the tick can be unconditional.
-                self.last = refresh(batches=1)
+                # A pass is a no-op when nothing is stale, and costs no
+                # model call in that case — so the tick is unconditional.
+                self.last = run_pass(batches=1)
             except Exception as e:  # noqa: BLE001 — never kill the thread
                 self.last = {"error": str(e)[:200]}
+            self.last_run = _now()
+            self.runs += 1
             time.sleep(self.interval)
+
+    def state(self):
+        return {"runs": self.runs, "last_run": self.last_run,
+                "interval_s": self.interval, "last": self.last,
+                "out_of_process": True}
 
 
 # ---------- CLI ----------
 
+# `refresh` here is not only a human convenience: it is the child process
+# run_pass() spawns on every tick, and its stdout is that call's return
+# value. Keep this branch's only stdout write the JSON.
 if __name__ == "__main__":          # pragma: no cover
-    import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "refresh":
         n = int(sys.argv[2]) if len(sys.argv) > 2 else 20
