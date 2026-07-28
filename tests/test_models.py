@@ -193,11 +193,20 @@ class LoginCommandTest(unittest.TestCase):
 
 
 class CapabilityTest(unittest.TestCase):
-    def test_only_anthropic_drives_agent_sessions(self):
-        # Circuits, Judge, Agent Loops and the cockpit are Claude Agent SDK.
-        # Setup must say so rather than let a run fail later.
+    def test_session_grades_per_provider(self):
+        # Anthropic is the gated engine (SDK, per-tool cards); OpenAI hosts
+        # sessions best-effort via codex exec (2026-07-28); the API-only
+        # rows cannot host sessions at all. The UI says which grade BEFORE
+        # a dispatch, so these three facts are load-bearing.
+        from server import agentbackend
         self.assertTrue(models.PROVIDERS["anthropic"]["can"]["sessions"])
-        self.assertFalse(models.PROVIDERS["openai"]["can"]["sessions"])
+        self.assertTrue(models.PROVIDERS["openai"]["can"]["sessions"])
+        self.assertEqual(agentbackend.sessions_quality("anthropic"), "gated")
+        self.assertEqual(agentbackend.sessions_quality("openai"),
+                         "best_effort")
+        self.assertEqual(agentbackend.sessions_quality("google"), "")
+        self.assertFalse(models.PROVIDERS["google"]["can"]["sessions"])
+        self.assertFalse(models.PROVIDERS["xai"]["can"]["sessions"])
 
 
 class CatalogTest(unittest.TestCase):
@@ -279,9 +288,12 @@ class CatalogTest(unittest.TestCase):
                          {"cli": "cli_model", "api": "api_model"})
         self.assertEqual(by_id["openai"]["config_keys"],
                          {"cli": "openai_cli_model", "api": "openai_api_model"})
-        # Only the session-capable provider may feed a circuit stage.
+        # Session-capable providers feed the run-sheet/circuit pickers,
+        # each carrying its grade so the UI can caveat best-effort.
         self.assertTrue(by_id["anthropic"]["sessions"])
-        self.assertFalse(by_id["openai"]["sessions"])
+        self.assertTrue(by_id["openai"]["sessions"])
+        self.assertEqual(by_id["anthropic"]["sessions_quality"], "gated")
+        self.assertEqual(by_id["openai"]["sessions_quality"], "best_effort")
 
     def test_active_is_the_configured_provider_when_it_is_usable(self):
         def probe(pid):
@@ -414,6 +426,27 @@ class ApiOnlyProviderTest(unittest.TestCase):
         rows = [{"id": "grok-4", "created": 2}, {"id": "grok-3-mini", "created": 1}]
         got = models._shape_models("xai", rows)
         self.assertEqual([m["id"] for m in got], ["grok-4", "grok-3-mini"])
+
+    def test_options_carries_the_roster(self):
+        # The curated picker roster (config model_roster) rides the catalog
+        # payload; a malformed value degrades to uncurated, never a crash.
+        with mock.patch.object(models, "probe",
+                               return_value={"connected": False, "auth": "",
+                                             "has_key": False}), \
+             mock.patch.object(models, "catalog",
+                               return_value={"cli": [], "api": [],
+                                             "api_live": False,
+                                             "api_detail": "",
+                                             "cli_detail": ""}):
+            with mock.patch.object(models.settings, "raw",
+                                   return_value={"model_roster":
+                                                 ["sonnet", "gpt-5.6-sol"]}):
+                out = models.options(refresh=True)
+            self.assertEqual(out["roster"], ["sonnet", "gpt-5.6-sol"])
+            with mock.patch.object(models.settings, "raw",
+                                   return_value={"model_roster": "junk"}):
+                out = models.options(refresh=True)
+            self.assertEqual(out["roster"], [])
 
 
 class ApiOnlyDraftRoutingTest(unittest.TestCase):

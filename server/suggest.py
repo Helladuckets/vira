@@ -24,10 +24,18 @@ DEFAULTS = {
     "cli_model": "sonnet",
     "api_model": "claude-sonnet-5",
     "api_key_env": "VIRA_ANTHROPIC_KEY",
-    "openai_cli_model": "gpt-5.1-codex",
-    "openai_api_model": "gpt-5.1",
+    # Empty = codex's own configured default model (~/.codex/config.toml).
+    # A pinned name here breaks the day OpenAI retires the generation — a
+    # ChatGPT-account codex hard-rejects stale names (verified 2026-07-28).
+    "openai_cli_model": "",
+    "openai_api_model": "gpt-5.6-sol",
     "google_api_model": "gemini-2.5-pro",
     "xai_api_model": "grok-4",
+    # The curated model roster (the Cursor pattern, owner's ask 2026-07-28):
+    # the model ids enabled for pickers across every provider. EMPTY means
+    # "everything the catalog offers" — so a fresh install shows all, and a
+    # future model arrives enabled unless the owner has curated.
+    "model_roster": [],
     "timeout": 120,
 }
 
@@ -134,7 +142,10 @@ def _call_codex_cli(prompt, model, timeout):
     binary = provider.find_binary("openai")
     if not binary:
         raise RuntimeError("codex CLI not found on this Mac")
-    cmd = [binary, "exec", "--model", model, "--skip-git-repo-check", prompt]
+    cmd = [binary, "exec", "--skip-git-repo-check"]
+    if model:                       # empty = codex's own configured default
+        cmd += ["--model", model]
+    cmd += [prompt]
     res = subprocess.run(cmd, capture_output=True, text=True,
                          timeout=timeout, env=settings.strip_env())
     if res.returncode != 0:

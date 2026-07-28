@@ -61,8 +61,12 @@ PROVIDERS = {
         # run. Both carry the label the UI shows, so a dropdown never has
         # to guess a marketing name from an id.
         "models": {
-            "cli": [("sonnet", "Sonnet 5"), ("opus", "Opus 4.8"),
-                    ("haiku", "Haiku 4.5"), ("fable", "Fable 5")],
+            # Generation-FREE labels (2026-07-28): each alias resolves to
+            # the newest model of its tier at the CLI, so a pinned "Sonnet
+            # 5" label starts lying the week Sonnet 6 ships. The live list
+            # (catalog unions it in when a key exists) carries real names.
+            "cli": [("sonnet", "Sonnet (latest)"), ("opus", "Opus (latest)"),
+                    ("haiku", "Haiku (latest)"), ("fable", "Fable")],
             "api": [("claude-sonnet-5", "Sonnet 5"),
                     ("claude-opus-4-8", "Opus 4.8"),
                     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
@@ -88,14 +92,23 @@ PROVIDERS = {
         "install_url": "https://openai.com/codex",
         "install_cmd": "npm install -g @openai/codex",
         "models": {
-            "cli": [("gpt-5.1-codex", "GPT-5.1 Codex"), ("gpt-5.1", "GPT-5.1")],
-            "api": [("gpt-5.1", "GPT-5.1"), ("gpt-5.1-codex", "GPT-5.1 Codex")],
+            # Names verified against the live codex CLI 2026-07-28 — a
+            # ChatGPT-account codex REJECTS stale generation names outright
+            # ("gpt-5.1-codex is not supported"), so this list rots louder
+            # than Anthropic's alias list does. The live union + the empty
+            # default (= codex's own configured model) are the real guards.
+            "cli": [("gpt-5.6-sol", "GPT-5.6 Sol"),
+                    ("gpt-5.6-terra", "GPT-5.6 Terra")],
+            "api": [("gpt-5.6-sol", "GPT-5.6 Sol"),
+                    ("gpt-5.6-terra", "GPT-5.6 Terra")],
         },
         "models_url": "https://api.openai.com/v1/models",
         "config_keys": {"cli": "openai_cli_model", "api": "openai_api_model"},
-        # codex exec serves every suggest.complete path (drafts, dossiers,
-        # the brief narrative). It cannot host live agent sessions.
-        "can": {"draft": True, "sessions": False},
+        # codex exec serves drafts AND, since 2026-07-28, live agent
+        # sessions — best-effort grade: the runner drives `codex exec`
+        # inside its own harness, containment is codex's sandbox rather
+        # than Vira's per-tool gate (server/agentbackend.py says the rest).
+        "can": {"draft": True, "sessions": True},
     },
     # The API-only rows. Both have CLIs that may exist on a machine (gemini,
     # grok) — presence is probed and shown — but Vira talks to them through
@@ -291,6 +304,7 @@ def probe(pid):
         "models": [m for m, _ in
                    (spec["models"]["cli"] or spec["models"]["api"])],
         "can": dict(spec["can"]),
+        "sessions_quality": _sessions_quality(pid, spec["can"]["sessions"]),
         "login_cmd": login_cmd,
         "key_url": spec.get("key_url", ""),
         "install_url": spec.get("install_url", ""),
@@ -298,6 +312,15 @@ def probe(pid):
         "connected": auth in (SIGNED_IN, KEY),
         "action": _action_for(spec, binary, auth, login_cmd),
     }
+
+
+def _sessions_quality(pid, can_sessions):
+    """"" | "best_effort" | "gated" — how good a live session is on this
+    provider. Lazy import: agentbackend imports this module at its top."""
+    if not can_sessions:
+        return ""
+    from . import agentbackend
+    return agentbackend.sessions_quality(pid)
 
 
 def _action_for(spec, binary, auth, login_cmd):
@@ -457,19 +480,30 @@ def _live_models(pid, refresh=False):
 def catalog(pid, refresh=False):
     """What this provider can be pointed at, per backend.
 
-    The CLI list is the alias set its binary accepts — neither CLI has a
-    "list models" subcommand to ask, and an alias is the spelling that
-    keeps working across releases. The API list IS asked live, against the
-    key on file, because that is the one place a true answer exists."""
+    The CLI list starts from the alias set its binary accepts — neither
+    CLI has a "list models" subcommand to ask, and an alias is the
+    spelling that keeps working across releases. When a key is on file the
+    LIVE model list is unioned in after the aliases: the CLIs accept full
+    model ids too, so a brand-new model is pickable the day it ships
+    instead of waiting for a curated-list edit. The API list IS the live
+    answer, falling back to the curated one."""
     spec = PROVIDERS.get(pid)
     if not spec:
-        return {"cli": [], "api": [], "api_live": False, "api_detail": ""}
+        return {"cli": [], "api": [], "api_live": False,
+                "api_detail": "", "cli_detail": ""}
     live, detail = _live_models(pid, refresh)
     curated = [{"id": i, "label": lb} for i, lb in spec["models"]["api"]]
-    return {"cli": [{"id": i, "label": lb} for i, lb in spec["models"]["cli"]],
+    cli = [{"id": i, "label": lb} for i, lb in spec["models"]["cli"]]
+    cli_detail = "aliases the CLI resolves to its newest models"
+    if cli and live:
+        known = {m["id"] for m in cli}
+        cli = cli + [m for m in live if m["id"] not in known]
+        cli_detail += f" + {len(live)} live ids from your API key"
+    return {"cli": cli,
             "api": live or curated,
             "api_live": bool(live),
-            "api_detail": detail}
+            "api_detail": detail,
+            "cli_detail": cli_detail if cli else ""}
 
 
 def options(refresh=False):
@@ -493,6 +527,8 @@ def options(refresh=False):
             "auth": rec.get("auth", ABSENT),
             "has_key": bool(rec.get("has_key")),
             "sessions": bool(spec["can"]["sessions"]),
+            "sessions_quality": _sessions_quality(pid,
+                                                  spec["can"]["sessions"]),
             "config_keys": dict(spec["config_keys"]),
             **catalog(pid, refresh),
         })
@@ -500,8 +536,13 @@ def options(refresh=False):
     # rather than probing every provider a second time.
     want = str(settings.raw().get("ai_provider") or "anthropic")
     usable = [p["id"] for p in provs if p["connected"]]
+    # The owner's curated roster (config model_roster): the ids every
+    # picker should offer. Empty = uncurated, offer everything.
+    roster = settings.raw().get("model_roster")
     payload = {"providers": provs,
-               "active": want if want in usable else next(iter(usable), "")}
+               "active": want if want in usable else next(iter(usable), ""),
+               "roster": [str(m) for m in roster]
+               if isinstance(roster, list) else []}
     with _lock:
         _options_cache.update(at=now, payload=payload)
     return payload
