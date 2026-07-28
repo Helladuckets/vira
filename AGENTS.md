@@ -53,11 +53,15 @@ screen walks the human through it, but you can close most of the distance:
   ChatGPT.app is detected automatically; otherwise
   `npm install -g @openai/codex`.
 
-- **Sign-in is the owner's act** — it is their subscription and their
-  browser. Hand them exactly one step: the login command shown on Vira's
-  own Connect screen (it composes the right one for this machine), or the
-  API-key paste on that same screen (the key lands in the OS keychain,
-  never in a file).
+- **Sign-in is the owner's act, and Vira drives it** — it is their
+  subscription and their browser, but there is no terminal step: Vira's
+  Connect screen runs the login flow itself. The owner clicks **Sign in**,
+  approves in the browser that opens, pastes the code back into the card,
+  and it flips green. A machine that is ALREADY signed in connects itself
+  on first open with zero clicks. So your whole hand-off is: "open
+  http://localhost:8377 and click Sign in with Claude." (The API-key paste
+  on the same screen is the alternative; keys land in the OS keychain,
+  never in a file.)
 
 ## 3. Stop
 
