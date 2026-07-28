@@ -120,8 +120,15 @@ class CpuGate:
             self._sem.release()
             dt = time.monotonic() - held
             with self._lock:
-                if dt > self.peak_hold_s:
-                    self.peak_hold_s = dt
+                # `or not self.busiest` is load-bearing on a coarse clock:
+                # time.monotonic() has ~15.6ms granularity on Windows before
+                # Python 3.13, so a fast path measures dt == 0.0 exactly and a
+                # strict `>` would never name it. A gate reporting admitted > 0
+                # with slowest_path "" is a diagnostic contradicting itself —
+                # the first holder is named, and only a genuinely slower one
+                # replaces it.
+                if dt > self.peak_hold_s or not self.busiest:
+                    self.peak_hold_s = max(self.peak_hold_s, dt)
                     self.busiest = label
 
     def stats(self):

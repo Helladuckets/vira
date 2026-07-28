@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -145,13 +146,20 @@ class _FakeRunner:
 
 def _fake_codex(tmp, lines_per_call):
     """A stub binary that prints one canned JSONL set per invocation (a
-    counter file picks the set), echoing nothing else."""
+    counter file picks the set), echoing nothing else.
+
+    The payload is a plain .py file and the "binary" is a one-line shim that
+    hands it to this interpreter, because a shebang is a POSIX mechanism:
+    Windows CreateProcess reads the extension, not the first line, so an
+    executable-bit text file raises WinError 193. That is a fact about the
+    test harness, not about run_cliexec — the codex path is shipped code a
+    Windows install can exercise, so it stays under test on both platforms
+    rather than being skipped off-Mac."""
     marker = Path(tmp) / "calls"
     marker.write_text("0", encoding="utf-8")
-    script = Path(tmp) / "codex"
+    impl = Path(tmp) / "codex_impl.py"
     sets = json.dumps(lines_per_call)
-    script.write_text(encoding="utf-8", data=
-        "#!/usr/bin/env python3\n"
+    impl.write_text(encoding="utf-8", data=
         "import json, sys\n"
         f"marker = {str(marker)!r}\n"
         f"sets = json.loads({sets!r})\n"
@@ -160,7 +168,19 @@ def _fake_codex(tmp, lines_per_call):
         "open(marker + '.argv%d' % n, 'w').write(json.dumps(sys.argv[1:]))\n"
         "for ev in sets[min(n, len(sets) - 1)]:\n"
         "    print(json.dumps(ev))\n")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    if os.name == "nt":
+        # cmd forwards the tail of its own command line verbatim through %*,
+        # so a quoted prompt arrives as one argv rather than being resplit.
+        script = Path(tmp) / "codex.cmd"
+        script.write_text(encoding="utf-8", data=
+            "@echo off\r\n"
+            f'"{sys.executable}" "{impl}" %*\r\n')
+    else:
+        script = Path(tmp) / "codex"
+        script.write_text(encoding="utf-8", data=
+            "#!/bin/sh\n"
+            f'exec "{sys.executable}" "{impl}" "$@"\n')
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
     return script
 
 
