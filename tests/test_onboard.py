@@ -7,7 +7,9 @@ sqlite, invented CSV rows, tmp CRM roots. PII-safe by construction
 Run: .venv/bin/python -m unittest discover tests
 """
 import json
+import os
 import sqlite3
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -498,6 +500,46 @@ class DossierCostTests(unittest.TestCase):
         from server import models
         with mock.patch.object(models, "auth_mode", return_value=""):
             self.assertIn("Connect your AI", onboard._cost_line(40))
+
+
+class FdaAssistTest(unittest.TestCase):
+    """The PermissionFlow-style Full Disk Access assist: deep-link System
+    Settings to the exact pane, reveal the serving python in Finder, and
+    let the card's poll detect the grant. Mac-only, passive-refused."""
+
+    def test_off_mac_refuses_by_name(self):
+        with mock.patch.object(onboard.settings, "IS_MAC", False):
+            with self.assertRaises(ValueError):
+                onboard.fda_assist()
+
+    def test_passive_instance_refuses(self):
+        # A branch test copy must never pop windows on the owner's desktop.
+        with mock.patch.object(onboard.settings, "IS_MAC", True), \
+             mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(RuntimeError):
+                onboard.fda_assist()
+
+    def test_opens_the_pane_and_reveals_the_serving_python(self):
+        calls = []
+        with mock.patch.object(onboard.settings, "IS_MAC", True), \
+             mock.patch.dict(os.environ), \
+             mock.patch.object(onboard.subprocess, "run",
+                               side_effect=lambda a, **k: calls.append(a)):
+            os.environ.pop("VIRA_PASSIVE", None)
+            out = onboard.fda_assist()
+        self.assertTrue(out["opened"])
+        # The grant attaches to the interpreter actually serving Vira.
+        self.assertEqual(out["python"], sys.executable)
+        joined = ["\x00".join(c) for c in calls]
+        self.assertTrue(any("Privacy_AllFiles" in j for j in joined))
+        self.assertTrue(any("-R" in c for c in calls))
+
+    def test_status_names_the_serving_python(self):
+        # The card used to DERIVE this path client-side from crm.root and
+        # got it wrong on every install since the ~/.vira/crm default —
+        # the printed drag target did not exist. The server says which
+        # binary it runs as; the card must render that.
+        self.assertEqual(onboard.status()["python"], sys.executable)
 
 
 if __name__ == "__main__":

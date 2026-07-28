@@ -313,10 +313,52 @@ def _muse_prompt():
         f"CURRENT BACKLOG:\n{backlog}")
 
 
+# Prompt tokens that resolve to deterministic in-process refreshes — no
+# model session is launched, so they run fine on a machine with no AI.
+_INTERNAL_TOKENS = ("__refresh_groupings__", "__refresh_intros__",
+                    "__refresh_atlas__", "__refresh_reconnect__")
+
+
+# _ai_ready's probe shells out per provider, and a skipped routine stays
+# due (see dispatch), so the scheduler re-asks every tick — cache the
+# answer briefly to keep an AI-less machine's idle loop cheap.
+_AI_PROBE_TTL = 300
+_ai_cache = {"at": 0.0, "ok": False}
+
+
+def _ai_ready():
+    """Whether any provider is actually usable. A routine that launches a
+    model session on a machine with no AI connected can only mint a dead
+    job — which is exactly what a fresh install's first hour looked like
+    (2026-07-28: muse + system-map dispatched within a minute of first
+    boot, before the owner had connected anything, and sat in the ledger
+    with no outcome). Deterministic probe, no model call. A broken probe
+    must never silence routines, so errors read as ready."""
+    now = time.monotonic()
+    if now - _ai_cache["at"] < _AI_PROBE_TTL:
+        return _ai_cache["ok"]
+    try:
+        from . import models
+        ok = bool(models.connected())
+    except Exception:
+        ok = True
+    _ai_cache.update(at=now, ok=ok)
+    return ok
+
+
 def dispatch(r):
     """Dispatch one routine now. Returns {job_id} or {run_id}."""
     from . import circuits
     from . import session
+    if (r.get("prompt") or "") not in _INTERNAL_TOKENS and not _ai_ready():
+        # last_run is deliberately NOT stamped: the routine stays due, so
+        # it fires within a probe-cache window of the owner connecting an
+        # AI — instead of quietly losing a whole cadence period to the
+        # skip. The stamp (write-once, or the still-due routine would
+        # grind the store every tick) is what the Agent Loops panel shows.
+        if r.get("last_status") != "skipped — no AI connected":
+            _stamp(r["id"], last_status="skipped — no AI connected")
+        return {"skipped": "no_ai"}
     if r["kind"] == "circuit":
         cid = r.get("circuit_id") or ""
         run = circuits.start_run(cid, r.get("prompt") or r["name"],

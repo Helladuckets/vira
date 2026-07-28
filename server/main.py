@@ -1771,6 +1771,16 @@ def api_onboard_vault(req: OnboardVaultReq):
         raise HTTPException(400, str(e))
 
 
+@app.post("/api/onboard/fda-assist")
+def api_onboard_fda_assist():
+    try:
+        return onboard.fda_assist()
+    except RuntimeError as e:      # passive: refuse, don't pop windows
+        raise HTTPException(403, str(e))
+    except ValueError as e:        # off-Mac: the grant does not exist
+        raise HTTPException(400, str(e))
+
+
 # ---------- notifications (iMessage push on high-value inbound) ----------
 
 @app.get("/api/notify")

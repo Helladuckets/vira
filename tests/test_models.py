@@ -604,5 +604,41 @@ class ApiOnlyDraftRoutingTest(unittest.TestCase):
         note.assert_called_once()
 
 
+class InstallCommandTest(unittest.TestCase):
+    """The 2026-07-28 fresh-Mac wall: the Connect card handed over
+    `npm install -g @anthropic-ai/claude-code`, which writes to a
+    root-owned prefix and fails EACCES on a stock machine — admin or not.
+    The card must hand over the native installer, forked per platform,
+    because a command that fails on the reader's OS is worse than none."""
+
+    def test_anthropic_install_is_the_native_installer(self):
+        with mock.patch.object(models.settings, "IS_WIN", False):
+            cmd = models.install_command("anthropic")
+        self.assertIn("claude.ai/install.sh", cmd)
+        self.assertNotIn("npm", cmd)
+        self.assertNotIn("sudo", cmd)
+
+    def test_windows_gets_the_powershell_form(self):
+        with mock.patch.object(models.settings, "IS_WIN", True):
+            cmd = models.install_command("anthropic")
+        self.assertIn("install.ps1", cmd)
+        self.assertNotIn("curl", cmd)
+
+    def test_probe_carries_the_forked_command(self):
+        with mock.patch.object(models, "find_binary", return_value=""), \
+             mock.patch.object(models, "api_key", return_value=""):
+            rec = models.probe("anthropic")
+        self.assertEqual(rec["install_cmd"],
+                         models.install_command("anthropic"))
+
+    def test_openai_row_is_untouched(self):
+        # codex has no native installer; its npm line stays.
+        with mock.patch.object(models.settings, "IS_WIN", False):
+            self.assertIn("npm", models.install_command("openai"))
+
+    def test_unknown_provider_is_empty(self):
+        self.assertEqual(models.install_command("nosuch"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

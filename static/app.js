@@ -7447,7 +7447,12 @@ function rosterBlock(card, cat) {
   render();
 }
 
+// One grant-detection poll, ever — cardDisk re-renders on every dashboard
+// paint, and the outgoing card's poller must die with it.
+let fdaPoll = null;
+
 function cardDisk(card, step, st) {
+  if (fdaPoll) { fdaPoll.stop(); fdaPoll = null; }
   if (step.state === "skipped") {
     // Off-Mac there is nothing to grant; the card says why, by name.
     card.appendChild(el("p", "hint", step.detail));
@@ -7469,21 +7474,45 @@ function cardDisk(card, step, st) {
     "covers Vira alone."));
   stores();
   const steps = el("ol", "setup-steps");
-  ["Open System Settings > Privacy & Security > Full Disk Access",
-   "Add the Python below (drag it in, or use the + button)",
-   "Come back and hit Recheck — no restart needed"].forEach((t) =>
+  ["Hit Guide me — System Settings opens on the Full Disk Access pane, " +
+     "and Finder highlights the file to add",
+   "Drag that file into the Full Disk Access list (or use +) and flip " +
+     "its toggle on",
+   "That's it — Vira notices the grant on its own and this card flips " +
+     "green. No restart needed."].forEach((t) =>
     steps.appendChild(el("li", "", t)));
   card.appendChild(steps);
-  const path = (st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python";
+  // The server names the interpreter it is actually running as. The old
+  // client-side derivation from crm.root pointed at a directory that has
+  // no venv on any install since the ~/.vira/crm default — kept only as
+  // the fallback against an older server.
+  const path = st.python ||
+    ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
   const code = el("code", "setup-cmd", path);
   code.title = "click to copy";
   code.onclick = () => { copyText(path); toast("Path copied"); };
   card.appendChild(code);
   const row = el("div", "setup-row");
-  const rb = el("button", "btn primary", "Recheck");
+  const gb = el("button", "btn primary", "Guide me");
+  gb.onclick = () => setupAct(gb,
+    () => api("/api/onboard/fda-assist", { method: "POST" }),
+    () => "Drag the highlighted file into the Full Disk Access list");
+  row.appendChild(gb);
+  const rb = el("button", "btn", "Recheck");
   rb.onclick = () => loadSetup();
   row.appendChild(rb);
   card.appendChild(row);
+  // PermissionFlow beat: DETECT the grant when it lands, instead of
+  // asking the owner to come back and press a button. Dies with the card.
+  fdaPoll = startPoll(async (h) => {
+    if (!card.isConnected) { h.stop(); fdaPoll = null; return; }
+    const cur = await api("/api/onboard");
+    if ((cur.feed || {}).chat_db === "ok") {
+      h.stop(); fdaPoll = null;
+      toast("Full Disk Access granted");
+      loadSetup();
+    }
+  }, 5000);
 }
 
 // Per-card actions for contact-source tiles, keyed by the row's card name.

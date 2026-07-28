@@ -81,7 +81,15 @@ PROVIDERS = {
         # opens these in the default browser so "get a key" is one click.
         "key_url": "https://console.anthropic.com/settings/keys",
         "install_url": "https://claude.com/claude-code",
-        "install_cmd": "npm install -g @anthropic-ai/claude-code",
+        # The NATIVE installer, not npm. `npm install -g` writes to a
+        # root-owned prefix (/usr/local/lib/node_modules on a stock node)
+        # and fails EACCES without sudo — even for an admin. A fresh-Mac
+        # first run hit exactly that wall on 2026-07-28: our own card
+        # handed over the one command the machine could not run. The
+        # native installer needs no node and no sudo; it lands in
+        # ~/.local/bin, which find_binary already hunts.
+        "install_cmd": "curl -fsSL https://claude.ai/install.sh | bash",
+        "install_cmd_win": "irm https://claude.ai/install.ps1 | iex",
         # What each backend accepts. The CLI entries are ALIASES the binary
         # resolves itself — generation-free by construction, so they cannot
         # rot. The API list is deliberately EMPTY: see MODEL SOURCES below.
@@ -240,6 +248,17 @@ def cli_models(pid):
     return []
 
 
+def install_command(pid):
+    """The command a card hands over to INSTALL a provider's CLI —
+    platform-forked, because a command that fails on the reader's OS is
+    worse than none (the login_command discipline, applied one step
+    earlier in the funnel)."""
+    spec = PROVIDERS.get(pid) or {}
+    if settings.IS_WIN and spec.get("install_cmd_win"):
+        return spec["install_cmd_win"]
+    return spec.get("install_cmd", "")
+
+
 def login_command(pid, binary=None):
     """The exact command a terminal needs to sign this provider in.
 
@@ -363,7 +382,7 @@ def probe(pid):
         "login_cmd": login_cmd,
         "key_url": spec.get("key_url", ""),
         "install_url": spec.get("install_url", ""),
-        "install_cmd": spec.get("install_cmd", ""),
+        "install_cmd": install_command(pid),
         "connected": auth in (SIGNED_IN, KEY),
         "action": _action_for(spec, binary, auth, login_cmd),
     }
