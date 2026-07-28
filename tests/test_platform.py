@@ -5,7 +5,9 @@ asserts the module answers with its honest fallback — the contract that
 lets one codebase boot on a Mac with everything, a Mac before Full Disk
 Access, and a Windows/Linux machine with none of the Apple stores.
 """
+import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -111,6 +113,22 @@ class QochaBinTests(unittest.TestCase):
             self.assertEqual(onboard._qocha_bin().name, "qocha.exe")
         with mock.patch.object(onboard.settings, "IS_WIN", False):
             self.assertEqual(onboard._qocha_bin().name, "qocha")
+
+
+class AgentInstallScriptTests(unittest.TestCase):
+    """agent-install.sh is the one command AGENTS.md and the README hand a
+    stranger (or a strange AI); a parse error there is a broken front
+    door. Windows installs ship run.ps1 instead, so posix-only is honest,
+    not a portability gap."""
+
+    @unittest.skipUnless(os.name == "posix",
+                         "the posix installer; Windows ships run.ps1")
+    def test_script_parses(self):
+        root = Path(__file__).resolve().parents[1]
+        r = subprocess.run(
+            ["bash", "-n", str(root / "scripts" / "agent-install.sh")],
+            capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr.decode())
 
 
 if __name__ == "__main__":

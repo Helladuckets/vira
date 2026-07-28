@@ -7235,15 +7235,26 @@ function provCard(card, pr, st, ai) {
       row.appendChild(use);
     }
   } else if (pr.present && pr.login_cmd) {
-    // The login flow is interactive and belongs to the owner — Vira shows
-    // the command rather than running an auth flow on their behalf.
+    // Vira drives the auth flow itself (owner's ruling, 2026-07-28 — the
+    // copy-a-command-into-a-terminal round trip was the disaster). The
+    // owner still owns the account: they approve in the browser and paste
+    // the code; the terminal command survives as the fallback.
+    loginFlow(pr.id, pr.sub_name, card, async () => {
+      if (!ai.active_id) {
+        try { await aiConnect({ provider: pr.id }); } catch { /* shown */ }
+      }
+      loadSetup();
+    });
+    const det = el("details", "fr-alt");
+    det.appendChild(el("summary", "", "prefer a terminal?"));
     const cmd = el("code", "setup-cmd", pr.login_cmd);
     cmd.title = "click to copy";
     cmd.onclick = () => { copyText(pr.login_cmd); toast("Command copied"); };
-    row.appendChild(cmd);
+    det.appendChild(cmd);
     const rb = el("button", "btn", "Recheck");
     rb.onclick = () => loadSetup();
-    row.appendChild(rb);
+    det.appendChild(rb);
+    card.appendChild(det);
   } else if (pr.install_cmd) {
     card.appendChild(el("p", "hint",
       `Sign in with your ${pr.sub_name} subscription by installing its ` +
@@ -7447,7 +7458,99 @@ function rosterBlock(card, cat) {
   render();
 }
 
+// The in-app sign-in: Vira drives the CLI's own login flow server-side —
+// the browser pops on this machine, the owner approves there, pastes the
+// code here, and the card flips green. No terminal. Shared by the
+// first-run welcome and the Config provider cards.
+function loginFlow(pid, subName, mount, onDone, big) {
+  let poll = null;
+  const box = el("div", "login-flow");
+  const btn = el("button", "btn primary" + (big ? " fr-big" : ""),
+    "Sign in with " + subName);
+  const stat = el("p", "hint");
+  stat.hidden = true;
+  const linkP = el("p", "hint");
+  linkP.hidden = true;
+  const row = el("div", big ? "fr-row" : "setup-row");
+  row.hidden = true;
+  const inp = el("input");
+  inp.className = "search";
+  inp.placeholder = "paste the code from the browser";
+  inp.autocomplete = "off";
+  const send = el("button", "btn primary", "Finish sign-in");
+  row.appendChild(inp);
+  row.appendChild(send);
+  const stop = () => { if (poll) { poll.stop(); poll = null; } };
+  const reset = () => {
+    btn.disabled = false;
+    btn.textContent = "Sign in with " + subName;
+    row.hidden = true;
+    send.disabled = false;
+    send.textContent = "Finish sign-in";
+  };
+  const paint = (st) => {
+    if (st.connected) { stop(); toast(subName + " connected"); onDone(); return; }
+    if (st.error) { stop(); stat.hidden = false; stat.textContent = st.error; reset(); return; }
+    if (st.running) {
+      btn.textContent = "waiting for the browser…";
+      stat.hidden = false;
+      stat.textContent = "Approve in the browser window that just opened, " +
+        "then paste the code it gives you:";
+      row.hidden = false;
+      if (st.url && linkP.hidden) {
+        linkP.hidden = false;
+        linkP.appendChild(el("span", "", "Browser didn't open? "));
+        const a = el("a", "", "open the sign-in page");
+        a.href = st.url;
+        a.target = "_blank";
+        a.rel = "noopener";
+        linkP.appendChild(a);
+      }
+    }
+  };
+  btn.onclick = async () => {
+    btn.disabled = true;
+    btn.textContent = "starting…";
+    try {
+      paint(await post("/api/onboard/login", { provider: pid }));
+      stop();
+      poll = startPoll(async (h) => {
+        if (!box.isConnected) { h.stop(); return; }
+        paint(await api("/api/onboard/login/" + pid));
+      }, 2000);
+    } catch (e) {
+      toast(e.message || "sign-in failed to start");
+      reset();
+    }
+  };
+  send.onclick = async () => {
+    if (!inp.value.trim()) { toast("Paste the code first"); return; }
+    send.disabled = true;
+    send.textContent = "finishing…";
+    try {
+      await post("/api/onboard/login/code", { provider: pid, code: inp.value });
+      send.textContent = "checking…";
+    } catch (e) {
+      toast(e.message || "code refused");
+      send.disabled = false;
+      send.textContent = "Finish sign-in";
+    }
+  };
+  box.appendChild(btn);
+  box.appendChild(stat);
+  box.appendChild(linkP);
+  box.appendChild(row);
+  mount.appendChild(box);
+  return box;
+}
+
+
+// One grant-detection poll, ever — cardDisk re-renders on every dashboard
+// paint, and the outgoing card's poller must die with it.
+let fdaPoll = null;
+
 function cardDisk(card, step, st) {
+  if (fdaPoll) { fdaPoll.stop(); fdaPoll = null; }
   if (step.state === "skipped") {
     // Off-Mac there is nothing to grant; the card says why, by name.
     card.appendChild(el("p", "hint", step.detail));
@@ -7469,21 +7572,45 @@ function cardDisk(card, step, st) {
     "covers Vira alone."));
   stores();
   const steps = el("ol", "setup-steps");
-  ["Open System Settings > Privacy & Security > Full Disk Access",
-   "Add the Python below (drag it in, or use the + button)",
-   "Come back and hit Recheck — no restart needed"].forEach((t) =>
+  ["Hit Guide me — System Settings opens on the Full Disk Access pane, " +
+     "and Finder highlights the file to add",
+   "Drag that file into the Full Disk Access list (or use +) and flip " +
+     "its toggle on",
+   "That's it — Vira notices the grant on its own and this card flips " +
+     "green. No restart needed."].forEach((t) =>
     steps.appendChild(el("li", "", t)));
   card.appendChild(steps);
-  const path = (st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python";
+  // The server names the interpreter it is actually running as. The old
+  // client-side derivation from crm.root pointed at a directory that has
+  // no venv on any install since the ~/.vira/crm default — kept only as
+  // the fallback against an older server.
+  const path = st.python ||
+    ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
   const code = el("code", "setup-cmd", path);
   code.title = "click to copy";
   code.onclick = () => { copyText(path); toast("Path copied"); };
   card.appendChild(code);
   const row = el("div", "setup-row");
-  const rb = el("button", "btn primary", "Recheck");
+  const gb = el("button", "btn primary", "Guide me");
+  gb.onclick = () => setupAct(gb,
+    () => api("/api/onboard/fda-assist", { method: "POST" }),
+    () => "Drag the highlighted file into the Full Disk Access list");
+  row.appendChild(gb);
+  const rb = el("button", "btn", "Recheck");
   rb.onclick = () => loadSetup();
   row.appendChild(rb);
   card.appendChild(row);
+  // PermissionFlow beat: DETECT the grant when it lands, instead of
+  // asking the owner to come back and press a button. Dies with the card.
+  fdaPoll = startPoll(async (h) => {
+    if (!card.isConnected) { h.stop(); fdaPoll = null; return; }
+    const cur = await api("/api/onboard");
+    if ((cur.feed || {}).chat_db === "ok") {
+      h.stop(); fdaPoll = null;
+      toast("Full Disk Access granted");
+      loadSetup();
+    }
+  }, 5000);
 }
 
 // Per-card actions for contact-source tiles, keyed by the row's card name.
@@ -7842,13 +7969,46 @@ async function maybeFirstrun() {
   const ai = (flow.steps || []).find((s) => s.id === "ai");
   if (!ai) return;
   if (ai.state === "done") {
-    // An existing install adopts the flag silently — the welcome is for
-    // strangers, not for someone whose Vira already runs.
+    // The machine is already signed in, so Vira connects itself. A FRESH
+    // install (still on fixture data) gets told so, once — that screen IS
+    // the "clone it and it just works" moment. An existing install adopts
+    // the flag silently: the welcome is for strangers, not for someone
+    // whose Vira already runs.
+    const pr = (ai.providers || []).find((p) => p.connected);
+    let fresh = false;
+    try { fresh = !!(await api("/api/onboard")).fixture_mode; } catch { }
+    if (fresh && pr) {
+      frAi = ai;
+      openFirstrun();
+      aiConnect({ provider: pr.id }).catch(() => { });
+      frAlready(pr);
+      return;
+    }
     frMarkDone();
     return;
   }
   frAi = ai;
   openFirstrun();
+}
+
+// The zero-click path: nothing to configure, so the screen only announces.
+function frAlready(pr) {
+  const b = frBody();
+  if (!b) return;
+  b.appendChild(el("div", "fr-kicker", "Connected"));
+  b.appendChild(el("h1", "fr-title", "You're already set"));
+  b.appendChild(el("p", "fr-sub",
+    `This machine is signed in to ${pr.sub_name}, so Vira connected ` +
+    "itself — replies in your voice, dossiers, and the daily brief all " +
+    "run on your own account. Nothing to configure."));
+  const row = el("div", "fr-row");
+  const go = el("button", "btn primary fr-big", "Take me to Vira");
+  go.onclick = () => closeFirstrun();
+  row.appendChild(go);
+  b.appendChild(row);
+  b.appendChild(el("p", "fr-note",
+    "Optional extras — contacts, mail, your notes — live in Config, " +
+    "whenever you want them."));
 }
 
 function openFirstrun() {
@@ -7953,11 +8113,17 @@ function frConnect(pid) {
 
   if (pr.present && pr.login_cmd) {
     b.appendChild(el("p", "fr-sub",
-      `The ${pr.sub_name} command line is already on this machine. Sign in ` +
-      "with your subscription — copy this into a terminal and follow the " +
-      "browser prompt:"));
-    b.appendChild(frCmd(pr.login_cmd));
-    b.appendChild(frCheckBtn(pid, "I signed in — check"));
+      `The ${pr.sub_name} command line is already on this machine — one ` +
+      "click, approve in your browser, done:"));
+    loginFlow(pr.id, pr.sub_name, b, async () => {
+      try { await aiConnect({ provider: pr.id }); } catch { /* toasted */ }
+      frFinish(pr);
+    }, true);
+    const det = el("details", "fr-alt");
+    det.appendChild(el("summary", "", "prefer a terminal?"));
+    det.appendChild(frCmd(pr.login_cmd));
+    det.appendChild(frCheckBtn(pid, "I signed in — check", true));
+    b.appendChild(det);
     b.appendChild(el("div", "fr-or", "or use an API key"));
   } else if (pr.install_cmd) {
     b.appendChild(el("p", "fr-sub",

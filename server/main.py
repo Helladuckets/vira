@@ -1715,6 +1715,11 @@ class OnboardAiReq(BaseModel):
     model: str | None = None
 
 
+class OnboardLoginReq(BaseModel):
+    provider: str
+    code: str | None = None            # the pasted OAuth code (code route)
+
+
 @app.get("/api/onboard")
 def api_onboard():
     return onboard.status()
@@ -1769,6 +1774,46 @@ def api_onboard_vault(req: OnboardVaultReq):
         return onboard.vault_setup(req.path, req.init)
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/fda-assist")
+def api_onboard_fda_assist():
+    try:
+        return onboard.fda_assist()
+    except RuntimeError as e:      # passive: refuse, don't pop windows
+        raise HTTPException(403, str(e))
+    except ValueError as e:        # off-Mac: the grant does not exist
+        raise HTTPException(400, str(e))
+
+
+# ---------- the driven sign-in (no terminal) ----------
+
+@app.post("/api/onboard/login")
+def api_onboard_login(req: OnboardLoginReq):
+    try:
+        return models.login_start(req.provider)
+    except RuntimeError as e:      # passive test instance
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/login/code")
+def api_onboard_login_code(req: OnboardLoginReq):
+    try:
+        return models.login_code(req.provider, req.code or "")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/onboard/login/cancel")
+def api_onboard_login_cancel(req: OnboardLoginReq):
+    return models.login_cancel(req.provider)
+
+
+@app.get("/api/onboard/login/{pid}")
+def api_onboard_login_status(pid: str):
+    return models.login_status(pid)
 
 
 # ---------- notifications (iMessage push on high-value inbound) ----------

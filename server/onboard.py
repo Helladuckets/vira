@@ -486,6 +486,13 @@ def status():
     return {
         "fixture_mode": settings.fixture_mode(),
         "crm": {"root": str(root), "people": people, "profiles": profiles},
+        # The interpreter actually serving Vira — the file the Full Disk
+        # Access grant attaches to. The card used to DERIVE this path
+        # client-side from crm.root, which is a different directory on
+        # every install since the ~/.vira/crm default landed; the drag
+        # target it printed did not exist. The server knows exactly which
+        # binary it is running as; say that.
+        "python": sys.executable,
         "feed": {"chat_db": sources.chatdb_state()},
         "contacts": {"apple_sources": len(sources.addressbook_dbs())},
         "vault": {"root": vraw, "connected": vault_ok,
@@ -497,6 +504,27 @@ def status():
         # so Setup cards can speak honestly about where keys are stored.
         "platform": sources._platform(),
     }
+
+
+def fda_assist():
+    """PermissionFlow-style assist for the Full Disk Access grant: open
+    System Settings on the exact pane AND reveal the serving python in
+    Finder, so the drag source and the drop target are both on screen at
+    once. A browser app cannot animate a helper beside System Settings or
+    follow its window the way a native flow can; deep-link + reveal + the
+    card's grant-detection poll are the reachable beats, and the card's
+    copy carries the rest."""
+    if not settings.IS_MAC:
+        raise ValueError("Full Disk Access is a macOS grant")
+    if os.environ.get("VIRA_PASSIVE"):
+        raise RuntimeError("passive test instance — not opening windows "
+                           "on the owner's desktop")
+    py = sys.executable
+    subprocess.run(["open", "-R", py], check=False, timeout=10)
+    subprocess.run(["open", "x-apple.systempreferences:"
+                    "com.apple.preference.security?Privacy_AllFiles"],
+                   check=False, timeout=10)
+    return {"opened": True, "python": py}
 
 
 def set_provider(pid, api_key=None, model=None):

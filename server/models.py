@@ -81,7 +81,15 @@ PROVIDERS = {
         # opens these in the default browser so "get a key" is one click.
         "key_url": "https://console.anthropic.com/settings/keys",
         "install_url": "https://claude.com/claude-code",
-        "install_cmd": "npm install -g @anthropic-ai/claude-code",
+        # The NATIVE installer, not npm. `npm install -g` writes to a
+        # root-owned prefix (/usr/local/lib/node_modules on a stock node)
+        # and fails EACCES without sudo — even for an admin. A fresh-Mac
+        # first run hit exactly that wall on 2026-07-28: our own card
+        # handed over the one command the machine could not run. The
+        # native installer needs no node and no sudo; it lands in
+        # ~/.local/bin, which find_binary already hunts.
+        "install_cmd": "curl -fsSL https://claude.ai/install.sh | bash",
+        "install_cmd_win": "irm https://claude.ai/install.ps1 | iex",
         # What each backend accepts. The CLI entries are ALIASES the binary
         # resolves itself — generation-free by construction, so they cannot
         # rot. The API list is deliberately EMPTY: see MODEL SOURCES below.
@@ -240,6 +248,17 @@ def cli_models(pid):
     return []
 
 
+def install_command(pid):
+    """The command a card hands over to INSTALL a provider's CLI —
+    platform-forked, because a command that fails on the reader's OS is
+    worse than none (the login_command discipline, applied one step
+    earlier in the funnel)."""
+    spec = PROVIDERS.get(pid) or {}
+    if settings.IS_WIN and spec.get("install_cmd_win"):
+        return spec["install_cmd_win"]
+    return spec.get("install_cmd", "")
+
+
 def login_command(pid, binary=None):
     """The exact command a terminal needs to sign this provider in.
 
@@ -267,6 +286,131 @@ def login_command(pid, binary=None):
     if settings.sandboxed():
         cmd = f"HOME={shlex.quote(str(Path.home()))} {cmd}"
     return cmd
+
+
+# ---------- driven sign-in (the in-app login flow) -------------------------
+# The CLI login flows run fine with no TTY: they try to open the browser
+# themselves, print the OAuth URL as a fallback, and wait on stdin for the
+# pasted code (verified live 2026-07-28 against `claude auth login` under a
+# fake HOME). So Vira drives the whole thing from a card: the server spawns
+# the login, the browser pops on this same machine, the owner approves and
+# pastes the code into the card. No terminal. ONE login at a time — two
+# concurrent flows would fight over the browser and over whoever is pasting
+# codes.
+
+LOGIN_TIMEOUT = 600
+_login_lock = threading.Lock()
+_login = {"pid": "", "proc": None, "out": None, "started": 0.0, "error": ""}
+_LOGIN_URL_RE = re.compile(r"https://\S+")
+
+
+def _login_pump(proc, buf):
+    try:
+        for line in proc.stdout:
+            buf.append(line)
+            if len(buf) > 200:
+                del buf[: len(buf) - 200]
+    except Exception:  # noqa: BLE001 — a dead pipe just ends the pump
+        pass
+
+
+def _login_kill(proc):
+    try:
+        proc.terminate()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def login_start(pid):
+    """Spawn the provider's own login flow, server-side. Vira runs on the
+    owner's machine, so the browser the CLI opens is the owner's browser —
+    the same trick the Full Disk Access assist uses. The account boundary
+    holds: Vira drives the plumbing, the OWNER approves in the browser and
+    pastes the code."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise RuntimeError("passive test instance — sign in on the live Vira")
+    spec = PROVIDERS.get(pid)
+    if not spec or not spec.get("login_args"):
+        raise ValueError(f"{pid}: no sign-in flow — connect with an API key")
+    binary = find_binary(pid)
+    if not binary:
+        raise ValueError(f"{spec['bin']} is not installed yet")
+    with _login_lock:
+        proc = _login["proc"]
+        if proc and proc.poll() is None:
+            if _login["pid"] == pid:
+                pass                   # already in flight — report, don't fork
+            else:
+                _login_kill(proc)
+                proc = None
+        if not (proc and proc.poll() is None):
+            buf = []
+            p = subprocess.Popen(
+                [binary] + list(spec["login_args"]),
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                errors="replace", env=settings.strip_env(),
+                start_new_session=True)
+            _login.update(pid=pid, proc=p, out=buf, started=time.time(),
+                          error="")
+            threading.Thread(target=_login_pump, args=(p, buf), daemon=True,
+                             name="vira-login-pump").start()
+    return login_status(pid)
+
+
+def login_code(pid, code):
+    """Hand the pasted OAuth code to the waiting login process."""
+    code = (code or "").strip()
+    if not code:
+        raise ValueError("paste the code first")
+    with _login_lock:
+        proc = _login["proc"]
+        if _login["pid"] != pid or not proc or proc.poll() is not None:
+            raise ValueError("no sign-in is waiting for a code — start again")
+        try:
+            proc.stdin.write(code + "\n")
+            proc.stdin.flush()
+        except Exception as e:  # noqa: BLE001
+            raise ValueError(f"could not hand the code over: {e}")
+    return {"submitted": True}
+
+
+def login_cancel(pid):
+    with _login_lock:
+        proc = _login["proc"]
+        if proc and proc.poll() is None and _login["pid"] == pid:
+            _login_kill(proc)
+            _login["error"] = "canceled"
+    return {"canceled": True}
+
+
+def login_status(pid):
+    """Where the driven sign-in stands: running, the OAuth URL once the CLI
+    prints it, and — after the process exits cleanly — whether the login
+    actually took (asked of the CLI itself, never inferred from output)."""
+    with _login_lock:
+        mine = _login["pid"] == pid
+        proc = _login["proc"] if mine else None
+        out = "".join(_login["out"] or []) if mine else ""
+        started = _login["started"] if mine else 0.0
+        error = _login["error"] if mine else ""
+        running = bool(proc and proc.poll() is None)
+        if running and time.time() - started > LOGIN_TIMEOUT:
+            _login_kill(proc)
+            running = False
+            error = "sign-in timed out — start it again"
+            _login["error"] = error
+        exit_code = proc.poll() if (proc and not running) else None
+    m = _LOGIN_URL_RE.search(out)
+    connected = False
+    if mine and not running and exit_code == 0:
+        connected = bool((probe(pid) or {}).get("connected"))
+    if mine and not running and exit_code not in (None, 0) and not error:
+        tail = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        error = tail[-1][:200] if tail else f"sign-in exited ({exit_code})"
+    return {"provider": pid, "running": running,
+            "url": m.group(0) if m else "",
+            "connected": connected, "error": error}
 
 
 def api_key(pid):
@@ -363,7 +507,7 @@ def probe(pid):
         "login_cmd": login_cmd,
         "key_url": spec.get("key_url", ""),
         "install_url": spec.get("install_url", ""),
-        "install_cmd": spec.get("install_cmd", ""),
+        "install_cmd": install_command(pid),
         "connected": auth in (SIGNED_IN, KEY),
         "action": _action_for(spec, binary, auth, login_cmd),
     }

@@ -520,12 +520,46 @@ class RoutineTests(unittest.TestCase):
     def test_room_scout_with_no_rooms_is_a_quiet_noop(self):
         from server import readingroom
         row = routines.get_routine("room-scout")
-        with mock.patch.object(readingroom, "refresh_all_prompt",
+        with mock.patch.object(routines, "_ai_ready", return_value=True), \
+             mock.patch.object(readingroom, "refresh_all_prompt",
                                return_value=""):
             out = routines.dispatch(row)
         self.assertEqual(out.get("internal"), "no_rooms")
         row = routines.get_routine("room-scout")
         self.assertEqual(row.get("last_status"), "done")
+
+    def test_dispatch_skips_session_routines_with_no_ai(self):
+        # The fresh-install regression (2026-07-28): muse + system-map
+        # dispatched within a minute of first boot, before any provider
+        # was connected, and sat in the ledger with no outcome.
+        row = routines.get_routine("muse")
+        with mock.patch.object(routines, "_ai_ready", return_value=False):
+            out = routines.dispatch(row)
+        self.assertEqual(out, {"skipped": "no_ai"})
+        row = routines.get_routine("muse")
+        self.assertEqual(row.get("last_status"), "skipped — no AI connected")
+        # last_run deliberately unstamped: the routine stays due, so it
+        # fires soon after an AI connects instead of a cadence later.
+        self.assertFalse(row.get("last_run"))
+
+    def test_internal_refreshes_run_without_ai(self):
+        # The deterministic refresh tokens launch no session; a machine
+        # with no AI still keeps its graphs current.
+        row = routines.get_routine("intro-scout")
+        with mock.patch.object(routines, "_ai_ready", return_value=False), \
+             mock.patch.object(radar, "refresh_groupings"):
+            out = routines.dispatch(row)
+        self.assertEqual(out.get("internal"), "refresh_groupings")
+
+    def test_dispatch_launches_once_ai_is_connected(self):
+        from server import session
+        row = routines.get_routine("muse")
+        with mock.patch.object(routines, "_ai_ready", return_value=True), \
+             mock.patch.object(session.sessions, "launch",
+                               return_value="j-test") as launch:
+            out = routines.dispatch(row)
+        self.assertEqual(out, {"job_id": "j-test"})
+        launch.assert_called_once()
 
     def test_due_daily_at(self):
         r = {"enabled": True, "daily_at": "07:30", "last_run": None}

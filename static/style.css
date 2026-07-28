@@ -3868,6 +3868,11 @@ a.rm-name:hover { color: var(--accent); }
 }
 .fr-sub { color: var(--text); font-size: 14.5px; margin: 0 0 16px; }
 .fr-note { color: var(--text-dim); font-size: 12.5px; margin: 14px 0 0; }
+.login-flow { display: flex; flex-direction: column; gap: 10px; margin: 10px 0; }
+.login-flow .hint { margin: 0; }
+.fr-alt { margin-top: 14px; }
+.fr-alt summary { cursor: pointer; color: var(--text-dim); font-size: 12.5px; }
+.fr-alt[open] summary { margin-bottom: 8px; }
 .fr-tiles {
   display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
 }
