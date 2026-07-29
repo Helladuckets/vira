@@ -7368,6 +7368,7 @@ async function loadSetup() {
   setupExtra = extra;
   renderSetup(flow, st);
   launchUnlocked(flow);
+  refreshGates(flow);   // a reveal-gated window undresses when its data lands
   if (st.dossiers && st.dossiers.running) pollSetup();
 }
 
@@ -7398,6 +7399,7 @@ function pollSetup() {
     setupSt = st;
     renderSetup(flow, st);
     launchUnlocked(flow);
+    refreshGates(flow);
     if (!st.dossiers || !st.dossiers.running) {
       h.stop(); setupPollTimer = null;
       toast("Dossier build finished");
@@ -7540,7 +7542,9 @@ function renderSetup(flow, st) {
       render: (card) => {
         ({ disk: cardDisk, contacts: cardContacts, dossiers: cardDossiers,
            brain: cardBrain, mail: cardMail }[id] || cardMail)(card, s, st);
-        if (s.unlocks && s.state !== "done")
+        // The disk card carries its own feature list (owner's call,
+        // 2026-07-28) — the generic unlocks foot would just repeat it.
+        if (s.unlocks && s.state !== "done" && id !== "disk")
           card.appendChild(el("p", "setup-unlocks", "Unlocks " + s.unlocks));
       },
     };
@@ -7970,6 +7974,10 @@ function loginFlow(pid, subName, mount, onDone, big) {
 // One grant-detection poll, ever — cardDisk re-renders on every dashboard
 // paint, and the outgoing card's poller must die with it.
 let fdaPoll = null;
+// Whether Guide me has been hit this sitting — the how-to steps and the
+// interpreter path render only then, and must survive the dashboard
+// re-render that setupAct triggers.
+let fdaGuided = false;
 
 function cardDisk(card, step, st) {
   if (fdaPoll) { fdaPoll.stop(); fdaPoll = null; }
@@ -7978,45 +7986,68 @@ function cardDisk(card, step, st) {
     card.appendChild(el("p", "hint", step.detail));
     return;
   }
-  const stores = () => (step.sources || []).forEach((row) =>
-    card.appendChild(srcTile(row, { on: "readable", ready: "needs access" })));
   const state = st.feed.chat_db;
   if (state === "ok") {
+    fdaGuided = false;
     card.appendChild(el("p", "hint setup-ok",
-      "Granted — Vira can read this Mac's Messages, contacts and calendar."));
-    stores();
+      "Granted — Vira reads this Mac directly."));
     return;
   }
+  // ONE subject (owner's call, 2026-07-28): this card sells Full Disk
+  // Access and nothing else. The source tiles that used to render here
+  // (iMessage / Apple Calendar with NOT FOUND states) read as extra setup
+  // items and buried the single action; the how-to appears once Guide me
+  // is hit, which is the moment it is needed.
   card.appendChild(el("p", "hint",
-    "Vira reads your messages, contacts and calendar directly from this " +
-    "Mac — nothing is uploaded to do it. macOS gates those files behind " +
-    "Full Disk Access, granted to Vira's own Python so the permission " +
-    "covers Vira alone."));
-  stores();
-  const steps = el("ol", "setup-steps");
-  ["Hit Guide me — System Settings opens on the Full Disk Access pane, " +
-     "and Finder highlights the file to add",
-   "Drag that file into the Full Disk Access list (or use +) and flip " +
-     "its toggle on",
-   "That's it — Vira notices the grant on its own and this card flips " +
-     "green. No restart needed."].forEach((t) =>
-    steps.appendChild(el("li", "", t)));
-  card.appendChild(steps);
-  // The server names the interpreter it is actually running as. The old
-  // client-side derivation from crm.root pointed at a directory that has
-  // no venv on any install since the ~/.vira/crm default — kept only as
-  // the fallback against an older server.
-  const path = st.python ||
-    ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
-  const code = el("code", "setup-cmd", path);
-  code.title = "click to copy";
-  code.onclick = () => { copyText(path); toast("Path copied"); };
-  card.appendChild(code);
+    "One macOS permission lets Vira read this Mac directly — nothing is " +
+    "uploaded, and the grant covers Vira's own Python alone. It switches " +
+    "on most of what Vira does:"));
+  const brags = el("ul", "setup-brags");
+  ["Your entire iMessage history becomes searchable — every photo, link, " +
+     "and document ever shared",
+   "The Daily Brief reads your calendar: today, tomorrow, conflicts, " +
+     "birthdays",
+   "Incoming texts arrive with instant context on who's writing and " +
+     "what's open with them",
+   "Dossiers write themselves from real conversation history",
+   "Ask for 'the PDF Alex sent in March' and Vira finds it",
+   "Owed replies and friends going quiet surface on their own",
+  ].forEach((t) => brags.appendChild(el("li", "", t)));
+  card.appendChild(brags);
+  const guideBox = el("div", "");
+  const fillGuide = () => {
+    const steps = el("ol", "setup-steps");
+    ["System Settings is opening on the Full Disk Access pane, and " +
+       "Finder is highlighting the file to add",
+     "Drag that file into the Full Disk Access list (or use +) and flip " +
+       "its toggle on",
+     "That's it — Vira notices the grant on its own and this card flips " +
+       "green. No restart needed."].forEach((t) =>
+      steps.appendChild(el("li", "", t)));
+    guideBox.appendChild(steps);
+    // The server names the interpreter it is actually running as. The old
+    // client-side derivation from crm.root pointed at a directory that has
+    // no venv on any install since the ~/.vira/crm default — kept only as
+    // the fallback against an older server.
+    const path = st.python ||
+      ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
+    const code = el("code", "setup-cmd", path);
+    code.title = "click to copy";
+    code.onclick = () => { copyText(path); toast("Path copied"); };
+    guideBox.appendChild(code);
+  };
+  if (fdaGuided) fillGuide();
+  card.appendChild(guideBox);
   const row = el("div", "setup-row");
   const gb = el("button", "btn primary", "Guide me");
-  gb.onclick = () => setupAct(gb,
-    () => api("/api/onboard/fda-assist", { method: "POST" }),
-    () => "Drag the highlighted file into the Full Disk Access list");
+  gb.onclick = () => {
+    // The how-to appears the instant the click lands — never gated on the
+    // assist call round-tripping (a failed call must not eat the steps).
+    if (!fdaGuided) { fdaGuided = true; fillGuide(); }
+    setupAct(gb,
+      () => api("/api/onboard/fda-assist", { method: "POST" }),
+      () => "Drag the highlighted file into the Full Disk Access list");
+  };
   row.appendChild(gb);
   const rb = el("button", "btn", "Recheck");
   rb.onclick = () => loadSetup();
@@ -8362,6 +8393,8 @@ function cardUpdates(card) {
 // else lives in the Config dashboard. Re-run from Config > System.
 
 let frAi = null;                 // the ai step record (providers + active_id)
+let frFlow = null;               // the full step flow — the reveal derives its
+                                 // gates from these states, never a static map
 
 function frMarkDone() {
   uiPush("vira-firstrun-done", lsSet("vira-firstrun-done", true));
@@ -8388,6 +8421,7 @@ async function maybeFirstrun() {
   if (lsGet("vira-firstrun-done", false)) return;
   let flow;
   try { flow = await api("/api/onboard/steps"); } catch { return; }
+  frFlow = flow;
   const ai = (flow.steps || []).find((s) => s.id === "ai");
   if (!ai) return;
   if (ai.state === "done") {
@@ -8425,7 +8459,7 @@ function frAlready(pr) {
     "run on your own account. Nothing to configure."));
   const row = el("div", "fr-row");
   const go = el("button", "btn primary fr-big", "Take me to Vira");
-  go.onclick = () => closeFirstrun();
+  go.onclick = () => frFinish(pr);   // same splash + reveal as a fresh connect
   row.appendChild(go);
   b.appendChild(row);
   b.appendChild(el("p", "fr-note",
@@ -8459,6 +8493,7 @@ function closeFirstrun() {
 async function frRefresh(pid) {
   const flow = await api("/api/onboard/steps").catch(() => null);
   if (!flow) return;
+  frFlow = flow;
   frAi = (flow.steps || []).find((s) => s.id === "ai") || frAi;
   if (pid) frConnect(pid);
   else frPick();
@@ -8617,28 +8652,116 @@ function frCheckBtn(pid, label, plain) {
   return rb;
 }
 
-// Screen 3 — connected.
+// Screen 3 — connected. Not a card with buttons anymore (owner's call,
+// 2026-07-28): the card becomes a short splash, then the blur lifts and the
+// desk comes alive (aiReveal). No click between connecting and seeing Vira.
 function frFinish(pr) {
   const b = frBody();
   if (!b) return;
-  b.appendChild(el("div", "fr-kicker", "Connected"));
-  b.appendChild(el("h1", "fr-title", "Vira is alive"));
-  b.appendChild(el("p", "fr-sub",
-    `Everything Vira writes for you — replies in your voice, dossiers, the ` +
-    `daily brief — now runs on ${pr.label}, under your own account.`));
-  b.appendChild(el("p", "fr-note",
-    "The rest is optional: contacts, mail, and your notes plug in from " +
-    "Config whenever you like."));
-  const row = el("div", "fr-row");
-  const go = el("button", "btn primary fr-big", "Take me to Vira");
-  go.onclick = () => closeFirstrun();
-  const cfg = el("button", "btn", "Open Config");
-  cfg.onclick = () => { closeFirstrun(); openApp("setup"); };
-  row.appendChild(go);
-  row.appendChild(cfg);
-  b.appendChild(row);
-  confettiAt(b);
   loadSetup().catch(() => {});      // the dashboard behind it goes green
+  b.appendChild(el("div", "fr-kicker", "Connected"));
+  const splash = el("div", "fr-splash");
+  splash.appendChild(el("div", "fr-ring"));
+  splash.appendChild(el("h1", "fr-title fr-got", "Oh — I've got it."));
+  splash.appendChild(el("p", "fr-sub",
+    `Vira is running on ${pr.label}, under your own account. ` +
+    "Here's what wakes up right away."));
+  b.appendChild(splash);
+  confettiAt(splash);
+  setTimeout(aiReveal, REDUCED_MOTION ? 300 : 1900);
+}
+
+// ---- the reveal: the desk comes alive ---------------------------------
+// The blur lifts and the modules that run on AI alone pop open live; the
+// ones that need this Mac's data sit in focus but muted gray, wearing a
+// watermark that names the ONE thing that wakes them (click-through to the
+// right Config row). Gates derive from the live step states — on a machine
+// whose contacts are already imported, People opens live, never gated.
+
+function sceneGates(flow) {
+  const done = (id) =>
+    (flow?.steps || []).find((s) => s.id === id)?.state === "done";
+  const disk = done("disk"), ppl = done("contacts");
+  const dGate = { label: "Grant disk access", row: "disk" };
+  const cGate = { label: "Import contacts", row: "contacts" };
+  return {
+    feed: disk ? null : dGate,
+    people: ppl ? null : cGate,
+    brief: disk ? (ppl ? null : cGate) : dGate,
+  };
+}
+
+function aiReveal() {
+  const fr = $("#firstrun");
+  frMarkDone();
+  if (!fr || fr.hidden) return;
+  if (!isDesktop || !winState) {
+    // No floating windows to pop on a phone — the splash was the moment.
+    closeFirstrun();
+    return;
+  }
+  fr.classList.add("fr-reveal");            // scrim un-blurs, card dissolves
+  setTimeout(() => {
+    fr.hidden = true;
+    fr.classList.remove("fr-reveal");
+    document.body.classList.remove("fr-open");
+  }, REDUCED_MOTION ? 0 : 950);
+  // Gated modules first (they sit behind the lifting blur already dressed),
+  // live ones last so they land on top of the stack.
+  const gates = sceneGates(frFlow);
+  const scene = ["feed", "people", "brief", "work", "reader", "applications"];
+  let delay = REDUCED_MOTION ? 0 : 380;
+  scene.forEach((id) => {
+    if (!winState[id]) return;
+    const show = () => {
+      if (gates[id]) gateWindow(id, gates[id]);
+      else ungateWindow(id);
+      openWindow(id);
+    };
+    if (REDUCED_MOTION) show();
+    else { setTimeout(show, delay); delay += 190; }
+  });
+}
+
+// Dress a window as gated: content muted and inert (title bar stays live —
+// it still drags and closes), with the watermark as the click target.
+function gateWindow(id, gate) {
+  const st = winState && winState[id];
+  if (!st) return;
+  st.el.classList.add("fwin-gated");
+  let mark = st.el.querySelector(".gate-mark");
+  if (!mark) {
+    mark = el("button", "gate-mark");
+    st.el.appendChild(mark);
+  }
+  mark.replaceChildren();
+  mark.appendChild(el("span", "gate-mark-label", gate.label));
+  mark.appendChild(el("span", "gate-mark-sub", "click to set up"));
+  mark.onclick = (e) => {
+    e.stopPropagation();
+    setupActive = gate.row;
+    openApp("setup");
+  };
+}
+
+function ungateWindow(id) {
+  const st = winState && winState[id];
+  if (!st) return;
+  st.el.classList.remove("fwin-gated");
+  st.el.querySelector(".gate-mark")?.remove();
+}
+
+// A steps refresh re-derives the gates, so a window stops wearing one the
+// moment its data lands. Only windows ALREADY gated are touched — a refresh
+// must never dress a window the reveal didn't.
+function refreshGates(flow) {
+  if (typeof winState === "undefined" || !winState) return;
+  Object.entries(sceneGates(flow)).forEach(([id, g]) => {
+    const st = winState[id];
+    if (!st || !st.el.classList.contains("fwin-gated")) return;
+    if (g) gateWindow(id, g);
+    else ungateWindow(id);
+  });
 }
 
 

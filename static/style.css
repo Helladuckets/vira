@@ -3840,6 +3840,10 @@ a.rm-name:hover { color: var(--accent); }
 .setup-cost { color: var(--accent-bright); margin: 8px 0 2px; }
 .setup-steps { margin: 8px 0 4px 18px; color: var(--text-dim); font-size: 13px; }
 .setup-steps li { margin: 3px 0; }
+/* The disk card's feature list — why the one grant is worth it. */
+.setup-brags { margin: 8px 0 6px 18px; padding: 0; color: var(--text); font-size: 13px; }
+.setup-brags li { margin: 6px 0; }
+.setup-brags li::marker { color: var(--accent); }
 .setup-cmd {
   display: inline-block; background: var(--bg-raised); border: 1px solid var(--line);
   border-radius: 6px; padding: 5px 8px; margin-top: 6px;
@@ -4004,10 +4008,83 @@ a.rm-name:hover { color: var(--accent); }
 .fr-link:hover { color: var(--text-head); text-decoration: underline; }
 .fr-link.dim { color: var(--text-dim); }
 
+/* ---------- the connected splash + the reveal ---------- */
+/* The scrim's blur transitions off (backdrop-filter animates in modern
+   engines) while the card dissolves — "the desk comes alive". */
+#firstrun .fr-scrim {
+  transition: opacity .9s ease, backdrop-filter .9s ease,
+    -webkit-backdrop-filter .9s ease;
+}
+#firstrun.fr-reveal { pointer-events: none; }
+#firstrun.fr-reveal .fr-scrim {
+  opacity: 0;
+  backdrop-filter: blur(0); -webkit-backdrop-filter: blur(0);
+}
+#firstrun.fr-reveal .fr-card {
+  opacity: 0; transform: scale(1.06);
+  transition: opacity .55s ease, transform .55s ease;
+}
+.fr-splash { text-align: center; padding: 22px 8px 26px; }
+.fr-splash .fr-title { margin: 18px 0 10px; font-size: 32px; }
+.fr-splash .fr-sub { margin-bottom: 0; }
+.fr-ring {
+  width: 74px; height: 74px; margin: 8px auto 0; border-radius: 50%;
+  border: 2px solid var(--accent); position: relative;
+  animation: fr-ring-pop .7s cubic-bezier(.2, .9, .3, 1.4) both;
+}
+.fr-ring::before {  /* the check */
+  content: ""; position: absolute; left: 22px; top: 22px;
+  width: 28px; height: 15px;
+  border-left: 3px solid var(--accent); border-bottom: 3px solid var(--accent);
+  transform: rotate(-45deg);
+}
+.fr-ring::after {   /* the halo burst */
+  content: ""; position: absolute; inset: -2px; border-radius: 50%;
+  border: 2px solid var(--accent);
+  animation: fr-halo 1.1s ease-out .2s both;
+}
+@keyframes fr-ring-pop {
+  from { transform: scale(.35); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+@keyframes fr-halo {
+  from { transform: scale(1); opacity: .7; }
+  to { transform: scale(2.2); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #firstrun .fr-scrim, #firstrun.fr-reveal .fr-card { transition: none; }
+  .fr-ring, .fr-ring::after { animation: none; }
+}
+
+/* A reveal-gated window: in focus, muted gray, wearing the watermark that
+   names what wakes it. Content is inert; the title bar stays live. */
+.fwin-gated .fwin-body {
+  filter: grayscale(1) opacity(.42);
+  pointer-events: none;
+}
+.gate-mark {
+  position: absolute; left: 50%; top: 50%; z-index: 5;
+  transform: translate(-50%, -50%) rotate(-6deg);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  background: var(--scrim, rgba(0, 0, 0, .25));
+  border: 2px solid var(--line-warm-bright, var(--line));
+  border-radius: 10px; padding: 12px 22px; cursor: pointer;
+  color: var(--text-dim); font: inherit;
+}
+.gate-mark:hover { border-color: var(--accent); color: var(--text); }
+.gate-mark-label {
+  font-size: 13px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .14em; white-space: nowrap;
+}
+.gate-mark-sub {
+  font-size: 10.5px; letter-spacing: .05em; color: var(--text-faint);
+}
+
 @media (max-width: 640px) {
   .fr-card { padding: 22px 18px 16px; }
   .fr-tiles { grid-template-columns: 1fr; }
   .fr-title { font-size: 22px; }
+  .fr-splash .fr-title { font-size: 26px; }
 }
 
 /* ---------- Phone Link (Android companion) ---------- */
