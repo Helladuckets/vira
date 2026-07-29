@@ -1429,16 +1429,63 @@ async function openPerson(pid) {
   sugSec.appendChild(sugOut);
   colA.appendChild(sugSec);
 
-  // profile summary
-  if (prof) {
+  // profile summary — with the refresh button (desktop and mobile alike):
+  // one pass over what's held, or a real explore session that digs
+  if (prof || m.evidence) {
     const s = el("div", "p-section");
-    s.appendChild(el("h4", null, "Relationship"));
-    s.appendChild(el("div", "p-summary", prof.relationship_summary || ""));
-    colA.appendChild(s);
-  } else if (m.evidence) {
-    const s = el("div", "p-section");
-    s.appendChild(el("h4", null, "Evidence"));
-    s.appendChild(el("div", "p-summary", m.evidence));
+    const head = el("div", "thread-head");
+    head.appendChild(el("h4", null, prof ? "Relationship" : "Evidence"));
+    const rBtn = el("button", "hook-edit-btn", "refresh");
+    rBtn.title = "Refresh this description";
+    head.appendChild(rBtn);
+    s.appendChild(head);
+    const sum = el("div", "p-summary",
+      prof ? (prof.relationship_summary || "") : m.evidence);
+    s.appendChild(sum);
+    const runCurrent = async () => {
+      rBtn.disabled = true;
+      rBtn.textContent = "refreshing…";
+      try {
+        const r = await post(`/api/person/${pid}/refresh`,
+                             { mode: "current" });
+        if (r.status !== "ok") { toast(r.note || "No refresh."); return; }
+        sum.textContent = r.relationship_summary;
+        toast("Description refreshed.");
+      } catch (e) {
+        toast("Refresh failed: " + e.message);
+      } finally {
+        rBtn.disabled = false;
+        rBtn.textContent = "refresh";
+      }
+    };
+    const runExplore = async () => {
+      rBtn.disabled = true;
+      rBtn.textContent = "exploring…";
+      try {
+        const r = await post(`/api/person/${pid}/refresh`,
+                             { mode: "explore" });
+        if (r.status !== "ok" || !r.job_id) {
+          toast(r.note || "No session.");
+          return;
+        }
+        toast("Vira is exploring — the description updates when they finish.");
+        openSession(r.job_id);
+      } catch (e) {
+        toast("Explore failed: " + e.message);
+      } finally {
+        rBtn.disabled = false;
+        rBtn.textContent = "refresh";
+      }
+    };
+    rBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      showContextMenu(ev.clientX, ev.clientY, [
+        { head: "Refresh this description" },
+        { label: "Refresh based on current information", run: runCurrent },
+        { label: "Explore and refresh — actually try to find more information",
+          run: runExplore },
+      ]);
+    });
     colA.appendChild(s);
   }
 

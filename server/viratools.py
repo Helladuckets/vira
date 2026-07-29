@@ -567,6 +567,31 @@ async def _t_propose_idea(args):
 _ASK = None
 
 
+def _update_person_profile_text(person, relationship_summary, how_we_met):
+    """The explore session's write-back: a refreshed dossier description,
+    through the same quarantined writer the refresh button uses."""
+    from . import data as crm
+    pid = (person or "").strip()
+    if pid not in crm._load()["by_id"]:
+        hits = crm.search_people(q=pid, limit=2)
+        if len(hits) != 1:
+            return (f"No unique person for {person!r} — "
+                    f"{len(hits)} matches. Pass the person id.")
+        pid = hits[0]["id"]
+    try:
+        prof = crm.save_profile_refresh(
+            pid, relationship_summary or "",
+            how_met=how_we_met or "", reason="vira-refresh-explore")
+    except ValueError as e:
+        return f"Refused: {e}"
+    except crm.ProfileCorruptError as e:
+        return f"Refused: {e}"
+    return (f"Profile refreshed for {prof.get('name') or pid} ({pid}): "
+            f"description updated"
+            + (", how_we_met set" if (how_we_met or "").strip() else "")
+            + f"; refresh #{prof.get('refresh_count')}.")
+
+
 def bind_ask(fn):
     """Called by the runner with an async (question, options, allow_text)."""
     global _ASK
@@ -767,6 +792,16 @@ TOOL_SPECS = [
      "data/config.json or the boards registry by hand. An EMPTY locations "
      "list means unfiltered; never guess a city.",
      {"config_json": str}, _t_configure_applications),
+    ("update_person_profile",
+     "REPLACE a CRM person's dossier description with a refreshed one you "
+     "researched. person is the person id (preferred) or an unambiguous "
+     "name; relationship_summary is 3-6 grounded sentences with evidence "
+     "dates in brackets like [2019-04-02]; how_we_met is one sentence or "
+     "'' to leave it unchanged. The previous description is kept and the "
+     "refresh is stamped. Call it once, at the end, with your final text "
+     "— never with a draft.",
+     {"person": str, "relationship_summary": str, "how_we_met": str},
+     _update_person_profile_text),
     ("ask_owner",
      "Ask the owner a question and WAIT for the answer. Use this the "
      "moment a decision is genuinely theirs — which of two approaches to "
@@ -799,6 +834,7 @@ WRITE_TOOLS = {
     "mcp__vira__update_module_map",
     "mcp__vira__create_reading_room",
     "mcp__vira__configure_applications",
+    "mcp__vira__update_person_profile",
 }
 
 _server = None
