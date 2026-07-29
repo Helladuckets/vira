@@ -46,7 +46,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
-               photos, plans, radar, reconnect, textindex,
+               photos, plans, profilerefresh, radar, reconnect, textindex,
                receipts,
                resolver,
                routines,
@@ -260,6 +260,29 @@ def api_loops_set(pid: str, req: LoopsReq):
     except crm.ProfileCorruptError as e:
         raise HTTPException(409, str(e))
     return {"open_loops": prof.get("open_loops", [])}
+
+
+class ProfileRefreshReq(BaseModel):
+    mode: str = "current"        # current | explore
+
+
+@app.post("/api/person/{pid}/refresh")
+def api_profile_refresh(pid: str, req: ProfileRefreshReq):
+    """The dossier-description refresh button. current = one model pass
+    over what's already held; explore = a live agent session that digs
+    (old mail, vault, media) and writes back through the guarded tool."""
+    try:
+        if req.mode == "explore":
+            return profilerefresh.explore(pid)
+        return profilerefresh.refresh_current(pid)
+    except KeyError:
+        raise HTTPException(404, "unknown person")
+    except crm.ProfileCorruptError as e:
+        raise HTTPException(409, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 # ---------- server-synced UI state (window layout, dock order) — rides

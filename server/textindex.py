@@ -34,6 +34,12 @@ import urllib.parse
 from datetime import datetime, timezone
 from pathlib import Path
 
+# A full-history mailbox walk starts at UID watermark 0, and the UID
+# SEARCH reply listing a 20-year mailbox overflows imaplib's default 1MB
+# line cap ("got more than 1000000 bytes"). Hit on the first real
+# backlog run, 2026-07-28.
+imaplib._MAXLINE = max(imaplib._MAXLINE, 50_000_000)
+
 from . import channels, crmindex
 from . import data as crm
 from . import mail as mailmod
@@ -164,12 +170,23 @@ def _my_addresses():
 
 def backfill_graph(account, since=None, limit=400, log=print):
     """M365/Outlook bodies through Graph. Unlike mailindex this does NOT
-    filter on hasAttachments — the body IS the payload here."""
+    filter on hasAttachments — the body IS the payload here.
+
+    Watermarked (wm_mailg:<account> = newest receivedDateTime seen):
+    Graph pages newest-first, so without one every run re-walks the whole
+    mailbox to find its few new rows. The stamp only advances when the
+    page walk COMPLETES — an interrupted run re-pages the overlap and
+    INSERT OR IGNORE eats the duplicates, which is cheaper than a gap."""
     from . import msgraph
     con = _db()
     n = 0
+    wm_key = f"wm_mailg:{account}"
+    newest = None
+    finished = False
     try:
         my = _my_addresses()
+        if since is None:
+            since = get_state(con, wm_key) or None
         flt = f"receivedDateTime ge {since}" if since else ""
         path = ("/me/messages?" + (f"$filter={urllib.parse.quote(flt)}&"
                                    if flt else "")
@@ -178,6 +195,7 @@ def backfill_graph(account, since=None, limit=400, log=print):
         while path and n < limit:
             out = msgraph._graph_request(account, path)
             for m in out.get("value", []):
+                newest = max(newest or "", m.get("receivedDateTime") or "")
                 frm = (m.get("from") or {}).get("emailAddress") or {}
                 from_addr = (frm.get("address") or "").lower()
                 body = (m.get("body") or {})
@@ -208,7 +226,11 @@ def backfill_graph(account, since=None, limit=400, log=print):
             nxt = out.get("@odata.nextLink")
             path = (nxt[len(msgraph.GRAPH):]
                     if nxt and nxt.startswith(msgraph.GRAPH) else nxt or None)
+            finished = path is None
             log(f"  mail {account}: {n} indexed")
+        if finished and newest:
+            set_state(con, wm_key, newest)
+            con.commit()
     finally:
         con.close()
     return n
@@ -301,13 +323,45 @@ def backfill_mail(limit=400, log=print):
     n = 0
     for acct in channels.mail_accounts():
         try:
-            if acct.get("kind") == "graph" or acct.get("provider") == "graph":
+            # accounts carry "type": "graph" (channels.graph_accounts,
+            # mail.py, mailindex.py all key on it). This function checked
+            # "kind"/"provider" — keys no account row has ever carried —
+            # so a Graph mailbox silently fell to the IMAP path with no
+            # host and indexed nothing. Found on the 2026-07-28 backlog.
+            if acct.get("type") == "graph":
                 n += backfill_graph(acct["email"], limit=limit, log=log)
             else:
                 n += backfill_imap(acct, limit=limit, log=log)
         except Exception as e:      # noqa: BLE001 — one bad mailbox never
             log(f"  mail {acct.get('email')}: {e}")     # stops the others
     return n
+
+
+def _mail_watermarks():
+    """Every mail watermark row — the full-backlog loop's done signal."""
+    con = _db()
+    try:
+        return dict(con.execute(
+            "SELECT key, val FROM state WHERE key LIKE 'wm_mail%'"))
+    finally:
+        con.close()
+
+
+def backfill_mail_full(log=print, batch=2000):
+    """The backlog: loop the watermarked per-account backfills until a
+    pass moves NO watermark and inserts nothing. Zero inserts alone is
+    not done: a stretch of `batch` consecutive empty-body messages (a
+    burst of automated mail whose HTML strips to nothing) yields +0
+    while the walk is mid-mailbox — the first live run stopped two years
+    early on exactly that. Resumable at any point."""
+    total = 0
+    while True:
+        before = _mail_watermarks()
+        n = backfill_mail(limit=batch, log=log)
+        total += n
+        log(f"mail backlog: +{n} (total {total})")
+        if n == 0 and _mail_watermarks() == before:
+            return total
 
 
 def backfill(limit=None, log=print):
@@ -480,7 +534,7 @@ class Indexer(threading.Thread):
         self._stop.set()
 
 
-if __name__ == "__main__":       # python -m server.textindex backfill [mail]
+if __name__ == "__main__":  # python -m server.textindex backfill [mail [--full]]
     import sys
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
     if cmd == "backfill":
@@ -488,5 +542,8 @@ if __name__ == "__main__":       # python -m server.textindex backfill [mail]
         if which in ("all", "imessage"):
             print("imessage:", backfill_imessage(log=print))
         if which in ("all", "mail"):
-            print("mail:", backfill_mail(log=print))
+            if "--full" in sys.argv:
+                print("mail:", backfill_mail_full(log=print))
+            else:
+                print("mail:", backfill_mail(log=print))
     print(json.dumps(status(), indent=1))

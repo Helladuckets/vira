@@ -253,6 +253,43 @@ def _save_field_locked(pid, p, field, value):
     return prof
 
 
+def save_profile_refresh(pid, summary, how_met=None, reason="refresh"):
+    """A refreshed dossier description, written back to the profile file.
+
+    The summary is model-SYNTHESIZED content landing in a model-synthesized
+    field — same provenance class as what the CRM pipeline wrote, so it
+    goes in the file itself, not the owner-edit overlay. The outgoing text
+    is kept one deep (prev_relationship_summary) and the refresh is
+    stamped (refresh_count / last_refresh_reason, the pipeline's own
+    fields) so a later synthesis pass can see Vira touched it."""
+    if not (summary or "").strip():
+        raise ValueError("empty summary")
+    c = _load()
+    p = c["by_id"].get(pid)
+    if not p:
+        raise KeyError(pid)
+    with _write_lock:
+        path = _profile_path(pid)
+        prof = _load_profile_for_write(pid, p)
+        prev = prof.get("relationship_summary")
+        if prev and prev != summary:
+            prof["prev_relationship_summary"] = prev
+        prof["relationship_summary"] = summary.strip()
+        if (how_met or "").strip():
+            prof["how_we_met"] = how_met.strip()
+        prof["relationship_summary_updated_by_vira"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S")
+        prof["refresh_count"] = int(prof.get("refresh_count") or 0) + 1
+        prof["last_refresh_reason"] = reason
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(prof, indent=1, ensure_ascii=False),
+                       encoding="utf-8")
+        tmp.replace(path)
+        invalidate()
+        return prof
+
+
 def _norm_what(s):
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
