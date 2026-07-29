@@ -7368,6 +7368,7 @@ async function loadSetup() {
   setupExtra = extra;
   renderSetup(flow, st);
   launchUnlocked(flow);
+  refreshGates(flow);   // a reveal-gated window undresses when its data lands
   if (st.dossiers && st.dossiers.running) pollSetup();
 }
 
@@ -7398,6 +7399,7 @@ function pollSetup() {
     setupSt = st;
     renderSetup(flow, st);
     launchUnlocked(flow);
+    refreshGates(flow);
     if (!st.dossiers || !st.dossiers.running) {
       h.stop(); setupPollTimer = null;
       toast("Dossier build finished");
@@ -8391,6 +8393,8 @@ function cardUpdates(card) {
 // else lives in the Config dashboard. Re-run from Config > System.
 
 let frAi = null;                 // the ai step record (providers + active_id)
+let frFlow = null;               // the full step flow — the reveal derives its
+                                 // gates from these states, never a static map
 
 function frMarkDone() {
   uiPush("vira-firstrun-done", lsSet("vira-firstrun-done", true));
@@ -8417,6 +8421,7 @@ async function maybeFirstrun() {
   if (lsGet("vira-firstrun-done", false)) return;
   let flow;
   try { flow = await api("/api/onboard/steps"); } catch { return; }
+  frFlow = flow;
   const ai = (flow.steps || []).find((s) => s.id === "ai");
   if (!ai) return;
   if (ai.state === "done") {
@@ -8454,7 +8459,7 @@ function frAlready(pr) {
     "run on your own account. Nothing to configure."));
   const row = el("div", "fr-row");
   const go = el("button", "btn primary fr-big", "Take me to Vira");
-  go.onclick = () => closeFirstrun();
+  go.onclick = () => frFinish(pr);   // same splash + reveal as a fresh connect
   row.appendChild(go);
   b.appendChild(row);
   b.appendChild(el("p", "fr-note",
@@ -8488,6 +8493,7 @@ function closeFirstrun() {
 async function frRefresh(pid) {
   const flow = await api("/api/onboard/steps").catch(() => null);
   if (!flow) return;
+  frFlow = flow;
   frAi = (flow.steps || []).find((s) => s.id === "ai") || frAi;
   if (pid) frConnect(pid);
   else frPick();
@@ -8646,28 +8652,116 @@ function frCheckBtn(pid, label, plain) {
   return rb;
 }
 
-// Screen 3 — connected.
+// Screen 3 — connected. Not a card with buttons anymore (owner's call,
+// 2026-07-28): the card becomes a short splash, then the blur lifts and the
+// desk comes alive (aiReveal). No click between connecting and seeing Vira.
 function frFinish(pr) {
   const b = frBody();
   if (!b) return;
-  b.appendChild(el("div", "fr-kicker", "Connected"));
-  b.appendChild(el("h1", "fr-title", "Vira is alive"));
-  b.appendChild(el("p", "fr-sub",
-    `Everything Vira writes for you — replies in your voice, dossiers, the ` +
-    `daily brief — now runs on ${pr.label}, under your own account.`));
-  b.appendChild(el("p", "fr-note",
-    "The rest is optional: contacts, mail, and your notes plug in from " +
-    "Config whenever you like."));
-  const row = el("div", "fr-row");
-  const go = el("button", "btn primary fr-big", "Take me to Vira");
-  go.onclick = () => closeFirstrun();
-  const cfg = el("button", "btn", "Open Config");
-  cfg.onclick = () => { closeFirstrun(); openApp("setup"); };
-  row.appendChild(go);
-  row.appendChild(cfg);
-  b.appendChild(row);
-  confettiAt(b);
   loadSetup().catch(() => {});      // the dashboard behind it goes green
+  b.appendChild(el("div", "fr-kicker", "Connected"));
+  const splash = el("div", "fr-splash");
+  splash.appendChild(el("div", "fr-ring"));
+  splash.appendChild(el("h1", "fr-title fr-got", "Oh — I've got it."));
+  splash.appendChild(el("p", "fr-sub",
+    `Vira is running on ${pr.label}, under your own account. ` +
+    "Here's what wakes up right away."));
+  b.appendChild(splash);
+  confettiAt(splash);
+  setTimeout(aiReveal, REDUCED_MOTION ? 300 : 1900);
+}
+
+// ---- the reveal: the desk comes alive ---------------------------------
+// The blur lifts and the modules that run on AI alone pop open live; the
+// ones that need this Mac's data sit in focus but muted gray, wearing a
+// watermark that names the ONE thing that wakes them (click-through to the
+// right Config row). Gates derive from the live step states — on a machine
+// whose contacts are already imported, People opens live, never gated.
+
+function sceneGates(flow) {
+  const done = (id) =>
+    (flow?.steps || []).find((s) => s.id === id)?.state === "done";
+  const disk = done("disk"), ppl = done("contacts");
+  const dGate = { label: "Grant disk access", row: "disk" };
+  const cGate = { label: "Import contacts", row: "contacts" };
+  return {
+    feed: disk ? null : dGate,
+    people: ppl ? null : cGate,
+    brief: disk ? (ppl ? null : cGate) : dGate,
+  };
+}
+
+function aiReveal() {
+  const fr = $("#firstrun");
+  frMarkDone();
+  if (!fr || fr.hidden) return;
+  if (!isDesktop || !winState) {
+    // No floating windows to pop on a phone — the splash was the moment.
+    closeFirstrun();
+    return;
+  }
+  fr.classList.add("fr-reveal");            // scrim un-blurs, card dissolves
+  setTimeout(() => {
+    fr.hidden = true;
+    fr.classList.remove("fr-reveal");
+    document.body.classList.remove("fr-open");
+  }, REDUCED_MOTION ? 0 : 950);
+  // Gated modules first (they sit behind the lifting blur already dressed),
+  // live ones last so they land on top of the stack.
+  const gates = sceneGates(frFlow);
+  const scene = ["feed", "people", "brief", "work", "reader", "applications"];
+  let delay = REDUCED_MOTION ? 0 : 380;
+  scene.forEach((id) => {
+    if (!winState[id]) return;
+    const show = () => {
+      if (gates[id]) gateWindow(id, gates[id]);
+      else ungateWindow(id);
+      openWindow(id);
+    };
+    if (REDUCED_MOTION) show();
+    else { setTimeout(show, delay); delay += 190; }
+  });
+}
+
+// Dress a window as gated: content muted and inert (title bar stays live —
+// it still drags and closes), with the watermark as the click target.
+function gateWindow(id, gate) {
+  const st = winState && winState[id];
+  if (!st) return;
+  st.el.classList.add("fwin-gated");
+  let mark = st.el.querySelector(".gate-mark");
+  if (!mark) {
+    mark = el("button", "gate-mark");
+    st.el.appendChild(mark);
+  }
+  mark.replaceChildren();
+  mark.appendChild(el("span", "gate-mark-label", gate.label));
+  mark.appendChild(el("span", "gate-mark-sub", "click to set up"));
+  mark.onclick = (e) => {
+    e.stopPropagation();
+    setupActive = gate.row;
+    openApp("setup");
+  };
+}
+
+function ungateWindow(id) {
+  const st = winState && winState[id];
+  if (!st) return;
+  st.el.classList.remove("fwin-gated");
+  st.el.querySelector(".gate-mark")?.remove();
+}
+
+// A steps refresh re-derives the gates, so a window stops wearing one the
+// moment its data lands. Only windows ALREADY gated are touched — a refresh
+// must never dress a window the reveal didn't.
+function refreshGates(flow) {
+  if (typeof winState === "undefined" || !winState) return;
+  Object.entries(sceneGates(flow)).forEach(([id, g]) => {
+    const st = winState[id];
+    if (!st || !st.el.classList.contains("fwin-gated")) return;
+    if (g) gateWindow(id, g);
+    else ungateWindow(id);
+  });
 }
 
 
