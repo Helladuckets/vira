@@ -455,7 +455,7 @@ class DetachedJob:
         would wedge the cockpit shut."""
         st = self.last_state or {}
         return (st.get("status", "running") == "running"
-                and st.get("awaiting") != "reply")
+                and st.get("awaiting") not in ("reply", "paused"))
 
 
 class Session:

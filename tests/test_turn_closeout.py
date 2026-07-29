@@ -272,3 +272,68 @@ class MidTurnSteering(unittest.TestCase):
     def test_a_broken_hook_can_never_kill_the_session(self):
         self.r.inbox = None              # any failure at all
         self.assertEqual(self._fire(), {})
+
+
+class StopIsAPauseNotAnEnding(unittest.TestCase):
+    """The owner pressed Stop; the agent received the queued steer, acted on
+    it, wrapped up cleanly — and the session closed anyway, because
+    `interrupted` short-circuited await_reply before it could park. Stopping
+    something mid-work is exactly when you have something to say to it, and
+    it was the one moment Vira took the input box away (2026-07-29)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _runner(self, **kw):
+        r = make_runner(self.tmp.name, **kw)
+        self.addCleanup(r.out.close)
+        return r
+
+    def test_stop_parks_instead_of_ending(self):
+        r = self._runner()
+        r.interrupted = True
+        r.inbox.put_nowait("do it this way instead")
+        self.assertEqual(asyncio.run(r.await_reply()), "do it this way instead")
+
+    def test_finish_still_ends_it(self):
+        r = self._runner()
+        r.closing = True
+        self.assertIsNone(asyncio.run(r.await_reply()))
+
+    def test_a_cut_short_turn_is_not_finished_cleanly(self):
+        """finished_cleanly gates the epilogue — publishing a plan, closing
+        out the idea. Parking after a Stop must not smuggle an interrupted
+        run into that path."""
+        r = self._runner()
+        r.interrupted = True
+        r.inbox.put_nowait("carry on")
+        asyncio.run(r.await_reply())
+        self.assertFalse(r.finished_cleanly)
+
+    def test_an_uninterrupted_park_is_finished_cleanly(self):
+        r = self._runner()
+        r.inbox.put_nowait("carry on")
+        asyncio.run(r.await_reply())
+        self.assertTrue(r.finished_cleanly)
+
+    def test_the_state_separates_paused_from_complete(self):
+        for interrupted, want in ((True, "paused"), (False, "reply")):
+            r = self._runner()
+            r.interrupted = interrupted
+            seen = []
+            real = r.flush_state
+            r.flush_state = lambda rr=r: (seen.append(rr.state.get("awaiting")),
+                                          real())
+            r.inbox.put_nowait("x")
+            asyncio.run(r.await_reply())
+            self.assertIn(want, seen)
+
+    def test_a_paused_session_does_not_block_the_live_cap(self):
+        """DetachedJob.working() excludes a parked session so a handful of
+        them cannot wedge the cockpit shut — paused must count the same."""
+        h = session.DetachedJob("j" * 12, "/nonexistent", {"mode": "manual"})
+        for aw, want in (("reply", False), ("paused", False),
+                         (None, True), ("permission", True)):
+            h.last_state = {"status": "running", "awaiting": aw}
+            self.assertEqual(h.working(), want, f"awaiting={aw}")
