@@ -337,16 +337,30 @@ def backfill_mail(limit=400, log=print):
     return n
 
 
+def _mail_watermarks():
+    """Every mail watermark row — the full-backlog loop's done signal."""
+    con = _db()
+    try:
+        return dict(con.execute(
+            "SELECT key, val FROM state WHERE key LIKE 'wm_mail%'"))
+    finally:
+        con.close()
+
+
 def backfill_mail_full(log=print, batch=2000):
     """The backlog: loop the watermarked per-account backfills until a
-    whole pass inserts nothing. Resumable at any point — both paths pick
-    up from their watermark."""
+    pass moves NO watermark and inserts nothing. Zero inserts alone is
+    not done: a stretch of `batch` consecutive empty-body messages (a
+    burst of automated mail whose HTML strips to nothing) yields +0
+    while the walk is mid-mailbox — the first live run stopped two years
+    early on exactly that. Resumable at any point."""
     total = 0
     while True:
+        before = _mail_watermarks()
         n = backfill_mail(limit=batch, log=log)
         total += n
         log(f"mail backlog: +{n} (total {total})")
-        if n == 0:
+        if n == 0 and _mail_watermarks() == before:
             return total
 
 

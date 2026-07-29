@@ -207,6 +207,27 @@ class MailBacklogTests(unittest.TestCase):
             total = textindex.backfill_mail_full(log=lambda *a: None)
         self.assertEqual(total, 837)
 
+    def test_an_empty_stretch_does_not_end_the_backlog(self):
+        # pass 2 inserts nothing but ADVANCES the watermark (400 straight
+        # empty bodies) — the loop must keep going; only a pass that moves
+        # no watermark and inserts nothing is done
+        wm = {"n": 0}
+        script = iter([(300, True), (0, True), (250, True), (0, False)])
+
+        def fake_pass(**kw):
+            inserted, moved = next(script)
+            if moved:
+                wm["n"] += 1
+                con = textindex._db()
+                textindex.set_state(con, "wm_mail:a@example.test", wm["n"])
+                con.commit()
+                con.close()
+            return inserted
+        with mock.patch.object(textindex, "backfill_mail",
+                               side_effect=fake_pass):
+            total = textindex.backfill_mail_full(log=lambda *a: None)
+        self.assertEqual(total, 550)
+
     def _graph_pages(self, calls):
         """A two-page mailbox; `calls` records each request path."""
         def fake_request(account, path):
