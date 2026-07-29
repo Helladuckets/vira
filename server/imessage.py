@@ -258,7 +258,7 @@ class Watcher:
         try:
             rows = con.execute(
                 """SELECT m.ROWID, m.date, m.is_from_me, m.text, m.attributedBody,
-                          h.id, c.style, c.display_name
+                          h.id, c.style, c.display_name, c.ROWID
                    FROM message m
                    LEFT JOIN handle h ON h.ROWID = m.handle_id
                    JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
@@ -280,7 +280,7 @@ class Watcher:
 
     def _to_item(self, row):
         from . import photos
-        rowid, dt, _fm, text, blob, handle, style, display_name = row
+        rowid, dt, _fm, text, blob, handle, style, display_name, chat_id = row
         t = msg_text(text, blob)
         if not t:
             return None
@@ -296,6 +296,8 @@ class Watcher:
             "handle": handle,
             "group": style != 45,
             "group_name": display_name or None,
+            # the door into the group profile: which chat row this rode in on
+            "chat_id": chat_id if style != 45 else None,
             "person_id": pid,
             "person_name": person["name"] if person else None,
             "known": pid is not None,

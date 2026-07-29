@@ -37,7 +37,8 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                reading,
                readinglist,
                readingroom,
-               fixtures, ideas, ideatags, imessage, jobboards, jobfiles,
+               fixtures, groupchat, ideas, ideatags, imessage, jobboards,
+               jobfiles,
                joblog,
                journal,
                judge,
@@ -1350,6 +1351,51 @@ def api_group_thread(ids: str, limit: int = 60, before: int | None = None):
     return {"messages": imessage.group_thread(chat_ids[:60],
                                               max(1, min(limit, 500)),
                                               before)}
+
+
+@app.get("/api/group/profile")
+def api_group_profile(ids: str = "", chat: int | None = None):
+    """The group panel payload: the merged group, member dossiers, who-talks
+    activity, interconnection edges, related-group diffs, media counts.
+    Address by `chat` (one rowid, e.g. off a feed item) or `ids` (a merged
+    leg list off a person page's group row)."""
+    if chat is not None:
+        return groupchat.profile(chat=chat)
+    return groupchat.profile(chat_ids=_parse_chat_ids(ids))
+
+
+class GroupBriefReq(BaseModel):
+    ids: list[int]
+    force: bool = False
+
+
+@app.post("/api/group/brief")
+def api_group_brief(req: GroupBriefReq):
+    """The one AI pass over the group — cached until a newer message lands."""
+    if not req.ids:
+        raise HTTPException(400, "no chat ids")
+    try:
+        return groupchat.brief(req.ids[:60], force=req.force)
+    except Exception as e:  # noqa: BLE001 — model/backend failure, honestly
+        raise HTTPException(502, f"brief failed: {e}")
+
+
+class GroupSendReq(BaseModel):
+    ids: list[int]
+    text: str
+
+
+@app.post("/api/group/send")
+def api_group_send(req: GroupSendReq):
+    """Send into the group's active leg (chat-guid addressed)."""
+    if not req.ids:
+        raise HTTPException(400, "no chat ids")
+    try:
+        return groupchat.send(req.ids[:60], req.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/stream")

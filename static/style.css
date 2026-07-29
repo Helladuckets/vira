@@ -1068,6 +1068,91 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 .group-sub { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
 .group-members { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
 
+/* ---------- group profile panel ---------- */
+.gp-hero {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 2px 0 10px; border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.gp-avs { display: flex; flex: none; }
+.gp-avs .avatar {
+  width: 34px; height: 34px; font-size: 12px;
+  border: 2px solid var(--bg-card); margin-left: -8px;
+}
+.gp-avs .avatar:first-child { margin-left: 0; }
+.gp-hero-meta { flex: 1 1 200px; min-width: 0; }
+.gp-hero-sub { font-size: 12px; color: var(--text-dim); }
+.gp-hero-act { font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+.gp-mem {
+  display: flex; gap: 10px; align-items: flex-start;
+  border-left: 2px solid var(--line); padding: 6px 10px; margin: 6px 0;
+  border-radius: 0 2px 2px 0; cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.gp-mem:hover { background: var(--accent-soft); border-left-color: var(--accent); }
+.gp-mem.unknown { cursor: default; }
+.gp-mem .avatar { flex: none; }
+.gp-mem-main { flex: 1 1 auto; min-width: 0; }
+.gp-mem-name { font-size: 13.5px; font-weight: 500;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-mem-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 1px; }
+.gp-mem-sum { font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+.gp-badges { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 5px; }
+.gp-tag {
+  font-size: 10.5px; color: var(--text-dim); padding: 1px 7px;
+  border: 1px solid var(--line); border-radius: 999px; white-space: nowrap;
+}
+.gp-tag.warn { color: var(--red); border-color: var(--red-line); }
+.gp-edge { padding: 5px 0 6px; border-bottom: 1px solid var(--line); }
+.gp-edge:last-of-type { border-bottom: 0; }
+.gp-edge-names { font-size: 12.5px; }
+.gp-bar {
+  display: block; height: 3px; background: var(--bg-raised);
+  border-radius: 2px; margin: 4px 0 3px; overflow: hidden;
+}
+.gp-bar i { display: block; height: 100%; background: var(--accent); }
+.gp-edge-why { font-size: 11.5px; color: var(--text-faint); }
+.gp-note { font-size: 11.5px; color: var(--text-faint); margin-top: 8px; }
+.gp-diff { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 3px; }
+.gp-rel {
+  font-size: 10.5px; color: var(--steel); border: 1px solid var(--steel-line);
+  padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+}
+.gp-add {
+  font-size: 10.5px; color: var(--text); background: var(--green-soft);
+  border: 1px solid var(--green-line); padding: 1px 7px;
+  border-radius: 999px; white-space: nowrap;
+}
+.gp-miss {
+  font-size: 10.5px; color: var(--text-dim); background: var(--red-soft);
+  border: 1px solid var(--red-line); padding: 1px 7px;
+  border-radius: 999px; white-space: nowrap;
+}
+.gp-chips { display: flex; gap: 5px; flex-wrap: wrap; margin: 8px 0 2px; }
+.gp-chip {
+  font-size: 11px; color: var(--text-dim); padding: 2px 8px;
+  border: 1px solid var(--accent-line); border-radius: 999px;
+}
+.gp-loop { display: flex; gap: 8px; align-items: baseline; margin-top: 7px; }
+.gp-loop-text { font-size: 12px; color: var(--text); min-width: 0; }
+.gp-watch {
+  font-size: 11.5px; color: var(--text-dim); margin-top: 9px;
+  border-left: 2px solid var(--amber-line); padding-left: 8px;
+}
+.gp-sugstrip { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.gp-sug {
+  display: block; text-align: left; width: 100%; cursor: pointer;
+  background: var(--bg-raised); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 7px 10px; color: var(--text);
+  transition: border-color .15s, background .15s;
+}
+.gp-sug:hover { border-color: var(--accent-line); background: var(--accent-soft); }
+.gp-sug-label {
+  display: block; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--accent-bright); margin-bottom: 2px;
+}
+.gp-sug-text { display: block; font-size: 12.5px; }
+
 /* shared media: photos grid, link rows, document rows */
 .media-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr));
