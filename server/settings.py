@@ -58,6 +58,9 @@ DEFAULTS = {
     "fixture_mode": None,                # None = auto (fixture when crm_root missing)
     "apple_contacts_push": True,         # contact-card saves push to Apple Contacts
                                          # (macOS only; AppleScript spoke, syncs to phone)
+    "mail_body_index": False,            # incremental mail-body sweep in the
+                                         # Indexer tick (the backlog CLI flips
+                                         # it on once the full walk lands)
     "mercury_poll_hours": 6,             # subscriptions charge-poll cadence
     "receipts_sweep_days": 7,            # receipts-pass sweep cadence
     "idea_tag_interval_min": 10,         # backlog tag/vector pass cadence
