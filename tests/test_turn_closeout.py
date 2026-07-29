@@ -212,3 +212,63 @@ class SteerMessageMatchesTheState(unittest.TestCase):
         out = self._say(False)
         self.assertIn("[you] discard", out)
         self.assertIn("queued", out)
+
+
+class MidTurnSteering(unittest.TestCase):
+    """Steering used to reach the model only at the turn boundary, and a
+    turn is however many tool calls the agent chooses to make. The owner
+    typed "Okay, wrap it up" and watched twenty more calls go by
+    (2026-07-29) — indistinguishable from steering being broken. The
+    PostToolUse hook's additionalContext is the SDK's channel for handing
+    the model text alongside the tool result it is already reading."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.r = make_runner(self.tmp.name)
+        self.addCleanup(self.r.out.close)
+
+    def _fire(self):
+        return asyncio.run(self.r.steer_hook({}, "tu_1", None))
+
+    def test_nothing_queued_injects_nothing(self):
+        self.assertEqual(self._fire(), {})
+
+    def test_a_queued_message_is_handed_over_as_context(self):
+        self.r.inbox.put_nowait("Okay, wrap it up.")
+        out = self._fire()["hookSpecificOutput"]
+        self.assertEqual(out["hookEventName"], "PostToolUse")
+        self.assertIn("Okay, wrap it up.", out["additionalContext"])
+        self.assertIn("mid-turn", out["additionalContext"])
+
+    def test_it_drains_everything_queued(self):
+        self.r.inbox.put_nowait("one")
+        self.r.inbox.put_nowait("two")
+        ctx = self._fire()["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("one", ctx)
+        self.assertIn("two", ctx)
+        self.assertEqual(self._fire(), {}, "second fire has nothing left")
+
+    def test_it_shows_in_the_transcript(self):
+        self.r.inbox.put_nowait("stop after this file")
+        self._fire()
+        out = (Path(self.r.dir) / "output.log").read_text(encoding="utf-8")
+        self.assertIn("steering delivered — stop after this file", out)
+
+    def test_finish_is_never_consumed_by_the_hook(self):
+        """_END means the owner pressed Finish. Only await_reply may act on
+        it; swallowing it here would silently ignore a close."""
+        self.r.inbox.put_nowait(runner_mod._END)
+        self.assertEqual(self._fire(), {})
+        self.assertIs(self.r.inbox.get_nowait(), runner_mod._END)
+
+    def test_finish_queued_behind_a_message_survives(self):
+        self.r.inbox.put_nowait("keep going")
+        self.r.inbox.put_nowait(runner_mod._END)
+        ctx = self._fire()["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("keep going", ctx)
+        self.assertIs(self.r.inbox.get_nowait(), runner_mod._END)
+
+    def test_a_broken_hook_can_never_kill_the_session(self):
+        self.r.inbox = None              # any failure at all
+        self.assertEqual(self._fire(), {})
