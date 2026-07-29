@@ -50,6 +50,7 @@ JD_CAP = 24000          # keep snapshot JDs bounded
 NOTIFY_TITLES = 3       # titles named in a ping before "+ k more"
 NOTIFY_RETRY_DAYS = 2   # how long a failed ping keeps retrying
 FRESH_DAYS = 10         # how long a role counts as NEW in the UI
+VERIFY_DAYS = 2         # how long a sweep's "still listed" stays credible
 
 _lock = threading.Lock()
 
@@ -368,6 +369,14 @@ FETCHERS = {
     "google": fetch_google,
 }
 
+# Which fetchers return the COMPLETE board, so absence is proof a posting
+# is gone. greenhouse/ashby/lever hand back every listed role; microsoft
+# and google are QUERY searches, where a role can fall out of the result
+# set while the posting is perfectly alive — so a miss there is only
+# evidence about roles that board has actually served before, never proof
+# about the wider namespace.
+FULL_BOARD = ("greenhouse", "ashby", "lever")
+
 
 def _q(s):
     from urllib.parse import quote
@@ -514,6 +523,27 @@ def evaluate(rec, adj):
 
 # ------------------------------------------------------------ poll + diff
 
+def _catalog_uids():
+    """Every uid the Applications catalog holds — the curated universe AND
+    the raw corpora behind it. A board sweep closes against these too, not
+    only against what the snapshot already knows.
+
+    The corpora are FROZEN files (a teardown captured on one day and never
+    refetched), so a role in them is exactly the kind that can quietly die
+    with nothing noticing: it was never in a snapshot, so a snapshot-only
+    sweep could never learn it. That is how two of the owner's eight picks
+    sat in the module as live candidates weeks after their postings came
+    down. A full board owns its whole namespace, so absence there IS the
+    answer for every one of them."""
+    try:
+        from . import applications
+        uids = {r["uid"] for r in applications.load_universe()}
+        uids |= {r["uid"] for r in applications.load_roles()[0]}
+        return uids
+    except Exception:  # noqa: BLE001 — a broken catalog never stops a poll
+        return set()
+
+
 def poll_once(notify_new=True):
     """Fetch every pollable board, diff against state, mark new/closed,
     ping the owner about new eligible roles. Returns a summary dict."""
@@ -527,8 +557,23 @@ def poll_once(notify_new=True):
     roles = dict(snapshot.get("roles") or {})
     board_meta = dict(snapshot.get("boards") or {})
     st_roles = dict(state.get("roles") or {})
+    st_boards = dict(state.get("boards") or {})
+    catalog = _catalog_uids()
     now = _now()
     new_uids, closed_uids = [], []
+    # A board's FIRST-EVER sweep is a baseline, never news: registering a
+    # company means discovering its whole board at once (Anthropic and
+    # OpenAI together are ~1,150 roles), and announcing that as "new jobs"
+    # would bury the one ping that matters. Same rule that protected the
+    # original load; it just never covered later registrations.
+    #
+    # `board_meta` is read alongside the state so an install upgrading into
+    # this rule does not baseline its whole registry on the first poll —
+    # the prior snapshot already records every board ever swept, and
+    # suppressing that cycle's genuinely new roles would be a silent miss.
+    swept = set(st_boards) | set(board_meta)
+    baseline_boards = {bid for bid in (_board_id(b) for b in reg["boards"])
+                       if bid not in swept}
 
     for b in reg["boards"]:
         bid = _board_id(b)
@@ -555,7 +600,10 @@ def poll_once(notify_new=True):
             prior = st_roles.get(uid)
             if prior is None:
                 st_roles[uid] = {"first_seen": now, "last_seen": now}
-                new_uids.append(uid)
+                if bid in baseline_boards:
+                    st_roles[uid]["notified"] = "baseline"
+                else:
+                    new_uids.append(uid)
             else:
                 prior["last_seen"] = now
                 prior.pop("closed", None)
@@ -565,13 +613,32 @@ def poll_once(notify_new=True):
                 rec["baseline"] = True
             rec.pop("closed", None)
             roles[uid] = rec
-        # anything this board owned that vanished is closed (not deleted)
-        for uid, rec in roles.items():
-            if rec.get("board") == bid and uid not in fetched_uids \
-                    and not rec.get("closed"):
+        # Anything this board owns that did not come back is closed — kept,
+        # never deleted, because the analysis on top of it is the expensive
+        # part. A full board owns its whole uid namespace (so a role it has
+        # never served, carried in from a corpus, still gets checked); a
+        # query board can only speak for roles it has served before.
+        if b.get("ats") in FULL_BOARD:
+            prefix = jobshared.uid_prefix(b["ats"], b.get("slug") or "")
+            owned = [u for u in set(roles) | set(st_roles) | catalog
+                     if u.startswith(prefix)]
+        else:
+            owned = [u for u, r in roles.items() if r.get("board") == bid]
+        for uid in owned:
+            if uid in fetched_uids:
+                continue
+            rec = roles.get(uid)
+            if (rec or {}).get("closed") or (st_roles.get(uid) or {}).get("closed"):
+                continue
+            if rec is not None:
                 rec["closed"] = now
-                st_roles.setdefault(uid, {})["closed"] = now
-                closed_uids.append(uid)
+            st_roles.setdefault(uid, {})["closed"] = now
+            closed_uids.append(uid)
+        st_boards[bid] = {"last_sweep": now, "ats": b.get("ats"),
+                          "company": b.get("company"),
+                          "full_board": b.get("ats") in FULL_BOARD,
+                          "prefix": jobshared.uid_prefix(
+                              b["ats"], b.get("slug") or "")}
         board_meta[bid] = {"company": b.get("company"), "ats": b.get("ats"),
                            "ok": True, "count": len(fetched_uids), "at": now}
 
@@ -607,11 +674,12 @@ def poll_once(notify_new=True):
     with _lock:
         _write_json(_snapshot_path(), {"fetched": now, "boards": board_meta,
                                        "roles": roles})
-        _write_json(_state_path(), {"roles": st_roles})
+        _write_json(_state_path(), {"roles": st_roles, "boards": st_boards})
     return {"ok": True, "at": now, "boards": board_meta,
             "total": len([r for r in roles.values() if not r.get("closed")]),
             "new": len(new_uids), "eligible_new": len(eligible_new),
-            "closed": len(closed_uids), "notified": notified}
+            "closed": len(closed_uids), "notified": notified,
+            "baselined": sorted(baseline_boards)}
 
 
 def _notify_new(eligible_new, st_roles):
@@ -651,6 +719,82 @@ def _notify_new(eligible_new, st_roles):
         for r in fresh:
             st_roles.setdefault(r["uid"], {})["notified"] = _now()
     return len(fresh) if ok else 0
+
+
+# ------------------------------------------------------------ availability
+
+def availability_map():
+    """uid -> {state: open|gone|unverified, checked|since}. The boards
+    STATE is the authority here, not the snapshot: a sweep can close a
+    role the snapshot never held (a catalog role carried in from a frozen
+    corpus), and that verdict has to survive somewhere the catalog reads.
+
+    `open` means A SWEEP CONFIRMED IT RECENTLY — within VERIFY_DAYS — not
+    merely that some sweep saw it once. A stale last_seen degrades to
+    `unverified` carrying its date, which is the difference between "this
+    is up" and "this was up when something last looked". The case that
+    forced it: a manual board's roles are written to state once, by hand,
+    and never refetched, so they would have read as live indefinitely.
+    The same rule covers a board that has been erroring for days and a
+    poller that has been down.
+
+    A uid absent from the map is `unverified` too — no registered board
+    has ever seen it. Never infer `gone` from absence."""
+    state = _read_json(_state_path(), {})
+    cutoff = time.time() - VERIFY_DAYS * 86400
+    out = {}
+    for uid, st in (state.get("roles") or {}).items():
+        if st.get("closed"):
+            out[uid] = {"state": "gone", "since": st["closed"]}
+            continue
+        seen = st.get("last_seen")
+        if not seen:
+            continue
+        try:
+            fresh = datetime.fromisoformat(seen).timestamp() >= cutoff
+        except ValueError:
+            fresh = False
+        out[uid] = {"state": "open" if fresh else "unverified",
+                    "checked": seen}
+    return out
+
+
+def arm_if_stale(poller=None):
+    """Ask the background poller for a sweep when the snapshot has gone
+    stale — what opening the Applications module calls.
+
+    Deliberately NOT a synchronous fetch: ten boards take the better part
+    of a minute, and blocking the module's first paint on that would make
+    opening it feel broken. The module paints from the last sweep and the
+    rows correct themselves when this one lands. Honest on a passive
+    instance, which runs no poller at all: nothing is armed and the caller
+    is told so rather than waiting for a sweep that will never come."""
+    fetched = (_read_json(_snapshot_path(), {}) or {}).get("fetched") or ""
+    minutes = float(settings.raw().get("boards_poll_minutes") or 15)
+    stale = True
+    if fetched:
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(fetched)).total_seconds()
+            stale = age > minutes * 60
+        except ValueError:
+            pass
+    running = bool(poller is not None and poller.is_alive())
+    if stale and running:
+        poller.poll_now()
+    return {"stale": stale, "armed": bool(stale and running),
+            "running": running, "fetched": fetched}
+
+
+def state_mtime():
+    """Mtime of the boards state, for cache keys in the catalog — without
+    it a poll closing a role would not invalidate the universe cache and
+    the module would keep serving the role as live until a role file or
+    score file happened to change."""
+    try:
+        return _state_path().stat().st_mtime
+    except OSError:
+        return None
 
 
 # ------------------------------------------------------------------ status

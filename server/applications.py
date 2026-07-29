@@ -116,15 +116,19 @@ def _now():
 def _parse_datajs(path):
     """A teardown data.js is `window.DATA={...json...}` (one assignment).
     A boards `snapshot.json` (server/jobboards.py) parses to the same
-    {meta, jobs} shape here — open roles only, closed ones dropped."""
+    {meta, jobs} shape here.
+
+    Closed roles are KEPT. Dropping them was the opposite of what the
+    owner wants from a posting that comes down: the analysis stacked on
+    top of it is the expensive part, so a dead role is marked and
+    filterable, never deleted out from under its own notes."""
     raw = path.read_text(encoding="utf-8")
     if path.name.endswith(".json"):
         try:
             snap = json.loads(raw)
         except json.JSONDecodeError:
             return None
-        jobs = [r for r in (snap.get("roles") or {}).values()
-                if not r.get("closed")]
+        jobs = list((snap.get("roles") or {}).values())
         return {"meta": {"source": f"live boards ({snap.get('fetched', '')})"},
                 "jobs": jobs}
     m = re.search(r"window\.DATA\s*=\s*(\{.*)", raw, re.S)
@@ -170,13 +174,29 @@ def _fresh(job):
         return False
 
 
-def _norm(job, source):
+def _availability(uid, avail, own_closed=""):
+    """One role's availability, from the boards state (jobboards owns the
+    verdict). Three values, and the third is the point: `unverified` means
+    no registered board has ever seen this posting, so the module says so
+    instead of showing a role from a frozen corpus as though it were
+    checked this morning."""
+    a = avail.get(uid)
+    if a:
+        return a["state"], a.get("since") or a.get("checked") or ""
+    if own_closed:                    # a snapshot record closed pre-migration
+        return "gone", own_closed
+    return "unverified", ""
+
+
+def _norm(job, source, avail=None):
     """Normalize a teardown/frontier job record to the module's role shape."""
     company = source["company"] or job.get("company") or "?"
     salary_min = job.get("annualMin", job.get("salaryMin"))
     salary_max = job.get("annualMax", job.get("salaryMax"))
+    uid = role_uid(job)
+    state, when = _availability(uid, avail or {}, job.get("closed") or "")
     return {
-        "uid": role_uid(job),
+        "uid": uid,
         "company": company,
         "title": job.get("title") or "?",
         "team": job.get("team") or job.get("dept") or "",
@@ -201,6 +221,8 @@ def _norm(job, source):
         "fresh": _fresh(job),
         "cut": job.get("cut") or "",
         "eligible": job.get("eligible", None),
+        "availability": state,
+        "availability_when": when,
     }
 
 
@@ -211,7 +233,11 @@ def _sources_key(srcs):
             parts.append((s["slug"], str(s["path"]), s["path"].stat().st_mtime))
         except OSError:
             parts.append((s["slug"], str(s["path"]), None))
-    return tuple(parts)
+    # the boards state decides availability, so a sweep that closes a role
+    # has to invalidate both caches — otherwise the catalog keeps serving
+    # it as live until some unrelated file happens to change
+    from . import jobboards
+    return tuple(parts) + (("boards-state", jobboards.state_mtime()),)
 
 
 def load_roles():
@@ -222,6 +248,8 @@ def load_roles():
     with _lock:
         if _cache["key"] == key and _cache["roles"] is not None:
             return _cache["roles"]
+    from . import jobboards
+    avail = jobboards.availability_map()
     seen = {}
     meta = {"sources": []}
     for s in srcs:
@@ -232,7 +260,7 @@ def load_roles():
         jobs = data.get("jobs") or []
         fresh = 0
         for j in jobs:
-            r = _norm(j, s)
+            r = _norm(j, s, avail)
             if r["uid"] not in seen:
                 seen[r["uid"]] = r
                 fresh += 1
@@ -321,6 +349,8 @@ def load_universe():
     scores = jobshared.load_scores(udir)
     adj = _load_adjudication(udir)
     corpus = {r["uid"]: r for r in load_roles()[0]}
+    from . import jobboards
+    avail = jobboards.availability_map()
     out = []
     if role_dir.is_dir():
         for f in sorted(role_dir.glob("*.json")):
@@ -333,6 +363,7 @@ def load_universe():
             cr = corpus.get(uid, {})
             tier = str(sc.get("final_tier") or sc.get("tier") or "") \
                 if sc else ""
+            av_state, av_when = _availability(uid, avail)
             out.append({
                 "uid": uid,
                 "company": j.get("company") or "?",
@@ -367,6 +398,8 @@ def load_universe():
                 "fresh": _fresh(j),
                 "shortlist": 0,               # page-order rank when picked
                 "cut": "",                    # reason text when cut
+                "availability": av_state,
+                "availability_when": av_when,
             })
             _apply_adjudication(out[-1], adj)
     # picks first in page order, then tiers, cut lane last (still visible)
@@ -481,24 +514,25 @@ def connections_for(company):
 
 # ------------------------------------------------------------- the payload
 
-def compose(company=None, view="universe"):
+def compose(company=None, view=None):
     """The /api/applications payload: roles + owner state merged.
 
-    view="universe" (default): the curated, owner-adjudicated candidate set
-    (tier-then-fit order). view="all": the universe first, then every corpus
-    role not in it (marked in_universe=False) — the discovery view for
-    postings newer than the last repass."""
+    ONE LIST. There used to be a Universe / All-boards mode toggle, and
+    the owner's verdict on it was that he neither understood nor wanted
+    the distinction — fair, because it was a fact about this module's
+    plumbing (curated-and-scored vs raw-posting) dressed up as a place to
+    navigate to. The analyzed roles still lead the order and "analyzed vs
+    not yet analyzed" survives as a filter line, which is what that split
+    was actually good for. `view` is accepted and ignored so an old
+    bookmark or a stale client cannot 404."""
     uni = load_universe()
     _roles, meta = load_roles()
-    if view == "all":
-        in_uni = {r["uid"] for r in uni}
-        rest = [dict(r, in_universe=False) for r in _roles
-                if r["uid"] not in in_uni]
-        rest.sort(key=lambda r: (r["fit"] is None,
-                                 -(r["fit"] or 0), r["company"], r["title"]))
-        roles = uni + rest
-    else:
-        roles = uni
+    in_uni = {r["uid"] for r in uni}
+    rest = [dict(r, in_universe=False) for r in _roles
+            if r["uid"] not in in_uni]
+    rest.sort(key=lambda r: (r["fit"] is None,
+                             -(r["fit"] or 0), r["company"], r["title"]))
+    roles = uni + rest
     meta = dict(meta)
     meta["universe"] = {
         "total": len(uni),
@@ -506,7 +540,13 @@ def compose(company=None, view="universe"):
         "tier1": sum(1 for r in uni if r["tier"] == "1" and not r["cut"]),
         "shortlist": sum(1 for r in uni if r["shortlist"]),
         "cut": sum(1 for r in uni if r["cut"]),
+        "unanalyzed": len(rest),
         "dir": str(universe_dir()),
+    }
+    meta["availability"] = {
+        "gone": sum(1 for r in roles if r["availability"] == "gone"),
+        "unverified": sum(1 for r in roles
+                          if r["availability"] == "unverified"),
     }
     state = get_state()
     companies = {}
