@@ -685,6 +685,10 @@ class Sessions:
             "finished": st.get("finished"),
             "permission_mode": spec.get("permission_mode"),
             "model": spec.get("model"),
+            # What the CLI resolved the request to — app.js prefers this
+            # everywhere it names a model, so an alias that is not tracking
+            # the newest generation shows as itself instead of hiding.
+            "model_used": st.get("model_used", ""),
             "provider": spec.get("provider", "anthropic"),
             "publish_plan": spec.get("publish_plan"),
             "idea_id": spec.get("idea_id"),

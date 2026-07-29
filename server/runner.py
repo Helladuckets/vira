@@ -286,8 +286,16 @@ class Runner:
         self.finished_cleanly = True
         self.awaiting_reply = True
         self.state["awaiting"] = "reply"
-        self.append("[vira] turn complete — reply to keep going, or Finish "
-                    "to close the session\n")
+        # NOTHING IS APPENDED HERE (owner's call, 2026-07-29). This used to
+        # print "turn complete — reply to keep going, or Finish to close the
+        # session", which restated what the compose bar was already saying
+        # in its own placeholder and its own button labels: the bar is live,
+        # it reads "Reply — this session is holding open for you", and the
+        # button says Finish. A line of chrome dressed as Vira speaking, at
+        # the exact spot the owner reads for the session's CONCLUSION.
+        # The close-out is the agent's job and is specified in the preamble
+        # (viratools.preamble, "HOW TO END A TURN"); the harness must not
+        # talk over it.
         self.flush_state()
         try:
             while True:
@@ -505,6 +513,20 @@ class Runner:
                 joblog.record_session(self.spec["id"], sid)
             tail = f" (session {sid[:8]})" if sid else ""
             model = msg.data.get("model", "claude")
+            # The RESOLVED generation, which is the only place it is ever
+            # stated. A launch asks for a TIER ("opus") and the CLI picks the
+            # id — and it does not always pick the newest: on CLI 2.1.207
+            # `opus` resolves to claude-opus-4-8 while claude-opus-5 answers
+            # fine. app.js has read `model_used` in three places since it was
+            # written and nothing ever wrote it, so every surface fell back
+            # to the requested alias and showed "Opus" over a 4.8 session.
+            # Recording it is what makes a stale alias visible instead of
+            # silent — the ledger keeps it after the job dir is pruned.
+            if model and self.state.get("model_used") != model:
+                self.state["model_used"] = model
+                joblog.record_model_used(self.spec["id"], model)
+            if sid:
+                self.flush_state()
             self.append(f"[vira] {model} working…{tail}\n")
             return None
         if isinstance(msg, ResultMessage):

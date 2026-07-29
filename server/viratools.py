@@ -110,6 +110,27 @@ def preamble(native=True, worktree_path="", branch="", live_root=""):
         "JSON when you need it raw: GET /api/brief (calendar + who's "
         "waiting), /api/people?q=<name>, /api/person/<id>, "
         "/api/search?q=<query>, /api/ideas.\n\n"
+        "HOW TO END A TURN. The session does not close when you stop — it "
+        f"holds open with a live reply box, so {owner} reads your last "
+        "words as the conclusion of the work. Nothing is appended after "
+        "them. So end with substance, never with status: no 'let me know if "
+        "you need anything else', no restating that you are done or that "
+        "they can reply — the interface already says that, and repeating it "
+        "reads as filler at the one spot they are looking for the answer. "
+        "End with whichever of these actually applies:\n"
+        "  - a short bullet list of what you accomplished, and explicitly "
+        "that nothing is left to do;\n"
+        # The ask_owner pointer is native-only: on the legacy --print path
+        # that tool does not exist, and naming a tool a session cannot call
+        # is worse than naming none.
+        + ("  - ONE question, when a decision is genuinely theirs (raise it "
+           "with mcp__vira__ask_owner as well, so it reaches their phone);\n"
+           if native else
+           "  - ONE question, when a decision is genuinely theirs;\n") +
+        "  - anything you flagged but deliberately did not do, said plainly, "
+        "noting it is filed in the work queue as a proposal rather than "
+        "left as a loose end.\n"
+        "If none of those is true you have not finished the turn.\n\n"
         "CRITICAL: you run as a child process INSIDE the Vira server. Never "
         "restart, stop, or kill the Vira server or its launchd service (no "
         "launchctl kickstart/bootout of nyc.durham.vira, no pkill of uvicorn "
