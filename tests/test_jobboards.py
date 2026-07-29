@@ -315,6 +315,46 @@ class PollDiffAndNotify(unittest.TestCase):
         # a stale sighting is never upgraded to gone — nothing checked
         self.assertNotEqual(av["g-exlabs-111"]["state"], "gone")
 
+    def test_arm_if_stale(self):
+        """Opening the module asks for a sweep only when the last one has
+        aged out, and never claims to have armed one on an instance that
+        runs no poller (a passive test clone) — the caller would wait
+        forever on a sweep that cannot happen."""
+        class FakePoller:
+            def __init__(self, alive):
+                self.alive, self.armed = alive, False
+
+            def is_alive(self):
+                return self.alive
+
+            def poll_now(self):
+                self.armed = True
+
+        self._poll(GH_PAYLOAD)                      # a sweep just happened
+        p = FakePoller(True)
+        r = jobboards.arm_if_stale(p)
+        self.assertFalse(r["stale"])
+        self.assertFalse(r["armed"])
+        self.assertFalse(p.armed)
+
+        snap = json.loads((self.dir / "snapshot.json").read_text(
+            encoding="utf-8"))
+        snap["fetched"] = "2026-07-01T00:00:00+00:00"
+        (self.dir / "snapshot.json").write_text(json.dumps(snap),
+                                                encoding="utf-8")
+        p2 = FakePoller(True)
+        r2 = jobboards.arm_if_stale(p2)
+        self.assertTrue(r2["stale"])
+        self.assertTrue(r2["armed"])
+        self.assertTrue(p2.armed)
+
+        # no poller (passive): stale, but honestly not armed
+        r3 = jobboards.arm_if_stale(FakePoller(False))
+        self.assertTrue(r3["stale"])
+        self.assertFalse(r3["armed"])
+        self.assertFalse(r3["running"])
+        self.assertFalse(jobboards.arm_if_stale(None)["armed"])
+
     def test_failed_ping_leaves_undedupe(self):
         _, sent1 = self._poll(GH_PAYLOAD, notify_ret=False)
         self.assertEqual(len(sent1), 1)
