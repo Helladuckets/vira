@@ -10,7 +10,7 @@ breadboard export semantics.
 
 This is how "Fable writes the plan, Sonnet executes it" happens: stage
 `plan` runs read-only on `fable`, stage `build` (needs: plan) runs
-autopilot on sonnet with the plan wired into its prompt, and stage
+bypassPermissions on sonnet with the plan wired into its prompt, and stage
 `judge` (mode: judge) spawns a FRESH session that grades the build — with
 an optional GRADE GATE: verdict below min_grade relaunches the target
 stage with the judge's findings appended, up to max_retries times (the
@@ -51,7 +51,27 @@ RUNS_KEEP = 120
 # `session` is imported lazily throughout this module to dodge a circular
 # import) plus "judge", the one stage kind that is a role rather than a
 # rung: read-only, grading the stages it names.
-MODES = ("interactive", "acceptedits", "autopilot", "judge")
+MODES = ("manual", "acceptEdits", "bypassPermissions", "judge")
+
+# Stage definitions are DATA, stored in data/circuits.json and in owner-saved
+# retunes, so they hold whatever rung name was current when they were saved.
+# Normalizing on read is what lets the 2026-07-29 rename land without
+# migrating that store — the same reason session.norm_mode exists.
+_LEGACY_STAGE_MODES = {"interactive": "manual", "acceptedits": "acceptEdits",
+                       "autopilot": "bypassPermissions"}
+
+
+def norm_stage_mode(m, default="manual"):
+    """Canonical stage mode, accepting retired rung spellings. "judge" is
+    passed through untouched — it is a role, not a rung."""
+    s = str(m or "").strip()
+    if not s:
+        return default
+    if s in MODES:
+        return s
+    return _LEGACY_STAGE_MODES.get(s.lower(), s)
+
+
 EXTRA_CAP = 4_000        # per-stage owner instructions (tray) length cap
 MAX_RETRIES = 5          # ceiling a tray-set grade gate may ask for
 
@@ -65,13 +85,13 @@ TEMPLATES = [
         "id": "plan-build-judge",
         "name": "Plan, build, judge",
         "description": "Fable 5 writes the implementation plan (read-only), "
-                       "Sonnet builds it (autopilot), and a fresh judge "
+                       "Sonnet builds it (bypass permissions), and a fresh judge "
                        "grades the result — below a B, the build re-runs "
                        "once with the judge's findings.",
         "builtin": True,
         "stages": [
             {"id": "plan", "name": "Plan (Fable)", "model": "fable",
-             "mode": "interactive", "read_only": True, "needs": [],
+             "mode": "manual", "read_only": True, "needs": [],
              "prompt": "You are the PLANNING stage of a pipeline. Another "
                        "agent will implement your plan without talking to "
                        "you, so it must stand alone.\n\nWrite a concrete, "
@@ -81,7 +101,7 @@ TEMPLATES = [
                        "order of work, how to verify, and what NOT to touch."
                        " Do not modify anything. Output only the plan."},
             {"id": "build", "name": "Build (Sonnet)", "model": "sonnet",
-             "mode": "autopilot", "needs": ["plan"],
+             "mode": "bypassPermissions", "needs": ["plan"],
              "prompt": "You are the BUILD stage of a pipeline. Implement "
                        "the plan below completely. Run tests where they "
                        "exist. Do NOT commit or push — changes stay in the "
@@ -103,13 +123,13 @@ TEMPLATES = [
                        "writes the definitive breakdown of what it "
                        "proposes; Fable 5 turns that into a standalone "
                        "implementation plan for the target repo, Sonnet "
-                       "builds it (autopilot), and a fresh judge grades "
+                       "builds it (bypass permissions), and a fresh judge grades "
                        "the result — below a B, the build re-runs once "
                        "with the judge's findings.",
         "builtin": True,
         "stages": [
             {"id": "watch", "name": "Watch (Sonnet)", "model": "sonnet",
-             "mode": "autopilot", "needs": [],
+             "mode": "bypassPermissions", "needs": [],
              "prompt": "You are the WATCH stage of a pipeline. The input "
                        "below holds a video URL (and possibly extra notes "
                        "from the owner). Watch the video for real and "
@@ -150,7 +170,7 @@ TEMPLATES = [
                        "Delete the working directory when done. Output "
                        "only the breakdown."},
             {"id": "plan", "name": "Plan (Fable)", "model": "fable",
-             "mode": "interactive", "read_only": True, "needs": ["watch"],
+             "mode": "manual", "read_only": True, "needs": ["watch"],
              "prompt": "You are the PLANNING stage of a pipeline. An "
                        "agent watched a video and wrote the breakdown "
                        "below. Turn it into a concrete, standalone "
@@ -167,7 +187,7 @@ TEMPLATES = [
                        "work, how to verify, and what NOT to touch. Do "
                        "not modify anything. Output only the plan."},
             {"id": "build", "name": "Build (Sonnet)", "model": "sonnet",
-             "mode": "autopilot", "needs": ["plan"],
+             "mode": "bypassPermissions", "needs": ["plan"],
              "prompt": "You are the BUILD stage of a pipeline. Implement "
                        "the plan below completely. Run tests where they "
                        "exist. Do NOT commit or push — changes stay in "
@@ -191,19 +211,19 @@ TEMPLATES = [
         "builtin": True,
         "stages": [
             {"id": "sonnet", "name": "Sonnet's take", "model": "sonnet",
-             "mode": "interactive", "read_only": True, "needs": [],
+             "mode": "manual", "read_only": True, "needs": [],
              "prompt": "Answer this question thoroughly and directly, on "
                        "your own judgment:\n\n{{input}}"},
             {"id": "opus", "name": "Opus's take", "model": "opus",
-             "mode": "interactive", "read_only": True, "needs": [],
+             "mode": "manual", "read_only": True, "needs": [],
              "prompt": "Answer this question thoroughly and directly, on "
                        "your own judgment:\n\n{{input}}"},
             {"id": "haiku", "name": "Haiku's take", "model": "haiku",
-             "mode": "interactive", "read_only": True, "needs": [],
+             "mode": "manual", "read_only": True, "needs": [],
              "prompt": "Answer this question thoroughly and directly, on "
                        "your own judgment:\n\n{{input}}"},
             {"id": "synth", "name": "Synthesis (Fable)", "model": "fable",
-             "mode": "interactive", "read_only": True,
+             "mode": "manual", "read_only": True,
              "needs": ["sonnet", "opus", "haiku"],
              "prompt": "Three independent advisors answered the same "
                        "question without seeing each other's work. "
@@ -226,7 +246,7 @@ TEMPLATES = [
         "builtin": True,
         "stages": [
             {"id": "research", "name": "Research (Sonnet)",
-             "model": "sonnet", "mode": "interactive", "read_only": True,
+             "model": "sonnet", "mode": "manual", "read_only": True,
              "needs": [],
              "prompt": "You are the RESEARCH stage. Investigate this "
                        "question using the mcp__vira__* native tools — "
@@ -238,7 +258,7 @@ TEMPLATES = [
                        "questions listed. Findings only — no "
                        "recommendations yet."},
             {"id": "brief", "name": "Brief (Fable)", "model": "fable",
-             "mode": "interactive", "read_only": True,
+             "mode": "manual", "read_only": True,
              "needs": ["research"],
              "prompt": "Turn these research findings into a decision "
                        "brief for the owner: the answer up front, the "
@@ -299,12 +319,12 @@ def validate_stages(stages):
         raise ValueError("stage ids must be unique and non-empty")
     known = set(ids)
     for st in stages:
-        if st.get("mode", "interactive") not in MODES:
+        if norm_stage_mode(st.get("mode")) not in MODES:
             raise ValueError(f"stage {st['id']}: bad mode")
         for n in st.get("needs") or []:
             if n not in known:
                 raise ValueError(f"stage {st['id']}: unknown need {n!r}")
-        if st.get("mode") == "judge":
+        if norm_stage_mode(st.get("mode")) == "judge":
             j = st.get("judge") or {}
             for ref in list(j.get("of") or []) + (
                     [j["retry_stage"]] if j.get("retry_stage") else []):
@@ -360,7 +380,7 @@ def apply_overrides(stages, overrides):
             raise ValueError(f"unknown stage {sid!r}")
         if not isinstance(upd, dict):
             raise ValueError(f"stage {sid}: overrides must be an object")
-        is_judge = st.get("mode") == "judge"
+        is_judge = norm_stage_mode(st.get("mode")) == "judge"
         for key, val in upd.items():
             if key in ("min_grade", "max_retries"):
                 if not is_judge:
@@ -577,7 +597,7 @@ def _built_path(run):
     if not cwd:
         return None
     for st in run.get("stages_def") or []:
-        if st.get("mode") == "judge":
+        if norm_stage_mode(st.get("mode")) == "judge":
             continue
         if not st.get("read_only"):
             return cwd
@@ -723,7 +743,7 @@ class Driver(threading.Thread):
             prompt = judge.build_prompt(
                 run["input"], evidence, cwd=target_cwd, context=context)
             model = st_def.get("model") or judge.judge_model()
-            mode, read_only = "interactive", True
+            mode, read_only = "manual", True
         else:
             prompt = render_prompt(st_def.get("prompt") or "", run)
             if extra:
@@ -736,7 +756,7 @@ class Driver(threading.Thread):
                            "attempt below the bar. Address these findings "
                            "specifically:\n" + fb)
             model = st_def.get("model") or None
-            mode = st_def.get("mode") or "interactive"
+            mode = norm_stage_mode(st_def.get("mode"))
             read_only = bool(st_def.get("read_only"))
         return session.sessions.launch(
             prompt, cwd=st_def.get("cwd") or run.get("cwd"),

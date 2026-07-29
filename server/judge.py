@@ -8,7 +8,7 @@ scores, findings, and a ship/fix/redo recommendation.
 
 Judge sessions run read-only (spec read_only=True: write tools disallowed
 at the SDK level AND gate-denied instantly, no hanging cards) in
-interactive mode, so the only reachable tools are the auto-allowed
+manual mode, so the only reachable tools are the auto-allowed
 read set + the native vira tools. The evidence (diff, transcript tail)
 is computed server-side and embedded in the prompt — the judge never
 needs Bash.
@@ -203,7 +203,7 @@ def launch_judge(jid, model=None):
     prompt = prompt_for_job(jid)
     judge_jid = session.sessions.launch(
         prompt, cwd=rec.get("cwd"), model=model or judge_model(),
-        mode="interactive", read_only=True,
+        mode="manual", read_only=True,
         meta={"judge_of": jid})
     threading.Thread(target=_watch_judge, args=(jid, judge_jid),
                      daemon=True, name=f"vira-judge-{judge_jid}").start()

@@ -30,7 +30,8 @@ from pathlib import Path
 from . import agentbackend, jobfiles, joblog, viratools, worktree
 from .session import (EDIT_TOOLS, OUTPUT_CAP, READ_ONLY_EXCLUDE,
                       _extract_plan_md, _finalize_plan, _mark_idea,
-                      _plan_ref, _sdk_env, _tool_preview, _tool_summary)
+                      _plan_ref, _sdk_env, _tool_preview, _tool_summary,
+                      norm_mode)
 
 # The SDK is required only by the gated (Anthropic) path. A best-effort
 # CLI-exec session must still run on a machine without it, so a failed
@@ -74,9 +75,38 @@ class _EngineDone(Exception):
 class Runner:
     END = _END                       # exposed for agentbackend's inbox loop
 
+    def _disarmed_guard(self):
+        """The reason this session's branch-first guard cannot fire, or "".
+
+        FAIL CLOSED. Placement and enforcement used to be independent: the
+        session was moved into a worktree and the gate was armed by separate
+        fields, so when the fields were dropped in transit (2026-07-25 ->
+        2026-07-29) the move still happened, everything looked right, and
+        the backstop was simply never there. Nothing anywhere said so.
+
+        Binding them means a placed session that arrives without its guard
+        is a hard error, not a silent fall-through. The test is the state on
+        disk, not a flag someone remembered to set: if the cwd we were handed
+        is a linked git worktree, placement happened, so live_root must be
+        here too.
+        """
+        if self.spec.get("read_only") or self.spec.get("publish_plan"):
+            return ""                       # read-only denial covers these
+        cwd = self.spec.get("cwd") or ""
+        if not cwd or not worktree.is_worktree(cwd):
+            return ""                       # not a placed session
+        if self.spec.get("worktree") and self.spec.get("live_root"):
+            return ""                       # placed AND armed — the good case
+        missing = [k for k in ("worktree", "live_root") if not self.spec.get(k)]
+        return (f"cwd {cwd} is a linked worktree, so this session was placed "
+                f"by branch-first — but the spec is missing {', '.join(missing)}, "
+                f"so the guard that keeps writes out of the live checkout "
+                f"cannot fire. Refusing to run rather than writing unguarded.")
+
     def __init__(self, jdir):
         self.dir = Path(jdir)
         self.spec = json.loads((self.dir / "job.json").read_text())
+        self.disarmed = self._disarmed_guard()
         self.state = {
             "id": self.spec["id"], "status": "running",
             "started": self.spec.get("started") or time.time(),
@@ -382,7 +412,9 @@ class Runner:
         # because a rule that any allow-list can override is not a rule.
         wt, live_root = self.spec.get("worktree"), self.spec.get("live_root")
         if wt and live_root and tool_name in worktree.WRITE_TOOLS:
-            for p in worktree.target_paths(tool_input):
+            targets = (worktree.bash_targets(tool_input) if tool_name == "Bash"
+                       else worktree.target_paths(tool_input))
+            for p in targets:
                 if worktree.violates(p, live_root, wt):
                     self.append(f"[vira] denied (branch-first) — {tool_name} "
                                 f"targets the live checkout: {p}\n")
@@ -390,7 +422,17 @@ class Runner:
                         message=worktree.deny_message(wt))
         if tool_name in self.auto_allow or tool_name in self.session_allow:
             return PermissionResultAllow()
-        if self.spec["mode"] == "acceptedits" and tool_name in EDIT_TOOLS:
+        mode = norm_mode(self.spec.get("mode"), "manual")
+        if mode == "bypassPermissions":
+            # The top rung allows everything — but it is the GATE saying so,
+            # not the gate being absent. Until 2026-07-29 this rung passed
+            # can_use_tool=None, which removed the two denials above along
+            # with the cards; the branch-first backstop the rung most needs
+            # was the thing it switched off. Claude Code's own
+            # bypassPermissions keeps a circuit breaker for the same reason;
+            # the live-tree denial is ours.
+            return PermissionResultAllow()
+        if mode == "acceptEdits" and tool_name in EDIT_TOOLS:
             # The middle rung: file edits land unasked, but commands and
             # everything else still raise a card. Deliberately below the
             # read-only denial above, which outranks every allow.
@@ -477,6 +519,14 @@ class Runner:
         ok = False
         try:
             self.append(spec.get("branch_note") or "")
+            if self.disarmed:
+                # Fail closed — see _disarmed_guard. This must raise BEFORE
+                # any engine starts; a session that gets as far as its first
+                # tool call has already been able to write.
+                self.append(f"[vira] REFUSING TO RUN (branch-first guard "
+                            f"disarmed) — {self.disarmed}\n")
+                raise RuntimeError(f"branch-first guard disarmed: "
+                                   f"{self.disarmed}")
             if agentbackend.uses_cli_exec(spec):
                 # Best-effort engine: the provider's own CLI, inside this
                 # same harness — inbox, reply window, epilogue all shared.
@@ -505,11 +555,15 @@ class Runner:
                                    live_root=spec.get("live_root") or "")},
                 mcp_servers={"vira": vira_srv} if vira_srv else {},
                 allowed_tools=list(viratools.TOOL_NAMES) if vira_srv else [],
-                permission_mode=("bypassPermissions"
-                                 if spec["mode"] == "autopilot"
-                                 else "default"),
-                can_use_tool=(None if spec["mode"] == "autopilot"
-                              else self.gate),
+                # ALWAYS "default" + ALWAYS our gate. Handing the SDK its own
+                # bypassPermissions used to skip can_use_tool altogether,
+                # which took the read-only and branch-first denials with it —
+                # policy lived in the gate, so removing the gate removed the
+                # policy. The bypass rung is now expressed INSIDE the gate
+                # (it returns Allow), so there is exactly one place that
+                # decides what a session may do, in every mode.
+                permission_mode="default",
+                can_use_tool=self.gate,
                 # Plan and read-only sessions: write tools — and the
                 # excluded non-reads (Task subagents, WebSearch egress) —
                 # leave the model's context entirely; anything else risky

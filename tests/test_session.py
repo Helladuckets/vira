@@ -263,14 +263,14 @@ class LaunchTests(unittest.TestCase):
         with mock.patch.object(session, "SDK_AVAILABLE", False):
             jid = self._launch_stubbed(
                 reg, permission_mode="bypassPermissions")
-        self.assertEqual(reg.get(jid)["mode"], "autopilot")
+        self.assertEqual(reg.get(jid)["mode"], "bypassPermissions")
         self.assertEqual(reg.get(jid)["permission_mode"], "bypassPermissions")
 
     def test_explicit_mode_wins(self):
         reg = make_registry()
         with mock.patch.object(session, "SDK_AVAILABLE", False):
             jid = self._launch_stubbed(reg, mode="interactive")
-        self.assertEqual(reg.get(jid)["mode"], "interactive")
+        self.assertEqual(reg.get(jid)["mode"], "manual")
 
     def test_sdk_absent_falls_back_and_says_so(self):
         reg = make_registry()

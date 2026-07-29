@@ -111,13 +111,14 @@ def sessions_quality(pid):
 
 def sandbox_for(spec):
     """Vira's permission ladder mapped onto codex's sandbox vocabulary.
-    read-only/plan stays read-only; autopilot means what bypassPermissions
-    means on the SDK path; everything between runs workspace-write —
+    read-only/plan stays read-only; bypassPermissions means on this path
+    what it means on the SDK path; everything between runs workspace-write —
     confined to the cwd, which branch-first placement has already made a
     worktree for any session that can write."""
+    from . import session          # lazy: session imports this module
     if spec.get("read_only") or spec.get("publish_plan"):
         return "read-only"
-    if spec.get("mode") == "autopilot":
+    if session.norm_mode(spec.get("mode")) == "bypassPermissions":
         return "danger-full-access"
     return "workspace-write"
 

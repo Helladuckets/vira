@@ -72,7 +72,14 @@ SESSION_DEFAULTS = {
     "session_auto_allow": ["Read", "Grep", "Glob", "TodoWrite", "Task",
                            "NotebookRead", "WebSearch"],
     "session_permission_timeout": 600,   # seconds until default-deny
-    "session_default_mode": "interactive",
+    # bypassPermissions is the shipped default (owner's call, 2026-07-29).
+    # The containment is structural, not per-call: a writing session is
+    # PLACED in its own worktree and the gate refuses any write aimed back
+    # at the live checkout, so the result is always either merged or thrown
+    # away with the branch. Clicking Approve on mechanical calls bought
+    # nothing — the session that broke the desktop on 2026-07-25 was one
+    # the owner was approving call by call.
+    "session_default_mode": "bypassPermissions",
     "session_max_live": 4,               # concurrent detached sessions cap
     "session_reply_window_hours": 12,    # safety reap for an idle linger
     # A writing session in a branch-first repo gets its own worktree, and
@@ -85,11 +92,44 @@ SESSION_DEFAULTS = {
 # The permission ladder, safest first. A session's mode is ONE of these —
 # it decides what the gate waves through, never whether the owner can talk
 # to the session (every mode is steerable; see the runner's reply window).
-#   interactive  every risky call raises an Approve/Deny card
-#   acceptedits  edits land unasked, commands still raise a card
-#   autopilot    bypassPermissions — the gate is off entirely
+#   manual             every risky call raises an Approve/Deny card
+#   acceptEdits        edits land unasked, commands still raise a card
+#   bypassPermissions  everything runs; only the two non-negotiable denials
+#                      (read-only, and a write aimed at the live checkout)
+#                      still fire — see runner.gate
 # Ordered, so a future rung slots in without rewriting the callers.
-MODES = ("interactive", "acceptedits", "autopilot")
+#
+# NAMED TO MATCH CLAUDE CODE's own --permission-mode values (owner's call,
+# 2026-07-29), so a rung means the same thing in both places and the two can
+# be compared at a glance. The old names were also actively misleading:
+# "interactive" implied the other rungs were not, when the steer bar has
+# never keyed on mode at all (app.js composeState) — EVERY rung is
+# interactive at the owner's discretion.
+MODES = ("manual", "acceptEdits", "bypassPermissions")
+DEFAULT_MODE = "bypassPermissions"
+
+# Retired spellings -> current. Stored modes outlive a rename: they sit in
+# data/jobs/*/job.json, in the joblog ledger rows the Work window renders,
+# in circuit stage definitions, in routines.json, and in the browser's
+# vira-idea-perm. Normalizing on READ means none of that has to be migrated
+# and an old record can never fall through to a stricter-or-looser default.
+LEGACY_MODES = {"interactive": "manual", "acceptedits": "acceptEdits",
+                "autopilot": "bypassPermissions"}
+
+
+def norm_mode(m, default=None):
+    """Canonical rung name for `m`, accepting retired spellings and any
+    casing. Returns `default` when it names no rung."""
+    s = str(m or "").strip()
+    if s in MODES:
+        return s
+    low = s.lower()
+    if low in LEGACY_MODES:
+        return LEGACY_MODES[low]
+    for canon in MODES:
+        if canon.lower() == low:
+            return canon
+    return default
 
 # What "edits land unasked" means. The acceptedits rung is enforced in
 # Vira's OWN gate (runner.gate), not by handing the SDK its acceptEdits
@@ -104,6 +144,22 @@ EDIT_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 # from viratools.WRITE_TOOLS so a new one is excluded the day it ships
 # rather than the day someone notices. Read-only means reads.
 READ_ONLY_EXCLUDE = {"Task", "WebSearch"} | viratools.WRITE_TOOLS
+
+# The two halves of the launch-dict -> job.json derivation (_spawn_runner).
+#
+# RUNNER_OWNED is the ONLY reason a launch input does not reach the runner:
+# these are live-state fields the runner itself owns and republishes in
+# state.json, so shipping them in the immutable spec would just be a stale
+# copy. Everything else in the launch dict is a launch INPUT and rides along
+# automatically — that default is the fix for the four-time key drop.
+RUNNER_OWNED = {"status", "output", "finished", "session_id", "awaiting",
+                "live"}
+
+# Fields _spawn_runner computes at spawn time rather than reading from the
+# launch dict. Named here so the structural test can state the whole contract
+# as one set equation instead of a hand-maintained list that drifts.
+SPAWN_COMPUTED = {"provider", "model_resolved", "auto_allow",
+                  "permission_timeout", "reply_window"}
 
 # UI/circuit model keywords -> ids the CLI actually accepts.
 #
@@ -430,18 +486,21 @@ class Sessions:
                publish_plan=False, idea_id=None, mode=None,
                read_only=False, meta=None, provider=None):
         """Start a run; returns the job id. `mode` is one of MODES — the
-        permission ladder (interactive / acceptedits / autopilot); when
-        absent it derives from the legacy permission_mode param, else the
-        config default. read_only=True disallows write tools at the SDK
-        level and the gate denies everything outside the auto-allow set
-        instantly (judge sessions, circuit read stages). `meta` is a small
-        dict recorded on the ledger row (circuit_run/stage/judge_of/
-        routine_id). Raises ValueError when the live-session cap is hit."""
-        if mode not in MODES:
-            mode = ("autopilot" if permission_mode == "bypassPermissions"
-                    else str(_scfg("session_default_mode")))
-            if mode not in MODES:
-                mode = "interactive"
+        permission ladder (manual / acceptEdits / bypassPermissions), and
+        retired spellings still resolve via norm_mode; when absent it
+        derives from the legacy permission_mode param, else the config
+        default. read_only=True disallows write tools at the SDK level and
+        the gate denies everything outside the auto-allow set instantly
+        (judge sessions, circuit read stages). `meta` is a small dict
+        recorded on the ledger row (circuit_run/stage/judge_of/routine_id).
+        Raises ValueError when the live-session cap is hit."""
+        mode = norm_mode(mode)
+        if mode is None:
+            mode = ("bypassPermissions"
+                    if permission_mode == "bypassPermissions"
+                    else norm_mode(_scfg("session_default_mode")))
+            if mode is None:
+                mode = DEFAULT_MODE
         jid = uuid.uuid4().hex[:12]
         if cwd:
             cwd = str(Path(cwd).expanduser())
@@ -493,7 +552,8 @@ class Sessions:
         data = {"id": jid, "prompt": prompt, "cwd": cwd or str(Path.home()),
                 "status": "running", "output": "", "started": time.time(),
                 "finished": None,
-                "permission_mode": ("bypassPermissions" if mode == "autopilot"
+                "permission_mode": ("bypassPermissions"
+                                    if mode == "bypassPermissions"
                                     else permission_mode),
                 "model": (resolve_model(model) if prov == "anthropic"
                           else (model or "").strip() or None),
@@ -530,7 +590,7 @@ class Sessions:
             s = Session(data)
             self.sessions[jid] = s
             note = "claude-agent-sdk not installed"
-            if mode == "interactive":
+            if mode == "manual":
                 self._append(s, "[vira] interactive session unavailable — "
                                 f"{note}; running one-shot (no steering or "
                                 "permission prompts)\n")
@@ -545,9 +605,17 @@ class Sessions:
         jdir = jobfiles.job_dir(jid)
         jdir.mkdir(parents=True, exist_ok=True)
         prov = data.get("provider") or "anthropic"
-        spec = {
-            "id": jid, "prompt": data["prompt"], "cwd": data["cwd"],
-            "model": data["model"],
+        # DERIVED, never retyped. This used to be a hand-written dict literal
+        # naming every key it wanted, and that seam has silently dropped a
+        # launch input FOUR times: read_only/meta, then reply_window, then
+        # provider, then — the expensive one — the whole branch-first guard.
+        # `worktree`/`live_root` never reached job.json, so runner.gate's
+        # denial could not fire, the model never learned it was in a worktree,
+        # and no transcript ever said which tree it edited (2026-07-25 ->
+        # diagnosed 2026-07-29). A new launch input now rides along by
+        # default; dropping one takes an explicit entry below.
+        spec = {k: v for k, v in data.items() if k not in RUNNER_OWNED}
+        spec.update({
             "provider": prov,
             # A launch that names no model runs the PROVIDER's configured
             # default, not anthropic's.
@@ -555,16 +623,10 @@ class Sessions:
                                or (resolve_model(config()["cli_model"])
                                    if prov == "anthropic"
                                    else agentbackend.default_model(prov))),
-            "permission_mode": data["permission_mode"],
-            "publish_plan": data["publish_plan"],
-            "idea_id": data["idea_id"], "mode": data["mode"],
-            "read_only": data.get("read_only", False),
-            "meta": data.get("meta") or {},
-            "started": data["started"],
             "auto_allow": list(_scfg("session_auto_allow")),
             "permission_timeout": float(_scfg("session_permission_timeout")),
             "reply_window": float(_scfg("session_reply_window_hours")) * 3600,
-        }
+        })
         jobfiles.write_json_atomic(jdir / "job.json", spec)
         (jdir / "control.jsonl").touch()
         joblog.record_launch(data)
