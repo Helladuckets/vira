@@ -27,7 +27,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import agentbackend, jobfiles, joblog, viratools, worktree
+from . import agentbackend, jobfiles, joblog, settings, viratools, worktree
 from .session import (EDIT_TOOLS, OUTPUT_CAP, READ_ONLY_EXCLUDE,
                       _extract_plan_md, _finalize_plan, _mark_idea,
                       _plan_ref, _sdk_env, _tool_preview, _tool_summary,
@@ -43,6 +43,7 @@ try:
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
+        HookMatcher,
         PermissionResultAllow,
         PermissionResultDeny,
         ResultMessage,
@@ -53,9 +54,12 @@ try:
     )
 except Exception as e:  # noqa: BLE001 — tolerated for CLI-exec jobs
     SDK_IMPORT_ERROR = e
-    AssistantMessage = ClaudeAgentOptions = ClaudeSDKClient = None
+    AssistantMessage = ClaudeAgentOptions = ClaudeSDKClient = HookMatcher = None
     PermissionResultAllow = PermissionResultDeny = ResultMessage = None
     SystemMessage = TextBlock = ThinkingBlock = ToolUseBlock = None
+
+# Who the mid-turn steering is from, in the words the model will read.
+OWNER_LABEL = settings.get("owner_name") or "The owner"
 
 HEARTBEAT = 2.0
 CONTROL_POLL = 0.25
@@ -152,6 +156,52 @@ class Runner:
 
     # ----- control stream -----
 
+    async def steer_hook(self, _input, _tool_use_id, _ctx):
+        """Deliver queued steering MID-TURN, alongside the next tool result.
+
+        Before this, `say` only reached the model at the turn boundary in
+        run_session — and a turn is however many tool calls the agent
+        decides to make. The owner typed "Okay, wrap it up" and watched the
+        session run twenty more calls without acknowledging it (2026-07-29);
+        from the outside that is indistinguishable from steering being
+        broken, and it is why "queued — delivers at the next turn boundary"
+        was never a satisfying answer.
+
+        A PostToolUse hook's `additionalContext` is the SDK's channel for
+        exactly this: text handed to the model with the tool result it is
+        already about to read. So the wait shrinks from "the rest of the
+        turn" to "the current tool call".
+
+        Deliberately non-blocking and total: it drains everything queued, it
+        never touches the _END sentinel (that is Finish, and only
+        await_reply may act on it), and any failure is swallowed — a hook
+        that raises must never be able to kill a running session.
+        """
+        try:
+            msgs, hold = [], []
+            while True:
+                try:
+                    item = self.inbox.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                (hold if item is _END else msgs).append(item)
+            for item in hold:            # put Finish back untouched
+                self.inbox.put_nowait(item)
+            if not msgs:
+                return {}
+            for m in msgs:
+                self.append(f"[vira] steering delivered — {m}\n")
+            body = "\n".join(str(m) for m in msgs)
+            return {"hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": (
+                    f"{OWNER_LABEL} sent this mid-turn, just now. Treat it as "
+                    f"a live instruction that outranks your current plan — "
+                    f"act on it before continuing:\n\n{body}"),
+            }}
+        except Exception:  # noqa: BLE001 — a hook must never kill the session
+            return {}
+
     async def control_loop(self):
         while True:
             self._consumed, cmds = jobfiles.read_control(
@@ -170,15 +220,17 @@ class Runner:
             if text:
                 self.inbox.put_nowait(text)
                 self.append(f"[you] {text}\n")
-                # Only say "queued" when it IS queued. A session parked in
-                # its reply window is sitting on the inbox, so the message
-                # goes straight in — and printing "delivers at the next turn
-                # boundary" followed instantly by "reply delivered" told the
-                # owner two contradictory things in consecutive lines
-                # (2026-07-29). Mid-turn the wait is real and worth saying.
+                # Say what is actually about to happen. A parked session is
+                # sitting on the inbox (immediate); mid-turn the steer_hook
+                # hands it over at the next tool result. Neither is "the
+                # next turn boundary", which is what this used to claim —
+                # printing it immediately before "reply delivered" told the
+                # owner two contradictory things in consecutive lines, and
+                # claiming a turn-long wait when steering had genuinely
+                # stopped being turn-bound would be worse (2026-07-29).
                 if not self.awaiting_reply:
-                    self.append("[vira] queued — delivers at the next turn "
-                                "boundary\n")
+                    self.append("[vira] queued — delivers at the agent's "
+                                "next step\n")
         elif op == "permission":
             fut = self.futures.get(cmd.get("req_id"))
             if fut is not None and not fut.done():
@@ -593,6 +645,14 @@ class Runner:
                 # decides what a session may do, in every mode.
                 permission_mode="default",
                 can_use_tool=self.gate,
+                # Steering reaches the model at the next TOOL RESULT, not at
+                # the end of the turn — see steer_hook. matcher=None so it
+                # fires after every tool, which is the point: the owner
+                # should never have to wait out a fifty-call turn to be
+                # heard. The turn-boundary drain in run_session stays as the
+                # fallback for a turn that calls no tools at all.
+                hooks={"PostToolUse": [HookMatcher(matcher=None,
+                                                   hooks=[self.steer_hook])]},
                 # Plan and read-only sessions: write tools — and the
                 # excluded non-reads (Task subagents, WebSearch egress) —
                 # leave the model's context entirely; anything else risky

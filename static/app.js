@@ -5589,11 +5589,11 @@ function createJobTerm(jid, refs) {
       r.say.disabled = r.send.disabled = r.stopBtn.disabled = !live;
       r.say.placeholder = replying
         ? "Reply — this session is holding open for you"
-        : "Steer this session — delivered at the next turn";
+        : "Steer this session — delivered at the agent's next step";
       r.stopBtn.textContent = replying ? "Finish" : "Stop";
       r.stopBtn.title = replying
         ? "Close the session — its work is already done and recorded"
-        : "End the current turn — takes effect at the next boundary; queued messages still deliver";
+        : "End the current turn — queued messages still deliver";
     },
     start() {
       activeTerms[this.jid] = this;
@@ -5714,10 +5714,10 @@ function openJobWindow(jid) {
   say.type = "text";
   say.spellcheck = false;
   say.autocomplete = "off";
-  say.placeholder = "Steer this session — delivered at the next turn";
+  say.placeholder = "Steer this session — delivered at the agent's next step";
   const send = el("button", "btn small", "Send");
   const stopBtn = el("button", "btn small term-stop", "Stop");
-  stopBtn.title = "End the current turn — takes effect at the next boundary; queued messages still deliver";
+  stopBtn.title = "End the current turn — queued messages still deliver";
   composebar.appendChild(say);
   composebar.appendChild(send);
   composebar.appendChild(stopBtn);
