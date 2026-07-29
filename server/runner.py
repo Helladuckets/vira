@@ -306,6 +306,27 @@ class Runner:
 
     # ----- the reply window -----
 
+    def should_park(self, ok):
+        """Whether THIS finished turn holds the session open.
+
+        A method rather than an inline condition because the inline version
+        was wrong and untestable: "Stop parks now" shipped on 2026-07-29
+        with the fix inside await_reply and the bug in the line deciding
+        whether to call it, so nothing the owner could see changed. The
+        tests exercised the function and never the guard — both halves, not
+        the join, exactly as with the branch guard.
+
+        `ok or self.interrupted`: an interrupted turn is NOT a failed one,
+        but the SDK reports them identically — a Stop makes the
+        ResultMessage an error, so `ok` is False. A genuine failure still
+        must NOT park (a dead session showing as alive for hours would hide
+        the auth failures the AI-health watcher exists to catch), which is
+        why this reads the interrupt explicitly instead of relaxing `ok`.
+        """
+        if not self.parks_at_turn_end():
+            return False
+        return bool(ok) or self.interrupted
+
     def parks_at_turn_end(self):
         """Whether a completed turn holds the session open for a reply.
 
@@ -723,7 +744,7 @@ class Runner:
                     # goes for every machine-dispatched run — see
                     # parks_at_turn_end for the full reasoning.
                     reply = (await self.await_reply()
-                             if ok and self.parks_at_turn_end() else None)
+                             if self.should_park(ok) else None)
                     if reply is None:
                         done = True
                     else:

@@ -337,3 +337,52 @@ class StopIsAPauseNotAnEnding(unittest.TestCase):
                          (None, True), ("permission", True)):
             h.last_state = {"status": "running", "awaiting": aw}
             self.assertEqual(h.working(), want, f"awaiting={aw}")
+
+
+class TheGuardThatDecidesWhetherToPark(unittest.TestCase):
+    """The join, not the halves. "Stop parks now" shipped once already with
+    the fix inside await_reply and the bug in the call site's condition, so
+    the owner saw no change at all: an interrupted turn reports is_error,
+    `ok` was False, and the park was skipped before the function ran.
+    Testing await_reply alone could never catch that."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _r(self, **spec):
+        r = make_runner(self.tmp.name, **spec)
+        self.addCleanup(r.out.close)
+        return r
+
+    def test_a_stopped_turn_parks_even_though_ok_is_false(self):
+        r = self._r()
+        r.interrupted = True
+        self.assertTrue(r.should_park(ok=False))
+
+    def test_a_clean_turn_parks(self):
+        self.assertTrue(self._r().should_park(ok=True))
+
+    def test_a_genuinely_failed_turn_does_not_park(self):
+        """A dead session showing as alive for hours would hide exactly the
+        auth failures the AI-health watcher exists to catch."""
+        self.assertFalse(self._r().should_park(ok=False))
+
+    def test_a_plan_session_never_parks_however_it_ended(self):
+        r = self._r(publish_plan=True)
+        r.interrupted = True
+        self.assertFalse(r.should_park(ok=True))
+        self.assertFalse(r.should_park(ok=False))
+
+    def test_machine_dispatched_runs_never_park_even_when_stopped(self):
+        for meta in ({"routine_id": "r1"}, {"circuit_run": "c1"},
+                     {"judge_of": "j1"}):
+            r = self._r(meta=meta)
+            r.interrupted = True
+            self.assertFalse(r.should_park(ok=True), meta)
+
+    def test_the_call_site_uses_the_guard(self):
+        """Pins the wiring itself, so the condition cannot drift back into
+        an inline expression that the tests above would not see."""
+        src = inspect.getsource(runner_mod.Runner.run_session)
+        self.assertIn("self.should_park(ok)", src)
