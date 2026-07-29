@@ -4919,17 +4919,22 @@ function jobPhase(j) {
   if (!j || j.status !== "running") return (j && j.status) || "";
   if (j.awaiting === "permission" || j.awaiting === "ask") return "waiting";
   if (j.awaiting === "reply") return "complete";
+  // Stopped mid-turn: the box is open but the work was cut
+  // short, so this must never read as complete.
+  if (j.awaiting === "paused") return "paused";
   return "running";
 }
 const JOB_PHASE_LABEL = {
   running: "working",
   waiting: "waiting on you",
   complete: "complete — nothing pending",
+  paused: "paused — you stopped it",
 };
 // Phase -> the existing dot/pill state classes, so no new CSS is needed and
 // a complete session reads green like any other finished job.
 const JOB_PHASE_CLASS = {
   running: "running", waiting: "running", complete: "done",
+  paused: "running",
 };
 
 async function refreshJobs() {
@@ -5509,16 +5514,19 @@ function createJobTerm(jid, refs) {
       const asking = j.status === "running" && j.awaiting === "ask";
       // Parked at a finished turn, holding open for the owner's answer —
       // the work is done, nothing is burning, but the session is still live.
-      const replying = j.status === "running" && j.awaiting === "reply";
+      const replying = j.status === "running"
+        && (j.awaiting === "reply" || j.awaiting === "paused");
       // A parked turn is COMPLETE, not waiting — see jobPhase. The bar
       // stays live underneath (composeState), so the session is still
       // steerable; it just stops claiming to be an active job.
       const st = j.status === "running"
         ? (waiting ? "waiting on you"
           : asking ? "waiting on your answer"
+          : j.awaiting === "paused" ? "paused — you stopped it"
           : replying ? "complete — nothing pending" : "working")
         : (j.status || "");
       r.led.className = "term-dot " + (waiting || asking ? "wait"
+        : j.awaiting === "paused" ? "wait"
         : replying ? "done"
         : j.status === "running" ? "run" : (j.status || ""));
       const modelLbl = ccModelLabel(j.model_used || j.model)
@@ -5582,12 +5590,15 @@ function createJobTerm(jid, refs) {
       // Stop and Finish are the same control wearing the right word: a
       // mid-turn Stop cuts the work short, but at a finished turn there is
       // nothing left to cut — it just closes the door.
-      const replying = live && j.awaiting === "reply";
+      const replying = live
+        && (j.awaiting === "reply" || j.awaiting === "paused");
       const r = this.refs;
       r.composebar.classList.toggle("off", !live);
       r.composebar.classList.toggle("replying", replying);
       r.say.disabled = r.send.disabled = r.stopBtn.disabled = !live;
-      r.say.placeholder = replying
+      r.say.placeholder = j.awaiting === "paused"
+        ? "Stopped — tell it what to do instead, or Finish to close it"
+        : replying
         ? "Reply — this session is holding open for you"
         : "Steer this session — delivered at the agent's next step";
       r.stopBtn.textContent = replying ? "Finish" : "Stop";

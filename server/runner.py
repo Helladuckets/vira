@@ -340,11 +340,30 @@ class Runner:
         finalizes when the owner says so (Finish) or the safety window
         expires. Returns the message to deliver, or None to finish.
         """
-        if self.closing or self.interrupted:
+        # ONLY Finish/close ends the session here. A Stop does NOT — it ends
+        # the current turn, which is a pause, not an abandonment. Stopping
+        # something mid-work is precisely the moment the owner has something
+        # to say to it, and until 2026-07-29 it was the one moment Vira took
+        # the input box away: the agent received the queued steer, acted on
+        # it, wrapped up cleanly, and the session closed anyway because
+        # `interrupted` was set.
+        if self.closing:
             return None
-        self.finished_cleanly = True
+        # A cut-short turn is still NOT "finished cleanly" — that flag is
+        # what decides whether the epilogue treats the run as complete
+        # (publishing a plan, closing out the idea). Parking after a Stop
+        # must not smuggle an interrupted run into that path; the owner can
+        # reply to finish the work, and the reply's own clean turn is what
+        # earns the flag.
+        if not self.interrupted:
+            self.finished_cleanly = True
         self.awaiting_reply = True
-        self.state["awaiting"] = "reply"
+        # "reply" = the turn ended on its own, so the work is COMPLETE.
+        # "paused" = a Stop cut it short. Both hold the box open; they are
+        # separated because the surfaces must not call an interrupted run
+        # complete — jobPhase reads this to decide what the LED and the
+        # strip say (app.js).
+        self.state["awaiting"] = "paused" if self.interrupted else "reply"
         # NOTHING IS APPENDED HERE (owner's call, 2026-07-29). This used to
         # print "turn complete — reply to keep going, or Finish to close the
         # session", which restated what the compose bar was already saying
@@ -709,6 +728,11 @@ class Runner:
                         done = True
                     else:
                         self.finished_cleanly = False
+                        # The reply answers the Stop, so the interrupt is
+                        # served: this turn starts clean and is judged on
+                        # its own ending. Without the reset, one Stop would
+                        # mark every later turn of the session aborted.
+                        self.interrupted = False
                         self.append("[vira] reply delivered\n")
                         await client.query(reply)
         except _EngineDone:
