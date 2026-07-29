@@ -274,38 +274,59 @@ def backfill_imap(acct, limit=400, log=print):
                 return 0
             uids = [int(u) for u in data[0].split()][:limit]
             my = _my_addresses()
+            # One malformed message must never wedge the walk (a Subject
+            # with an unknown charset held the whole mailbox at 2014):
+            # a lone poison uid is logged, stepped past, and the walk
+            # keeps going. But >3 CONSECUTIVE failures read as the
+            # connection dying, not the mail — the batch aborts with the
+            # watermark held, so a network blip can't skip real mail.
+            fails = 0
             for uid in uids:
-                _, md = imap.uid("fetch", str(uid), "(RFC822)")
-                if not md or md[0] is None:
-                    continue
-                msg = email.message_from_bytes(md[0][1])
-                body = mailmod._body_preview(msg, limit=MAIL_BODY_MAX)
-                if len(body) < MIN_CHARS:
+                try:
+                    _, md = imap.uid("fetch", str(uid), "(RFC822)")
+                    if not md or md[0] is None:
+                        wm = max(wm, uid)
+                        continue
+                    msg = email.message_from_bytes(md[0][1])
+                    body = mailmod._body_preview(msg, limit=MAIL_BODY_MAX)
+                    if len(body) < MIN_CHARS:
+                        fails = 0
+                        wm = max(wm, uid)
+                        continue
+                    _, from_addr = email.utils.parseaddr(
+                        msg.get("From", ""))
+                    from_addr = (from_addr or "").lower()
+                    from_me = from_addr in my
+                    to_pid = None
+                    for _, a in email.utils.getaddresses(
+                            [msg.get("To", "") or ""]):
+                        to_pid = crm.resolve_handle((a or "").lower())
+                        if to_pid:
+                            break
+                    dt = email.utils.parsedate_to_datetime(msg.get("Date")) \
+                        if msg.get("Date") else datetime.now(timezone.utc)
+                    n += _insert(
+                        con, uid="mail:" + (msg.get("Message-ID")
+                                            or f"{addr}:{uid}").strip(),
+                        source="email", account=addr, text=body,
+                        subject=mailmod._decode_header(
+                            msg.get("Subject") or ""),
+                        date_ns=apple_ns(dt), from_me=int(from_me),
+                        sender_pid="me" if from_me
+                        else crm.resolve_handle(from_addr),
+                        chat_pid=to_pid if from_me
+                        else crm.resolve_handle(from_addr),
+                        sender_handle=from_addr)
+                    fails = 0
                     wm = max(wm, uid)
-                    continue
-                _, from_addr = email.utils.parseaddr(msg.get("From", ""))
-                from_addr = (from_addr or "").lower()
-                from_me = from_addr in my
-                to_pid = None
-                for _, a in email.utils.getaddresses(
-                        [msg.get("To", "") or ""]):
-                    to_pid = crm.resolve_handle((a or "").lower())
-                    if to_pid:
+                except Exception as e:  # noqa: BLE001
+                    fails += 1
+                    if fails > 3:
+                        log(f"  mail {addr}: batch aborted after repeated "
+                            f"failures at uid {uid}: {e}")
                         break
-                dt = email.utils.parsedate_to_datetime(msg.get("Date")) \
-                    if msg.get("Date") else datetime.now(timezone.utc)
-                n += _insert(
-                    con, uid="mail:" + (msg.get("Message-ID")
-                                        or f"{addr}:{uid}").strip(),
-                    source="email", account=addr, text=body,
-                    subject=mailmod._decode_header(msg.get("Subject") or ""),
-                    date_ns=apple_ns(dt), from_me=int(from_me),
-                    sender_pid="me" if from_me
-                    else crm.resolve_handle(from_addr),
-                    chat_pid=to_pid if from_me
-                    else crm.resolve_handle(from_addr),
-                    sender_handle=from_addr)
-                wm = max(wm, uid)
+                    log(f"  mail {addr}: uid {uid} skipped: {e}")
+                    wm = max(wm, uid)
             set_state(con, key, wm)
             con.commit()
             log(f"  mail {addr}: {n} indexed (uid {wm})")

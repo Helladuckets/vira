@@ -89,7 +89,14 @@ def _decode_header(raw):
     out = []
     for text, enc in parts:
         if isinstance(text, bytes):
-            out.append(text.decode(enc or "utf-8", errors="replace"))
+            # errors="replace" only helps for a KNOWN codec; a header
+            # advertising a codec Python has no name for ("unknown-8bit"
+            # in the wild) raises LookupError before errors= applies —
+            # one such Subject wedged the 2026-07-28 backlog walk.
+            try:
+                out.append(text.decode(enc or "utf-8", errors="replace"))
+            except LookupError:
+                out.append(text.decode("latin-1", errors="replace"))
         else:
             out.append(text)
     return "".join(out)
