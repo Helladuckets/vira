@@ -278,6 +278,16 @@ class MailBacklogTests(unittest.TestCase):
         self.assertIsNone(wm)
 
 
+class IncrementalSettingTests(unittest.TestCase):
+    def test_the_sweep_setting_has_a_default(self):
+        # settings.get raises KeyError for a key absent from BOTH config
+        # and DEFAULTS — which silently killed the Indexer's mail sweep
+        # on every tick before this default existed
+        from server import settings
+        with mock.patch.object(settings, "raw", return_value={}):
+            self.assertFalse(settings.get("mail_body_index"))
+
+
 def _graph_msg(mid, received):
     return {"id": mid, "internetMessageId": f"<{mid}@x>",
             "subject": "hello", "receivedDateTime": received,
