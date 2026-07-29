@@ -100,10 +100,57 @@ class TargetPaths(unittest.TestCase):
     def test_the_write_tool_set_is_what_the_gate_checks(self):
         for t in ("Write", "Edit", "MultiEdit", "NotebookEdit"):
             self.assertIn(t, worktree.WRITE_TOOLS)
+        # Bash joined the set on 2026-07-29, when bypassPermissions became
+        # the default rung: with every shell call running unasked, a guard
+        # that only reads file_path arguments does not guard anything.
+        # Which Bash calls are inspected is bash_targets' business, below.
+        self.assertIn("Bash", worktree.WRITE_TOOLS)
         # Reading the live tree stays fine — it is how a session learns
         # what to change.
-        for t in ("Read", "Grep", "Glob", "Bash"):
+        for t in ("Read", "Grep", "Glob"):
             self.assertNotIn(t, worktree.WRITE_TOOLS)
+
+
+class BashTargets(unittest.TestCase):
+    """The heuristic half. It exists to catch an agent naming the live root
+    in a mutating command; it must NEVER cost a session its ability to read
+    the live tree, which is the one thing worktree.py's own rule protects."""
+
+    def test_a_read_only_command_is_never_inspected(self):
+        for cmd in ("grep -rn foo ~/workspace/vira/server",
+                    "cat ~/workspace/vira/CLAUDE.md",
+                    "git -C ~/workspace/vira log --oneline",
+                    "ls -la ~/workspace/vira",
+                    "diff ~/workspace/vira/a.py ./a.py",
+                    "python3 -m unittest discover tests"):
+            self.assertEqual(worktree.bash_targets({"command": cmd}), [],
+                             f"a read must not be inspected: {cmd}")
+
+    def test_redirects_and_mutating_utilities_are_inspected(self):
+        for cmd in ("echo x > ~/workspace/vira/static/app.js",
+                    "cat a >> ~/workspace/vira/notes.md",
+                    "sed -i '' s/a/b/ ~/workspace/vira/server/main.py",
+                    "rm -rf ~/workspace/vira/data",
+                    "cp ./x.py ~/workspace/vira/server/x.py",
+                    "mv ./x ~/workspace/vira/x",
+                    "true && tee ~/workspace/vira/out.txt"):
+            self.assertTrue(worktree.bash_targets({"command": cmd}),
+                            f"a mutation must be inspected: {cmd}")
+
+    def test_a_redirect_to_stderr_is_not_a_write(self):
+        self.assertEqual(
+            worktree.bash_targets({"command": "make 2>&1 | tail"}), [])
+
+    def test_paths_stop_at_shell_metacharacters(self):
+        got = worktree.bash_targets(
+            {"command": "cp ./a.py ~/workspace/vira/b.py; echo done"})
+        self.assertIn("~/workspace/vira/b.py", got)
+        self.assertNotIn("~/workspace/vira/b.py;", got)
+
+    def test_non_dict_and_empty_input(self):
+        self.assertEqual(worktree.bash_targets(None), [])
+        self.assertEqual(worktree.bash_targets({}), [])
+        self.assertEqual(worktree.bash_targets({"command": "   "}), [])
 
 
 class Slugs(unittest.TestCase):

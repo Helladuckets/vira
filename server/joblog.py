@@ -234,6 +234,16 @@ def record_launch(job):
         "idea_id": job.get("idea_id"),
         "mode": job.get("mode"),
         "read_only": bool(job.get("read_only")),
+        # Where this session was allowed to write, and the tree it was kept
+        # out of. Same reasoning as `provider` above: the job dir is pruned
+        # at 400 and the live registry forgets on restart, so without these
+        # the ledger's only forensic signal is `cwd` — which cannot tell
+        # "placement declined by design" from "placement failed". Answering
+        # "was that session guarded?" after the fact took a half-day
+        # diagnostic on 2026-07-29; it should be one query.
+        "worktree": job.get("worktree") or "",
+        "branch": job.get("branch") or "",
+        "live_root": job.get("live_root") or "",
         "meta": job.get("meta") or {},
         "status": "running", "started": _now(), "finished": None,
         "result": "",

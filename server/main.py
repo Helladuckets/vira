@@ -579,7 +579,7 @@ def api_applications_apply(uid: str, req: AppApplyReq):
     prompt = applications.apply_prompt(role, req.note or "")
     try:
         jid = jobs.launch(prompt, str(applications.self_record()),
-                          None, req.model, False, None, "interactive")
+                          None, req.model, False, None, "manual")
     except ValueError as e:
         raise HTTPException(429, str(e))
     applications.update_state(uid, job_id=jid)
@@ -654,7 +654,7 @@ def api_jobboards_score(req: BoardScoreReq):
         raise HTTPException(400, "nothing unscored — the universe is current")
     try:
         jid = jobs.launch(prompt, str(applications.self_record()),
-                          None, req.model, False, None, "interactive")
+                          None, req.model, False, None, "manual")
     except ValueError as e:
         raise HTTPException(429, str(e))
     return {"job_id": jid, "roles": n}
@@ -672,7 +672,7 @@ def api_map_refresh():
     """Dispatch the map-refresh job now (same prompt the weekly routine
     composes) — watch it in the Jobs window."""
     jid = jobs.launch(modulemap.refresh_prompt(), cwd=str(ROOT),
-                      mode="interactive", meta={"kind": "map-refresh"})
+                      mode="manual", meta={"kind": "map-refresh"})
     return {"job_id": jid}
 
 
@@ -1078,7 +1078,7 @@ def api_frontdoor_setup(module_id: str, req: FrontDoorSetupReq):
         raise HTTPException(400, str(e))
     try:
         jid = jobs.launch(prompt, str(ROOT), None, req.model, False, None,
-                          "interactive")
+                          "manual")
     except ValueError as e:
         raise HTTPException(429, str(e))
     frontdoor.record_run(module_id, jid, req.answers or {})
@@ -1200,7 +1200,7 @@ def api_reading_room_update(name: str):
         prompt = readingroom.update_prompt(name)
     except (KeyError, ValueError):
         raise HTTPException(404, "no such reading room")
-    jid = jobs.launch(prompt, cwd=str(ROOT), mode="interactive",
+    jid = jobs.launch(prompt, cwd=str(ROOT), mode="manual",
                       meta={"kind": "room-update", "room": name})
     return {"job_id": jid}
 
@@ -1928,12 +1928,15 @@ class RunReq(BaseModel):
     model: str | None = None
     publish_plan: bool = False
     idea_id: str | None = None
-    # The permission ladder, safest first (session.MODES): "interactive"
-    # (every risky call gated) | "acceptedits" (edits land, commands gated)
-    # | "autopilot" (bypassPermissions). Absent -> derived from
-    # permission_mode, else the config default (session_default_mode,
-    # "interactive" out of the box). Every rung is steerable — the mode
-    # decides what the gate stops, never whether the owner can talk.
+    # The permission ladder, safest first (session.MODES), named to match
+    # Claude Code's own --permission-mode values: "manual" (every risky call
+    # gated) | "acceptEdits" (edits land, commands gated) |
+    # "bypassPermissions" (everything runs; only the read-only and
+    # branch-first denials still fire). Retired spellings still resolve via
+    # session.norm_mode. Absent -> derived from permission_mode, else the
+    # config default (session_default_mode, "bypassPermissions" out of the
+    # box). Every rung is steerable — the mode decides what the gate stops,
+    # never whether the owner can talk to the session.
     mode: str | None = None
     # Which engine drives the session ("anthropic" | "openai"); absent, the
     # model names it, else the gated default. server/agentbackend.py.

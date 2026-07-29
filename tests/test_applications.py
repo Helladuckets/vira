@@ -386,7 +386,7 @@ class ApplyRouteTest(ApplicationsBase):
         self.assertEqual(out["job_id"], "job-123")
         self.assertIn("emphasize the caveat", calls["prompt"])
         self.assertEqual(calls["model"], "opus")
-        self.assertEqual(calls["mode"], "interactive")
+        self.assertEqual(calls["mode"], "manual")
         self.assertIsNone(calls["permission_mode"])
         self.assertEqual(
             applications.get_state()["g-examplelabs-1234567"]["last_job"],

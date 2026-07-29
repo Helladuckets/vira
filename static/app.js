@@ -4426,16 +4426,18 @@ function ideaImplementPrompt(it, extra, cwd, perm, fold) {
   // session holds open at the end of its turn, so a closing question is
   // something they can actually answer rather than shout into a dead log.
   const gate = {
-    interactive:
+    manual:
       "Every edit and command pauses for the owner's approval; a denial is\n"
       + "guidance, not failure — adjust your approach and continue.",
-    acceptedits:
+    acceptEdits:
       "Your file edits apply without asking; commands still pause for the\n"
       + "owner's approval. A denial is guidance, not failure — adjust and\n"
       + "continue.",
-    autopilot:
-      "Nothing pauses for approval — you have full autonomy in this repo.",
-  }[perm] || "";
+    bypassPermissions:
+      "Nothing pauses for approval — you have full autonomy in this repo,\n"
+      + "with one exception that is enforced rather than advisory: writes\n"
+      + "aimed at the live checkout are denied. Work in your worktree.",
+  }[normPermMode(perm, "manual")] || "";
   return [
     "You are Vira's coding agent, working in the git repository at "
       + cwd + ".",
@@ -4502,26 +4504,41 @@ function ideaPlanPrompt(it, extra, cwd, fold) {
 // Every rung is steerable: the compose bar is live for the whole session,
 // including the reply window it parks in once its turn is done. What the
 // rung decides is only how much reaches the Approve/Deny gate.
+// Named to match Claude Code's own --permission-mode values so a rung means
+// the same thing in both places. "interactive" was retired because it was
+// never true of only one rung — the steer bar keys on the session being
+// live, never on the mode, so every rung is interactive at your discretion.
 const PERM_MODES = [
-  { id: "interactive", label: "Ask before edits and commands",
+  { id: "manual", label: "Manual — ask before edits and commands",
     note: "Edits and commands pause for your Approve/Deny in the session panel." },
-  { id: "acceptedits", label: "Auto-accept edits, ask before commands",
+  { id: "acceptEdits", label: "Accept edits — ask before commands",
     note: "File edits land unasked; commands and everything else still ask." },
-  { id: "autopilot", label: "Full autonomy — no prompts",
-    note: "Full autonomy in the target repo (edits + commands, nothing asks)." },
+  { id: "bypassPermissions", label: "Bypass permissions — nothing asks",
+    note: "Everything runs unasked. The session still cannot write to the live "
+        + "checkout: it works in its own branch worktree, and that denial "
+        + "survives this rung." },
 ];
-const PERM_DEFAULT = "interactive";
-function permMode(id) {
-  return PERM_MODES.find((m) => m.id === id) || PERM_MODES[0];
+const PERM_DEFAULT = "bypassPermissions";
+// Retired spellings -> current, so a saved pick made before 2026-07-29 lands
+// on the same rung instead of silently falling back to the default.
+const PERM_LEGACY = {
+  interactive: "manual", acceptedits: "acceptEdits", autopilot: "bypassPermissions",
+};
+function normPermMode(id, fallback) {
+  const s = String(id || "");
+  if (PERM_MODES.some((m) => m.id === s)) return s;
+  return PERM_LEGACY[s.toLowerCase()] || fallback || null;
 }
-// Remembered per the owner's last pick. Migrates the retired autopilot
-// checkbox: someone who left it ticked keeps landing on full autonomy
-// rather than being silently moved to a stricter rung.
+function permMode(id) {
+  return PERM_MODES.find((m) => m.id === normPermMode(id)) || PERM_MODES[0];
+}
+// Remembered per the owner's last pick. Also migrates the long-retired
+// autopilot checkbox, which now means the same thing the default does.
 function savedPermMode() {
-  const saved = lsGet("vira-idea-perm", null);
-  if (saved && PERM_MODES.some((m) => m.id === saved)) return saved;
+  const saved = normPermMode(lsGet("vira-idea-perm", null));
+  if (saved) return saved;
   return localStorage.getItem("vira-idea-autopilot") === "1"
-    ? "autopilot" : PERM_DEFAULT;
+    ? "bypassPermissions" : PERM_DEFAULT;
 }
 
 // Row-level "Copy" — hand the idea to another Claude Code session verbatim,
@@ -4676,7 +4693,7 @@ $("#idea-run-go").addEventListener("click", async () => {
     : ideaImplementPrompt(it, extra, cwd, perm, fold);
   // Plan runs read-only (the session gate denies writes) and Vira publishes
   // its markdown to the lab; Implement runs on the rung the owner picked.
-  const permission_mode = perm === "autopilot" ? "bypassPermissions" : null;
+  const permission_mode = perm === "bypassPermissions" ? "bypassPermissions" : null;
   const publish_plan = mode === "plan";
   const runMode = perm;
   ideaRunSheet.close();
@@ -5180,9 +5197,11 @@ function renderCCBanner(host, j, defModel, inst) {
   const badge = providerBadge(j);
   const mode = j.publish_plan ? "plan (read-only)"
     : badge.id === "openai" ? (j.mode || "run") + " (best-effort — sandboxed, no cards)"
-    : j.mode === "autopilot" ? "autopilot"
-    : j.mode === "acceptedits" ? "auto-edits (commands gated)"
-    : j.mode === "interactive" ? "interactive (gated)"
+    : normPermMode(j.mode) === "bypassPermissions"
+        ? (j.worktree ? "bypassPermissions (branch-guarded)"
+                      : "bypassPermissions")
+    : normPermMode(j.mode) === "acceptEdits" ? "acceptEdits (commands gated)"
+    : normPermMode(j.mode) === "manual" ? "manual (every call gated)"
     : (j.permission_mode === "bypassPermissions" ? "implement" : "run");
   host.innerHTML = `<div class="cc-banner">
     <span class="cc-legend"></span><span class="cc-legend-r">Vira</span>
@@ -9932,7 +9951,7 @@ function stageTray(s, ctx) {
   const head = el("div", "cir-tray-head");
   head.appendChild(el("span", "cir-tray-name", s.name || s.id));
   head.appendChild(el("span", "cir-tray-sub",
-    [judgeStage ? "fresh-eyes judge" : (s.mode || "interactive"),
+    [judgeStage ? "fresh-eyes judge" : (normPermMode(s.mode, "manual")),
      (s.needs || []).length
        ? "runs after " + s.needs.map(ctx.stageName).join(" + ")
        : "starts the circuit"].join(" · ")));
@@ -9995,7 +10014,7 @@ function stageTray(s, ctx) {
       o.value = v;
       hs.appendChild(o);
     });
-    hs.value = ctx.val(s, "mode") || "interactive";
+    hs.value = normPermMode(ctx.val(s, "mode"), "manual");
     hs.addEventListener("change", () => ctx.set(s.id, "mode", hs.value));
     hf.appendChild(hs);
     row.appendChild(hf);
@@ -11292,7 +11311,7 @@ function ctxAskVira(x, y, ctx) {
         "on localhost:8377 where they help. Prefer read-only research; any file",
         "edit or command pauses for the owner's approval. Never restart the Vira",
         "server. Finish with a concise report of what you found or changed.");
-      await launchJob(lines.join("\n"), "~/workspace/vira", { mode: "interactive" });
+      await launchJob(lines.join("\n"), "~/workspace/vira", { mode: "manual" });
       toast("Vira is on it — session opened");
     },
   });

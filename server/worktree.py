@@ -39,10 +39,62 @@ TIMEOUT = 120
 
 # Writes are what we care about. A session reading the live tree is fine and
 # often necessary — it is how it learns what to change.
-WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
+#
+# Bash is here because the structured write tools are not the only way to
+# write a file. With the bypass rung as the default, every shell call runs
+# unasked, so `sed -i ... ~/workspace/vira/static/app.js` would sail straight
+# past a guard that only reads file_path arguments.
+WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"}
 
 # Where a tool call carries the path it would write.
 PATH_KEYS = ("file_path", "path", "notebook_path")
+
+# --- the Bash half, which is a HEURISTIC and is labelled as one ---
+#
+# A shell command is not a structured path argument: it can build a
+# destination from a variable, cd first, or hide it inside a script, and no
+# amount of pattern matching makes this airtight. What it DOES catch is the
+# realistic failure — an agent that knows the live root's absolute path and
+# names it in a mutating command — which is exactly the 2026-07-25 shape.
+# A speed bump on top of placement, never proof a shell cannot reach live.
+#
+# READS MUST STAY FREE. A session has to read the live tree to know what to
+# change (the module's own rule, above), and `grep -rn foo ~/workspace/vira`
+# is ordinary work. So a command is inspected only when it carries a
+# mutation signal; a read-only command is never scanned and never denied.
+_CMD_KEYS = ("command", "cmd", "script")
+
+# Output redirection, or a mutating utility in command position (start of
+# string, or after a pipe/;/&&/||). Deliberately conservative: a verb that
+# only sometimes writes is better handled by the placement it would have to
+# escape than by a denial that makes the guard annoying enough to turn off.
+_MUTATES_RE = re.compile(
+    r">>?(?!&)"
+    r"|(?:^|[|;&]\s*|\bsudo\s+|\bxargs\s+)"
+    r"(?:rm|mv|cp|dd|tee|truncate|install|ln|chmod|chown|touch|mkdir"
+    r"|rmdir|sed\s+-[a-zA-Z]*i|perl\s+-[a-zA-Z]*i|patch|shred)\b")
+
+# A path-looking run inside a command string: enough leading context to be a
+# real path, stopping at whitespace, quotes and shell metacharacters.
+_CMD_PATH_RE = re.compile(r"(?:~|\.{0,2}/)[^\s'\"`;|&()<>]*")
+
+
+def bash_targets(tool_input):
+    """Paths a Bash call might WRITE, or [] when the command shows no sign of
+    mutating anything. See the heuristic note above — over-reporting within a
+    mutating command is fine (the caller only denies paths that land inside
+    the live root and outside the worktree); missing a read is the point."""
+    if not isinstance(tool_input, dict):
+        return []
+    out = []
+    for k in _CMD_KEYS:
+        v = tool_input.get(k)
+        if not (isinstance(v, str) and v.strip()):
+            continue
+        if not _MUTATES_RE.search(v):
+            continue
+        out.extend(m.group(0) for m in _CMD_PATH_RE.finditer(v))
+    return out
 
 
 def repo_root(path):
@@ -146,8 +198,12 @@ def ensure(root, slug):
 
 def target_paths(tool_input):
     """Every filesystem path a tool call names. Only the write tools are
-    ever passed here, so this stays a small, explicit key list rather than
-    a scan for anything path-shaped."""
+    ever passed here, so the structured half stays a small, explicit key
+    list rather than a scan for anything path-shaped.
+
+    Bash is handled separately by bash_targets(), because a shell command
+    that merely READS the live tree must stay allowed.
+    """
     out = []
     if isinstance(tool_input, dict):
         for k in PATH_KEYS:

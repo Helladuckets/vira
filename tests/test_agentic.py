@@ -277,7 +277,7 @@ class CircuitTests(unittest.TestCase):
         self.assertEqual(order, ["watch", "plan", "build", "judge"])
         by_id = {st["id"]: st for st in circ["stages"]}
         # watch needs Bash for yt-dlp/ffmpeg, so it must run autopilot
-        self.assertEqual(by_id["watch"]["mode"], "autopilot")
+        self.assertEqual(by_id["watch"]["mode"], "bypassPermissions")
         self.assertNotIn("read_only", by_id["watch"])
         self.assertTrue(by_id["plan"]["read_only"])
         self.assertEqual(by_id["build"]["needs"], ["plan"])
@@ -344,7 +344,7 @@ class CircuitTests(unittest.TestCase):
         self.drive(run["id"])
         build = [r for r in stub.launched if r["meta"]["stage"] == "build"][0]
         self.assertEqual(build["model"], "opus")
-        self.assertEqual(build["mode"], "interactive")
+        self.assertEqual(build["mode"], "manual")
         # The instructions reach the model, after the stage's own brief.
         self.assertIn("Stay out of the migrations.", build["prompt"])
         self.assertLess(build["prompt"].index("build OUT"),
