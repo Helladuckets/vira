@@ -169,5 +169,101 @@ class TextIndexTests(unittest.TestCase):
         self.assertEqual(st["vectors"], 0)
 
 
+class MailBacklogTests(unittest.TestCase):
+    """The mail-side plumbing the 2026-07-28 backlog run exposed: account
+    routing keys on "type" (the key rows actually carry), the Graph walk
+    is watermarked, and the full backlog loops until a pass is dry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = mock.patch.object(textindex, "DB",
+                              Path(self.tmp.name) / "text-index.sqlite")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_graph_account_routes_on_type(self):
+        # a row shaped exactly like data/mail-accounts.json: "type", not
+        # the "kind"/"provider" keys the old check looked for
+        accts = [{"email": "gm@example.test", "host": "imap.example.test"},
+                 {"email": "gr@example.test", "type": "graph"}]
+        with mock.patch.object(textindex.channels, "mail_accounts",
+                               return_value=accts), \
+             mock.patch.object(textindex, "backfill_graph",
+                               return_value=2) as graph, \
+             mock.patch.object(textindex, "backfill_imap",
+                               return_value=1) as imap:
+            n = textindex.backfill_mail(log=lambda *a: None)
+        self.assertEqual(n, 3)
+        graph.assert_called_once()
+        self.assertEqual(graph.call_args[0][0], "gr@example.test")
+        imap.assert_called_once()
+        self.assertEqual(imap.call_args[0][0]["email"], "gm@example.test")
+
+    def test_full_backlog_loops_until_a_pass_is_dry(self):
+        passes = iter([400, 400, 37, 0])
+        with mock.patch.object(textindex, "backfill_mail",
+                               side_effect=lambda **kw: next(passes)):
+            total = textindex.backfill_mail_full(log=lambda *a: None)
+        self.assertEqual(total, 837)
+
+    def _graph_pages(self, calls):
+        """A two-page mailbox; `calls` records each request path."""
+        def fake_request(account, path):
+            calls.append(path)
+            if "$skip" in path:
+                return {"value": [_graph_msg("m1", "2026-03-01T10:00:00Z")]}
+            return {"value": [_graph_msg("m2", "2026-03-05T10:00:00Z")],
+                    "@odata.nextLink": "/me/messages?$skip=25"}
+        return fake_request
+
+    def test_graph_walk_stamps_and_reuses_a_watermark(self):
+        from server import msgraph
+        calls = []
+        with mock.patch.object(crm, "resolve_handle", lambda h: None), \
+             mock.patch.object(textindex.channels, "mail_accounts",
+                               return_value=[{"email": "me@example.test"}]), \
+             mock.patch.object(msgraph, "_graph_request",
+                               side_effect=self._graph_pages(calls)):
+            n = textindex.backfill_graph("gr@example.test",
+                                         log=lambda *a: None)
+            self.assertEqual(n, 2)
+            con = textindex._db()
+            wm = textindex.get_state(con, "wm_mailg:gr@example.test")
+            con.close()
+            self.assertEqual(wm, "2026-03-05T10:00:00Z")
+            # the next run filters from the stamp instead of re-walking
+            calls.clear()
+            textindex.backfill_graph("gr@example.test", log=lambda *a: None)
+        self.assertIn("receivedDateTime%20ge%202026-03-05T10%3A00%3A00Z",
+                      calls[0])
+
+    def test_an_interrupted_graph_walk_leaves_the_watermark_alone(self):
+        from server import msgraph
+
+        def one_page_forever(account, path):
+            return {"value": [_graph_msg("m9", "2026-03-09T10:00:00Z")],
+                    "@odata.nextLink": "/me/messages?$skip=25"}
+        with mock.patch.object(crm, "resolve_handle", lambda h: None), \
+             mock.patch.object(textindex.channels, "mail_accounts",
+                               return_value=[{"email": "me@example.test"}]), \
+             mock.patch.object(msgraph, "_graph_request",
+                               side_effect=one_page_forever):
+            textindex.backfill_graph("gr@example.test", limit=1,
+                                     log=lambda *a: None)
+        con = textindex._db()
+        wm = textindex.get_state(con, "wm_mailg:gr@example.test")
+        con.close()
+        self.assertIsNone(wm)
+
+
+def _graph_msg(mid, received):
+    return {"id": mid, "internetMessageId": f"<{mid}@x>",
+            "subject": "hello", "receivedDateTime": received,
+            "from": {"emailAddress": {"address": "ann@example.test"}},
+            "toRecipients": [],
+            "body": {"contentType": "text", "content": "a real body here"}}
+
+
 if __name__ == "__main__":
     unittest.main()
