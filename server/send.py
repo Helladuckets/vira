@@ -40,6 +40,18 @@ end run
 
 _SERVICES = {"imessage": "iMessage", "sms": "SMS"}
 
+# A group send is addressed by the chat's own guid ("iMessage;+;chat..."),
+# never a participant: the guid pins BOTH the thread and the service it
+# rides, so there is no iMessage-vs-SMS ladder here — Messages routes on
+# whatever leg the guid names.
+GROUP_SCRIPT = '''
+on run {targetChatId, msgText}
+    tell application "Messages"
+        send msgText to chat id targetChatId
+    end tell
+end run
+'''
+
 
 def best_handle(pid):
     """Pick the handle the owner actually texts this person on.
@@ -237,6 +249,70 @@ def send_message(text, person_id=None, handle=None, channel=None, timeout=20):
                         "text instead."}
     return {"handle": target, "channel": "imessage", "downgraded": False,
             "note": None}
+
+
+def _group_send_errored(chat_ids, since_ns, wait_seconds):
+    """Best-effort mirror of _imessage_errored for a group: did the outbound
+    row just written into these chat rows record a delivery error? Group
+    delivery receipts are per-recipient and unreliable, so unlike the 1:1
+    path there is no early success bail — we only watch for a DEFINITE
+    error, briefly. Never raises."""
+    if not settings.IS_MAC or settings.fixture_mode() or not chat_ids:
+        return False
+    qmarks = ",".join("?" * len(chat_ids))
+    deadline = time.time() + max(0.0, wait_seconds)
+    while True:
+        try:
+            con = imessage._connect()
+            try:
+                row = con.execute(
+                    f"""SELECT m.error FROM message m
+                        JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+                        WHERE cmj.chat_id IN ({qmarks})
+                          AND m.is_from_me = 1 AND m.date >= ?
+                        ORDER BY m.date DESC LIMIT 1""",
+                    (*chat_ids, since_ns)).fetchone()
+            finally:
+                con.close()
+        except Exception:  # noqa: BLE001
+            return False
+        if row is not None and row[0] and int(row[0]) != 0:
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.75)
+
+
+def send_to_group(chat_guid, text, chat_ids=None, timeout=20):
+    """Send `text` into a group chat addressed by its chat guid. Returns
+    {guid, channel, note}; note is set when the send looks undelivered.
+    Raises ValueError on bad input and RuntimeError when Messages refuses
+    (automation permission, or a guid Messages no longer knows)."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise RuntimeError(
+            "passive test instance: outbound iMessage is blocked")
+    if not settings.IS_MAC:
+        raise RuntimeError(
+            "iMessage sending needs macOS (Messages.app) — not available "
+            "on this platform")
+    if not chat_guid:
+        raise ValueError("no chat guid for this group")
+    if not text or not text.strip():
+        raise ValueError("empty message")
+    since_ns = imessage.apple_ns(datetime.datetime.now())
+    res = subprocess.run(
+        ["osascript", "-", chat_guid, text],
+        input=GROUP_SCRIPT, capture_output=True, text=True, timeout=timeout)
+    if res.returncode != 0:
+        raise RuntimeError(res.stderr.strip()[-400:] or "osascript failed")
+    note = None
+    verify_seconds = float(settings.get("send_verify_seconds"))
+    if verify_seconds > 0 and _group_send_errored(
+            chat_ids or [], since_ns, min(verify_seconds, 5.0)):
+        note = ("Messages reported a delivery error on this group send — "
+                "check the thread in Messages.app.")
+    channel = "sms" if chat_guid.lower().startswith("sms") else "imessage"
+    return {"guid": chat_guid, "channel": channel, "note": note}
 
 
 def send_imessage(text, person_id=None, handle=None, timeout=20):

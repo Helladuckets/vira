@@ -440,7 +440,8 @@ function feedCard(it) {
   else if (it.channel === "whatsapp") main.appendChild(el("div", "feed-group",
     "WhatsApp" + (it.group ? " · " + (it.group_name || "group") : "")));
   else if (it.group) main.appendChild(el("div", "feed-group",
-    "group" + (it.group_name ? ": " + it.group_name : "")));
+    "group" + (it.group_name ? ": " + it.group_name : "")
+    + (it.chat_id ? " ›" : "")));
   if (!it.known && it.handle) {
     const addBtn = el("button", "feed-add", "add to crm");
     addBtn.addEventListener("click", async (e) => {
@@ -461,7 +462,12 @@ function feedCard(it) {
     markRead(it);
     card.classList.remove("unread");
     card.querySelector(".unread-dot")?.remove();
-    if (it.person_id) openPerson(it.person_id);
+    // a group message opens the GROUP as the subject (the sender's own
+    // profile stays one right-click away); items predating chat_id — and
+    // WhatsApp groups, which have no chat.db row — keep opening the person
+    if (it.group && it.chat_id && it.channel === "imessage")
+      openGroupChat({ chat: it.chat_id, name: it.group_name });
+    else if (it.person_id) openPerson(it.person_id);
   });
   wrap.appendChild(card);
   if (!isDesktop && !it.hidden) attachSwipe(wrap, card, it);
@@ -1312,10 +1318,13 @@ async function openPerson(pid) {
   const tHead = el("h4", null, "Recent thread");
   const tEarlier = el("button", "hook-edit-btn", "load earlier");
   tEarlier.style.display = "none";
+  const tProfile = el("button", "hook-edit-btn", "group profile");
+  tProfile.style.display = "none";
   const tBack = el("button", "hook-edit-btn", "back to direct");
   tBack.style.display = "none";
   tHeadRow.appendChild(tHead);
   tHeadRow.appendChild(tEarlier);
+  tHeadRow.appendChild(tProfile);
   tHeadRow.appendChild(tBack);
   tSec.appendChild(tHeadRow);
   const thread = el("div", "thread");
@@ -1544,6 +1553,13 @@ async function openPerson(pid) {
     tHead.textContent = "Group: " + label;
     tBack.style.display = "";
     tEarlier.style.display = "none";
+    // real group rows (not the synthetic combined view) open as a profile
+    if (g.participants) {
+      tProfile.style.display = "";
+      tProfile.onclick = () => openGroupChat({ ids: g.chat_ids, name: label });
+    } else {
+      tProfile.style.display = "none";
+    }
     composeBar.style.display = "none";
     thread.innerHTML = "";
     thread.appendChild(el("div", "spin", "Loading…"));
@@ -1592,6 +1608,7 @@ async function openPerson(pid) {
     tHead.textContent = "Recent thread";
     tBack.style.display = "none";
     tEarlier.style.display = "none";
+    tProfile.style.display = "none";
     groupCtx = null;
     composeBar.style.display = "";
     shared.setScope(null);
@@ -1615,9 +1632,13 @@ const fmtDur = (s) => {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 };
 
-function mediaSection(pid) {
+function mediaSection(pid, initialScope) {
+  // initialScope ({ids, label}) starts the section group-scoped — the group
+  // panel's case, where there is no direct conversation to fall back to
   const sec = el("div", "p-section");
-  const head = el("h4", null, "Shared in this conversation");
+  const head = el("h4", null, initialScope
+    ? "Shared in group: " + initialScope.label
+    : "Shared in this conversation");
   sec.appendChild(head);
   const searchInput = el("input", "search media-search");
   searchInput.type = "text";
@@ -1632,7 +1653,7 @@ function mediaSection(pid) {
   let data = null;
   let tab = "photos";
   let expanded = false;
-  let scope = null;   // null = direct conversation; {ids, label} = group thread
+  let scope = initialScope || null;   // null = direct; {ids, label} = group
   let searchResults = null;   // non-null overrides data while searching
   let ctxOn = localStorage.getItem("vira-media-context") === "1";
   const PREVIEW = { photos: 24, links: 12, docs: 10 };
@@ -2788,6 +2809,360 @@ function watchNote(id, statusEl) {
 function closePerson() { exitFocus($("#person-panel")); }
 $("#person-back").addEventListener("click", closePerson);
 $("#viewer-back").addEventListener("click", closeViewer);
+
+// ---------- group profile: a group chat as a first-class subject ----------
+// Clicking a group card in the feed (or "group profile" on a person page's
+// group thread) opens the group the way a person opens: member dossiers,
+// who-talks share, network ties among the members, related groups with
+// their diffs, Vira's read of the room, and a compose bar that sends INTO
+// the group. enterFocus de-dupes the panel, so a related-group click
+// re-renders in place instead of stacking a second copy.
+
+const GP_SIGNALS = {
+  photo_cooccur: "in photos together",
+  group_cochat: "group chats together",
+  family: "family",
+  colleague: "colleagues",
+  shared_topic: "shared interests",
+  vault_comention: "in your notes together",
+};
+const GP_RELATION = {
+  same: "same people",
+  superset: "these people plus more",
+  subset: "a smaller circle of this group",
+  overlap: "overlapping circle",
+};
+
+function closeGroupPanel() { exitFocus($("#group-panel")); }
+$("#group-back").addEventListener("click", closeGroupPanel);
+
+async function openGroupChat(ref) {
+  // ref: {chat: <rowid>} off a feed item, or {ids: [rowids]} off a merged
+  // group row; ref.name is only the provisional title while loading
+  const panel = $("#group-panel");
+  panel.classList.add("open");
+  enterFocus(panel, () => panel.classList.remove("open"));
+  const body = $("#group-body");
+  body.innerHTML = "";
+  body.appendChild(el("div", "spin", "Reading the group…"));
+  $("#group-title").textContent = ref.name || "Group";
+  let d;
+  try {
+    const q = ref.ids ? "ids=" + ref.ids.join(",") : "chat=" + ref.chat;
+    d = await api("/api/group/profile?" + q);
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty", "Group unavailable: " + e.message));
+    return;
+  }
+  if (d.status !== "ok") {
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty", d.note || "Not a known group."));
+    return;
+  }
+  const g = d.group;
+  body.innerHTML = "";
+  $("#group-title").textContent = d.label;
+  panel.dataset.gname = d.label;   // the right-click menu names the group
+
+  // hero: stacked faces + the group's vitals
+  const hero = el("div", "gp-hero");
+  const avs = el("div", "gp-avs");
+  g.participants.slice(0, 8).forEach((p) =>
+    avs.appendChild(avatarNode(p.person_id, p.name, p.known, p.has_photo)));
+  hero.appendChild(avs);
+  const heroMeta = el("div", "gp-hero-meta");
+  const bits = [(g.participants.length + 1) + " people",
+                (g.messages || 0).toLocaleString() + " messages"];
+  if (d.first) bits.push("since " + new Date(d.first).getFullYear());
+  if (g.last) bits.push("last " + fmtTime(g.last));
+  const mc = d.media || {};
+  if (mc.photos) bits.push(mc.photos.toLocaleString() + " photos");
+  if (mc.links) bits.push(mc.links.toLocaleString() + " links");
+  heroMeta.appendChild(el("div", "gp-hero-sub", bits.join(" · ")));
+  const act = (d.activity || []).slice(0, 5)
+    .map((a) => `${a.name.split(" ")[0]} ${a.pct}%`).join(" · ");
+  if (act) heroMeta.appendChild(el("div", "gp-hero-act", "who talks: " + act));
+  hero.appendChild(heroMeta);
+  body.appendChild(hero);
+
+  const cols = el("div", "p-cols");
+  const colA = el("div");
+  const colB = el("div");
+  cols.appendChild(colA);
+  cols.appendChild(colB);
+  body.appendChild(cols);
+
+  // ---- conversation column: the thread + reply INTO the group ----
+  const tSec = el("div", "p-section");
+  const tHeadRow = el("div", "thread-head");
+  tHeadRow.appendChild(el("h4", null, "The thread"));
+  const tEarlier = el("button", "hook-edit-btn", "load earlier");
+  tEarlier.style.display = "none";
+  tHeadRow.appendChild(tEarlier);
+  tSec.appendChild(tHeadRow);
+  const thread = el("div", "thread");
+  tSec.appendChild(thread);
+  const sugStrip = el("div", "gp-sugstrip");
+  tSec.appendChild(sugStrip);
+  const composeBar = el("div", "runbar");
+  composeBar.style.marginTop = "10px";
+  const composeInput = el("input", "search");
+  composeInput.type = "text";
+  composeInput.placeholder = "Message " + d.label + "…";
+  const composeSend = el("button", "btn primary", "Send");
+  const doSend = async () => {
+    const text = composeInput.value.trim();
+    if (!text) return;
+    composeSend.disabled = true;
+    composeSend.textContent = "Sending…";
+    try {
+      const r = await post("/api/group/send", { ids: g.chat_ids, text });
+      composeInput.value = "";
+      const b = el("div", "bubble me");
+      b.appendChild(document.createTextNode(text));
+      b.appendChild(el("div", "bubble-time",
+        "just now · " + (r.channel === "sms" ? "text" : "iMessage")));
+      thread.appendChild(b);
+      thread.scrollTop = thread.scrollHeight;
+      if (r.note) toast(r.note);
+      composeSend.textContent = "Sent";
+      confettiAt(composeSend);
+      setTimeout(() => (composeSend.textContent = "Send"), 1200);
+    } catch (e) {
+      composeSend.textContent = "Failed";
+      alert("Send failed: " + e.message);
+      setTimeout(() => (composeSend.textContent = "Send"), 1500);
+    } finally {
+      composeSend.disabled = false;
+    }
+  };
+  composeSend.addEventListener("click", doSend);
+  composeInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doSend(); });
+  composeBar.appendChild(composeInput);
+  composeBar.appendChild(composeSend);
+  tSec.appendChild(composeBar);
+  colB.appendChild(tSec);
+
+  const gbubble = (msg) => {
+    const b = el("div", "bubble " + (msg.from_me ? "me" : "them"));
+    if (!msg.from_me) b.appendChild(el("div", "bubble-sender", msg.sender || ""));
+    b.appendChild(document.createTextNode(msg.text));
+    b.appendChild(el("div", "bubble-time", fmtTime(msg.when)));
+    return b;
+  };
+  let oldest = null, threadDone = false;
+  const loadThread = async () => {
+    thread.innerHTML = "";
+    thread.appendChild(el("div", "spin", "Loading…"));
+    try {
+      const { messages } = await api(
+        `/api/group/thread?ids=${g.chat_ids.join(",")}&limit=60`);
+      thread.innerHTML = "";
+      if (!messages.length)
+        thread.appendChild(el("div", "empty", "No visible messages."));
+      messages.forEach((msg) => thread.appendChild(gbubble(msg)));
+      thread.scrollTop = thread.scrollHeight;
+      oldest = messages.length ? messages[0].rowid : null;
+      threadDone = messages.length < 60;
+      tEarlier.style.display = threadDone ? "none" : "";
+    } catch {
+      thread.innerHTML = "";
+      thread.appendChild(el("div", "empty", "Thread unavailable."));
+    }
+  };
+  tEarlier.addEventListener("click", async () => {
+    if (threadDone || !oldest) return;
+    tEarlier.disabled = true;
+    tEarlier.textContent = "loading…";
+    try {
+      const { messages } = await api(
+        `/api/group/thread?ids=${g.chat_ids.join(",")}&limit=60&before=${oldest}`);
+      const prevH = thread.scrollHeight, prevTop = thread.scrollTop;
+      const frag = document.createDocumentFragment();
+      messages.forEach((m) => frag.appendChild(gbubble(m)));
+      thread.prepend(frag);
+      thread.scrollTop = prevTop + (thread.scrollHeight - prevH);
+      if (messages.length) oldest = messages[0].rowid;
+      if (messages.length < 60) {
+        threadDone = true;
+        tEarlier.style.display = "none";
+      }
+    } catch { /* transient; the button stays for a retry */ }
+    tEarlier.disabled = false;
+    tEarlier.textContent = "load earlier";
+  });
+
+  // ---- Vira's read: the one AI pass, cached server-side ----
+  const bSec = el("div", "p-section");
+  const bHeadRow = el("div", "thread-head");
+  bHeadRow.appendChild(el("h4", null, "Vira's read"));
+  const bRefresh = el("button", "hook-edit-btn", "refresh");
+  bHeadRow.appendChild(bRefresh);
+  bSec.appendChild(bHeadRow);
+  const bOut = el("div");
+  bSec.appendChild(bOut);
+  colA.appendChild(bSec);
+  const loadBrief = async (force) => {
+    bOut.innerHTML = "";
+    bOut.appendChild(el("div", "spin", "Vira is reading the room…"));
+    try {
+      const r = await post("/api/group/brief",
+        { ids: g.chat_ids, force: !!force });
+      bOut.innerHTML = "";
+      sugStrip.innerHTML = "";
+      if (r.status !== "ok") {
+        bOut.appendChild(el("div", "empty left", r.note || "No read yet."));
+        return;
+      }
+      const b = r.brief;
+      bOut.appendChild(el("div", "p-summary", b.read));
+      if (b.highlights?.length) {
+        const row = el("div", "gp-chips");
+        b.highlights.forEach((h) => row.appendChild(el("span", "gp-chip", h)));
+        bOut.appendChild(row);
+      }
+      (b.loops || []).forEach((lo) => {
+        const row = el("div", "gp-loop");
+        row.appendChild(el("span", "gp-tag" +
+          (lo.who === "you" ? " warn" : ""), lo.who));
+        row.appendChild(el("span", "gp-loop-text", lo.what));
+        bOut.appendChild(row);
+      });
+      if (b.watch) bOut.appendChild(el("div", "gp-watch", "watch: " + b.watch));
+      // suggestions land beside the compose bar, where they get used
+      (b.suggestions || []).forEach((s) => {
+        const c = el("button", "gp-sug");
+        c.appendChild(el("span", "gp-sug-label", s.label));
+        c.appendChild(el("span", "gp-sug-text", s.text));
+        c.title = "Put this in the compose box";
+        c.addEventListener("click", () => {
+          composeInput.value = s.text;
+          composeInput.focus();
+        });
+        sugStrip.appendChild(c);
+      });
+    } catch (e) {
+      bOut.innerHTML = "";
+      bOut.appendChild(el("div", "empty left",
+        "Vira couldn't read this group: " + e.message));
+    }
+  };
+  bRefresh.addEventListener("click", () => loadBrief(true));
+
+  // ---- members: each with their CRM depth, click-through to the person ----
+  const mSec = el("div", "p-section");
+  mSec.appendChild(el("h4", null, "Members"));
+  const actByPid = new Map((d.activity || [])
+    .filter((a) => a.person_id).map((a) => [a.person_id, a]));
+  g.participants.forEach((p) => {
+    const row = el("div", "gp-mem" + (p.known ? "" : " unknown"));
+    row.appendChild(avatarNode(p.person_id, p.name, p.known, p.has_photo));
+    const main = el("div", "gp-mem-main");
+    main.appendChild(el("div", "gp-mem-name", p.name));
+    const sub = [p.relationship,
+                 [p.title, p.company].filter(Boolean).join(", ")]
+      .filter(Boolean).join(" · ");
+    if (sub) main.appendChild(el("div", "gp-mem-sub", sub));
+    if (p.summary) main.appendChild(el("div", "gp-mem-sum", p.summary));
+    const badges = el("div", "gp-badges");
+    const a = actByPid.get(p.person_id);
+    if (a) badges.appendChild(el("span", "gp-tag", a.pct + "% of msgs"));
+    if (p.hooks?.length)
+      badges.appendChild(el("span", "gp-tag", p.hooks.length + " hooks"));
+    if (p.open_loops?.length)
+      badges.appendChild(el("span", "gp-tag warn",
+        p.open_loops.length + (p.open_loops.length > 1 ? " loops" : " loop")));
+    if (badges.children.length) main.appendChild(badges);
+    row.appendChild(main);
+    if (p.known) {
+      cardAction(row, () => openPerson(p.person_id));
+    } else {
+      const add = el("button", "feed-add", "add to crm");
+      add.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openAddSheet(p.handle, "", "seen in group: " + d.label);
+      });
+      main.appendChild(add);
+    }
+    mSec.appendChild(row);
+  });
+  colA.appendChild(mSec);
+
+  // ---- how they connect: network ties among the members ----
+  const cSec = el("div", "p-section");
+  cSec.appendChild(el("h4", null, "How they connect"));
+  const conn = d.connections || {};
+  if (!conn.available) {
+    cSec.appendChild(el("div", "empty left",
+      "The network map hasn't been built yet — open Visual Network once."));
+  } else if (!(conn.edges || []).length) {
+    cSec.appendChild(el("div", "empty left",
+      "No mapped ties among these members yet."));
+  } else {
+    const maxW = conn.edges[0].weight || 1;
+    conn.edges.forEach((e2) => {
+      const row = el("div", "gp-edge");
+      const names = el("div", "gp-edge-names");
+      names.appendChild(el("b", null, e2.a_name.split(" ")[0]));
+      names.appendChild(document.createTextNode(" + "));
+      names.appendChild(el("b", null, e2.b_name.split(" ")[0]));
+      row.appendChild(names);
+      const bar = el("span", "gp-bar");
+      const fill = el("i");
+      fill.style.width =
+        Math.max(8, Math.round(100 * (e2.weight || 0) / maxW)) + "%";
+      bar.appendChild(fill);
+      row.appendChild(bar);
+      const why = (e2.signals || [])
+        .map((s) => GP_SIGNALS[s.type] || s.type).join(", ");
+      row.appendChild(el("div", "gp-edge-why", e2.narrative || why));
+      cSec.appendChild(row);
+    });
+    if ((conn.off_graph || []).length) {
+      const names = g.participants
+        .filter((p) => conn.off_graph.includes(p.person_id))
+        .map((p) => p.name.split(" ")[0]).join(", ");
+      cSec.appendChild(el("div", "gp-note",
+        names + " aren't on the network map yet (quieter contacts)."));
+    }
+  }
+  colA.appendChild(cSec);
+
+  // ---- related groups: the same circle elsewhere, diffs highlighted ----
+  const rSec = el("div", "p-section");
+  rSec.appendChild(el("h4", null, "Related groups"));
+  if (!(d.related || []).length) {
+    rSec.appendChild(el("div", "empty left",
+      "No other groups share these people."));
+  } else {
+    d.related.forEach((rg) => {
+      const row = el("div", "group-row");
+      row.appendChild(el("div", "group-title", rg.label));
+      const diffs = el("div", "gp-diff");
+      diffs.appendChild(el("span", "gp-rel",
+        GP_RELATION[rg.relation] || rg.relation));
+      rg.added.forEach((n) => diffs.appendChild(el("span", "gp-add", "+ " + n)));
+      rg.missing.forEach((n) =>
+        diffs.appendChild(el("span", "gp-miss", "- " + n)));
+      row.appendChild(diffs);
+      const sub = [];
+      if (rg.messages) sub.push(rg.messages.toLocaleString() + " msgs");
+      if (rg.last) sub.push("last " + fmtTime(rg.last));
+      if (sub.length) row.appendChild(el("div", "group-sub", sub.join(" · ")));
+      cardAction(row, () => openGroupChat({ ids: rg.chat_ids, name: rg.label }));
+      rSec.appendChild(row);
+    });
+  }
+  colA.appendChild(rSec);
+
+  // ---- shared media, scoped to this group from the start ----
+  const shared = mediaSection(null, { ids: g.chat_ids, label: d.label });
+  colA.appendChild(shared.sec);
+
+  loadThread();
+  loadBrief(false);
+}
 
 // ---------- ideas & on-hold (cross-session backlog; source of truth for
 // /resume, edited here) + change log (every change per session) ----------
@@ -10624,6 +10999,9 @@ function ctxDescribe(target) {
       if (title) ctx.target = { menu: "the " + title.toLowerCase() + " section",
                                 note: title + " section", text: "" };
     }
+  } else if (target.closest("#group-panel")) {
+    const gp = target.closest("#group-panel");
+    ctx.component = gp.dataset.gname ? "Group: " + gp.dataset.gname : "Group";
   } else if (target.closest("#viewer-panel")) {
     ctx.component = "Media viewer";
   } else if (target.closest("#job-panel")) {
@@ -15139,7 +15517,7 @@ function initDesktop() {
   buildPalette();
   // the person and job panels behave like windows too:
   // drag + focus-raise + edge resize + content zoom
-  ["#person-panel", "#job-panel"].forEach((sel) => {
+  ["#person-panel", "#group-panel", "#job-panel"].forEach((sel) => {
     const panel = document.querySelector(sel);
     const head = panel.querySelector(".panel-head");
     makeDraggable(panel, head);
