@@ -24,7 +24,9 @@ import time
 import unittest
 from pathlib import Path
 
-from server import joblog, viratools
+from unittest import mock
+
+from server import joblog, session, viratools
 from server import runner as runner_mod
 
 
@@ -141,3 +143,72 @@ class ModelUsedIsRecorded(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AliasOverrides(unittest.TestCase):
+    """An alias is supposed to name a TIER and track the newest generation
+    of it. On Claude Code 2.1.207 `opus` resolves to claude-opus-4-8 while
+    claude-opus-5 answers, so every launch ran a generation behind whatever
+    the picker displayed. The override is owner DATA, not a shipped table —
+    session.MODEL_ALIASES must stay empty."""
+
+    def _with(self, mapping):
+        return mock.patch.object(
+            session, "config", lambda: {session.ALIAS_OVERRIDE_KEY: mapping})
+
+    def test_shipped_table_is_still_empty(self):
+        self.assertEqual(session.MODEL_ALIASES, {})
+
+    def test_override_wins_over_the_bare_alias(self):
+        with self._with({"opus": "claude-opus-5"}):
+            self.assertEqual(session.resolve_model("opus"), "claude-opus-5")
+
+    def test_override_is_case_insensitive_on_the_key(self):
+        with self._with({"opus": "claude-opus-5"}):
+            self.assertEqual(session.resolve_model("  Opus "), "claude-opus-5")
+
+    def test_unlisted_aliases_pass_through_untouched(self):
+        with self._with({"opus": "claude-opus-5"}):
+            self.assertEqual(session.resolve_model("sonnet"), "sonnet")
+            self.assertEqual(session.resolve_model("claude-opus-5"),
+                             "claude-opus-5")
+
+    def test_no_overrides_is_the_old_behaviour(self):
+        for bad in ({}, None, "nonsense", []):
+            with mock.patch.object(
+                    session, "config",
+                    lambda b=bad: {session.ALIAS_OVERRIDE_KEY: b}):
+                self.assertEqual(session.resolve_model("opus"), "opus")
+                self.assertIsNone(session.resolve_model(""))
+
+    def test_a_blank_override_does_not_erase_the_model(self):
+        with self._with({"opus": "   "}):
+            self.assertEqual(session.resolve_model("opus"), "opus")
+
+
+class SteerMessageMatchesTheState(unittest.TestCase):
+    """"queued — delivers at the next turn boundary" immediately followed by
+    "reply delivered" told the owner two contradictory things in consecutive
+    lines (2026-07-29). A parked session is sitting on the inbox; the wait
+    only exists mid-turn."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def _say(self, parked):
+        r = make_runner(self.tmp.name)
+        self.addCleanup(r.out.close)
+        r.awaiting_reply = parked
+        asyncio.run(r.handle({"op": "say", "text": "discard"}))
+        return (Path(r.dir) / "output.log").read_text(encoding="utf-8")
+
+    def test_parked_does_not_claim_a_wait(self):
+        out = self._say(True)
+        self.assertIn("[you] discard", out)
+        self.assertNotIn("queued", out)
+
+    def test_mid_turn_still_says_queued(self):
+        out = self._say(False)
+        self.assertIn("[you] discard", out)
+        self.assertIn("queued", out)

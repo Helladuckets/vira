@@ -4901,14 +4901,47 @@ const agoShort = (ts) => {
   return Math.round(s / 86400) + "d ago";
 };
 
+// What a job IS, as opposed to what its raw status field says. A session
+// parked at a finished turn keeps status "running" — that is deliberate and
+// load-bearing, because the compose bar keys on it (composeState) and the
+// bar is what lets the owner steer. But it is NOT running: the work is
+// done, nothing is pending, and every surface that called it "running" or
+// "waiting on your reply" was reporting an active job that had finished
+// (owner, 2026-07-29: "the session is totally finished, nothing is
+// pending").
+//
+// The distinction was already in the data and simply unused: `awaiting`
+// separates a session blocked on a card the owner must action
+// (permission/ask — genuinely waiting) from one parked at a turn boundary
+// (reply — complete). ONE helper, so the strip, the rows, the LED and the
+// statusbar cannot drift apart again.
+function jobPhase(j) {
+  if (!j || j.status !== "running") return (j && j.status) || "";
+  if (j.awaiting === "permission" || j.awaiting === "ask") return "waiting";
+  if (j.awaiting === "reply") return "complete";
+  return "running";
+}
+const JOB_PHASE_LABEL = {
+  running: "working",
+  waiting: "waiting on you",
+  complete: "complete — nothing pending",
+};
+// Phase -> the existing dot/pill state classes, so no new CSS is needed and
+// a complete session reads green like any other finished job.
+const JOB_PHASE_CLASS = {
+  running: "running", waiting: "running", complete: "done",
+};
+
 async function refreshJobs() {
   const { jobs } = await api("/api/jobs");
   const strip = $("#jobs-strip");
   strip.innerHTML = "";
   jobs.slice(0, 10).forEach((j) => {
-    const pill = el("div", "job-pill " + j.status,
-      (j.status === "running" ? "running: " : j.status === "error" ? "failed: " : "") +
-      (j.title || j.prompt || "").slice(0, 60));
+    const ph = jobPhase(j);
+    const prefix = ph === "running" ? "running: " : ph === "waiting"
+      ? "waiting: " : ph === "error" ? "failed: " : "";
+    const pill = el("div", "job-pill " + (JOB_PHASE_CLASS[ph] || ph),
+      prefix + (j.title || j.prompt || "").slice(0, 60));
     pill.addEventListener("click", () => openSession(j.id));
     strip.appendChild(pill);
   });
@@ -4920,11 +4953,12 @@ async function refreshJobs() {
       "No jobs yet — run one from Dispatch."));
     jobs.slice(0, 20).forEach((j) => {
       const row = el("div", "card job-row-full");
-      row.appendChild(el("span", "job-dot " + j.status));
+      const rph = jobPhase(j);
+      row.appendChild(el("span", "job-dot " + (JOB_PHASE_CLASS[rph] || rph)));
       const main = el("div", "link-main");
       main.appendChild(el("div", "link-title", (j.title || j.prompt || "").slice(0, 90)));
       main.appendChild(el("div", "link-sub",
-        j.status + " · started " + agoShort(j.started)));
+        (JOB_PHASE_LABEL[rph] || rph) + " · started " + agoShort(j.started)));
       row.appendChild(main);
       row.addEventListener("click", () => openSession(j.id));
       full.appendChild(row);
@@ -5476,12 +5510,16 @@ function createJobTerm(jid, refs) {
       // Parked at a finished turn, holding open for the owner's answer —
       // the work is done, nothing is burning, but the session is still live.
       const replying = j.status === "running" && j.awaiting === "reply";
+      // A parked turn is COMPLETE, not waiting — see jobPhase. The bar
+      // stays live underneath (composeState), so the session is still
+      // steerable; it just stops claiming to be an active job.
       const st = j.status === "running"
         ? (waiting ? "waiting on you"
           : asking ? "waiting on your answer"
-          : replying ? "waiting on your reply" : "working")
+          : replying ? "complete — nothing pending" : "working")
         : (j.status || "");
-      r.led.className = "term-dot " + (waiting || asking || replying ? "wait"
+      r.led.className = "term-dot " + (waiting || asking ? "wait"
+        : replying ? "done"
         : j.status === "running" ? "run" : (j.status || ""));
       const modelLbl = ccModelLabel(j.model_used || j.model)
         || await defaultModelLabel();
@@ -13186,8 +13224,10 @@ async function loadSubsViz() {
     + (p.built || "").replace("T", " ")));
   if (st.job) {
     const j = st.job;
+    const jph = jobPhase(j);
     const b = el("button", "btn small",
-      j.status === "running" ? "Apply job running — watch" : "Last apply: " + j.status);
+      jph === "running" || jph === "waiting"
+        ? "Apply job running — watch" : "Last apply: " + jph);
     b.addEventListener("click", () => openJob(j.id));
     meta.appendChild(b);
   }

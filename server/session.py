@@ -163,20 +163,52 @@ SPAWN_COMPUTED = {"provider", "model_resolved", "auto_allow",
 
 # UI/circuit model keywords -> ids the CLI actually accepts.
 #
-# EMPTY, and it should stay that way. This table used to widen `fable` to
-# `claude-fable-5` back when the alias was too young for the CLI to know
+# STILL EMPTY, and it must stay that way. This table used to widen `fable`
+# to `claude-fable-5` back when the alias was too young for the CLI to know
 # it — which quietly turned a tier keyword into a GENERATION PIN: every
 # circuit stage and routine that says "fable" would still be running Fable
-# 5 the week Fable 6 shipped, with nothing on screen to say so. The CLI
-# resolves the bare alias itself (verified 2026-07-28: `claude --print
-# --model fable` answers, and `claude --help` documents fable/opus/sonnet
-# as aliases for the latest of each tier). A widening entry here is a
-# stale name by another name — see models.py MODEL SOURCES.
+# 5 the week Fable 6 shipped, with nothing on screen to say so. A widening
+# entry here is a stale name by another name — see models.py MODEL SOURCES,
+# and test_no_shipped_model_id_names_a_generation, which fails the build.
 MODEL_ALIASES = {}
+
+# The escape hatch for when an alias is WRONG on this machine, which is not
+# hypothetical: measured 2026-07-29 on Claude Code 2.1.207, `--model opus`
+# resolves to claude-opus-4-8 while `--model claude-opus-5` answers fine.
+# So every session had been running a generation behind whatever the picker
+# said, because the picker sends the bare alias and the alias is stale.
+#
+# Config key `model_alias_overrides`, default {} — OWNER DATA, never a
+# shipped literal, so the no-hardcoded-id rule is intact and the override
+# lives somewhere visible and editable rather than buried in code. It
+# applies at resolve_model, which is the single funnel every anthropic
+# launch already passes through (idea dispatches, circuit stages, routines,
+# judges, the Applications apply), so one entry fixes all of them at once.
+#
+# Re-measure after any CLI upgrade and DELETE the entry once the alias is
+# correct again — an override left in place is exactly the generation pin
+# the table above exists to prevent:
+#   claude --print --output-format json --model opus 'Say OK.'   # read modelUsage
+ALIAS_OVERRIDE_KEY = "model_alias_overrides"
+
+
+def alias_overrides():
+    v = config().get(ALIAS_OVERRIDE_KEY)
+    return v if isinstance(v, dict) else {}
 
 
 def resolve_model(m):
+    """The id to actually launch for a UI/circuit model keyword.
+
+    Owner overrides win: they exist to correct an alias the CLI resolves
+    WRONG on this machine, so they must outrank the alias itself.
+    """
     m = (m or "").strip()
+    if not m:
+        return None
+    over = alias_overrides().get(m.lower())
+    if isinstance(over, str) and over.strip():
+        return over.strip()
     return MODEL_ALIASES.get(m.lower(), m) or None
 
 
