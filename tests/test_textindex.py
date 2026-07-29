@@ -278,6 +278,107 @@ class MailBacklogTests(unittest.TestCase):
         self.assertIsNone(wm)
 
 
+def _rfc822(subject, body="hello there, a real body"):
+    return (f"From: ann@example.test\r\nTo: me@example.test\r\n"
+            f"Subject: {subject}\r\n"
+            f"Date: Mon, 15 Jun 2015 10:00:00 +0000\r\n\r\n"
+            f"{body}").encode()
+
+
+class FakeIMAP:
+    """Just enough imaplib for backfill_imap: a uid-keyed mailbox."""
+
+    def __init__(self, mailbox):
+        self.mailbox = mailbox      # uid -> raw rfc822 bytes
+
+    def login(self, *a):
+        return "OK", []
+
+    def select(self, *a, **kw):
+        return "OK", []
+
+    def uid(self, cmd, *args):
+        if cmd == "search":
+            lo = int(args[-1].split(":")[0])
+            hits = sorted(u for u in self.mailbox if u >= lo)
+            return "OK", [" ".join(map(str, hits)).encode()]
+        u = int(args[0])
+        return "OK", [(b"h", self.mailbox[u])]
+
+    def logout(self):
+        return "OK", []
+
+
+class PoisonResilienceTests(unittest.TestCase):
+    """A malformed message steps the walk past itself; a dying connection
+    aborts the batch instead of skipping the rest of the mailbox."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.acct = {"email": "me@example.test", "host": "imap.example.test"}
+        patches = [
+            mock.patch.object(textindex, "DB",
+                              Path(self.tmp.name) / "text-index.sqlite"),
+            mock.patch.object(textindex.channels, "mail_accounts",
+                              return_value=[self.acct]),
+            mock.patch.object(textindex.channels, "imap_special_folder",
+                              return_value="INBOX"),
+            mock.patch.object(textindex.mailmod, "keychain_password",
+                              return_value="pw"),
+            mock.patch.object(crm, "resolve_handle", lambda h: None),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _wm(self):
+        con = textindex._db()
+        try:
+            return int(textindex.get_state(
+                con, "wm_mail:me@example.test", 0) or 0)
+        finally:
+            con.close()
+
+    def _run(self, mailbox, preview):
+        with mock.patch.object(textindex.imaplib, "IMAP4_SSL",
+                               return_value=FakeIMAP(mailbox)), \
+             mock.patch.object(textindex.mailmod, "_body_preview",
+                               side_effect=preview):
+            return textindex.backfill_imap(self.acct, log=lambda *a: None)
+
+    def test_a_lone_poison_message_is_stepped_past(self):
+        mailbox = {1: _rfc822("one"), 2: _rfc822("poison"),
+                   3: _rfc822("three")}
+
+        def preview(msg, limit=400):
+            if msg.get("Subject") == "poison":
+                raise LookupError("unknown encoding: unknown-8bit")
+            return "a real body long enough to index"
+        n = self._run(mailbox, preview)
+        self.assertEqual(n, 2)               # 1 and 3 landed
+        self.assertEqual(self._wm(), 3)      # the walk moved past the poison
+
+    def test_repeated_failures_abort_the_batch(self):
+        mailbox = {u: _rfc822(f"m{u}") for u in range(1, 8)}
+
+        def preview(msg, limit=400):
+            if msg.get("Subject") == "m1":
+                return "a real body long enough to index"
+            raise OSError("connection reset")
+        n = self._run(mailbox, preview)
+        self.assertEqual(n, 1)
+        # three skips are tolerated, the fourth consecutive failure
+        # aborts — the watermark holds there instead of skipping the
+        # rest of the mailbox
+        self.assertEqual(self._wm(), 4)
+
+    def test_an_unknown_header_charset_no_longer_raises(self):
+        from server import mail as mailmod
+        raw = "=?unknown-8bit?B?aGVsbG8gd29ybGQ=?="
+        self.assertEqual(mailmod._decode_header(raw), "hello world")
+
+
 class IncrementalSettingTests(unittest.TestCase):
     def test_the_sweep_setting_has_a_default(self):
         # settings.get raises KeyError for a key absent from BOTH config
