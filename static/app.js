@@ -7540,7 +7540,9 @@ function renderSetup(flow, st) {
       render: (card) => {
         ({ disk: cardDisk, contacts: cardContacts, dossiers: cardDossiers,
            brain: cardBrain, mail: cardMail }[id] || cardMail)(card, s, st);
-        if (s.unlocks && s.state !== "done")
+        // The disk card carries its own feature list (owner's call,
+        // 2026-07-28) — the generic unlocks foot would just repeat it.
+        if (s.unlocks && s.state !== "done" && id !== "disk")
           card.appendChild(el("p", "setup-unlocks", "Unlocks " + s.unlocks));
       },
     };
@@ -7970,6 +7972,10 @@ function loginFlow(pid, subName, mount, onDone, big) {
 // One grant-detection poll, ever — cardDisk re-renders on every dashboard
 // paint, and the outgoing card's poller must die with it.
 let fdaPoll = null;
+// Whether Guide me has been hit this sitting — the how-to steps and the
+// interpreter path render only then, and must survive the dashboard
+// re-render that setupAct triggers.
+let fdaGuided = false;
 
 function cardDisk(card, step, st) {
   if (fdaPoll) { fdaPoll.stop(); fdaPoll = null; }
@@ -7978,45 +7984,68 @@ function cardDisk(card, step, st) {
     card.appendChild(el("p", "hint", step.detail));
     return;
   }
-  const stores = () => (step.sources || []).forEach((row) =>
-    card.appendChild(srcTile(row, { on: "readable", ready: "needs access" })));
   const state = st.feed.chat_db;
   if (state === "ok") {
+    fdaGuided = false;
     card.appendChild(el("p", "hint setup-ok",
-      "Granted — Vira can read this Mac's Messages, contacts and calendar."));
-    stores();
+      "Granted — Vira reads this Mac directly."));
     return;
   }
+  // ONE subject (owner's call, 2026-07-28): this card sells Full Disk
+  // Access and nothing else. The source tiles that used to render here
+  // (iMessage / Apple Calendar with NOT FOUND states) read as extra setup
+  // items and buried the single action; the how-to appears once Guide me
+  // is hit, which is the moment it is needed.
   card.appendChild(el("p", "hint",
-    "Vira reads your messages, contacts and calendar directly from this " +
-    "Mac — nothing is uploaded to do it. macOS gates those files behind " +
-    "Full Disk Access, granted to Vira's own Python so the permission " +
-    "covers Vira alone."));
-  stores();
-  const steps = el("ol", "setup-steps");
-  ["Hit Guide me — System Settings opens on the Full Disk Access pane, " +
-     "and Finder highlights the file to add",
-   "Drag that file into the Full Disk Access list (or use +) and flip " +
-     "its toggle on",
-   "That's it — Vira notices the grant on its own and this card flips " +
-     "green. No restart needed."].forEach((t) =>
-    steps.appendChild(el("li", "", t)));
-  card.appendChild(steps);
-  // The server names the interpreter it is actually running as. The old
-  // client-side derivation from crm.root pointed at a directory that has
-  // no venv on any install since the ~/.vira/crm default — kept only as
-  // the fallback against an older server.
-  const path = st.python ||
-    ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
-  const code = el("code", "setup-cmd", path);
-  code.title = "click to copy";
-  code.onclick = () => { copyText(path); toast("Path copied"); };
-  card.appendChild(code);
+    "One macOS permission lets Vira read this Mac directly — nothing is " +
+    "uploaded, and the grant covers Vira's own Python alone. It switches " +
+    "on most of what Vira does:"));
+  const brags = el("ul", "setup-brags");
+  ["Your entire iMessage history becomes searchable — every photo, link, " +
+     "and document ever shared",
+   "The Daily Brief reads your calendar: today, tomorrow, conflicts, " +
+     "birthdays",
+   "Incoming texts arrive with instant context on who's writing and " +
+     "what's open with them",
+   "Dossiers write themselves from real conversation history",
+   "Ask for 'the PDF Alex sent in March' and Vira finds it",
+   "Owed replies and friends going quiet surface on their own",
+  ].forEach((t) => brags.appendChild(el("li", "", t)));
+  card.appendChild(brags);
+  const guideBox = el("div", "");
+  const fillGuide = () => {
+    const steps = el("ol", "setup-steps");
+    ["System Settings is opening on the Full Disk Access pane, and " +
+       "Finder is highlighting the file to add",
+     "Drag that file into the Full Disk Access list (or use +) and flip " +
+       "its toggle on",
+     "That's it — Vira notices the grant on its own and this card flips " +
+       "green. No restart needed."].forEach((t) =>
+      steps.appendChild(el("li", "", t)));
+    guideBox.appendChild(steps);
+    // The server names the interpreter it is actually running as. The old
+    // client-side derivation from crm.root pointed at a directory that has
+    // no venv on any install since the ~/.vira/crm default — kept only as
+    // the fallback against an older server.
+    const path = st.python ||
+      ((st.crm.root || "").replace(/\/data\/.*$/, "") + "/.venv/bin/python");
+    const code = el("code", "setup-cmd", path);
+    code.title = "click to copy";
+    code.onclick = () => { copyText(path); toast("Path copied"); };
+    guideBox.appendChild(code);
+  };
+  if (fdaGuided) fillGuide();
+  card.appendChild(guideBox);
   const row = el("div", "setup-row");
   const gb = el("button", "btn primary", "Guide me");
-  gb.onclick = () => setupAct(gb,
-    () => api("/api/onboard/fda-assist", { method: "POST" }),
-    () => "Drag the highlighted file into the Full Disk Access list");
+  gb.onclick = () => {
+    // The how-to appears the instant the click lands — never gated on the
+    // assist call round-tripping (a failed call must not eat the steps).
+    if (!fdaGuided) { fdaGuided = true; fillGuide(); }
+    setupAct(gb,
+      () => api("/api/onboard/fda-assist", { method: "POST" }),
+      () => "Drag the highlighted file into the Full Disk Access list");
+  };
   row.appendChild(gb);
   const rb = el("button", "btn", "Recheck");
   rb.onclick = () => loadSetup();

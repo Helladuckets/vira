@@ -3840,6 +3840,10 @@ a.rm-name:hover { color: var(--accent); }
 .setup-cost { color: var(--accent-bright); margin: 8px 0 2px; }
 .setup-steps { margin: 8px 0 4px 18px; color: var(--text-dim); font-size: 13px; }
 .setup-steps li { margin: 3px 0; }
+/* The disk card's feature list — why the one grant is worth it. */
+.setup-brags { margin: 8px 0 6px 18px; padding: 0; color: var(--text); font-size: 13px; }
+.setup-brags li { margin: 6px 0; }
+.setup-brags li::marker { color: var(--accent); }
 .setup-cmd {
   display: inline-block; background: var(--bg-raised); border: 1px solid var(--line);
   border-radius: 6px; padding: 5px 8px; margin-top: 6px;
