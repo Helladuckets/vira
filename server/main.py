@@ -2058,7 +2058,11 @@ def _job_from_disk(jid):
         "provider": (r.get("provider")
                      or agentbackend.provider_of_model(r.get("model"))
                      or "anthropic"),
-        "model": r.get("model"), "publish_plan": r.get("publish_plan"),
+        # Same reasoning as `provider` above, for the same reason the
+        # ledger records it: a replayed job must name the generation that
+        # actually answered, not the alias that was asked for.
+        "model": r.get("model"), "model_used": r.get("model_used", ""),
+        "publish_plan": r.get("publish_plan"),
         "idea_id": r.get("idea_id"), "session_id": r.get("session_id", ""),
         "mode": r.get("mode"), "awaiting": None, "live": False,
         "pending": [], "transcript": r.get("transcript", ""),

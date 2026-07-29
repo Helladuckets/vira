@@ -278,6 +278,23 @@ def set_title(jid, title):
     return out.get("rec")
 
 
+def record_model_used(jid, model):
+    """The generation the CLI actually resolved the launch's model to.
+
+    `model` on the row is what was ASKED for — usually a tier alias like
+    "opus" — and an alias does not always resolve to the newest generation
+    of its tier. Without this the ledger cannot say which model did the
+    work, and the UI shows the alias, which is a claim it has not checked.
+    """
+    def fn(s):
+        r = next((r for r in s["jobs"] if r["id"] == jid), None)
+        if r and model and r.get("model_used") != model:
+            r["model_used"] = model
+            return True
+        return False
+    _mutate(fn)
+
+
 def record_session(jid, session_id):
     def fn(s):
         r = next((r for r in s["jobs"] if r["id"] == jid), None)
