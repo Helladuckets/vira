@@ -153,6 +153,10 @@ class PollDiffAndNotify(unittest.TestCase):
             self.addCleanup(p.stop)
         self.tmp2 = self.tmp   # keep alive
         self.addCleanup(self.tmp.cleanup)
+        # Every test below starts from a board Vira has already swept once.
+        # A board's FIRST sweep is a baseline — it discovers the whole board
+        # at once, which is not news — and that has its own test.
+        self._poll({"jobs": []})
 
     def _poll(self, payload, notify_ret=True):
         sent = []
@@ -194,6 +198,122 @@ class PollDiffAndNotify(unittest.TestCase):
         self.assertEqual(sent4, [])
         snap = json.loads((self.dir / "snapshot.json").read_text(encoding="utf-8"))
         self.assertFalse(snap["roles"]["g-exlabs-111"].get("closed"))
+
+    def test_first_sweep_of_a_new_board_is_a_baseline(self):
+        """Registering a company means discovering its whole board at once
+        — announcing that as new jobs would bury the ping that matters."""
+        self.dir.joinpath("boards.json").write_text(json.dumps(
+            {"boards": [dict(GH_BOARD),
+                        {"company": "Late Co", "ats": "greenhouse",
+                         "slug": "lateco"}]}), encoding="utf-8")
+        r, sent = self._poll(GH_PAYLOAD)      # lateco's first sweep
+        self.assertEqual(r["baselined"], ["greenhouse-lateco"])
+        # the already-swept board's new roles are real news...
+        self.assertEqual(r["new"], 2)          # both exlabs roles
+        self.assertEqual(r["eligible_new"], 1)  # the AE is cut
+        self.assertEqual(len(sent), 1)
+        self.assertIn("Example Labs", sent[0][0])
+        # ...while the whole of the new board is baselined, not announced
+        self.assertNotIn("Late Co", sent[0][0])
+        state = json.loads((self.dir / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertEqual(state["roles"]["g-lateco-111"]["notified"],
+                         "baseline")
+        # ...and a role that shows up AFTER the baseline is real news
+        later = {"jobs": GH_PAYLOAD["jobs"] + [
+            {"id": 333, "title": "Deployment Engineer",
+             "absolute_url": "https://job-boards.greenhouse.io/exlabs/jobs/333",
+             "location": {"name": "New York City, NY"},
+             "departments": [{"name": "Deployment"}],
+             "content": "Base salary role.", "updated_at": "2026-07-02"}]}
+        r2, sent2 = self._poll(later)
+        self.assertEqual(r2["new"], 2)        # one per registered board
+        self.assertEqual(len(sent2), 1)
+        self.assertIn("Deployment Engineer", sent2[0][0])
+
+    def test_upgrading_does_not_baseline_an_already_swept_registry(self):
+        """An install that predates this rule has no board state, but its
+        snapshot records every board it has ever swept. Baselining those
+        would silently swallow one cycle's real new roles."""
+        self._poll(GH_PAYLOAD)
+        state = json.loads((self.dir / "state.json").read_text(
+            encoding="utf-8"))
+        state.pop("boards")                     # the pre-upgrade shape
+        (self.dir / "state.json").write_text(json.dumps(state),
+                                             encoding="utf-8")
+        later = {"jobs": GH_PAYLOAD["jobs"] + [
+            {"id": 444, "title": "Deployment Lead",
+             "absolute_url": "https://job-boards.greenhouse.io/exlabs/jobs/444",
+             "location": {"name": "New York City, NY"},
+             "departments": [{"name": "Deployment"}],
+             "content": "Base salary role.", "updated_at": "2026-07-03"}]}
+        r, sent = self._poll(later)
+        self.assertEqual(r["baselined"], [])
+        self.assertEqual(r["new"], 1)
+        self.assertIn("Deployment Lead", sent[0][0])
+
+    def test_a_full_board_closes_roles_it_never_served(self):
+        """The universe is mostly roles carried in from frozen corpora that
+        no snapshot ever held. A sweep that only checks what it has served
+        before can never learn those died — which is exactly how dead picks
+        sat in the module for weeks."""
+        with mock.patch.object(jobboards, "_catalog_uids",
+                               return_value={"g-exlabs-999", "as-other-1"}):
+            r, _ = self._poll(GH_PAYLOAD)
+        # 999 is in this board's namespace and did not come back -> gone
+        self.assertEqual(r["closed"], 1)
+        state = json.loads((self.dir / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertTrue(state["roles"]["g-exlabs-999"].get("closed"))
+        # another board's namespace is none of this board's business
+        self.assertNotIn("as-other-1", state["roles"])
+
+    def test_a_query_board_never_closes_outside_what_it_served(self):
+        """microsoft/google are SEARCHES: a role can fall out of a result
+        set while the posting is alive, so absence proves nothing about the
+        wider namespace."""
+        self.dir.joinpath("boards.json").write_text(json.dumps(
+            {"boards": [{"company": "MS", "ats": "microsoft",
+                         "query": "AI", "location": "New York"}]}),
+            encoding="utf-8")
+        with mock.patch.object(jobboards, "_catalog_uids",
+                               return_value={"ms-4242"}), \
+                mock.patch.object(jobboards, "_get",
+                                  return_value={"data": {"count": 0,
+                                                         "positions": []}}), \
+                mock.patch("server.notify.agent_ping", lambda *a, **k: True):
+            jobboards.poll_once()
+        state = json.loads((self.dir / "state.json").read_text(
+            encoding="utf-8"))
+        self.assertNotIn("ms-4242", state["roles"])
+
+    def test_availability_map_states(self):
+        self._poll(GH_PAYLOAD)
+        av = jobboards.availability_map()
+        self.assertEqual(av["g-exlabs-111"]["state"], "open")
+        self._poll({"jobs": [GH_PAYLOAD["jobs"][1]]})
+        av = jobboards.availability_map()
+        self.assertEqual(av["g-exlabs-111"]["state"], "gone")
+        self.assertTrue(av["g-exlabs-111"]["since"])
+        # never inferred from absence: an unseen uid is simply not in the map
+        self.assertNotIn("a-1234", av)
+
+    def test_a_stale_sighting_is_unverified_not_open(self):
+        """'open' means a sweep confirmed it recently. A manual board's
+        roles are written once by hand and never refetched, so a bare
+        last_seen would read as live forever."""
+        self._poll(GH_PAYLOAD)
+        state = json.loads((self.dir / "state.json").read_text(
+            encoding="utf-8"))
+        state["roles"]["g-exlabs-111"]["last_seen"] = "2026-07-01T00:00:00+00:00"
+        (self.dir / "state.json").write_text(json.dumps(state),
+                                             encoding="utf-8")
+        av = jobboards.availability_map()
+        self.assertEqual(av["g-exlabs-111"]["state"], "unverified")
+        self.assertEqual(av["g-exlabs-111"]["checked"],
+                         "2026-07-01T00:00:00+00:00")
+        # a stale sighting is never upgraded to gone — nothing checked
+        self.assertNotEqual(av["g-exlabs-111"]["state"], "gone")
 
     def test_failed_ping_leaves_undedupe(self):
         _, sent1 = self._poll(GH_PAYLOAD, notify_ret=False)

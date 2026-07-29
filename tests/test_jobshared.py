@@ -86,20 +86,36 @@ class UidParityTests(unittest.TestCase):
         self.assertEqual(applications.role_uid({"url": url}),
                          f"as-cursor-{uuid}")
 
-    def test_frontier_specials_pinned(self):
-        """The teardown corpora's a-/o- spellings hold on the URL side;
-        the fetcher side stays generic (state-key stability) — the
-        asymmetry is deliberate and pinned here."""
+    def test_frontier_specials_are_the_same_on_both_sides(self):
+        """CONVERGED 2026-07-29. These two spellings used to differ by
+        design — a-999001 from a corpus URL, g-anthropic-999001 from the
+        fetcher — which meant registering the owner's two anchor company
+        boards would have produced a second copy of every posting that
+        joined to none of his analysis. Both sides mint one uid now, so a
+        sweep can tell him a posting he was tracking has closed."""
         gh = "https://boards.greenhouse.io/anthropic/jobs/999001"
         self.assertEqual(applications.role_uid({"url": gh}), "a-999001")
         self.assertEqual(
             jobshared.board_uid("greenhouse", "999001", "anthropic"),
-            "g-anthropic-999001")
+            "a-999001")
         uuid = "11111111-2222-3333-4444-555555555555"
         oa = f"https://jobs.ashbyhq.com/openai/{uuid}"
         self.assertEqual(applications.role_uid({"url": oa}), f"o-{uuid}")
         self.assertEqual(jobshared.board_uid("ashby", uuid, "openai"),
-                         f"as-openai-{uuid}")
+                         f"o-{uuid}")
+
+    def test_uid_prefix_namespaces(self):
+        """What lets a sweep ask which known roles a board owns. The dash
+        is load-bearing: `as-` must not fall inside `a-`."""
+        self.assertEqual(jobshared.uid_prefix("greenhouse", "anthropic"), "a-")
+        self.assertEqual(jobshared.uid_prefix("ashby", "openai"), "o-")
+        self.assertEqual(jobshared.uid_prefix("greenhouse", "scale"),
+                         "g-scale-")
+        self.assertEqual(jobshared.uid_prefix("microsoft"), "ms-")
+        self.assertFalse("as-openai-x".startswith(
+            jobshared.uid_prefix("greenhouse", "anthropic")))
+        self.assertFalse("gg-74022".startswith(
+            jobshared.uid_prefix("greenhouse", "scale")))
 
     def test_query_boards_carry_no_org(self):
         self.assertEqual(jobshared.board_uid("microsoft", "18773301"),

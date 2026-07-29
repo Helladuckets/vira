@@ -546,7 +546,7 @@ def api_evidence_export_case(cid: str):
 # working in the self-record) ----------
 
 @app.get("/api/applications")
-def api_applications(company: str | None = None, view: str = "universe"):
+def api_applications(company: str | None = None, view: str | None = None):
     return applications.compose(company, view)
 
 
@@ -609,6 +609,13 @@ def api_jobboards():
     s = jobboards.status()
     s["poller"] = getattr(jobboards_poller, "status", "not running")
     return s
+
+
+@app.post("/api/jobboards/poll-now")
+def api_jobboards_poll_now():
+    """Opening the Applications module asks for a sweep if the last one has
+    aged out. Returns immediately; the rows update when it lands."""
+    return jobboards.arm_if_stale(jobboards_poller)
 
 
 @app.post("/api/jobboards/refresh")

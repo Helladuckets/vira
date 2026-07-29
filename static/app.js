@@ -10368,11 +10368,24 @@ DESKTOP_MQ.addEventListener("change", () => location.reload());
 let appsData = null;
 let appsShown = 200;
 const APPS_PAGE = 200;
+// `avail` defaults to "live": a posting that has come down is marked and
+// filtered out, never deleted — the analysis stacked on it is the
+// expensive part. The count line always states how many are being held
+// back, so the default can never read as "that's all there is".
 let appsFilters = { company: "", q: "", fit: "", status: "", starred: false,
-                    view: "universe", tier: "", comp: "" };
+                    avail: "live", tier: "", comp: "" };
+// A saved value the dropdown no longer offers must fall back, not stick:
+// the retired "untriaged" tier matches no role, so a browser carrying it
+// would render an empty list with every control looking unset.
+const APPS_TIERS = ["", "shortlist", "cut", "1", "2", "3", "pass",
+                    "analyzed", "raw", "fresh"];
+const APPS_AVAIL = ["live", "gone", "unverified", ""];
 try {
   appsFilters = { ...appsFilters,
                   ...lsGet("vira-apps-filter", {}) };
+  if (!APPS_TIERS.includes(appsFilters.tier)) appsFilters.tier = "";
+  if (!APPS_AVAIL.includes(appsFilters.avail)) appsFilters.avail = "live";
+  delete appsFilters.view;              // the retired mode toggle
 } catch (e) { /* corrupt saved filters -> defaults */ }
 
 function saveAppsFilters() {
@@ -10382,14 +10395,40 @@ function saveAppsFilters() {
 async function loadApplications() {
   const host = $("#app-list");
   if (!appsData && host) host.innerHTML = "<p class='hint'>Loading roles…</p>";
-  const view = appsFilters.view === "all" ? "all" : "universe";
-  appsData = await api("/api/applications?view=" + view);
-  const seg = $("#apps-view");
-  if (seg) [...seg.querySelectorAll(".seg-btn")].forEach((b) =>
-    b.classList.toggle("on", b.dataset.appsview === view));
+  appsData = await api("/api/applications");
   buildAppsCompanySelect();
   renderApplications();
   loadBoardsStrip().catch(() => {});
+  appsCheckStale().catch(() => {});
+}
+
+// Opening the module asks the background poller for a sweep when the last
+// one has aged out, then repaints when it lands. Deliberately not a
+// blocking fetch: ten boards take the better part of a minute, so the
+// list paints from the last sweep and corrects itself. One watcher at a
+// time — re-opening the module must not stack pollers.
+let appsStaleTimer = null;
+
+async function appsCheckStale() {
+  const r = await post("/api/jobboards/poll-now", {});
+  if (!r || !r.armed) return;
+  const before = r.fetched || "";
+  const strip = $("#app-boards-line");
+  if (strip) strip.textContent = "Checking the boards for closed postings…";
+  clearInterval(appsStaleTimer);
+  let ticks = 0;
+  appsStaleTimer = setInterval(async () => {
+    if (++ticks > 40) { clearInterval(appsStaleTimer); loadBoardsStrip(); return; }
+    try {
+      const s = await api("/api/jobboards");
+      if ((s.fetched || "") === before) return;
+      clearInterval(appsStaleTimer);
+      appsData = await api("/api/applications");
+      buildAppsCompanySelect();
+      renderApplications();
+      loadBoardsStrip();
+    } catch (e) { clearInterval(appsStaleTimer); }
+  }, 3000);
 }
 
 async function loadBoardsStrip() {
@@ -10441,12 +10480,18 @@ function appsFiltered() {
     if (f.company && r.company !== f.company) return false;
     if (f.starred && !r.starred) return false;
     if (f.status && (r.status || "none") !== f.status) return false;
+    const av = r.availability || "unverified";
+    if (f.avail === "live" && av === "gone") return false;
+    if (f.avail === "gone" && av !== "gone") return false;
+    if (f.avail === "unverified" && av !== "unverified") return false;
     if (f.tier === "shortlist") {
       if (!r.shortlist) return false;
     } else if (f.tier === "cut") {
       if (!r.cut) return false;
-    } else if (f.tier === "untriaged") {
-      if (!r.in_universe || r.tier) return false;
+    } else if (f.tier === "analyzed") {
+      if (!r.in_universe) return false;
+    } else if (f.tier === "raw") {
+      if (r.in_universe) return false;
     } else if (f.tier === "fresh") {
       if (!r.fresh) return false;
     } else if (f.tier && r.tier !== f.tier) return false;
@@ -10492,15 +10537,19 @@ function renderApplications() {
   if (summary) {
     const starred = appsData.roles.filter((r) => r.starred).length;
     const u = (appsData.meta || {}).universe || {};
+    const av = (appsData.meta || {}).availability || {};
     let line = `${rows.length} of ${appsData.roles.length} roles` +
-               (appsFilters.view === "all" && u.total
-                 ? ` (universe ${u.total} + newer postings)`
-                 : u.scored
-                   ? (u.shortlist ? ` · ${u.shortlist} picks` : "") +
-                     ` · ${u.scored} scored` +
-                     (u.cut ? ` · ${u.cut} cut` : "")
-                   : "") +
-               (starred ? ` · ${starred} starred` : "");
+               (u.scored
+                 ? (u.shortlist ? ` · ${u.shortlist} picks` : "") +
+                   ` · ${u.scored} scored` +
+                   (u.cut ? ` · ${u.cut} cut` : "") +
+                   (u.unanalyzed ? ` · ${u.unanalyzed} not yet analyzed` : "")
+                 : "") +
+               (starred ? ` · ${starred} starred` : "") +
+               // never let the default filter read as "that's everything"
+               (appsFilters.avail === "live" && av.gone
+                 ? ` · ${av.gone} no longer available (hidden)`
+                 : "");
     if (appsFilters.company) {
       const c = appsData.companies[appsFilters.company];
       if (c && c.connections)
@@ -10518,8 +10567,36 @@ function renderApplications() {
   if (more) more.style.display = rows.length > appsShown ? "" : "none";
 }
 
+function appAvailChip(r) {
+  const av = r.availability || "unverified";
+  const when = (r.availability_when || "").slice(0, 10);
+  if (av === "gone") {
+    // A role you had already applied to going down is a different fact
+    // from a role you were still considering — it says something about
+    // where you stand, so it does not wear the same grey chip.
+    const applied = r.status === "applied" || r.status === "interviewing";
+    const chip = el("span", "gone-chip" + (applied ? " applied" : ""),
+                    applied ? "GONE — YOU APPLIED" : "GONE");
+    chip.title = "No longer listed on the company's board"
+      + (when ? ` — first missed ${when}` : "")
+      + (applied ? ". You have an application on this one." : "");
+    return chip;
+  }
+  if (av === "unverified") {
+    const chip = el("span", "unver-chip", "unchecked");
+    chip.title = when
+      ? `Last confirmed listed on ${when}; no sweep has checked it since. `
+        + "Its board is manual, erroring, or newly added."
+      : "No registered board covers this posting, so Vira cannot tell "
+        + "whether it is still open. Add the company under + board.";
+    return chip;
+  }
+  return null;
+}
+
 function appRow(r) {
-  const row = el("div", "app-row" + (r.cut ? " cutlane" : ""));
+  const row = el("div", "app-row" + (r.cut ? " cutlane" : "")
+                 + (r.availability === "gone" ? " gone" : ""));
   row.dataset.uid = r.uid;
 
   const star = el("button", "app-star" + (r.starred ? " on" : ""));
@@ -10548,6 +10625,8 @@ function appRow(r) {
     chip.title = "Newly listed on the live boards";
     title.appendChild(chip);
   }
+  const availChip = appAvailChip(r);
+  if (availChip) title.appendChild(availChip);
   const a = document.createElement("a");
   a.href = r.url || r.apply_url;
   a.target = "_blank";
@@ -10792,14 +10871,14 @@ $("#app-run-copy").addEventListener("click", async () => {
     appsFilters.company = company.value;
     appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
   });
-  const seg = $("#apps-view");
-  if (seg) seg.addEventListener("click", (e) => {
-    const b = e.target.closest(".seg-btn");
-    if (!b) return;
-    appsFilters.view = b.dataset.appsview === "all" ? "all" : "universe";
-    appsShown = APPS_PAGE; saveAppsFilters();
-    loadApplications().catch(() => {});
-  });
+  const avail = $("#app-avail");
+  if (avail) {
+    avail.value = appsFilters.avail ?? "live";
+    avail.addEventListener("change", () => {
+      appsFilters.avail = avail.value;
+      appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
+    });
+  }
   const fit = $("#app-fit");
   if (fit) {
     fit.value = appsFilters.fit || "";

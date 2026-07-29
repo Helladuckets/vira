@@ -294,16 +294,13 @@
 
   <section id="view-applications" class="view">
     <div class="section-head"><h2>Applications</h2></div>
-    <p class="hint">The adjudicated candidate universe: your eight
-      frontier-fit picks on top, then the v2 tiers; the sales/marketing lane
-      is cut on your 2026-07-14 call and demoted, labeled, never hidden.
+    <p class="hint">Every role in one list: your eight frontier-fit picks on
+      top, then the v2 tiers, then postings not yet analyzed. The
+      sales/marketing lane is cut on your 2026-07-14 call and demoted,
+      labeled, never hidden — and a posting that comes down is marked GONE
+      and filtered out by default, never deleted, so its analysis survives.
       Star, note, track — Apply dispatches an agent that drafts the full
-      package in the self-record. Nothing is ever submitted for you.
-      "All boards" adds every raw posting newer than the last repass.</p>
-    <div class="seg ideas-tabs" id="apps-view">
-      <button data-appsview="universe" class="seg-btn on">Universe</button>
-      <button data-appsview="all" class="seg-btn">All boards</button>
-    </div>
+      package in the self-record. Nothing is ever submitted for you.</p>
     <div id="app-boards" class="app-boards" style="display:none">
       <span id="app-boards-line" class="hint"></span>
       <button id="app-refresh" class="btn"
@@ -315,6 +312,12 @@
     </div>
     <div class="app-filters">
       <select id="app-company" class="idea-sort" title="Company"></select>
+      <select id="app-avail" class="idea-sort" title="Availability">
+        <option value="live">Still available</option>
+        <option value="gone">No longer available</option>
+        <option value="unverified">Unverified</option>
+        <option value="">Everything</option>
+      </select>
       <select id="app-tier" class="idea-sort" title="Tier">
         <option value="">Any tier</option>
         <option value="shortlist">Your eight picks</option>
@@ -323,7 +326,8 @@
         <option value="2">Tier 2</option>
         <option value="3">Tier 3</option>
         <option value="pass">Passed on</option>
-        <option value="untriaged">Untriaged</option>
+        <option value="analyzed">Analyzed only</option>
+        <option value="raw">Not yet analyzed</option>
         <option value="fresh">New on the boards</option>
       </select>
       <select id="app-comp" class="idea-sort" title="Comp structure">

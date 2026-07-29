@@ -32,12 +32,19 @@ ATS_PREFIX = {
     "google": "gg",
 }
 
-# Frontier teardown specials — URL-derivation side ONLY, matching the
-# corpora's historical scheme (a-<id> Anthropic Greenhouse, o-<uuid>
-# OpenAI Ashby). board_uid deliberately does NOT apply these: fetcher
-# uids key the boards snapshot/state, and changing them for a
-# registered anthropic/openai board would re-mint every role as "new"
-# (ping storm). Converging the two spellings is a daylight decision.
+# Frontier teardown specials: the corpora's historical scheme (a-<id>
+# Anthropic Greenhouse, o-<uuid> OpenAI Ashby).
+#
+# CONVERGED 2026-07-29. These used to apply on the URL-derivation side
+# ONLY, so a registered anthropic/openai board would have minted
+# g-anthropic-<id> against a universe holding a-<id> — the same posting
+# under two names, joining to nothing. The stated risk of converging was
+# re-minting every role on an already-registered board as "new" (a ping
+# storm); it did not apply, because neither board had ever been
+# registered. What the split actually cost: the owner's two anchor
+# companies could not be polled at all, so 181 universe roles — every one
+# of his eight picks among them — had no line to a live board and no way
+# to learn a posting had closed. One spelling now, both sides.
 FRONTIER = {("greenhouse", "anthropic"): "a", ("ashby", "openai"): "o"}
 
 GH_URL = re.compile(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)")
@@ -46,8 +53,23 @@ ASHBY_URL = re.compile(r"ashbyhq\.com/([a-z0-9_-]+)/([0-9a-f-]{36})")
 
 def board_uid(ats, jid, org=""):
     """Fetcher-side uid for a board role (stable across polls)."""
+    special = FRONTIER.get((ats, (org or "").lower()))
+    if special:
+        return f"{special}-{jid}"
     p = ATS_PREFIX[ats]
     return f"{p}-{org}-{jid}" if org else f"{p}-{jid}"
+
+
+def uid_prefix(ats, org=""):
+    """The uid namespace a board mints into — `a-`, `g-scaleai-`, `ms-`.
+    What lets a sweep ask "which known roles does this board own?" and so
+    close a posting the snapshot never held (a universe role carried over
+    from a frozen teardown corpus, which is most of them)."""
+    special = FRONTIER.get((ats, (org or "").lower()))
+    if special:
+        return f"{special}-"
+    p = ATS_PREFIX[ats]
+    return f"{p}-{org}-" if org else f"{p}-"
 
 
 def url_uid(url):
@@ -63,8 +85,7 @@ def url_uid(url):
 
 
 def _org_uid(ats, org, jid):
-    p = FRONTIER.get((ats, org))
-    return f"{p}-{jid}" if p else board_uid(ats, jid, org)
+    return board_uid(ats, jid, org)
 
 
 # ------------------------------------------------------- adjudication cut

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import applications
+from server import applications, jobboards
 
 
 TEARDOWN = {
@@ -86,6 +86,14 @@ class ApplicationsBase(unittest.TestCase):
                               lambda: self.universe),
             mock.patch.object(applications, "STORE",
                               root / "applications.json"),
+            # Availability is read from the boards state, and boards_dir()
+            # checks CONFIG before it falls back to the universe — so
+            # without this the suite reads the running instance's own
+            # boards, and a machine with a config override makes these
+            # tests pass or fail on facts about that machine. Patching
+            # what the code writes never isolates what it reads.
+            mock.patch.object(jobboards, "boards_dir",
+                              lambda: self.universe / "boards"),
         ]
         for p in patches:
             p.start()
@@ -245,10 +253,15 @@ class ComposeTest(ApplicationsBase):
         self.assertEqual(len(out["roles"]), 1)
         self.assertEqual(out["roles"][0]["company"], "OtherCo")
 
-    def test_empty_universe_default_view(self):
+    def test_empty_universe_still_serves_the_corpus(self):
+        """One list: with nothing analyzed yet the raw postings ARE the
+        catalog. The old default served [] here, which is what a fresh
+        install saw — an empty module beside a full boards snapshot."""
         out = applications.compose()
-        self.assertEqual(out["roles"], [])
+        self.assertEqual(len(out["roles"]), 2)
         self.assertEqual(out["meta"]["universe"]["total"], 0)
+        self.assertEqual(out["meta"]["universe"]["unanalyzed"], 2)
+        self.assertTrue(all(not r["in_universe"] for r in out["roles"]))
 
 
 class UniverseTest(ApplicationsBase):
@@ -272,21 +285,81 @@ class UniverseTest(ApplicationsBase):
         self.assertEqual(ops["tier"], "")
         self.assertEqual(ops["comp_kind"], "ote")
 
-    def test_universe_is_default_view(self):
+    def test_one_list_leads_with_the_analyzed_roles(self):
+        """The Universe / All-boards toggle is gone. Everything is in one
+        list, analyzed roles first, and the axis that toggle was actually
+        good for survives as the in_universe flag the tier filter reads."""
         out = applications.compose()
-        self.assertEqual(len(out["roles"]), 2)
-        self.assertTrue(all(r["in_universe"] for r in out["roles"]))
-        self.assertEqual(out["meta"]["universe"]["scored"], 1)
-        self.assertEqual(out["meta"]["universe"]["tier1"], 1)
-
-    def test_all_view_appends_corpus_only(self):
-        out = applications.compose(view="all")
         uids = [r["uid"] for r in out["roles"]]
         self.assertEqual(uids[:2],
                          ["g-examplelabs-1234567", "g-examplelabs-777"])
         rest = out["roles"][2:]
         self.assertTrue(rest)
         self.assertTrue(all(not r["in_universe"] for r in rest))
+        self.assertEqual(out["meta"]["universe"]["scored"], 1)
+        self.assertEqual(out["meta"]["universe"]["tier1"], 1)
+        self.assertEqual(out["meta"]["universe"]["unanalyzed"], len(rest))
+
+    def test_view_param_is_accepted_and_ignored(self):
+        """An old bookmark or a stale client must not 404 or get a
+        different list than the one the module now has."""
+        self.assertEqual(applications.compose(view="all")["roles"],
+                         applications.compose()["roles"])
+        self.assertEqual(applications.compose(view="universe")["roles"],
+                         applications.compose()["roles"])
+
+    def _seed_boards_state(self, roles):
+        d = self.universe / "boards"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "state.json").write_text(json.dumps({"roles": roles}),
+                                      encoding="utf-8")
+        applications._cache.update({"key": None, "roles": None})
+        applications._universe_cache.update({"key": None, "roles": None})
+
+    def test_availability_marks_a_dead_posting_without_deleting_it(self):
+        """The whole point: the analysis stacked on a role is expensive, so
+        a posting that comes down is marked, not dropped."""
+        self._seed_boards_state({
+            "g-examplelabs-1234567": {"closed": "2026-07-22T10:00:00+00:00"},
+            "g-examplelabs-777": {"last_seen": "2026-07-29T10:00:00+00:00"},
+        })
+        by = {r["uid"]: r for r in applications.load_universe()}
+        gone = by["g-examplelabs-1234567"]
+        self.assertEqual(gone["availability"], "gone")
+        self.assertTrue(gone["availability_when"].startswith("2026-07-22"))
+        self.assertEqual(gone["fit"], 90)          # the analysis survives
+        self.assertEqual(gone["tier"], "1")
+        self.assertEqual(by["g-examplelabs-777"]["availability"], "open")
+
+    def test_a_role_no_board_covers_reads_unverified_never_open(self):
+        """A frozen corpus is not evidence a posting is live. Absence of a
+        board is stated, not silently rendered as still-available."""
+        self._seed_boards_state({})
+        by = {r["uid"]: r for r in applications.load_universe()}
+        self.assertEqual(by["g-examplelabs-1234567"]["availability"],
+                         "unverified")
+        out = applications.compose()
+        self.assertEqual(out["meta"]["availability"]["gone"], 0)
+        self.assertTrue(out["meta"]["availability"]["unverified"])
+
+    def test_a_closed_role_invalidates_the_cache(self):
+        """Availability lives in the boards state, so a sweep that closes a
+        role has to invalidate the catalog cache — or the module keeps
+        serving it as live until some unrelated file happens to change."""
+        self._seed_boards_state(
+            {"g-examplelabs-1234567": {"last_seen": "2026-07-29T10:00:00+00:00"}})
+        first = {r["uid"]: r for r in applications.load_universe()}
+        self.assertEqual(first["g-examplelabs-1234567"]["availability"],
+                         "open")
+        d = self.universe / "boards"
+        (d / "state.json").write_text(json.dumps(
+            {"roles": {"g-examplelabs-1234567":
+                       {"closed": "2026-07-29T12:00:00+00:00"}}}),
+            encoding="utf-8")
+        # no cache reset here on purpose — the key must notice by itself
+        again = {r["uid"]: r for r in applications.load_universe()}
+        self.assertEqual(again["g-examplelabs-1234567"]["availability"],
+                         "gone")
 
     def test_adjudication_pins_and_cuts(self):
         self.seed_adjudication(shortlist=["g-examplelabs-777"])
