@@ -141,6 +141,39 @@ class BashTargets(unittest.TestCase):
         self.assertEqual(
             worktree.bash_targets({"command": "make 2>&1 | tail"}), [])
 
+    def test_dev_null_suppression_is_not_a_write(self):
+        """The false positive that denied an agent an `ls` within minutes of
+        the guard going live (2026-07-29). `2>/dev/null` is how shell reads
+        suppress noise; counting it as a mutation blocks ordinary work,
+        which is how a guard gets switched off."""
+        for cmd in ("ls ~/.venvs/ 2>/dev/null",
+                    "ls ~/workspace/vira/.venv/bin/python3 2>/dev/null && echo ok",
+                    "which foo >/dev/null 2>&1",
+                    "ls -la .venv 2>/dev/null | head -3"):
+            self.assertEqual(worktree.bash_targets({"command": cmd}), [],
+                             f"a suppressed read is still a read: {cmd}")
+
+    def test_only_the_destination_counts(self):
+        """A command may read one path and write another. Denying the READ
+        would stop legitimate work — copying a file out of the live tree
+        into the worktree is exactly what a placed session does."""
+        got = worktree.bash_targets(
+            {"command": "cp ~/workspace/vira/a.py ./b.py"})
+        self.assertEqual(got, ["./b.py"])
+        got = worktree.bash_targets(
+            {"command": "cat ~/workspace/vira/a.py > ./b.py"})
+        self.assertEqual(got, ["./b.py"])
+
+    def test_destructive_verbs_claim_every_argument(self):
+        got = worktree.bash_targets({"command": "rm -rf ~/workspace/vira/data"})
+        self.assertIn("~/workspace/vira/data", got)
+
+    def test_one_mutating_clause_does_not_taint_the_whole_line(self):
+        """Per-segment, so a read earlier in the line stays a read."""
+        got = worktree.bash_targets(
+            {"command": "grep -rn x ~/workspace/vira/server; echo y > ./out"})
+        self.assertEqual(got, ["./out"])
+
     def test_paths_stop_at_shell_metacharacters(self):
         got = worktree.bash_targets(
             {"command": "cp ./a.py ~/workspace/vira/b.py; echo done"})

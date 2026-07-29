@@ -170,8 +170,15 @@ class Runner:
             if text:
                 self.inbox.put_nowait(text)
                 self.append(f"[you] {text}\n")
-                self.append("[vira] queued — delivers at the next turn "
-                            "boundary\n")
+                # Only say "queued" when it IS queued. A session parked in
+                # its reply window is sitting on the inbox, so the message
+                # goes straight in — and printing "delivers at the next turn
+                # boundary" followed instantly by "reply delivered" told the
+                # owner two contradictory things in consecutive lines
+                # (2026-07-29). Mid-turn the wait is real and worth saying.
+                if not self.awaiting_reply:
+                    self.append("[vira] queued — delivers at the next turn "
+                                "boundary\n")
         elif op == "permission":
             fut = self.futures.get(cmd.get("req_id"))
             if fut is not None and not fut.done():

@@ -64,15 +64,27 @@ PATH_KEYS = ("file_path", "path", "notebook_path")
 # mutation signal; a read-only command is never scanned and never denied.
 _CMD_KEYS = ("command", "cmd", "script")
 
-# Output redirection, or a mutating utility in command position (start of
-# string, or after a pipe/;/&&/||). Deliberately conservative: a verb that
-# only sometimes writes is better handled by the placement it would have to
-# escape than by a denial that makes the guard annoying enough to turn off.
-_MUTATES_RE = re.compile(
-    r">>?(?!&)"
-    r"|(?:^|[|;&]\s*|\bsudo\s+|\bxargs\s+)"
-    r"(?:rm|mv|cp|dd|tee|truncate|install|ln|chmod|chown|touch|mkdir"
-    r"|rmdir|sed\s+-[a-zA-Z]*i|perl\s+-[a-zA-Z]*i|patch|shred)\b")
+# A redirect and its destination. `2>&1` is not a write (it duplicates a
+# file descriptor) and NEITHER IS /dev/null — that one matters far more than
+# it looks: `ls ... 2>/dev/null` is how half of all shell reads suppress
+# noise, and treating it as a mutation denied an agent an ordinary `ls`
+# within minutes of the guard going live (2026-07-29). Over-blocking reads
+# is the failure mode that gets a guard switched off.
+_REDIR_RE = re.compile(r"\d?>>?\s*(?!&)([^\s'\"`;|&()<>]+)")
+_DEV_NULL = ("/dev/null",)
+
+# Utilities that write. Split by WHICH argument they write, because a
+# command that reads one path and writes another must not have its read
+# denied: `cp <live>/a.py ./b.py` is legitimate, and only the destination
+# is a write. For cp/mv/install/ln that is the LAST path; for the rest,
+# every path named is a target.
+_DEST_LAST = r"cp|mv|install|ln"
+_ALL_ARGS = (r"rm|rmdir|dd|tee|truncate|chmod|chown|touch|mkdir|shred|patch"
+             r"|sed\s+-[a-zA-Z]*i|perl\s+-[a-zA-Z]*i")
+# Command position only: start of string, or after a pipe/;/&&/||.
+_HEAD = r"(?:^|[|;&]\s*|\bsudo\s+|\bxargs\s+)"
+_DEST_LAST_RE = re.compile(_HEAD + r"(?:" + _DEST_LAST + r")\b")
+_ALL_ARGS_RE = re.compile(_HEAD + r"(?:" + _ALL_ARGS + r")\b")
 
 # A path-looking run inside a command string: enough leading context to be a
 # real path, stopping at whitespace, quotes and shell metacharacters.
@@ -80,10 +92,17 @@ _CMD_PATH_RE = re.compile(r"(?:~|\.{0,2}/)[^\s'\"`;|&()<>]*")
 
 
 def bash_targets(tool_input):
-    """Paths a Bash call might WRITE, or [] when the command shows no sign of
-    mutating anything. See the heuristic note above — over-reporting within a
-    mutating command is fine (the caller only denies paths that land inside
-    the live root and outside the worktree); missing a read is the point."""
+    """Paths a Bash call would WRITE — never the ones it merely reads.
+
+    See the heuristic note above. The rule is per-segment (split on pipes
+    and separators) so one mutating clause in a long command line does not
+    turn every path in it into a target:
+
+      ls ~/x 2>/dev/null            -> []              (a read)
+      cat a > <live>/b              -> [<live>/b]      (the destination)
+      cp <live>/a.py ./b.py         -> [./b.py]        (dest is last)
+      rm -rf <live>/data            -> [<live>/data]   (all args)
+    """
     if not isinstance(tool_input, dict):
         return []
     out = []
@@ -91,10 +110,19 @@ def bash_targets(tool_input):
         v = tool_input.get(k)
         if not (isinstance(v, str) and v.strip()):
             continue
-        if not _MUTATES_RE.search(v):
-            continue
-        out.extend(m.group(0) for m in _CMD_PATH_RE.finditer(v))
-    return out
+        for seg in (s.strip() for s in re.split(r"[|;]|&&|\|\|", v)):
+            for m in _REDIR_RE.finditer(seg):
+                dest = m.group(1)
+                if dest not in _DEV_NULL:
+                    out.append(dest)
+            paths = [m.group(0) for m in _CMD_PATH_RE.finditer(seg)]
+            if not paths:
+                continue
+            if _ALL_ARGS_RE.search(seg):
+                out.extend(paths)
+            elif _DEST_LAST_RE.search(seg):
+                out.append(paths[-1])
+    return [p for p in out if p not in _DEV_NULL]
 
 
 def repo_root(path):

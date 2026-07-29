@@ -23,6 +23,11 @@ DEFAULTS = {
     "ai_backend": "cli",          # "cli" (subscription login) | "api" (key)
     # cli_model is an ALIAS, so it names a tier and never a generation.
     "cli_model": "sonnet",
+    # Corrections for aliases this machine's CLI resolves WRONG, e.g.
+    # {"opus": "claude-opus-5"} when `--model opus` still gives 4.8.
+    # Empty by default; see session.ALIAS_OVERRIDE_KEY for why this is
+    # owner data rather than a shipped table, and how to re-measure.
+    "model_alias_overrides": {},
     # Every api_model default is EMPTY on purpose (models.py MODEL SOURCES):
     # a shipped model id is the thing that goes stale, and it goes stale in
     # the one place only an admin edit and a push could fix. Empty resolves
