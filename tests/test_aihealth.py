@@ -105,14 +105,29 @@ class StoreTests(Base):
 
 
 class ProbeTests(Base):
+    """Every case here is about an install that HAS an AI connected — the
+    never-configured fork is FreshInstallIsNotRed's subject, below.
+
+    That precondition has to be pinned, not assumed: `_never_configured`
+    asks the world (`models.connected`), so these read the developer's own
+    machine unless told otherwise. On a machine with a provider connected
+    they passed; on every CI runner probe() short-circuited to "setup" and
+    four cases failed. Which machine runs the suite must not decide what
+    the suite is testing.
+    """
+
     def _patch_cli(self, state, detail, extra=None):
         aihealth._probe_cli = lambda: (state, detail, extra or {})
 
     def setUp(self):
         super().setUp()
         self._real_cli = aihealth._probe_cli
+        self._conf = mock.patch.object(aihealth, "_never_configured",
+                                       return_value=False)
+        self._conf.start()
 
     def tearDown(self):
+        self._conf.stop()
         aihealth._probe_cli = self._real_cli
         super().tearDown()
 
@@ -220,6 +235,19 @@ class FreshInstallIsNotRed(unittest.TestCase):
 
     def test_a_broken_probe_reads_as_configured(self):
         # Never silence a real outage because the capability probe failed.
-        with mock.patch.object(aihealth, "models", create=True) as m:
-            m.connected.side_effect = RuntimeError("boom")
+        #
+        # Patched on the models MODULE, not on an `aihealth.models`
+        # attribute: _never_configured does its own `from . import models`
+        # inside the function, so there is no module-level name to replace
+        # and `create=True` invented one nothing ever read. The mock had no
+        # effect at all — the assertion was passing on the real
+        # models.connected() of whatever machine ran it.
+        from server import models
+        with mock.patch.object(models, "connected",
+                               side_effect=RuntimeError("boom")):
             self.assertFalse(aihealth._never_configured())
+
+    def test_no_provider_connected_reads_as_never_configured(self):
+        from server import models
+        with mock.patch.object(models, "connected", return_value=[]):
+            self.assertTrue(aihealth._never_configured())
