@@ -2077,6 +2077,39 @@ function openFindQuery(q, opts = {}) {
   else findPendingQuery = { q, opts };
 }
 
+// "If you search for it and find it, link it up" — the owner's ask, kept as
+// ONE gesture. Searching the vault and then attaching what you found are the
+// same act, so the picker IS the search result: no trip through Find, no
+// second surface to carry the item back to. The escape hatch is the last row,
+// for when the note is not in the top few and browsing is the real intent.
+async function linkVaultNote(x, y, it) {
+  let hits = [];
+  try {
+    ({ hits } = await api("/api/vault/search?q="
+      + encodeURIComponent(it.title) + "&limit=6"));
+  } catch { toast("Vault search failed"); return; }
+  const rows = hits.map((h) => ({
+    label: h.title || h.path.split("/").pop().replace(/\.md$/, ""),
+    hint: h.path.split("/")[0],
+    run: async () => {
+      try {
+        await post("/api/reading/rooms/" + rmRoom.slug + "/link",
+                   { item_id: it.id, path: h.path });
+        it.vault_note = h.path;
+        it.vault_note_kind = "room";
+        toast("Linked — the card opens it now");
+      } catch (err) { alert("Link failed: " + err.message); }
+    },
+  }));
+  showContextMenu(x, y, [
+    { head: "Link a vault note", sub: it.title },
+    ...(rows.length ? rows : [{ dim: true, label: "Nothing in the vault matches" }]),
+    { sep: true },
+    { label: "Search in Find instead…",
+      run: () => openFindQuery(it.title, { tab: "notes" }) },
+  ]);
+}
+
 // The host a link points at, for a menu row that names its destination.
 // A URL the browser cannot parse still deserves a working row, so the
 // fallback is the generic word rather than a thrown menu.
@@ -11807,15 +11840,21 @@ document.addEventListener("contextmenu", (e) => {
       hint: "new tab",
       run: () => window.open(it.url, "_blank", "noopener"),
     });
-    if (it.vault) items.push({
-      label: "Open the vault note",
+    // `vault_note` is RESOLVED server-side and means three different things,
+    // so the row says which: the owner's own summary, the pointer note the
+    // room ingest wrote, or genuinely nothing. Reading `it.vault` alone —
+    // which only ever means the SUMMARY — is what made 263 cards claim "no
+    // vault note yet" over notes that were sitting in the vault.
+    if (it.vault_note) items.push({
+      label: it.vault_note_kind === "owner" ? "Open your note on this"
+                                            : "Open the vault note",
       hint: "in Vira",
-      run: () => openNoteWindow(it.vault),
+      run: () => openNoteWindow(it.vault_note),
     });
     else {
       items.push({ dim: true, label: "No vault note yet" });
-      items.push({ label: "Search the vault for this…", hint: "Find",
-                   run: () => openFindQuery(it.title, { tab: "notes" }) });
+      items.push({ label: "Find and link a vault note…", hint: "search",
+                   run: () => linkVaultNote(e.clientX, e.clientY, it) });
     }
     items.push({ sep: true });
     items.push({ label: rmDone.has(it.id) ? "Mark as not done" : "Mark as done",
