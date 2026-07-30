@@ -11,6 +11,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from server import aihealth
 
@@ -186,3 +187,39 @@ class AlertTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FreshInstallIsNotRed(unittest.TestCase):
+    """A brand-new install has no AI connected, and that is not a fault.
+
+    Reported 2026-07-30 from a real first boot: the header wore a clay
+    "AI is paused — the Claude login is not active. Open a terminal and
+    run ... to reconnect" banner before the owner had done anything. Two
+    things wrong at once — it called the expected state broken, and it
+    handed over a terminal command, which is the exact hand-off the driven
+    sign-in was built to remove.
+    """
+
+    def test_never_configured_reports_setup_not_red(self):
+        with mock.patch.object(aihealth, "_never_configured",
+                               return_value=True):
+            r = aihealth.probe(write=False)
+        self.assertEqual(r["state"], "setup")
+        # The banner renders on "red" alone, so anything else hides it — but
+        # an empty action is what keeps a terminal command off a first boot
+        # even if some future surface starts printing it.
+        self.assertEqual(r["action"], "")
+
+    def test_a_configured_install_still_probes(self):
+        with mock.patch.object(aihealth, "_never_configured",
+                               return_value=False), \
+             mock.patch.object(aihealth, "_probe_cli",
+                               return_value=("red", "login expired", {})):
+            r = aihealth.probe(write=False)
+        self.assertEqual(r["state"], "red")
+
+    def test_a_broken_probe_reads_as_configured(self):
+        # Never silence a real outage because the capability probe failed.
+        with mock.patch.object(aihealth, "models", create=True) as m:
+            m.connected.side_effect = RuntimeError("boom")
+            self.assertFalse(aihealth._never_configured())

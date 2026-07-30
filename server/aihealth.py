@@ -215,10 +215,37 @@ def _action_for(state, backend, fallback):
     return "AI is paused — the API key was rejected. Check it in Setup > Connect your AI."
 
 
+def _never_configured():
+    """True when this install has never had an AI connected.
+
+    Deliberately asks the WORLD (models.connected) rather than storing a
+    'has been set up' flag — the onboard.steps discipline. A probe that
+    crashes the caller is worse than one that says unknown, so any failure
+    here reads as configured and the normal check runs.
+    """
+    try:
+        from . import models
+        return not models.connected()
+    except Exception:      # noqa: BLE001
+        return False
+
+
 def probe(write=True):
     """Run the deterministic health check against the CONFIGURED primary
     backend and return a status dict. Cheap: no model call, no token spend.
     Does NOT alert — the Watcher / recheck endpoint decide that."""
+    if _never_configured():
+        # A brand-new install has no AI connected, and that is the EXPECTED
+        # state — not a fault. Reporting red here put a clay "AI is paused"
+        # banner across a first boot, telling a stranger something was broken
+        # before they had done anything, and handing them a terminal command
+        # (the exact hand-off the driven sign-in exists to remove). This
+        # banner's job is "your WORKING Vira broke"; it has nothing to say
+        # until there is a working Vira.
+        return {"state": "setup", "detail": "no AI connected yet",
+                "backend": "", "fallback": None,
+                "checked_at": datetime.now().isoformat(timespec="seconds"),
+                "action": ""}
     backend, _ = _backend_config()
     key = _api_key()
     if backend == "api" and key:

@@ -7701,11 +7701,23 @@ function keyStoreSentence(st) {
 
 // POST /api/onboard/ai — the one connect call both surfaces (this dashboard
 // and the first-run welcome) route through.
+// The ONE place a provider gets connected — the first-run tiles and the
+// Config provider card both land here, so the health re-probe belongs here
+// too rather than on either caller.
 function aiConnect(bodyObj) {
   return api("/api/onboard/ai", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(bodyObj),
+  }).then((r) => {
+    // The banner reads a STORED probe and the Watcher only re-runs every few
+    // minutes, so connecting left "AI is paused — open a terminal…" on screen
+    // until the owner clicked Recheck. Clicking a button to tell the app
+    // something it just did itself is not a state the owner should ever see.
+    post("/api/health/ai/recheck", {})
+      .then((h) => renderAiHealth(h.latest || h))
+      .catch(() => {});
+    return r;
   });
 }
 
@@ -8480,6 +8492,13 @@ function cardUpdates(card) {
 let frAi = null;                 // the ai step record (providers + active_id)
 let frFlow = null;               // the full step flow — the reveal derives its
                                  // gates from these states, never a static map
+// Set BEFORE the desktop builds, and read by initDesktop: a first run opens
+// no default windows, so the welcome is the first and only thing on screen.
+// `frRevealed` distinguishes the two ways the overlay leaves — the reveal
+// opens the modules itself, a Skip must open the ordinary default set or the
+// owner is dropped onto a bare desk.
+let frGated = false;
+let frRevealed = false;
 
 function frMarkDone() {
   uiPush("vira-firstrun-done", lsSet("vira-firstrun-done", true));
@@ -8561,6 +8580,10 @@ function frAlready(pr) {
 function openFirstrun() {
   const fr = $("#firstrun");
   if (!fr) return;
+  // Gate the desk only when this is the real first run — the Config > System
+  // re-run opens over a desk the owner is already using, and closing every
+  // window under them would be the app rearranging their screen uninvited.
+  if (!lsGet("vira-firstrun-done", false)) frGated = true;
   fr.hidden = false;
   document.body.classList.add("fr-open");
   if (frAi) { frPick(); return; }
@@ -8579,6 +8602,25 @@ function closeFirstrun() {
   const fr = $("#firstrun");
   if (fr) fr.hidden = true;
   document.body.classList.remove("fr-open");
+  // Skip / dismiss: the reveal never ran, so nothing has opened the desk.
+  // Open what a non-first-run boot would have opened, or the owner lands on
+  // an empty screen with no way to read that anything is there.
+  if (frGated && !frRevealed) { frGated = false; openDefaultWindows(); }
+}
+
+// The opt-in default set, extracted so first-run can defer it rather than
+// skip it. Only ever opens on a VIRGIN desktop (no saved rect for that id),
+// so it can never re-open a window the owner has closed.
+function openDefaultWindows() {
+  if (!isDesktop || !winState) return;
+  const stored = desktopStore();
+  WINDOWS.forEach((spec) => {
+    const st = stored[spec.id] || {};
+    if (st.open ?? spec.defaultOpen === true) openWindow(spec.id);
+  });
+  const lead = WINDOWS.find((s) => s.focusFirst && !stored[s.id]
+                                   && winState[s.id]?.open);
+  if (lead) focusWin(winState[lead.id].el);
 }
 
 async function frRefresh(pid) {
@@ -8785,6 +8827,7 @@ function sceneGates(flow) {
 function aiReveal() {
   const fr = $("#firstrun");
   frMarkDone();
+  frRevealed = true;   // the reveal opens the desk itself; closeFirstrun must not
   if (!fr || fr.hidden) return;
   if (!isDesktop || !winState) {
     // No floating windows to pop on a phone — the splash was the moment.
@@ -15843,7 +15886,13 @@ function initDesktop() {
     // empty library), stacked over the one window that would help them.
     // Opt-in also means a window shipped in an update no longer pops open
     // uninvited on desks that predate it.
-    const shouldOpen = st.open ?? spec.defaultOpen === true;
+    // …and on a first run NOTHING opens: the welcome is the whole screen,
+    // and the reveal is what opens the modules a moment later. Without this
+    // the desk painted its default windows (and their pre-setup empty and
+    // error states) BEFORE the overlay arrived, so a stranger's first sight
+    // of Vira was three half-configured panes and a red banner, corrected
+    // a second later by the screen that should have been first.
+    const shouldOpen = !frGated && (st.open ?? spec.defaultOpen === true);
     if (shouldOpen) openWindow(spec.id);
   });
   // The WINDOWS array doubles as the z order (first built ends up at the
@@ -15966,6 +16015,13 @@ async function boot() {
   // fdDormant() as they build, and a late answer would draw every module
   // as configured and then correct itself in front of the user.
   await loadFrontDoor(true);
+  // The welcome is decided BEFORE anything paints, and awaited. It used to
+  // run at the tail of boot, unawaited, so a first run drew the whole desk —
+  // default windows, their empty pre-setup states, the AI-down banner — and
+  // only then covered it with the screen a stranger was supposed to see
+  // first. Two fetches is the same pre-paint cost the two lines above
+  // already pay, and it buys a first sight that is the finished product.
+  await maybeFirstrun();
   if (isDesktop) initDesktop();
   buildMobileDock();   // the phone's five-app access bar
   initReorg();         // long-press the grid or the bar to rearrange both
@@ -15986,7 +16042,6 @@ async function boot() {
   (fdState?.modules || []).forEach((m) => { if (!m.ready) fdMount(m.id); });
   if ((fdState?.modules || []).some((m) => !m.ready && m.run)) fdWatch();
   firstRunLanding();
-  maybeFirstrun();   // the welcome overlay, once per install, fresh AI-less installs only
   renderPeopleSort();
   loadBrief().catch(() => {});
   loadFeed().catch(() => {});
