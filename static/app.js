@@ -2066,6 +2066,25 @@ function setFindTab(tab) {
   else findPendingTab = tab;
 }
 
+// Open Find carrying a query — the one place the Reader and Find touch: an
+// item with no vault note hands its title over rather than dead-ending.
+let findSetQuery = null;
+let findPendingQuery = null;
+
+function openFindQuery(q, opts = {}) {
+  openApp("find");
+  if (findSetQuery) findSetQuery(q, opts);
+  else findPendingQuery = { q, opts };
+}
+
+// The host a link points at, for a menu row that names its destination.
+// A URL the browser cannot parse still deserves a working row, so the
+// fallback is the generic word rather than a thrown menu.
+function hostLabel(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return "the source"; }
+}
+
 function initFindView() {
   const root = $("#find-root");
   if (!root) return;
@@ -2201,9 +2220,22 @@ function initFindView() {
     renderTabs();
     if (input.value.trim()) run(false);
   };
+  findSetQuery = (q, opts = {}) => {
+    input.value = q || "";
+    if (opts.tab && FIND_TABS.some(([k]) => k === opts.tab)) tab = opts.tab;
+    renderTabs();
+    // a plain search, never an ask: this is a lookup handed over from
+    // somewhere else, and spending a model call on it was not asked for
+    run(false);
+    input.focus();
+  };
   renderTabs();
   renderKinds();
   if (findPendingTab) { findSetTab(findPendingTab); findPendingTab = null; }
+  if (findPendingQuery) {
+    findSetQuery(findPendingQuery.q, findPendingQuery.opts);
+    findPendingQuery = null;
+  }
   loadFindStatus();
 }
 
@@ -9190,33 +9222,128 @@ function mdToHtml(md) {
 
 function closeNote() { exitFocus($("#note-panel")); }
 
+function noteName(path, title) {
+  return title || path.split("/").pop().replace(/\.md$/, "");
+}
+
+// ===================== PEEK OR KEEP =====================
+// Vira has ONE note panel, so following a wikilink used to repaint it and
+// destroy the note you came from — no stack, no back button, and no way to
+// hold four articles open at once. Two tiers fix that, and the app already
+// runs both: the focus panel is the PEEK (one at a time, Escape returns
+// you) and openJobWindow proves many-at-once works. A note window is that
+// function with markdown in it instead of a terminal.
+//
+// THE RULE: LISTS PEEK, NOTES SPAWN. A click from a list — a Reader card, a
+// Find citation — is browsing, so it peeks. A wikilink clicked INSIDE a note
+// is the moment a chain starts, so that is where windows start. Mobile has
+// no floating windows, so every tier collapses back to the panel there.
+
+// Fill a container with a rendered note. `spawn` decides what a wikilink
+// inside it does, which is the only difference between the two tiers.
+async function fillNote(host, path, spawn) {
+  host.innerHTML = "";
+  host.appendChild(el("div", "spin", "Loading note…"));
+  try {
+    const n = await api("/api/vault/note?path=" + encodeURIComponent(path));
+    host.innerHTML = mdToHtml(n.text);
+    host.querySelectorAll(".note-link").forEach((a) =>
+      a.addEventListener("click", () => spawn(a.dataset.ref)));
+  } catch (e) {
+    host.innerHTML = "";
+    host.appendChild(el("div", "empty left", "Note unavailable: " + e.message));
+  }
+}
+
+// Resolve a wikilink and open it as a NEW window, promoting the peek it was
+// clicked in so the chain reads left to right instead of eating its own head.
+// The peek is read off the panel rather than passed in: it MUST be dismissed
+// either way, because focus mode dims and blurs everything behind it and a
+// window spawned under that scrim is a window you cannot read. A plan panel
+// carries no notePath, so it closes without being promoted.
+async function spawnNoteRef(ref) {
+  try {
+    const { hits } = await api("/api/vault/search?q="
+      + encodeURIComponent(ref) + "&limit=1");
+    if (!hits.length) { toast("No note found for " + ref); return; }
+    const panel = $("#note-panel");
+    if (isDesktop && panel?.classList.contains("open")) {
+      const from = panel.dataset.notePath;
+      if (from) openNoteWindow(from, panel.dataset.noteTitle);
+      closeNote();
+    }
+    openNoteWindow(hits[0].path, hits[0].title);
+  } catch { toast("Note lookup failed"); }
+}
+
+const noteWindows = {};   // path -> { win }
+let noteCascade = 0;
+
+// A note as its own floating window: drag, resize, zoom, close, and open as
+// many as the chain needs. Keyed on PATH so opening the same note twice
+// raises the window that already holds it rather than minting a duplicate.
+async function openNoteWindow(path, title) {
+  if (!isDesktop) { openNote(path, title); return; }   // no windows on a phone
+  const ex = noteWindows[path];
+  if (ex) {
+    ex.win.style.display = "flex";
+    requestAnimationFrame(() => ex.win.classList.add("open"));
+    focusWin(ex.win);
+    return;
+  }
+  const win = el("div", "fwin note-window");
+  const bar = el("div", "fwin-bar");
+  const close = el("button", "fwin-close");
+  close.title = "Close window";
+  bar.appendChild(close);
+  bar.appendChild(el("div", "fwin-title", noteName(path, title)));
+  const body = el("div", "fwin-body");
+  const scroll = el("div", "note-body");
+  body.appendChild(scroll);
+  win.appendChild(bar);
+  win.appendChild(body);
+  addZoomControls(bar, () => scroll, 1);
+  win.addEventListener("pointerdown", () => focusWin(win));
+  makeDraggable(win, bar);
+  makeResizable(win, null, 320, 240);
+  document.body.appendChild(win);
+  const w = Math.min(520, innerWidth - 48);
+  const h = Math.min(560, innerHeight - 140);
+  const n = noteCascade++ % 7;
+  win.style.width = w + "px";
+  win.style.height = h + "px";
+  win.style.left = Math.max(12, Math.round(innerWidth * 0.34) + n * 34) + "px";
+  win.style.top = (70 + n * 30) + "px";
+  win.style.display = "flex";
+  requestAnimationFrame(() => win.classList.add("open"));
+  focusWin(win);
+  noteWindows[path] = { win };
+  close.addEventListener("click", () => {
+    win.classList.remove("open");
+    setTimeout(() => win.remove(), 220);
+    delete noteWindows[path];
+  });
+  fillNote(scroll, path, spawnNoteRef);
+}
+
+// Promote the peek to a window — the "keep" control, for a glance that
+// turns out to matter.
+function keepNote(path, title) {
+  if (!path) return;
+  openNoteWindow(path, title);
+}
+
 async function openNote(path, title) {
   const panel = $("#note-panel");
   panel.classList.add("open");
   enterFocus(panel, () => panel.classList.remove("open"));
-  $("#note-title").textContent = title || path.split("/").pop()
-    .replace(/\.md$/, "");
+  panel.dataset.notePath = path;
+  panel.dataset.noteTitle = title || "";
+  const keep = $("#note-keep");
+  if (keep) keep.style.display = isDesktop ? "" : "none";
+  $("#note-title").textContent = noteName(path, title);
   const body = $("#note-body");
-  body.innerHTML = "";
-  body.appendChild(el("div", "spin", "Loading note…"));
-  try {
-    const n = await api("/api/vault/note?path=" + encodeURIComponent(path));
-    body.innerHTML = mdToHtml(n.text);
-    body.querySelectorAll(".note-link").forEach((a) =>
-      a.addEventListener("click", () => openNoteByRef(a.dataset.ref)));
-  } catch (e) {
-    body.innerHTML = "";
-    body.appendChild(el("div", "empty left", "Note unavailable: " + e.message));
-  }
-}
-
-async function openNoteByRef(ref) {
-  try {
-    const { hits } = await api("/api/vault/search?q="
-      + encodeURIComponent(ref) + "&limit=1");
-    if (hits.length) openNote(hits[0].path, hits[0].title);
-    else toast("No note found for " + ref);
-  } catch { toast("Note lookup failed"); }
+  await fillNote(body, path, spawnNoteRef);
 }
 
 // ----- Plans: Plan-mode output saved to the vault, reopenable in-app -----
@@ -9233,6 +9360,12 @@ async function openPlan(id) {
   const panel = $("#note-panel");
   panel.classList.add("open");
   enterFocus(panel, () => panel.classList.remove("open"));
+  // a plan is not a vault note, so it carries no path to promote — clearing
+  // is what stops a wikilink here from keeping the PREVIOUS note's peek
+  panel.dataset.notePath = "";
+  panel.dataset.noteTitle = "";
+  const keepBtn = $("#note-keep");
+  if (keepBtn) keepBtn.style.display = "none";
   $("#note-title").textContent = "Plan";
   const body = $("#note-body");
   body.innerHTML = "";
@@ -9252,7 +9385,7 @@ async function openPlan(id) {
       : mdToHtml(p.markdown);
     body.appendChild(md);
     md.querySelectorAll(".note-link").forEach((a) =>
-      a.addEventListener("click", () => openNoteByRef(a.dataset.ref)));
+      a.addEventListener("click", () => spawnNoteRef(a.dataset.ref)));
   } catch (e) {
     body.innerHTML = "";
     body.appendChild(el("div", "empty left", "Plan unavailable: " + e.message));
@@ -9568,6 +9701,14 @@ function evStartSweepPoll() {
 // ----- Brain: grounded chat over the vault -----
 
 $("#note-back")?.addEventListener("click", closeNote);
+// keep: promote this glance to its own window, so it survives the next click
+$("#note-keep")?.addEventListener("click", () => {
+  const panel = $("#note-panel");
+  const path = panel?.dataset.notePath;
+  if (!path) return;
+  keepNote(path, panel.dataset.noteTitle);
+  closeNote();
+});
 
 // ----- Radar: who to talk to + who to put in a room together -----
 
@@ -11245,8 +11386,18 @@ function showContextMenu(x, y, items) {
   const menu = el("div", "ctx-menu");
   items.filter(Boolean).forEach((it) => {
     if (it.sep) { menu.appendChild(el("div", "ctx-sep")); return; }
-    if (it.head) { menu.appendChild(el("div", "ctx-head", it.head)); return; }
+    if (it.head) {
+      const h = el("div", "ctx-head", it.head);
+      // a head may name the exact thing under the cursor beneath the
+      // component, so the menu can be read without looking back at the card
+      if (it.sub) h.appendChild(el("span", "ctx-sub", it.sub));
+      menu.appendChild(h);
+      return;
+    }
+    // an informational row: states a fact, does nothing, never looks clickable
+    if (it.dim) { menu.appendChild(el("div", "ctx-item off", it.label)); return; }
     const b = el("button", "ctx-item", it.label);
+    if (it.hint) b.appendChild(el("span", "ctx-hint", it.hint));
     if (it.onContext) b.classList.add("has-sub");
     b.addEventListener("click", () => { menu.remove(); it.run(); });
     if (it.onContext) b.addEventListener("contextmenu", (e) => {
@@ -11315,7 +11466,8 @@ function bindMediaOpen(node, url) {
 const WIN_TITLES = Object.fromEntries(WINDOWS.map((w) => [w.id, w.title]));
 
 function ctxDescribe(target) {
-  const ctx = { component: "Vira", person: null, snippet: "", target: null };
+  const ctx = { component: "Vira", person: null, snippet: "", target: null,
+                item: null };
   const sel = String(window.getSelection() || "").trim().replace(/\s+/g, " ");
   const pp = target.closest("#person-panel");
   const fwin = target.closest(".fwin");
@@ -11342,6 +11494,17 @@ function ctxDescribe(target) {
   } else if (target.closest("#group-panel")) {
     const gp = target.closest("#group-panel");
     ctx.component = gp.dataset.gname ? "Group: " + gp.dataset.gname : "Group";
+  } else if (target.closest(".rm-item")?.dataset.itemId) {
+    // A reading-room card is the most specific thing under the cursor and
+    // it carries everything the menu needs: a source URL, a vault path, a
+    // done-mark. Naming the ROOM (not "Reader") follows the same convention
+    // as "Profile: <name>" — the component is the subject, not the frame.
+    const it = rmItemById(target.closest(".rm-item").dataset.itemId);
+    if (it) {
+      ctx.item = it;
+      ctx.component = "Reader: " + (rmRoom?.title || "room");
+      ctx.target = { menu: "this item", note: "Reading item", text: it.title };
+    }
   } else if (target.closest("#viewer-panel")) {
     ctx.component = "Media viewer";
   } else if (target.closest("#job-panel")) {
@@ -11450,6 +11613,13 @@ function ctxAskVira(x, y, ctx) {
       ];
       if (ctx.person)
         lines.push("- Person: " + ctx.person.name + " (CRM id " + ctx.person.pid + ")");
+      // a reading item: hand over what identifies it, so the session can go
+      // read the thing rather than re-deriving which item was clicked
+      if (ctx.item) {
+        lines.push("- Reading item: " + ctx.item.title);
+        if (ctx.item.url) lines.push("- Source: " + ctx.item.url);
+        if (ctx.item.vault) lines.push("- Vault note: " + ctx.item.vault);
+      }
       if (ctx.snippet) lines.push("- Text at the click: \"" + ctx.snippet + "\"");
       lines.push(
         "",
@@ -11481,6 +11651,7 @@ document.addEventListener("contextmenu", (e) => {
     head: ctx.component
       + (ctx.person && !ctx.component.startsWith("Profile")
          ? " · " + ctx.person.name : ""),
+    sub: ctx.item ? ctx.item.title : "",
   }];
 
   // The DESKTOP itself (right-click on empty space): layout switching and
@@ -11519,9 +11690,16 @@ document.addEventListener("contextmenu", (e) => {
   // one OUT of a layout — remove it. A parked tile has no close button (the
   // whole surface is the grow gesture), and closing a grown card sends it
   // home, so without this a layout could be added to but never pruned.
+  // A CARD IS CONTENT; THE FRAME AROUND IT IS CHROME. Right-clicking a card
+  // used to hand back the window's layout menu — Send home / Remove from this
+  // layout — which says nothing about the thing under the cursor. Window
+  // management stays one right-click away on the title bar or any empty part
+  // of the window; it just no longer outranks the content. `ctx.target` is
+  // set only where ctxDescribe recognised something specific, so this is the
+  // general rule rather than a Reader special case.
   const fwin = t.closest(".fwin");
   const fid = fwin?.dataset.wid;
-  if (fid && (layoutMode === "stage" || editing) && fid !== "palette") {
+  if (fid && !ctx.target && (layoutMode === "stage" || editing) && fid !== "palette") {
     // while editing, "in the layout" simply means open — commitEdit captures
     // every open window and records the closed ones as closed
     const member = editing ? !!winState[fid]?.open : !!slotRects[fid];
@@ -11575,6 +11753,38 @@ document.addEventListener("contextmenu", (e) => {
     items.push({ sep: true });
   }
 
+  // A reading-room item: the source, the vault note, the done-mark. The two
+  // that matter lead, and where there is no vault note the row SAYS SO and
+  // hands over the query instead — a dead menu row is worse than an absent
+  // one, and a silent absence reads as a broken menu.
+  if (ctx.item) {
+    const it = ctx.item;
+    if (it.url) items.push({
+      label: "Open at " + hostLabel(it.url),
+      hint: "new tab",
+      run: () => window.open(it.url, "_blank", "noopener"),
+    });
+    if (it.vault) items.push({
+      label: "Open the vault note",
+      hint: "in Vira",
+      run: () => openNoteWindow(it.vault),
+    });
+    else {
+      items.push({ dim: true, label: "No vault note yet" });
+      items.push({ label: "Search the vault for this…", hint: "Find",
+                   run: () => openFindQuery(it.title, { tab: "notes" }) });
+    }
+    items.push({ sep: true });
+    items.push({ label: rmDone.has(it.id) ? "Mark as not done" : "Mark as done",
+                 run: () => rmToggleDone(it) });
+    if (it.url) items.push({
+      label: "Copy link",
+      run: () => copyText(it.url).then(() => toast("Link copied"),
+                                       () => alert("Copy failed")),
+    });
+    items.push({ sep: true });
+  }
+
   // hooks / open loops on the person page: jump straight into their editor
   const hookEdit = t.closest(".loop")?.querySelector(".hook-edit-btn");
   if (hookEdit) items.push({ label: "Edit this", run: () => hookEdit.click() });
@@ -11595,17 +11805,24 @@ document.addEventListener("contextmenu", (e) => {
     run: () => ctxIdeaComposer(e.clientX, e.clientY, ctx),
   });
   items.push({
+    // Ask stays PERSON-scoped where a person is in play (asking is
+    // investigation, not commenting on one card) — but a reading item is a
+    // thing you genuinely want researched, so it names itself.
     label: ctx.person
       ? "Ask Vira about " + ((ctx.person.name || "").split(" ")[0] || "them") + "…"
+      : ctx.item ? "Ask Vira about this item…"
       : "Ask Vira…",
     run: () => ctxAskVira(e.clientX, e.clientY, ctx),
   });
 
+  // NB: named selText, not copyText — a `const copyText` here would shadow
+  // the shared clipboard helper for the WHOLE handler block, putting it in
+  // the temporal dead zone for every item pushed above.
   const sel = String(window.getSelection() || "").trim();
-  const copyText = sel || ctx.snippet;
-  if (copyText) items.push({
+  const selText = sel || ctx.snippet;
+  if (selText) items.push({
     label: sel ? "Copy selection" : "Copy text",
-    run: () => navigator.clipboard.writeText(copyText).then(
+    run: () => copyText(selText).then(
       () => toast("Copied"), () => alert("Copy failed")),
   });
   showContextMenu(e.clientX, e.clientY, items);
@@ -14320,25 +14537,36 @@ function rmMatches(it) {
   return true;
 }
 
+// The done-mark, factored out of the check button so the right-click menu
+// toggles it through the same optimistic-write-then-rollback path. Two
+// implementations of "mark this read" would be two chances to drift.
+async function rmToggleDone(it) {
+  const now = !rmDone.has(it.id);
+  now ? rmDone.add(it.id) : rmDone.delete(it.id);   // optimistic
+  rmRender();
+  try {
+    await post("/api/reading/" + rmRoom.slug + "/done", { id: it.id, done: now });
+  } catch {
+    now ? rmDone.delete(it.id) : rmDone.add(it.id);
+    rmRender();
+    toast("Couldn't save that mark");
+  }
+}
+
+// The item under the cursor, for ctxDescribe. Rows carry their id rather
+// than the record, so a repaint can never hand the menu a stale object.
+function rmItemById(id) {
+  return (rmRoom?.items || []).find((x) => x.id === id) || null;
+}
+
 function rmRow(it) {
   const row = el("div", "rm-item" + (rmDone.has(it.id) ? " done" : ""));
+  row.dataset.itemId = it.id;
   const check = el("button", "rm-check");
   check.title = "Mark done";
   check.setAttribute("aria-label", "Mark done");
   check.dataset.exp = "check";
-  check.addEventListener("click", async () => {
-    const now = !rmDone.has(it.id);
-    now ? rmDone.add(it.id) : rmDone.delete(it.id);   // optimistic
-    rmRender();
-    try {
-      await post("/api/reading/" + rmRoom.slug + "/done",
-                 { id: it.id, done: now });
-    } catch {
-      now ? rmDone.delete(it.id) : rmDone.add(it.id);
-      rmRender();
-      toast("Couldn't save that mark");
-    }
-  });
+  check.addEventListener("click", () => rmToggleDone(it));
   row.appendChild(check);
 
   const body = el("div", "rm-body");
