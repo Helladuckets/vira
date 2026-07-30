@@ -28,6 +28,11 @@ android/**/build/
 android/.kotlin/
 
 # --- Environment / runtime ---
+# Branch worktrees (scripts/branch.sh start). They live inside the checkout so
+# they stay out of ~/workspace, where they read as projects. This entry is
+# load-bearing, not tidiness: without it `git status` on the live tree reports
+# every worktree as untracked and the merge preflight refuses every merge.
+.worktrees/
 # Branch-worktree test instances (scripts/branch.sh serve)
 .test-instance.*
 # no trailing slash: branch worktrees carry .venv as a SYMLINK to the live venv

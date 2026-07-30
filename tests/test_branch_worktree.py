@@ -1,13 +1,17 @@
 """branch.sh worktree resolution — finding a branch's worktree wherever it is.
 
-`start` creates worktrees at ../vira-<slug>, but the app's worktree toggle
-creates them under .claude/worktrees/<slug>. wt_dir used to hardcode the
-former, so serve/stop/discard died with "no worktree at ../vira-<slug>" on
-every worktree the script hadn't made itself — and discard, finding no
-directory to remove, fell through to a branch delete that git refuses while
-the branch is checked out somewhere.
+`start` creates worktrees at .worktrees/<slug>, the app's worktree toggle
+creates them under .claude/worktrees/<slug>, and everything made before
+2026-07-29 sits at ../vira-<slug>. wt_dir used to hardcode one layout, so
+serve/stop/discard died with "no worktree at ..." on every worktree the
+script hadn't made itself — and discard, finding no directory to remove,
+fell through to a branch delete that git refuses while the branch is checked
+out somewhere.
 
-These tests build real throwaway git repos with worktrees in both layouts.
+Asking git instead is what let the canonical path MOVE (out of ~/workspace,
+where a throwaway tree read as a sibling project) without touching any other
+command, and without stranding the worktrees already on disk. All three
+layouts are exercised below against real throwaway git repos.
 
 Run: .venv/bin/python -m unittest tests.test_branch_worktree
 """
@@ -68,7 +72,16 @@ class WorktreeResolution(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), str(wt))
 
-    def test_resolves_canonical_sibling_worktree(self):
+    def test_resolves_canonical_worktree(self):
+        wt = self.live / ".worktrees" / "feat"
+        self._add_worktree(wt, "feat")
+        r = run_in(self.live, 'wt_dir feat')
+        self.assertEqual(r.stdout.strip(), str(wt))
+
+    def test_resolves_legacy_sibling_worktree(self):
+        """Pre-2026-07-29 worktrees are siblings of the checkout. They are
+        just as real, and every command must keep working on them — the move
+        must not strand the ones already on disk."""
         wt = self.root / "vira-feat"
         self._add_worktree(wt, "feat")
         r = run_in(self.live, 'wt_dir feat')
@@ -76,9 +89,18 @@ class WorktreeResolution(unittest.TestCase):
 
     def test_unknown_slug_falls_back_to_canonical_path(self):
         # `start` needs a path to create, and merge/discard accept a branch
-        # whose worktree is already gone
+        # whose worktree is already gone. Inside the checkout, NOT beside it:
+        # a worktree is an implementation detail of a branch, not a project.
         r = run_in(self.live, 'wt_dir nope')
-        self.assertEqual(r.stdout.strip(), str(self.root / "vira-nope"))
+        self.assertEqual(r.stdout.strip(),
+                         str(self.live / ".worktrees" / "nope"))
+
+    def test_start_creates_the_worktree_inside_the_checkout(self):
+        """The whole point, through the real cmd_start."""
+        r = run_in(self.live, 'cmd_start feat')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.live / ".worktrees" / "feat").is_dir())
+        self.assertFalse((self.root / "vira-feat").exists())
 
     def test_discard_removes_a_harness_worktree_and_its_branch(self):
         wt = self.live / ".claude" / "worktrees" / "feat"
@@ -89,6 +111,60 @@ class WorktreeResolution(unittest.TestCase):
         branches = git("branch", "--format=%(refname:short)",
                        cwd=self.live).stdout.split()
         self.assertNotIn("claude/feat", branches)
+
+
+@posix_only
+class NestedWorktreesDoNotDirtyTheLiveTree(unittest.TestCase):
+    """The load-bearing consequence of moving worktrees inside the checkout.
+
+    git reports a nested worktree as an untracked directory. `cmd_merge`
+    preflights `git status --porcelain` on the live tree and refuses on any
+    output — so without `.worktrees/` in .gitignore, creating one worktree
+    would block EVERY subsequent merge. Pinned with the repo's real
+    .gitignore, so deleting that entry fails here rather than at the next
+    merge."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.live = self.root / "vira"
+        self.live.mkdir()
+        git("init", "-q", "-b", "main", ".", cwd=self.live)
+        real = Path(__file__).resolve().parents[1] / ".gitignore"
+        (self.live / ".gitignore").write_text(
+            real.read_text(encoding="utf-8"), encoding="utf-8")
+        git("add", ".gitignore", cwd=self.live)
+        git("-c", "user.email=t@t", "-c", "user.name=t",
+            "commit", "-q", "-m", "base", cwd=self.live)
+        (self.live / "CLAUDE.md").write_text("spec", encoding="utf-8")
+        (self.live / ".venv").mkdir()
+        (self.live / ".claude").mkdir()
+        (self.live / ".claude" / "launch.json").write_text("{}",
+                                                           encoding="utf-8")
+
+    def test_the_live_tree_stays_clean_after_start(self):
+        r = run_in(self.live, 'cmd_start feat')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.live / ".worktrees" / "feat").is_dir())
+        status = git("status", "--porcelain", cwd=self.live).stdout
+        self.assertEqual(status.strip(), "",
+                         "a nested worktree dirtied the live tree — merge "
+                         "would refuse; is .worktrees/ still in .gitignore?")
+
+    def test_a_data_clone_in_the_worktree_stays_clean_too(self):
+        """`serve` clones data/ into the worktree. Doubly ignored, and it has
+        to be: the merge preflight checks the worktree's status as well."""
+        run_in(self.live, 'cmd_start feat')
+        wt = self.live / ".worktrees" / "feat"
+        (wt / "data").mkdir()
+        (wt / "data" / "config.json").write_text("{}", encoding="utf-8")
+        (wt / ".test-instance.json").write_text('{"pid": 1, "port": 8378}',
+                                                encoding="utf-8")
+        self.assertEqual(
+            git("status", "--porcelain", cwd=wt).stdout.strip(), "")
+        self.assertEqual(
+            git("status", "--porcelain", cwd=self.live).stdout.strip(), "")
 
 
 @posix_only

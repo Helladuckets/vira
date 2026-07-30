@@ -19,6 +19,7 @@ This module is the deterministic half. It answers two questions:
 
   is_branch_first(root)  — does this repo run the worktree workflow at all?
   ensure(root, slug)     — give me a worktree for it, making one if needed.
+  tidy(...)              — and take it away again when it held nothing.
 
 and provides the backstop the runner's permission gate uses:
 
@@ -220,6 +221,103 @@ def ensure(root, slug):
         return made, True, "created"
     detail = ((out.stderr or "") + (out.stdout or "")).strip().splitlines()
     return None, False, (detail[-1] if detail else "branch.sh made no worktree")
+
+
+# ---------- cleanup ----------
+
+def _instance_alive(wt):
+    """True when `branch.sh serve` has a live test instance in this worktree.
+    Checked because discarding would KILL it — and a served instance is the
+    owner looking at the work, which is never something to clean up under
+    them."""
+    try:
+        import json
+        import os
+        p = Path(wt) / ".test-instance.json"
+        pid = int(json.loads(p.read_text(encoding="utf-8"))["pid"])
+        os.kill(pid, 0)
+        return True
+    except Exception:  # noqa: BLE001 — no file, bad json, or dead pid
+        return False
+
+
+def _git_out(cwd, *args):
+    """stdout of a git command, or None if it could not run."""
+    try:
+        out = subprocess.run(["git", "-C", str(cwd), *args],
+                             capture_output=True, text=True, timeout=30,
+                             check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (out.stdout or "") if out.returncode == 0 else None
+
+
+def tidy(live_root, wt, branch):
+    """Remove a finished session's worktree when it holds NOTHING.
+
+    A worktree per dispatch is correct — it is what keeps a session off the
+    live tree. A worktree per dispatch FOREVER is not: nothing removed them,
+    so they accumulated one per Implement click and the owner was left
+    deleting them by hand.
+
+    KEEPING is the default and every refusal is named, because the cost is
+    asymmetric: a stale empty directory is untidy, while removing a tree
+    holding the only copy of a session's work destroys it. The implement
+    prompt tells sessions NOT to commit, so uncommitted changes are the
+    normal shape of delivered work and the most important thing to protect.
+
+    Returns (removed, detail).
+    """
+    if not (live_root and wt and branch):
+        return False, "nothing to tidy"
+    if not str(branch).startswith("claude/"):
+        return False, f"not a session branch ({branch})"
+    slug = str(branch).split("/", 1)[1]
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        return False, f"slug is not branch.sh-legal ({slug})"
+    wt, live_root = Path(wt), Path(live_root)
+    try:
+        same = wt.resolve() == live_root.resolve()
+    except OSError:
+        same = False
+    if same:
+        return False, "refusing to remove the live checkout"
+    if not wt.is_dir():
+        return False, "already gone"
+    if not is_worktree(wt):
+        return False, "not a linked worktree"
+    if _instance_alive(wt):
+        return False, "a test instance is serving from it"
+    dirty = _git_out(wt, "status", "--porcelain")
+    if dirty is None:
+        return False, "could not read its git status"
+    if dirty.strip():
+        n = len(dirty.strip().splitlines())
+        return False, f"{n} uncommitted change(s) — keeping the work"
+    # Commits ahead of the branch's own merge-base, not of `main`: a branch
+    # forked while main was mid-history and never rebased would otherwise
+    # read as behind-and-empty when it actually carries work.
+    ahead = _git_out(live_root, "rev-list", "--count", f"main..{branch}")
+    if ahead is None:
+        return False, "could not count its commits"
+    if (ahead.strip() or "0") != "0":
+        return False, f"{ahead.strip()} commit(s) on {branch} — keeping them"
+    script = live_root / "scripts" / "branch.sh"
+    if not script.is_file():
+        return False, "no scripts/branch.sh"
+    # branch.sh owns teardown: it stops any instance, removes the gitignored
+    # data clone that blocks `worktree remove`, and deletes the branch. Doing
+    # it here by hand would be a second implementation of the same thing.
+    try:
+        out = subprocess.run([str(script), "discard", slug],
+                             cwd=str(live_root), capture_output=True,
+                             text=True, timeout=TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"branch.sh discard failed: {e}"
+    if wt.is_dir():
+        tail = ((out.stderr or "") + (out.stdout or "")).strip().splitlines()
+        return False, (tail[-1] if tail else "branch.sh discard left it behind")
+    return True, f"removed the empty worktree and {branch}"
 
 
 # ---------- the backstop ----------

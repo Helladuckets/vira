@@ -3,7 +3,7 @@
 # The live instance (launchd, port 8377) only ever changes at a merge.
 # See CLAUDE.md, section "Parallel feature branches".
 #
-#   branch.sh start <slug>     new branch claude/<slug> + worktree ../vira-<slug>
+#   branch.sh start <slug>     new branch claude/<slug> + worktree .worktrees/<slug>
 #   branch.sh adopt [slug]     provision a worktree this script didn't create
 #   branch.sh serve <slug>     test instance: cloned data, passive, port 8378+
 #   branch.sh serve <slug> --fresh   re-clone data before serving
@@ -19,7 +19,19 @@ set -eu
 GIT_COMMON=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
   echo "error: run from inside a vira checkout" >&2; exit 1; }
 LIVE=${GIT_COMMON:h}
-WORKSPACE=${LIVE:h}
+# Worktrees live INSIDE the live checkout, gitignored. They used to be siblings
+# of it (../vira-<slug>), which put a throwaway tree for "fix a visual bug" at
+# the same level in ~/workspace as the projects themselves — vira, crm, qocha.
+# One dispatch per folder, never cleaned up, and by 2026-07-29 six of them had
+# piled up in an afternoon. A worktree is an implementation detail of a branch,
+# not a project, so it belongs under the project it branches from.
+#
+# Safe because the guard already expects it: worktree.violates() tests the
+# worktree BEFORE the live root precisely so a nested one is not mistaken for
+# a write into live (that is where the app's own worktree toggle has always
+# put them, .claude/worktrees/<slug>). .worktrees/ must stay in .gitignore or
+# every merge preflight would read the live tree as dirty.
+WT_HOME=$LIVE/.worktrees
 PORT_MIN=8378
 PORT_MAX=8399
 PIDFILE=.test-instance.json
@@ -33,18 +45,21 @@ slug_check() {
 }
 
 # The worktree holding claude/<slug>, WHEREVER it lives — asked of git rather
-# than assumed. `start` puts worktrees at ../vira-<slug>, but a worktree made
-# by something else (the app's worktree toggle creates them under
-# .claude/worktrees/<slug>) is just as real, and serve/stop/discard used to
-# fail on it with "no worktree at ../vira-<slug>". Falls back to the canonical
-# path, which is what `start` creates and what `merge`/`discard` accept for a
-# branch whose worktree is already gone.
+# than assumed. `start` puts worktrees at $WT_HOME/<slug>, but a worktree made
+# by something else is just as real: the app's worktree toggle creates them
+# under .claude/worktrees/<slug>, and every worktree made before 2026-07-29
+# sits at ../vira-<slug>. serve/stop/merge/discard used to fail on those with
+# "no worktree at ...". Because git is the authority here, moving where NEW
+# worktrees go needed no change to any other command, and the ones already on
+# disk keep working exactly as they did. Falls back to the canonical path,
+# which is what `start` creates and what `merge`/`discard` accept for a branch
+# whose worktree is already gone.
 wt_dir() {
   local d
   d=$(git -C "$LIVE" worktree list --porcelain |
       awk -v b="branch refs/heads/claude/$1" \
           '/^worktree /{wt=substr($0,10)} $0==b{print wt; exit}')
-  if [[ -n "$d" ]]; then echo "$d"; else echo "$WORKSPACE/vira-$1"; fi
+  if [[ -n "$d" ]]; then echo "$d"; else echo "$WT_HOME/$1"; fi
 }
 
 # Provision the gitignored pieces a session needs, whoever made the worktree:
@@ -88,6 +103,7 @@ cmd_start() {
   slug_check "$1"
   local dir; dir=$(wt_dir "$1")
   [[ -e "$dir" ]] && { echo "error: $dir already exists" >&2; exit 1; }
+  mkdir -p "${dir:h}"
   git -C "$LIVE" worktree add -b "claude/$1" "$dir" main
   provision "$dir"
   record_base "$1"
