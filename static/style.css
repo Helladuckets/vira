@@ -4547,6 +4547,36 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 .tour-body { margin: 0 0 14px; font-size: 13px; line-height: 1.5; color: var(--ink-dim); }
 .tour-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--ink-dim); }
 .tour-note.warn { color: var(--red); }
+/* An anchored beat points at a control: a caret aimed at that control's
+   centre (--arrow-x, set by positionTour) and a ring on the control itself.
+   Two borders, offset by one, so the caret reads as part of the card edge. */
+.tour-anchored::before,
+.tour-anchored::after {
+  content: "";
+  position: absolute;
+  left: var(--arrow-x, 50%);
+  margin-left: -8px;
+  border: 8px solid transparent;
+}
+.tour-anchored::before { top: -16px; border-bottom-color: var(--line-warm-bright); }
+.tour-anchored::after { top: -15px; border-bottom-color: var(--bg-raised); }
+.tour-anchored.tour-above::before,
+.tour-anchored.tour-above::after { top: auto; }
+.tour-anchored.tour-above::before {
+  bottom: -16px;
+  border-bottom-color: transparent;
+  border-top-color: var(--line-warm-bright);
+}
+.tour-anchored.tour-above::after {
+  bottom: -15px;
+  border-bottom-color: transparent;
+  border-top-color: var(--bg-raised);
+}
+.tour-target {
+  outline: 1px solid var(--accent);
+  outline-offset: 4px;
+  border-radius: var(--radius);
+}
 .tour-row { display: flex; gap: 8px; justify-content: flex-end; }
 /* The closing beat carries three buttons, which will not sit on one line in
    a 360px card — wrap rather than squeeze them past legibility. */
