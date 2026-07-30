@@ -8955,7 +8955,45 @@ function paintTour() {
       + "machine."));
   }
   document.body.appendChild(card);
+  positionTour();
+  // .fwin-move animates left/top/width/height for ~380ms, so a rect measured
+  // now is a FRAME of that animation — the same trap winRect exists for. The
+  // card would centre on where Work was, not where it is going. Re-place once
+  // the move has settled; cheap, and it also catches a tab switch that
+  // resizes the pane under it.
+  clearTimeout(paintTour._settle);
+  paintTour._settle = setTimeout(positionTour, 440);
 }
+
+// The card rides the Work window rather than a screen corner: the tour is
+// ABOUT that card, and a caption parked in the bottom-right corner makes the
+// eye hunt for what it refers to. Centred horizontally on Work and anchored
+// near its foot, so the tabs it is naming stay visible above it.
+function positionTour() {
+  const card = tourCard();
+  const win = winState?.work?.el;
+  if (!card) return;
+  if (!win) {                       // no Work window (shouldn't happen) — centre on screen
+    card.style.left = "50%";
+    card.style.transform = "translateX(-50%)";
+    card.style.bottom = "92px";
+    return;
+  }
+  const r = win.getBoundingClientRect();
+  const w = card.offsetWidth || 360;
+  const h = card.offsetHeight || 220;
+  let left = r.left + (r.width - w) / 2;
+  let top = r.bottom - h - 24;
+  // Keep it on screen whatever the viewport does to the arrangement.
+  left = Math.max(12, Math.min(left, innerWidth - w - 12));
+  top = Math.max(12, Math.min(top, innerHeight - h - 12));
+  card.style.left = `${Math.round(left)}px`;
+  card.style.top = `${Math.round(top)}px`;
+  card.style.right = "auto";
+  card.style.bottom = "auto";
+  card.style.transform = "none";
+}
+addEventListener("resize", () => { if (tourCard()) positionTour(); });
 
 // A real OS folder panel — navigate, select, Open. Never "copy the path".
 // The server opens it (server/pickfolder.py) because Vira is local, and the
@@ -9037,6 +9075,17 @@ function sceneGates(flow) {
   };
 }
 
+// Dress every module the current step flow says is not usable yet. Shared by
+// the first paint (the perimeter behind the welcome) and the reveal, so the
+// two can never disagree about which tiles are grey.
+function applySceneGates() {
+  const gates = sceneGates(frFlow);
+  Object.entries(gates).forEach(([id, g]) => {
+    if (!winState?.[id]?.open) return;
+    if (g) gateWindow(id, g); else ungateWindow(id);
+  });
+}
+
 function aiReveal() {
   const fr = $("#firstrun");
   frMarkDone();
@@ -9053,25 +9102,22 @@ function aiReveal() {
     fr.classList.remove("fr-reveal");
     document.body.classList.remove("fr-open");
   }, REDUCED_MOTION ? 0 : 950);
-  // Gated modules first (they sit behind the lifting blur already dressed),
-  // live ones last so they land on top of the stack.
-  const gates = sceneGates(frFlow);
-  const scene = ["feed", "people", "brief", "work", "reader", "applications"];
-  let delay = REDUCED_MOTION ? 0 : 380;
-  scene.forEach((id) => {
-    if (!winState[id]) return;
-    const show = () => {
-      if (gates[id]) gateWindow(id, gates[id]);
-      else ungateWindow(id);
-      openWindow(id);
-    };
-    if (REDUCED_MOTION) show();
-    else { setTimeout(show, delay); delay += 190; }
-  });
-  // …then the tour, once the desk has settled. Work is the one module that
-  // runs on the AI alone, so it is what a freshly connected Vira should be
-  // showing — not six windows, half of them gated.
-  setTimeout(startWorkTour, REDUCED_MOTION ? 0 : delay + 260);
+  // The desk is ALREADY arranged — the perimeter has been sitting behind the
+  // scrim since first paint. So the reveal is not six windows popping open in
+  // sequence any more; it is the blur lifting off a finished arrangement, the
+  // gates re-derived (connecting an AI can unlock a module), and Work growing
+  // into the middle. One card in the centre is what the eye should land on,
+  // rather than a scatter with the important one somewhere in it.
+  applySceneGates();
+  const grow = () => {
+    growTile?.("work");
+    // Let the grow land before the caption arrives — a card that appears
+    // mid-flight and then slides is the app looking unsettled at the exact
+    // moment it is meant to look finished.
+    setTimeout(startWorkTour, REDUCED_MOTION ? 0 : 460);
+  };
+  if (REDUCED_MOTION) grow();
+  else setTimeout(grow, 900);
 }
 
 // Dress a window as gated: content muted and inert (title bar stays live —
@@ -15127,6 +15173,34 @@ function persistSavedLayouts(list) {
 }
 function newLayoutId() { return "ly_" + Math.random().toString(36).slice(2, 10); }
 
+// ---------- the shipped default arrangement ----------
+// Every install starts on the owner's Base Perimeter stage: modules parked
+// around the edges, one grown in the middle. Before this a fresh desktop was
+// freeform with nothing on it, so the first thing a stranger saw after
+// connecting was a scatter of windows in whatever order they opened.
+//
+// It ships as tracked DATA (static/layouts/base-perimeter.json) rather than a
+// literal in here, so re-cutting the default is re-exporting a layout — the
+// same reason skins are files. The layout engine already scales an
+// arrangement to the viewport it lands on, so one export serves every screen.
+const DEFAULT_LAYOUT_URL = "/layouts/base-perimeter.json";
+let defaultLayoutSeeded = false;
+
+async function seedDefaultLayout() {
+  // Only ever on a VIRGIN desktop. An owner who has saved even one layout has
+  // an arrangement of their own, and seeding over it would be the app
+  // rearranging a screen it does not own.
+  if (savedLayouts().length) return null;
+  let l;
+  try {
+    l = await (await fetch(DEFAULT_LAYOUT_URL, { cache: "no-store" })).json();
+  } catch { return null; }
+  if (!l || !l.id || !l.wins) return null;
+  persistSavedLayouts([l]);
+  defaultLayoutSeeded = true;
+  return l;
+}
+
 // A layout saved before the stage flag existed came out of the perimeter/tune
 // flow, so click-to-grow is what it was always meant to do — treat a missing
 // flag as stage. The toggle in edit mode turns any layout into plain placement.
@@ -16435,7 +16509,18 @@ async function boot() {
   // first. Two fetches is the same pre-paint cost the two lines above
   // already pay, and it buys a first sight that is the finished product.
   await maybeFirstrun();
+  // Fetched before the desk builds so applying it costs no second paint;
+  // applied after, because it needs the windows initDesktop creates.
+  const seeded = isDesktop ? await seedDefaultLayout() : null;
   if (isDesktop) initDesktop();
+  if (seeded) {
+    // The arrangement IS the backdrop the welcome sits over — a complete,
+    // deliberate perimeter with the data-dependent modules greyed, rather
+    // than the blank desk (or the random scatter before it). Modules that
+    // cannot work yet say so in place instead of being absent.
+    applySavedLayout(seeded.id, false);
+    if (frGated) applySceneGates();
+  }
   buildMobileDock();   // the phone's five-app access bar
   initReorg();         // long-press the grid or the bar to rearrange both
   // the brand (upper left) is the Launchpad button: floating window on
