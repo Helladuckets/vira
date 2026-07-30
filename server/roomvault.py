@@ -415,6 +415,23 @@ def ingest(slug, dry_run=False):
     }
 
 
+def sync(slug):
+    """Best-effort projection for a real entry point (the create_reading_room
+    tool, the update route). Returns the summary dict, or None when the
+    vault is unset, passive-blocked or unwritable — a room is never worth
+    losing over its projection.
+
+    This is deliberately NOT called from readingroom.build(). build() is a
+    pure store write, and a cross-boundary write hung off it fires for
+    every caller that never heard of a vault — including tests, which is
+    exactly how 11 fixture rooms landed in the live Obsidian vault on
+    2026-07-29. Entry points sync; store functions do not."""
+    try:
+        return ingest(slug)
+    except Exception:  # noqa: BLE001 — see above
+        return None
+
+
 def ingest_all(dry_run=False):
     return [ingest(r["slug"], dry_run=dry_run) for r in readingroom.list_rooms()]
 

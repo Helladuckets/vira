@@ -356,18 +356,6 @@ def _ping_additions(slug, title, new_titles):
         pass
 
 
-def _sync_vault(slug):
-    """Project the room into the vault after every build, so "everything
-    in the room is in the vault" stays true instead of being true once.
-    Best-effort and late: the room is already written, and a vault that is
-    disconnected, passive-blocked or missing is never worth a lost room."""
-    try:
-        from . import roomvault
-        return roomvault.ingest(slug)
-    except Exception:  # noqa: BLE001 — see above
-        return None
-
-
 def build(slug, title, subtitle, items, legacy_key=""):
     """Validate a proposed room and write THE STORE. Returns a summary dict.
 
@@ -409,7 +397,6 @@ def build(slug, title, subtitle, items, legacy_key=""):
 
     if prev and new_titles:
         _ping_additions(slug, title, new_titles)
-    _sync_vault(slug)
 
     by_mode = {}
     by_prio = {}

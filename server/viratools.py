@@ -699,7 +699,16 @@ def _create_reading_room_text(slug, title, subtitle, items_json):
         return f"error: {e}"
     except OSError as e:
         return f"error: could not write the room ({e})"
-    return readingroom.summary_line(res)
+    # Project into the vault HERE, not inside build(). build() is a pure
+    # store write; hanging a cross-boundary write off it means any caller
+    # that never heard of the vault — a test, a fixture, a future
+    # importer — writes to the owner's real Obsidian vault. That is not
+    # hypothetical: it put 11 fixture rooms in the live vault on
+    # 2026-07-29. The sync belongs to the real entry points.
+    from . import roomvault
+    synced = roomvault.sync(slug)
+    line = readingroom.summary_line(res)
+    return line + (f" {roomvault.summary_line(synced)}" if synced else "")
 
 
 async def _t_create_reading_room(args):
