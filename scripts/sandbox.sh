@@ -142,9 +142,11 @@ cmd_serve() {
   local demo_env=()
   [[ $demo == "--demo" ]] && demo_env=(VIRA_SANDBOX_DEMO=1)
   cd "$APP"
+  # The demo var rides `env`, not a bare array expansion: zsh decides where
+  # the command word starts BEFORE expanding, so `${arr[@]}` in assignment
+  # position is run as a command ("command not found: VIRA_SANDBOX_DEMO=1").
   HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" VIRA_SANDBOX=1 \
-    ${demo_env[@]} \
-    nohup "$APP/.venv/bin/uvicorn" server.main:app \
+    nohup env ${demo_env[@]} "$APP/.venv/bin/uvicorn" server.main:app \
     --host 127.0.0.1 --port "$PORT" >> "$LOG" 2>&1 &
   pid=$!
   print -r -- "{\"pid\": $pid, \"port\": $PORT}" > "$PIDFILE"

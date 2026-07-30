@@ -8504,6 +8504,9 @@ async function frAct(btn, fn) {
 
 async function maybeFirstrun() {
   if (lsGet("vira-firstrun-done", false)) return;
+  // Latches VIRA_DEMO before any screen renders: the copy below must not
+  // claim a real sign-in that demo mode simulated.
+  await instanceConfig().catch(() => {});
   let flow;
   try { flow = await api("/api/onboard/steps"); } catch { return; }
   frFlow = flow;
@@ -8538,10 +8541,13 @@ function frAlready(pr) {
   if (!b) return;
   b.appendChild(el("div", "fr-kicker", "Connected"));
   b.appendChild(el("h1", "fr-title", "You're already set"));
-  b.appendChild(el("p", "fr-sub",
-    `This machine is signed in to ${pr.sub_name}, so Vira connected ` +
-    "itself — replies in your voice, dossiers, and the daily brief all " +
-    "run on your own account. Nothing to configure."));
+  b.appendChild(el("p", "fr-sub", VIRA_DEMO
+    ? `Demo mode — the connection to ${pr.sub_name} is simulated, so ` +
+      "nothing here is running on a real account. This is the screen a " +
+      "stranger sees when their machine is already signed in."
+    : `This machine is signed in to ${pr.sub_name}, so Vira connected ` +
+      "itself — replies in your voice, dossiers, and the daily brief all " +
+      "run on your own account. Nothing to configure."));
   const row = el("div", "fr-row");
   const go = el("button", "btn primary fr-big", "Take me to Vira");
   go.onclick = () => frFinish(pr);   // same splash + reveal as a fresh connect
