@@ -8888,49 +8888,93 @@ function frFinish(pr) {
 }
 
 // ---- the Work tour: what you can do with nothing but an AI -------------
-// The reveal used to open six modules and gate three of them, so the first
-// sight of a connected Vira was mostly locked doors. Work is what actually
-// runs on a model alone — add an idea, plan it, implement it — so the tour
-// drives Work's own tabs and ends on a choice: try it now, or connect the
-// folders that make it deeper. Skippable at every beat; a tour you cannot
-// leave is a wall.
+// Work is what actually runs on a model alone — add an idea, plan it,
+// implement it — so once the reveal has grown it, the tour is about that
+// window and nothing else.
+//
+// It used to be four caption cards that drove Work's own tabs. It is now a
+// FILM, played over the Work window at the window's own size: the same four
+// tabs in depth, plus the parts four captions had no room for — what a
+// proposal from Vira offers you, what a session's terminal actually looks
+// like, what the record keeps. It ends the way the cards did, on the same
+// closing choice, so nothing that hung off that card was lost with it.
+//
+// Skippable at any moment, by the film's own control or by Escape.
 
-const TOUR = [
-  { tab: "queue", title: "Queue",
-    body: "Everything you want Vira to do, in one list. Type an idea and it "
-        + "lands here — searchable, tagged, and grouped so a backlog stays "
-        + "readable at a few hundred items." },
-  { tab: "dispatch", title: "Dispatch",
-    body: "Hand a piece of work to an agent. Plan it read-only first, or "
-        + "send it straight to Implement and let it write the code. Every "
-        + "skill in your library shows up here as a card." },
-  { tab: "live", title: "Live",
-    body: "Sessions running right now, each in its own terminal. You can "
-        + "steer one mid-turn, answer a question it raises, or stop it — "
-        + "it is a conversation, not a job you launched and lost." },
-  { tab: "record", title: "Record",
-    body: "What has already shipped. Every run keeps its transcript, so you "
-        + "can reopen the session that built a thing months later and read "
-        + "exactly what happened." },
-];
-
-let tourStep = -1;
+let tourStep = -1;          // -1 idle, 0 film playing, 1 the closing card
 
 function tourCard() { return $("#tour"); }
+function tourFilm() { return $("#tour-film"); }
 
-// The tour runs against the REAL Work window, driving its real tabs — a
-// mock-up would drift from the app the first time a tab is renamed.
-function startWorkTour() {
+async function startWorkTour() {
   if (!isDesktop || !winState?.work) return;
   openWindow("work");
   focusWin(winState.work.el);
   tourStep = 0;
-  paintTour();
+  // The film's frames are the owner's own instance, anonymized, and are
+  // deliberately NOT committed to this repo — so a checkout that does not
+  // carry them must not open an empty box at the one moment it is trying to
+  // explain itself. Ask first; fall straight through to the closing card.
+  let there = false;
+  try {
+    there = (await fetch("/tour/", { method: "HEAD" })).ok;
+  } catch { /* offline or no route — same answer */ }
+  if (tourStep !== 0) return;              // skipped while we were asking
+  if (!there) { tourStep = 1; paintTour(); return; }
+  playTourFilm();
 }
+
+// The film is an overlay ON the Work window, matching its rect — the point
+// is that it is showing you THIS window, so it sits exactly where the window
+// is and hands the real thing back when it closes. A rect measured while
+// .fwin-move is still animating is a frame of that animation, so the overlay
+// re-fits once the move has settled and on every resize after.
+function playTourFilm() {
+  tourFilm()?.remove();
+  const host = el("div", "tour-film");
+  host.id = "tour-film";
+  const frame = document.createElement("iframe");
+  frame.src = "/tour/";
+  frame.title = "A tour of the Work window";
+  frame.setAttribute("scrolling", "no");
+  host.appendChild(frame);
+  document.body.appendChild(host);
+  fitTourFilm();
+  clearTimeout(playTourFilm._settle);
+  playTourFilm._settle = setTimeout(fitTourFilm, 440);
+  addEventListener("resize", fitTourFilm);
+}
+
+function fitTourFilm() {
+  const host = tourFilm();
+  const win = winState?.work?.el;
+  if (!host) return;
+  if (!win) {                       // no Work window — centre a sensible box
+    const w = Math.min(680, innerWidth - 48), h = Math.min(720, innerHeight - 90);
+    Object.assign(host.style, { left: `${(innerWidth - w) / 2}px`,
+      top: `${(innerHeight - h) / 2}px`, width: `${w}px`, height: `${h}px` });
+    return;
+  }
+  const r = win.getBoundingClientRect();
+  Object.assign(host.style, { left: `${Math.round(r.left)}px`,
+    top: `${Math.round(r.top)}px`, width: `${Math.round(r.width)}px`,
+    height: `${Math.round(r.height)}px` });
+}
+
+// The film tells us when it is over — whether it ran out or was skipped.
+addEventListener("message", (e) => {
+  if (!e.data || e.data.viraTour !== "done" || tourStep !== 0) return;
+  tourFilm()?.remove();
+  removeEventListener("resize", fitTourFilm);
+  tourStep = 1;
+  paintTour();          // the closing card, with the three ways on
+});
 
 function endTour({ focusAdd } = {}) {
   tourStep = -1;
   tourCard()?.remove();
+  tourFilm()?.remove();
+  removeEventListener("resize", fitTourFilm);
   document.body.classList.remove("tour-open");
   if (focusAdd) {
     // "Give it a try" has to land ON the thing it invited — the cursor in
@@ -8943,38 +8987,23 @@ function endTour({ focusAdd } = {}) {
   }
 }
 
+// The one card that outlives the film: what to do now. It used to be the
+// fifth screen of a five-screen tour; it is now the only card, shown once
+// the film has finished or been skipped.
 function paintTour() {
   document.body.classList.add("tour-open");
   tourCard()?.remove();
-  const last = tourStep >= TOUR.length;
   const card = el("div", "tour-card");
   card.id = "tour";
 
   const head = el("div", "tour-head");
-  head.appendChild(el("span", "tour-kicker",
-    last ? "That's the loop" : `${tourStep + 1} of ${TOUR.length}`));
-  const skip = el("button", "tour-skip", last ? "Close" : "Skip");
+  head.appendChild(el("span", "tour-kicker", "That's the loop"));
+  const skip = el("button", "tour-skip", "Close");
   skip.onclick = () => endTour();
   head.appendChild(skip);
   card.appendChild(head);
 
-  if (!last) {
-    const beat = TOUR[tourStep];
-    setWorkTab(beat.tab);              // the tour drives the real tab
-    card.appendChild(el("h3", "tour-title", beat.title));
-    card.appendChild(el("p", "tour-body", beat.body));
-    const row = el("div", "tour-row");
-    if (tourStep > 0) {
-      const back = el("button", "btn", "Back");
-      back.onclick = () => { tourStep--; paintTour(); };
-      row.appendChild(back);
-    }
-    const next = el("button", "btn primary",
-      tourStep === TOUR.length - 1 ? "Finish" : "Next");
-    next.onclick = () => { tourStep++; paintTour(); };
-    row.appendChild(next);
-    card.appendChild(row);
-  } else {
+  {
     setWorkTab("queue");
     card.appendChild(el("h3", "tour-title", "Give it a try"));
     card.appendChild(el("p", "tour-body",
