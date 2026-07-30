@@ -15888,6 +15888,18 @@ function freeformRect(id, st) {
 // ring), `grows` is id → staged grown rect (omit for the cascade default).
 // activeLayout is set by the caller — a stage can be a saved layout or the
 // computed ring, and the "· current" marker names which.
+// A grown card must sit ABOVE the parked ring. growTile focuses the card it
+// grows, but re-arming a stage on RELOAD restores grownOrder without ever
+// going through growTile — so the centrepiece came back underneath whatever
+// tile happened to hold the top z, and a wide one painted straight over its
+// title bar and tabs. Called from BOTH enterStage and the end-of-boot
+// re-assert, because focusFirst and the late openers both raise after.
+function raiseGrown() {
+  grownOrder.forEach((id) => {
+    if (winState[id]?.open) focusWin(winState[id].el);
+  });
+}
+
 function enterStage(opts) {
   const o = opts || {};
   layoutMode = "stage";
@@ -15909,6 +15921,12 @@ function enterStage(opts) {
     Object.assign(growScroll, o.scrolls.grow || {});
   }
   applyStage(o.animate, stageComputed || !o.parks);
+  // A grown card must sit ABOVE the parked ring. growTile focuses the card it
+  // grows, but re-arming a stage on RELOAD restores grownOrder without ever
+  // going through growTile — so the centrepiece came back underneath whatever
+  // tile happened to hold the top z, and a wide one (Subscriptions) painted
+  // straight over its title bar and tabs.
+  raiseGrown();
   updateLayoutBtn();
   saveLayout();
 }
@@ -16569,7 +16587,7 @@ async function boot() {
   // Applications) were the stray boxes over the centre of a fresh install.
   // Cheap and idempotent: a window already parked is re-placed to the same
   // slot, and a genuine visitor still has no slot and stays free.
-  if (isDesktop && layoutMode === "stage") applyStage(false, false);
+  if (isDesktop && layoutMode === "stage") { applyStage(false, false); raiseGrown(); }
   firstRunLanding();
   renderPeopleSort();
   loadBrief().catch(() => {});
