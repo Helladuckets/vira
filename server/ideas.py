@@ -110,6 +110,52 @@ def add_project(name):
     return list_projects()
 
 
+# ---------- a project's folder on disk ----------
+# A project used to be a NAME and nothing else, while every dispatch asked
+# the owner to re-type a target repo into the run sheet. The two are the
+# same fact, so the project carries it: "connect a project" means point at
+# the folder, and Plan/Implement default their cwd to it.
+#
+# Stored as a SEPARATE map rather than turning `projects` into objects —
+# every reader of that list expects strings, and a shape change would be a
+# migration for no gain. A name with no entry is simply unconnected.
+
+def project_paths():
+    return dict(_load().get("project_paths") or {})
+
+
+def project_path(name):
+    return project_paths().get((name or "").strip(), "")
+
+
+def set_project_path(name, path):
+    """Point a project at a folder. Registers the project if it is new, so
+    connecting a folder is one act rather than two."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("empty project name")
+    path = (path or "").strip()
+    if path:
+        p = Path(path).expanduser()
+        # Refuse rather than store: a path that is not a directory yields a
+        # dispatch that dies at launch, and the error would surface far from
+        # the moment that caused it.
+        if not p.is_dir():
+            raise ValueError(f"not a folder: {path}")
+        path = str(p.resolve())
+    with _lock, locked(STORE):
+        s = _load()
+        _register_project(s, name)
+        paths = dict(s.get("project_paths") or {})
+        if path:
+            paths[name] = path
+        else:
+            paths.pop(name, None)     # empty clears the connection
+        s["project_paths"] = paths
+        _save(s)
+    return {"projects": list_projects(), "project_paths": project_paths()}
+
+
 def add(text, status="open", source="manual", note="", project=None):
     text = (text or "").strip()
     if not text:

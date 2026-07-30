@@ -3247,6 +3247,10 @@ async function openGroupChat(ref) {
 // /resume, edited here) + change log (every change per session) ----------
 let ideasCache = [];
 let projectsCache = [];
+// name -> folder on disk, for projects the owner has connected. This is what
+// makes "connect a project" mean something: a dispatch on that project runs
+// THERE instead of asking for a target repo it already knows.
+let projectPathsCache = {};
 let ideaSort = localStorage.getItem("vira-idea-sort") || "grouped";
 let ideaProject = localStorage.getItem("vira-idea-project") || "";  // "" = all
 let ideaAddProject = localStorage.getItem("vira-idea-add-project") || "";
@@ -3292,6 +3296,7 @@ async function loadIdeas() {
   const r = await api("/api/ideas");
   ideasCache = r.items || [];
   projectsCache = r.projects || [];
+  projectPathsCache = r.project_paths || {};
   ideaVocab = r.vocab || {};
   ideaTagStatus = r.tag_status || null;
   if (ideaTagStatus?.axes?.length)
@@ -4675,8 +4680,11 @@ function openIdeaRun(it, mode) {
   $("#idea-run-title").textContent =
     mode === "plan" ? "Plan this idea" : "Implement this idea";
   $("#idea-run-text").textContent = it.text;
-  $("#idea-run-cwd").value =
-    localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
+  // A connected project already answers "which folder?", so the idea's own
+  // project wins over the last-used value — otherwise the owner points at a
+  // folder during setup and is still asked for it on every dispatch.
+  $("#idea-run-cwd").value = projectPathsCache[it.project]
+    || localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
   // The model menu is built from the catalog, not a hand-list in the
   // markup — the same source Setup's defaults and circuit stages read.
   modelCatalog().then((cat) => fillModelSelect(
@@ -8836,7 +8844,180 @@ function frFinish(pr) {
   setTimeout(aiReveal, REDUCED_MOTION ? 300 : 1900);
 }
 
-// ---- the reveal: the desk comes alive ---------------------------------
+// ---- the Work tour: what you can do with nothing but an AI -------------
+// The reveal used to open six modules and gate three of them, so the first
+// sight of a connected Vira was mostly locked doors. Work is what actually
+// runs on a model alone — add an idea, plan it, implement it — so the tour
+// drives Work's own tabs and ends on a choice: try it now, or connect the
+// folders that make it deeper. Skippable at every beat; a tour you cannot
+// leave is a wall.
+
+const TOUR = [
+  { tab: "queue", title: "Queue",
+    body: "Everything you want Vira to do, in one list. Type an idea and it "
+        + "lands here — searchable, tagged, and grouped so a backlog stays "
+        + "readable at a few hundred items." },
+  { tab: "dispatch", title: "Dispatch",
+    body: "Hand a piece of work to an agent. Plan it read-only first, or "
+        + "send it straight to Implement and let it write the code. Every "
+        + "skill in your library shows up here as a card." },
+  { tab: "live", title: "Live",
+    body: "Sessions running right now, each in its own terminal. You can "
+        + "steer one mid-turn, answer a question it raises, or stop it — "
+        + "it is a conversation, not a job you launched and lost." },
+  { tab: "record", title: "Record",
+    body: "What has already shipped. Every run keeps its transcript, so you "
+        + "can reopen the session that built a thing months later and read "
+        + "exactly what happened." },
+];
+
+let tourStep = -1;
+
+function tourCard() { return $("#tour"); }
+
+// The tour runs against the REAL Work window, driving its real tabs — a
+// mock-up would drift from the app the first time a tab is renamed.
+function startWorkTour() {
+  if (!isDesktop || !winState?.work) return;
+  openWindow("work");
+  focusWin(winState.work.el);
+  tourStep = 0;
+  paintTour();
+}
+
+function endTour({ focusAdd } = {}) {
+  tourStep = -1;
+  tourCard()?.remove();
+  document.body.classList.remove("tour-open");
+  if (focusAdd) {
+    // "Give it a try" has to land ON the thing it invited — the cursor in
+    // the add box, not just the right tab showing.
+    setWorkTab("queue");
+    // #idea-input is the FIELD; #idea-add is the Add button beside it.
+    const box = $("#idea-input");
+    box?.focus();
+    box?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+
+function paintTour() {
+  document.body.classList.add("tour-open");
+  tourCard()?.remove();
+  const last = tourStep >= TOUR.length;
+  const card = el("div", "tour-card");
+  card.id = "tour";
+
+  const head = el("div", "tour-head");
+  head.appendChild(el("span", "tour-kicker",
+    last ? "That's the loop" : `${tourStep + 1} of ${TOUR.length}`));
+  const skip = el("button", "tour-skip", last ? "Close" : "Skip");
+  skip.onclick = () => endTour();
+  head.appendChild(skip);
+  card.appendChild(head);
+
+  if (!last) {
+    const beat = TOUR[tourStep];
+    setWorkTab(beat.tab);              // the tour drives the real tab
+    card.appendChild(el("h3", "tour-title", beat.title));
+    card.appendChild(el("p", "tour-body", beat.body));
+    const row = el("div", "tour-row");
+    if (tourStep > 0) {
+      const back = el("button", "btn", "Back");
+      back.onclick = () => { tourStep--; paintTour(); };
+      row.appendChild(back);
+    }
+    const next = el("button", "btn primary",
+      tourStep === TOUR.length - 1 ? "Finish" : "Next");
+    next.onclick = () => { tourStep++; paintTour(); };
+    row.appendChild(next);
+    card.appendChild(row);
+  } else {
+    setWorkTab("queue");
+    card.appendChild(el("h3", "tour-title", "Give it a try"));
+    card.appendChild(el("p", "tour-body",
+      "Type an idea in the Queue and hit Implement — that works right now, "
+      + "on the AI you just connected. Or point Vira at your own work first, "
+      + "so it plans against what you actually have."));
+    const row = el("div", "tour-row tour-row-wrap");
+    const go = el("button", "btn primary", "Give it a try");
+    go.onclick = () => endTour({ focusAdd: true });
+    row.appendChild(go);
+    const proj = el("button", "btn", "Connect a project…");
+    proj.onclick = () => tourConnect("project");
+    row.appendChild(proj);
+    const vault = el("button", "btn", "Connect your notes…");
+    vault.onclick = () => tourConnect("vault");
+    row.appendChild(vault);
+    card.appendChild(row);
+    card.appendChild(el("p", "tour-note",
+      "A project is a folder Vira writes code in. Your notes are a folder "
+      + "of markdown it can answer from, with citations. Both stay on this "
+      + "machine."));
+  }
+  document.body.appendChild(card);
+}
+
+// A real OS folder panel — navigate, select, Open. Never "copy the path".
+// The server opens it (server/pickfolder.py) because Vira is local, and the
+// browser APIs that open a panel refuse to hand back a filesystem path.
+//
+// `local` is decided HERE: only a browser on the same machine should make a
+// window appear on that machine's desktop. The phone over Tailscale gets the
+// text field instead, which is the honest answer rather than a panel opening
+// on a Mac nobody is looking at.
+function browserIsLocal() {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+}
+
+async function chooseFolder(prompt) {
+  return post("/api/pick-folder",
+              { prompt, local: browserIsLocal() }).catch(() => ({
+    unavailable: true, reason: "could not reach Vira to open a folder window",
+  }));
+}
+
+async function tourConnect(kind) {
+  const card = tourCard();
+  const row = card?.querySelector(".tour-row");
+  const busy = el("p", "tour-note", "Pick a folder in the window that just "
+                                    + "opened…");
+  row?.after(busy);
+  const r = await chooseFolder(kind === "vault"
+    ? "Choose the folder your notes live in"
+    : "Choose the folder for this project");
+  busy.remove();
+  if (r.cancelled) return;                       // a cancel is an answer
+  if (r.unavailable || !r.path) {
+    // No panel available (phone, demo, an unsupported platform) — say why
+    // and send them to the field that always works.
+    const p = el("p", "tour-note warn", (r.reason || "no folder window here")
+      + ". Open Config and type the path instead.");
+    row?.after(p);
+    return;
+  }
+  try {
+    if (kind === "vault") {
+      await api("/api/onboard/vault", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: r.path, init: false }),
+      });
+      toast("Notes connected — Vira can answer from them now");
+    } else {
+      // The folder's own name is the obvious project name, and re-typing it
+      // would be the second question this flow exists to remove.
+      const name = r.path.split("/").filter(Boolean).pop() || "Project";
+      await post("/api/ideas/projects/path", { name, path: r.path });
+      toast(`Project "${name}" connected`);
+      loadIdeas?.().catch(() => {});
+    }
+    endTour({ focusAdd: kind !== "vault" });
+  } catch (e) {
+    const p = el("p", "tour-note warn", e.message || "could not connect that "
+                                                     + "folder");
+    row?.after(p);
+  }
+}
+
 // The blur lifts and the modules that run on AI alone pop open live; the
 // ones that need this Mac's data sit in focus but muted gray, wearing a
 // watermark that names the ONE thing that wakes them (click-through to the
@@ -8887,6 +9068,10 @@ function aiReveal() {
     if (REDUCED_MOTION) show();
     else { setTimeout(show, delay); delay += 190; }
   });
+  // …then the tour, once the desk has settled. Work is the one module that
+  // runs on the AI alone, so it is what a freshly connected Vira should be
+  // showing — not six windows, half of them gated.
+  setTimeout(startWorkTour, REDUCED_MOTION ? 0 : delay + 260);
 }
 
 // Dress a window as gated: content muted and inert (title bar stays live —

@@ -46,7 +46,8 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
-               photos, plans, profilerefresh, radar, reconnect, textindex,
+               photos, pickfolder, plans, profilerefresh, radar, reconnect,
+               textindex,
                receipts,
                resolver,
                routines,
@@ -320,6 +321,7 @@ def api_ideas():
         items = ideas.list_items()
         return {"items": ideatags.annotate(items),
                 "projects": ideas.list_projects(),
+                "project_paths": ideas.project_paths(),
                 "vocab": ideatags.vocabulary(items),
                 "tag_status": ideatags.status(items)}
 
@@ -435,6 +437,19 @@ class ProjectAddReq(BaseModel):
 def api_ideas_add_project(req: ProjectAddReq):
     try:
         return {"projects": ideas.add_project(req.name)}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class ProjectPathReq(BaseModel):
+    name: str
+    path: str = ""      # empty clears the connection
+
+
+@app.post("/api/ideas/projects/path")
+def api_ideas_project_path(req: ProjectPathReq):
+    try:
+        return ideas.set_project_path(req.name, req.path)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -1860,6 +1875,22 @@ def api_onboard_fda_assist():
         raise HTTPException(403, str(e))
     except ValueError as e:        # off-Mac: the grant does not exist
         raise HTTPException(400, str(e))
+
+
+class PickFolderReq(BaseModel):
+    prompt: str = "Choose a folder"
+    # Whether the BROWSER is on this machine. The client decides (a hostname
+    # that is not localhost is the phone over Tailscale), because the server
+    # cannot tell a same-machine request from a tailnet one by address alone
+    # — and popping a panel on the wrong desk is the failure this avoids.
+    local: bool = True
+
+
+@app.post("/api/pick-folder")
+def api_pick_folder(req: PickFolderReq):
+    # Never raises — an unavailable picker is a normal answer the UI renders
+    # beside the text field it falls back to.
+    return pickfolder.pick(req.prompt, local=req.local)
 
 
 # ---------- the driven sign-in (no terminal) ----------

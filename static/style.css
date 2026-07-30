@@ -4304,3 +4304,55 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
     font-size: 16px !important;
   }
 }
+
+/* ---------- the Work tour (post-connect walkthrough) ---------- */
+/* Sits ABOVE floating windows (whose z climbs by one per focus, with no
+   ceiling) but BELOW the decision layer at 4100 — a permission card must
+   never end up behind a tour. */
+.tour-card {
+  position: fixed;
+  right: 28px;
+  bottom: 92px;
+  width: min(360px, calc(100vw - 56px));
+  z-index: 4050;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-warm-bright);
+  border-radius: var(--radius);
+  padding: 16px 18px 18px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+}
+.tour-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.tour-kicker {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.tour-skip {
+  background: none;
+  border: 0;
+  padding: 2px 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-dim);
+}
+.tour-skip:hover { color: var(--ink); }
+.tour-title { margin: 0 0 6px; font-size: 18px; }
+.tour-body { margin: 0 0 14px; font-size: 13px; line-height: 1.5; color: var(--ink-dim); }
+.tour-note { margin: 10px 0 0; font-size: 12px; line-height: 1.45; color: var(--ink-dim); }
+.tour-note.warn { color: var(--red); }
+.tour-row { display: flex; gap: 8px; justify-content: flex-end; }
+/* The closing beat carries three buttons, which will not sit on one line in
+   a 360px card — wrap rather than squeeze them past legibility. */
+.tour-row-wrap { flex-wrap: wrap; }
+.tour-row-wrap .btn { flex: 1 1 auto; }
+
+/* The tour is desktop-only: it drives floating windows, which do not exist
+   under the mobile breakpoint. */
+@media (max-width: 1099px) { .tour-card { display: none; } }
