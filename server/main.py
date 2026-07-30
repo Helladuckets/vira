@@ -52,6 +52,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                resolver,
                roomvault,
                routines,
+               routinesrc,
                search as msearch, send, sendpref, session, settings,
                genreroutes,
                skins,
@@ -2443,6 +2444,67 @@ def api_routines_run(rid: str):
         return routines.dispatch(r)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/routines/{rid}/hood")
+def api_routine_hood(rid: str):
+    r = routines.get_routine(rid)
+    if not r:
+        raise HTTPException(404, "unknown routine")
+    return routinesrc.hood(r)
+
+
+class HoodEditReq(BaseModel):
+    part: str
+    text: str
+
+
+@app.post("/api/routines/{rid}/hood")
+def api_routine_hood_edit(rid: str, req: HoodEditReq):
+    r = routines.get_routine(rid)
+    if not r:
+        raise HTTPException(404, "unknown routine")
+    try:
+        return routinesrc.apply_part(r, req.part, req.text)
+    except routinesrc.EditError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class HoodRevertReq(BaseModel):
+    module: str
+    to: str = "backup"        # backup | shipped
+
+
+@app.post("/api/routines/{rid}/hood/revert")
+def api_routine_hood_revert(rid: str, req: HoodRevertReq):
+    if not routines.get_routine(rid):
+        raise HTTPException(404, "unknown routine")
+    try:
+        if req.to == "shipped":
+            return routinesrc.restore_shipped(req.module)
+        return routinesrc.revert(req.module)
+    except routinesrc.EditError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/restart")
+def api_restart():
+    """Restart the server after a source edit. Refuses exactly where
+    update.apply() refuses — an unsupervised process that exits has
+    nothing to bring it back."""
+    if os.environ.get("VIRA_PASSIVE") or os.environ.get("VIRA_SANDBOX"):
+        raise HTTPException(403, "this instance does not restart itself")
+    kind, name = update.supervisor()
+    if not name:
+        raise HTTPException(
+            400, f"no supervisor configured ({kind}) — restart from a "
+                 "terminal instead")
+    threading.Thread(target=update._restart, daemon=True).start()
+    return {"restarting": True, "supervisor": name}
 
 
 @app.get("/api/radar")

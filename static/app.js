@@ -10736,12 +10736,19 @@ function cadenceLabel(r) {
   return "?";
 }
 
+// Which loops are expanded, and which panels inside them. Kept in memory:
+// an open hood is a reading position, not a preference worth persisting
+// across reloads.
+const hoodOpen = new Set();
+const hoodParts = new Map();     // "<routine>:<part>" -> open?
+
 async function loadRoutines() {
   const box = $("#routines-list");
   if (!box) return;
   const { routines: rows } = await api("/api/routines");
   box.innerHTML = "";
   rows.forEach((r) => {
+    const card = el("div", "routine-card");
     const row = el("div", "routine-row" + (r.enabled ? "" : " off"));
     const tog = el("input");
     tog.type = "checkbox";
@@ -10810,8 +10817,419 @@ async function loadRoutines() {
       acts.appendChild(rm);
     }
     row.appendChild(acts);
-    box.appendChild(row);
+    card.appendChild(row);
+    const hood = el("div", "hood");
+    card.appendChild(hood);
+    // Whole-card activation (the Vira-wide rule): the row opens the hood,
+    // its own controls are excluded by CARD_CONTROL_SEL.
+    cardAction(row, () => {
+      if (hoodOpen.has(r.id)) {
+        hoodOpen.delete(r.id);
+        hood.innerHTML = "";
+        card.classList.remove("open");
+      } else {
+        hoodOpen.add(r.id);
+        card.classList.add("open");
+        openHood(hood, r);
+      }
+    }, { hint: "Open the hood — what this loop does and how" });
+    if (hoodOpen.has(r.id)) {
+      card.classList.add("open");
+      openHood(hood, r);
+    }
+    box.appendChild(card);
   });
+}
+
+// ----- under the hood: what a loop is, and editing it -----
+
+// api() throws the raw response body; FastAPI wraps every refusal as
+// {"detail": "..."} and the sentence inside is what the owner needs to read.
+// Only a supervised instance can load a source change, so never promise a
+// restart on one that has nowhere to restart into.
+function restartLine(h) {
+  return h.writable.restart
+    ? "Vira has to restart before the change takes effect."
+    : "This instance has no supervisor, so it keeps running the code it "
+      + "started with either way.";
+}
+
+function errText(e) {
+  const raw = (e && e.message) || String(e);
+  try {
+    const j = JSON.parse(raw);
+    if (typeof j.detail === "string") return j.detail;
+  } catch (_) { /* not JSON — the body was already prose */ }
+  return raw;
+}
+
+async function openHood(host, r) {
+  host.innerHTML = "";
+  host.appendChild(el("div", "hood-load", "Opening the hood…"));
+  let h;
+  try {
+    h = await api(`/api/routines/${r.id}/hood`);
+  } catch (e) {
+    host.innerHTML = "";
+    host.appendChild(el("div", "hood-load", "Could not read this loop: "
+                                             + e.message));
+    return;
+  }
+  host.innerHTML = "";
+  const reload = () => openHood(host, r);
+
+  // 1. what it does — the owner's own sentence, editable in place
+  host.appendChild(el("div", "hood-kicker", "What it does"));
+  const desc = el("div", "hood-desc" + (h.description ? "" : " empty"),
+                  h.description || "No description yet — click to write one.");
+  desc.title = "Click to edit";
+  inlineEdit(desc, {
+    multiline: true,
+    placeholder: "What this loop is for, in your own words",
+    get: () => h.description || "",
+    set: async (v) => {
+      try {
+        await put(`/api/routines/${r.id}`, { description: v.trim() });
+        toast("Saved");
+        loadRoutines();
+      } catch (e) { alert("Save failed: " + e.message); }
+    },
+  });
+  host.appendChild(desc);
+
+  // 2. the facts — trigger, engine, blast radius
+  const facts = el("div", "hood-facts");
+  h.facts.forEach((f) => {
+    facts.appendChild(el("div", "hf-label", f.label));
+    facts.appendChild(el("div", "hf-val" + (f.tone ? " " + f.tone : ""),
+                         f.value));
+  });
+  host.appendChild(facts);
+  const settings = el("button", "brief-act hood-settings", "edit settings");
+  settings.title = "Name, cadence, notify — the same form as the edit button";
+  settings.addEventListener("click", (e) => {
+    e.stopPropagation();
+    routineForm(r);
+  });
+  host.appendChild(settings);
+
+  // 3. how it works
+  host.appendChild(el("div", "hood-kicker", "How it works"));
+  const steps = el("ol", "hood-steps");
+  h.steps.forEach((s) => {
+    const li = el("li");
+    li.appendChild(el("div", "hs-title", s.title));
+    li.appendChild(el("div", "hs-body", s.body));
+    steps.appendChild(li);
+  });
+  host.appendChild(steps);
+
+  // 4. under the hood — every piece, in full
+  host.appendChild(el("div", "hood-kicker", "Under the hood"));
+  // the note names WHICH checkout an edit lands in whenever that is not
+  // simply "live" — an edit that quietly went somewhere else would be
+  // worse than one that was refused
+  if (h.writable.reason)
+    host.appendChild(el("div", "hood-ro", h.writable.reason));
+  const own = h.parts.filter((p) => !p.shared);
+  const shared = h.parts.filter((p) => p.shared);
+  own.forEach((p) => host.appendChild(partPanel(h, p, r, reload, true)));
+  if (shared.length) {
+    host.appendChild(el("div", "hood-sub",
+      "Shared machinery — every loop runs through this"));
+    shared.forEach((p) => host.appendChild(partPanel(h, p, r, reload, false)));
+  }
+}
+
+function partPanel(h, p, r, reload, openByDefault) {
+  const key = r.id + ":" + p.id;
+  const box = el("div", "hpart" + (p.shared ? " shared" : ""));
+  const head = el("div", "hpart-head");
+  head.appendChild(el("span", "hpart-caret"));
+  head.appendChild(el("span", "hpart-title", p.title));
+  const kindTag = { code: "code", derived: "generated", field: "text",
+                    missing: "missing" }[p.kind] || p.kind;
+  head.appendChild(el("span", "hpart-tag " + p.kind, kindTag));
+  const where = p.path
+    ? `${p.path} · ${p.symbol} · ${p.lines} lines`
+    : `${p.lines} lines`;
+  head.appendChild(el("span", "hpart-where", where));
+  box.appendChild(head);
+
+  const body = el("div", "hpart-body");
+  box.appendChild(body);
+  const paint = () => {
+    body.innerHTML = "";
+    if (p.note) body.appendChild(el("div", "hpart-note", p.note));
+    if (p.kind === "missing") return;
+    body.appendChild(codeBlock(p.text, p.lang));
+    body.appendChild(partActions(h, p, r, reload, body, paint));
+  };
+  const setOpen = (on, remember) => {
+    box.classList.toggle("open", on);
+    if (remember) hoodParts.set(key, on);
+    if (on) { if (!body.childElementCount) paint(); }
+    else body.innerHTML = "";
+  };
+  head.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setOpen(!box.classList.contains("open"), true);
+  });
+  // undefined means the owner has not touched this panel yet, so the
+  // default stands; a deliberate collapse survives the next repaint
+  const saved = hoodParts.get(key);
+  setOpen(saved === undefined ? openByDefault : saved, false);
+  return box;
+}
+
+function partActions(h, p, r, reload, body, paint) {
+  const acts = el("div", "hpart-acts");
+  const copy = el("button", "brief-act", "copy");
+  copy.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await copyText(p.text);
+    toast("Copied");
+  });
+  acts.appendChild(copy);
+
+  if (p.editable && h.writable.ok) {
+    const edit = el("button", "brief-act" + (p.kind === "code" ? " warn" : ""),
+                    p.kind === "code" ? "edit code" : "edit");
+    edit.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (p.kind !== "code") { startPartEdit(h, p, r, reload, body, paint); return; }
+      confirmPopup({
+        x: e.clientX, y: e.clientY,
+        title: "Editing Vira's own code",
+        body: [
+          `This is real Python in ${p.path}. Getting it wrong can stop the `
+          + "loop working, or stop Vira starting.",
+          p.shared ? "It is SHARED machinery — every standing loop runs "
+                     + "through it, not just this one." : "",
+          "Two things are on your side: an edit that would not parse is "
+          + "refused before anything is written, and a snapshot of the file "
+          + "is taken first, so Revert can undo it.",
+          h.writable.restart
+            ? "Vira has to restart before the change takes effect — the "
+              + "button for that appears once you save."
+            : "This instance will not load the change: it has no supervisor "
+              + "to restart into. The edit is written to the file all the "
+              + "same.",
+        ].filter(Boolean),
+        cta: "I understand — edit it",
+        danger: true,
+        onConfirm: () => startPartEdit(h, p, r, reload, body, paint),
+      });
+    });
+    acts.appendChild(edit);
+  }
+
+  const st = p.module ? h.files[p.module] : null;
+  if (st && h.writable.ok && (st.backups.length || st.modified)) {
+    acts.appendChild(el("span", "hpart-gap"));
+    if (st.backups.length) {
+      const rv = el("button", "brief-act", "revert last edit");
+      rv.title = `Restore ${p.path} as it was before the most recent edit`;
+      rv.addEventListener("click", (e) => {
+        e.stopPropagation();
+        confirmPopup({
+          x: e.clientX, y: e.clientY,
+          title: "Revert the last edit",
+          body: [`${p.path} goes back to how it was before the most recent `
+                 + `edit (${st.backups.length} snapshot`
+                 + `${st.backups.length === 1 ? "" : "s"} on file).`,
+                 restartLine(h)],
+          cta: "Revert",
+          onConfirm: () => hoodRevert(r, p.module, "backup", reload),
+        });
+      });
+      acts.appendChild(rv);
+    }
+    if (st.modified) {
+      const sh = el("button", "brief-act", "restore shipped");
+      sh.title = `Throw away every local edit to ${p.path}`;
+      sh.addEventListener("click", (e) => {
+        e.stopPropagation();
+        confirmPopup({
+          x: e.clientX, y: e.clientY,
+          title: "Restore the shipped version",
+          body: [`Every local edit to ${p.path} is discarded and the file `
+                 + "goes back to the version Vira shipped with.",
+                 "A snapshot is still taken first, so this is undoable too.",
+                 restartLine(h)],
+          cta: "Restore shipped",
+          danger: true,
+          onConfirm: () => hoodRevert(r, p.module, "shipped", reload),
+        });
+      });
+      acts.appendChild(sh);
+    }
+  }
+  return acts;
+}
+
+function startPartEdit(h, p, r, reload, body, paint) {
+  body.innerHTML = "";
+  if (p.note) body.appendChild(el("div", "hpart-note", p.note));
+  const ta = el("textarea", "hpart-edit" + (p.kind === "code" ? " code" : ""));
+  ta.value = p.text;
+  ta.rows = Math.max(6, Math.min(34, p.lines + 2));
+  ta.spellcheck = false;
+  ta.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Escape") { e.preventDefault(); paint(); }
+    if (e.key === "Tab") {                 // a code box that eats Tab is worse
+      e.preventDefault();                  // than one that indents
+      const s = ta.selectionStart, t = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + "    " + ta.value.slice(t);
+      ta.selectionStart = ta.selectionEnd = s + 4;
+    }
+  });
+  body.appendChild(ta);
+  const err = el("div", "hpart-err");
+  err.style.display = "none";
+  body.appendChild(err);
+  const row = el("div", "hpart-acts");
+  const cancel = el("button", "brief-act", "cancel");
+  cancel.addEventListener("click", (e) => { e.stopPropagation(); paint(); });
+  const save = el("button", "brief-act primary", "save");
+  save.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    save.disabled = true;
+    err.style.display = "none";
+    try {
+      const res = await post(`/api/routines/${r.id}/hood`,
+                             { part: p.id, text: ta.value });
+      toast(res.changed === false ? "No change" : "Saved");
+      if (res.restart) restartStrip();
+      reload();
+      loadRoutines();
+    } catch (ex) {
+      // the refusal IS the instruction here, so it must read as prose —
+      // api() throws the raw response body, which is {"detail": "..."}
+      err.textContent = errText(ex);
+      err.style.display = "";
+      save.disabled = false;
+    }
+  });
+  row.appendChild(cancel);
+  row.appendChild(save);
+  if (p.kind === "code")
+    row.appendChild(el("span", "hpart-hint",
+      "Refused if it would not parse — nothing is written until it does."));
+  body.appendChild(row);
+  ta.focus();
+}
+
+async function hoodRevert(r, module, to, reload) {
+  try {
+    const res = await post(`/api/routines/${r.id}/hood/revert`,
+                           { module, to });
+    toast(res.changed === false ? "Already the shipped version" : "Reverted");
+    if (res.restart) restartStrip();
+    reload();
+  } catch (e) { alert("Revert failed: " + errText(e)); }
+}
+
+// A source edit only takes effect on restart, so say so where it happened
+// and offer the restart rather than leaving the owner to find a terminal.
+function restartStrip() {
+  let strip = $("#hood-restart");
+  if (strip) return;
+  strip = el("div", "hood-restart");
+  strip.id = "hood-restart";
+  strip.appendChild(el("span", null,
+    "Vira is still running the old code — restart to load the change."));
+  const go = el("button", "brief-act primary", "Restart Vira");
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    go.textContent = "Restarting…";
+    try {
+      await post("/api/restart", {});
+      setTimeout(() => location.reload(), 4000);
+    } catch (e) {
+      go.disabled = false;
+      go.textContent = "Restart Vira";
+      alert("Could not restart: " + errText(e)
+            + "\n\nRestart from a terminal instead.");
+    }
+  });
+  strip.appendChild(go);
+  const dismiss = el("button", "brief-act", "later");
+  dismiss.addEventListener("click", () => strip.remove());
+  strip.appendChild(dismiss);
+  document.body.appendChild(strip);
+}
+
+// A confirm that says what it is about to do, anchored where you clicked —
+// the .ctx-pop family, not a browser dialog.
+function confirmPopup(opts) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop confirm-pop"
+                        + (opts.danger ? " danger" : ""));
+  pop.appendChild(el("div", "ctx-head", opts.title));
+  (opts.body || []).forEach((line) =>
+    pop.appendChild(el("div", "cp-line", line)));
+  const acts = el("div", "ly-actions");
+  const cancel = el("button", "ly-btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  const go = el("button", "ly-btn primary", opts.cta || "Confirm");
+  go.addEventListener("click", () => { pop.remove(); opts.onConfirm(); });
+  acts.appendChild(cancel);
+  acts.appendChild(go);
+  pop.appendChild(acts);
+  placeCtxPop(pop, opts.x, opts.y);
+}
+
+// Minimal python/json highlighter. Self-contained by necessity (no CDN
+// reaches this app) and deliberately small: it colours the four things
+// that make code readable at a glance and leaves everything else alone.
+const PY_RE = new RegExp([
+  '"""[\\s\\S]*?"""', "'''[\\s\\S]*?'''",
+  '"(?:\\\\.|[^"\\\\])*"', "'(?:\\\\.|[^'\\\\])*'",
+  "#[^\\n]*",
+  "@[A-Za-z_][\\w.]*",
+  "\\b(?:def|class)\\s+\\w+",
+  "\\b(?:return|if|elif|else|for|while|try|except|finally|with|as|import"
+  + "|from|raise|yield|lambda|pass|break|continue|and|or|not|in|is|None"
+  + "|True|False|global|nonlocal|assert|del|async|await|self)\\b",
+  "\\b\\d+(?:\\.\\d+)?\\b",
+].join("|"), "g");
+
+function codeBlock(text, lang) {
+  const pre = el("pre", "hcode " + (lang === "python" ? "py" : "text"));
+  const code = el("code");
+  if (lang !== "python") {
+    code.textContent = text;
+    pre.appendChild(code);
+    return pre;
+  }
+  let last = 0;
+  let m;
+  PY_RE.lastIndex = 0;
+  while ((m = PY_RE.exec(text)) !== null) {
+    if (m.index > last)
+      code.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const t = m[0];
+    let cls = "kw";
+    if (t[0] === "#") cls = "cm";
+    else if (t[0] === '"' || t[0] === "'") cls = "st";
+    else if (t[0] === "@") cls = "dc";
+    else if (t[0] >= "0" && t[0] <= "9") cls = "nu";
+    const named = cls === "kw" && /^(?:def|class)(\s+)(\w+)$/.exec(t);
+    if (named) {
+      code.appendChild(el("span", "kw", t.slice(0, t.indexOf(named[1]))));
+      code.appendChild(document.createTextNode(named[1]));
+      code.appendChild(el("span", "fn", named[2]));
+    } else {
+      code.appendChild(el("span", cls, t));
+    }
+    last = m.index + t.length;
+  }
+  if (last < text.length)
+    code.appendChild(document.createTextNode(text.slice(last)));
+  pre.appendChild(code);
+  return pre;
 }
 
 // prefill seeds a NEW loop's initial fields (the Dispatch bar's
