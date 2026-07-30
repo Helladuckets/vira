@@ -49,6 +49,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                photos, plans, profilerefresh, radar, reconnect, textindex,
                receipts,
                resolver,
+               roomvault,
                routines,
                search as msearch, send, sendpref, session, settings,
                genreroutes,
@@ -1134,7 +1135,37 @@ def api_reading_room(name: str):
         done = reading.get_done(name)
     except ValueError:
         done = []
+    # where each item's note actually is — DERIVED here rather than stored on
+    # the item, so a renamed or deleted note can never leave a stale pointer
+    try:
+        roomvault.resolve(name, room.get("items") or [])
+    except Exception:                                   # noqa: BLE001
+        pass                                            # a room is worth more than its links
     return {"room": room, "done": done}
+
+
+class RoomLinkReq(BaseModel):
+    item_id: str
+    path: str = ""
+
+
+@app.post("/api/reading/rooms/{name}/link")
+def api_reading_room_link(name: str, req: RoomLinkReq):
+    """Attach a vault note to an item by hand — for a note the derivation
+    cannot see because nothing wrote `room_item_id` into it. Empty path
+    clears the override and falls back to whatever is derivable."""
+    if not req.item_id.strip():
+        raise HTTPException(400, "item_id required")
+    path = req.path.strip()
+    if path:
+        # note_text is the validator: it carries the engine's own containment
+        # check, so a path outside the vault is refused rather than stored
+        try:
+            vault.note_text(path)
+        except Exception:                               # noqa: BLE001
+            raise HTTPException(404, f"no such note: {path}")
+    roomvault.set_link(name, req.item_id.strip(), path)
+    return {"ok": True, "path": path}
 
 
 @app.get("/reading/{slug}.html")

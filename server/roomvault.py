@@ -13,8 +13,11 @@ room store is canonical; every note here is derived from it and carries
 `room_item_id`, so a re-run finds its own output and UPDATES it rather
 than minting a duplicate. That id is the room's own stable id (a hash of
 the URL), so a retitled item keeps its note and an item that survives a
-full repass keeps its place in the graph. Nothing here reads back into
-the room.
+full repass keeps its place in the graph. Nothing here WRITES back into
+the room — but see "which note belongs to this item" at the foot: the
+Reader has to be able to ASK where an item's note ended up, and that
+lookup reuses the same `room_item_id` key, derived live rather than
+stored.
 
 WHAT DOES *NOT* GET A NOTE. An item the owner has already consumed
 carries `vault: wiki/<slug>.md` — a real source-summary written from the
@@ -434,6 +437,107 @@ def sync(slug):
 
 def ingest_all(dry_run=False):
     return [ingest(r["slug"], dry_run=dry_run) for r in readingroom.list_rooms()]
+
+
+# ===================== WHICH NOTE BELONGS TO THIS ITEM =====================
+# The projection above is one-directional by design, which left the Reader
+# unable to answer a question its own cards were asking: is this in the
+# vault? An item's `vault` field is the OWNER'S SUMMARY and nothing else —
+# ingest() mints a pointer note precisely when that field is EMPTY — so
+# reading it as "does a note exist" reports the opposite of the truth for
+# every item this module has ever catalogued. On 2026-07-30 that was 263 of
+# 348 cards saying "No vault note yet" over a note sitting in the vault.
+#
+# THE POINTER PATH IS DERIVED, NEVER STORED. It is a fact about what is on
+# disk right now, and a copy of it in the room store is a copy that goes
+# stale the moment a note is renamed, moved or deleted — which is the exact
+# failure being fixed here, so storing it would only move the staleness. The
+# join is EXACT, not a guess: ingest() writes `room_item_id` into every
+# note's frontmatter for its own idempotency, and that is the key read back.
+# So there is no refresh step to run and none to forget.
+#
+# The owner overlay is the deliberate exception. A note that ingest() did
+# not write carries no `room_item_id`, so nothing can derive the link — the
+# owner attaching one by hand is genuinely new information. It lives in its
+# own store and is applied at read time (the contactcard.py pattern), so it
+# survives every room rebuild instead of being overwritten by the next one.
+
+# beside the done-marks, not beside the rooms: this is owner state about a
+# room, not part of the room's own regenerable store
+LINKS_PATH = readingroom.ROOMS_DIR.parent / "room-links.json"
+
+_notes_cache = {}   # rooms_dir -> (mtime, {item_id: path})
+
+
+def notes_by_item(root=None):
+    """Every pointer note this module has written, keyed by room item id.
+
+    Cached on the directory's mtime: the index is a few hundred small
+    header reads, cheap once and wasteful on every room load.
+    """
+    root = Path(root or vault.vault_root()).expanduser()
+    rooms_dir = root / ROOMS_SUBDIR
+    try:
+        stamp = rooms_dir.stat().st_mtime
+    except OSError:
+        return {}
+    hit = _notes_cache.get(str(rooms_dir))
+    if hit and hit[0] == stamp:
+        return hit[1]
+    idx = {k: str(p.relative_to(root).as_posix())
+           for k, p in _index_by_item_id(rooms_dir).items()}
+    _notes_cache[str(rooms_dir)] = (stamp, idx)
+    return idx
+
+
+def _load_links():
+    from . import jsonstore
+    return jsonstore.read(LINKS_PATH, {"links": {}}).get("links", {})
+
+
+def link_key(slug, item_id):
+    return f"{slug}:{item_id}"
+
+
+def set_link(slug, item_id, path):
+    """Attach a vault note to an item by hand — the owner asserting a link
+    the derivation cannot make. An empty path clears it."""
+    from . import jsonstore
+    key = link_key(slug, item_id)
+
+    def mutate(d):
+        links = d.setdefault("links", {})
+        if path:
+            links[key] = path
+        else:
+            links.pop(key, None)
+        return d
+
+    jsonstore.mutate(LINKS_PATH, mutate, {"links": {}})
+    return path
+
+
+def resolve(slug, items, root=None):
+    """Annotate each item with where its vault note actually is.
+
+    Three states, and the caller must be able to tell them apart because
+    they mean different things to a reader:
+      owner   — `vault`, a summary written from the material itself
+      room    — a pointer note this module minted, or one the owner attached
+      absent  — nothing, and only then may a surface say so
+    """
+    idx = notes_by_item(root)
+    links = _load_links()
+    for it in items:
+        owner = (it.get("vault") or "").strip()
+        if owner:
+            it["vault_note"] = owner
+            it["vault_note_kind"] = "owner"
+            continue
+        found = links.get(link_key(slug, it.get("id", ""))) or idx.get(it.get("id", ""))
+        it["vault_note"] = found or ""
+        it["vault_note_kind"] = "room" if found else ""
+    return items
 
 
 def summary_line(res):
