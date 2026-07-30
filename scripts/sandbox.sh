@@ -11,6 +11,9 @@
 #                                 --demo stubs the calls that escape to the
 #                                 real OS (browser sign-in, System Settings),
 #                                 so onboarding can be walked end to end
+#   sandbox.sh replay [--demo]    back to the FIRST SCREEN, no re-provision:
+#                                 wipes data/ (incl. the once-per-install
+#                                 welcome flag) and serves. Keeps venv + login.
 #   sandbox.sh stop
 #   sandbox.sh status
 #   sandbox.sh login              log the claude CLI in for the sandbox home
@@ -56,7 +59,10 @@ PIDFILE=$ROOT/.instance.json
 LOG=$ROOT/serve.log
 REAL_HOME=$HOME
 
-usage() { sed -n '2,21p' "$SELF"; exit 1; }
+# Line range must cover the whole command block above — it grew twice without
+# this following it, so `sandbox.sh` with no args stopped listing its own
+# newest commands.
+usage() { sed -n '2,24p' "$SELF"; exit 1; }
 die() { print -u2 -- "error: $*"; exit 1; }
 
 instance_pid() {
@@ -118,6 +124,33 @@ cmd_new() {
   echo "  app     $APP  ($(git -C "$APP" rev-parse --short HEAD))"
   echo "  home    $FAKE_HOME  (empty — no contacts, messages, calendar, or skills)"
   echo "next:   scripts/sandbox.sh serve"
+}
+
+# Put the sandbox back to its FIRST SCREEN without re-provisioning.
+#
+# The gap this closes: a plain `serve` resumes wherever you left off, and the
+# first-run welcome is once-per-install BY DESIGN — its seen-flag is stored
+# server-side so the overlay cannot re-pop on every browser. So after one walk
+# there was no way to see the first screen again short of `reset`, which
+# rebuilds the venv and costs minutes. That made the one thing the sandbox
+# exists to show the one thing hardest to look at twice.
+#
+# Resets what VIRA created (data/ — ui-state incl. the welcome flag, config,
+# every index and store) and re-stamps the instance so any browser holding a
+# saved arrangement adopts the fresh one. KEEPS what the MACHINE has: the
+# clone, the venv, a `sandbox.sh login`, and anything you exposed.
+cmd_replay() {
+  local demo=${1:-}
+  [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$APP/data"
+  mkdir -p "$APP/data"
+  date +%s.%N > "$APP/data/.instance-stamp"
+  # Vira's own neutral-default homes, created during a walk (an imported CRM
+  # here would keep fixture mode off and skip the whole first-run path).
+  rm -rf "$FAKE_HOME/.vira"
+  echo "replayed — first boot again (login and exposed stores kept)"
+  cmd_serve "$demo"
 }
 
 cmd_serve() {
@@ -264,6 +297,7 @@ case "$cmd" in
   new)      cmd_new "${1:-}";;
   login)    cmd_login;;
   serve)    cmd_serve "$@";;
+  replay)   cmd_replay "$@";;
   stop)     cmd_stop;;
   status)   cmd_status;;
   expose)   cmd_expose "$@";;
