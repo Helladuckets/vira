@@ -6889,7 +6889,17 @@ async function loadBrief() {
     }
   } catch (e) {
     body.innerHTML = "";
-    body.appendChild(el("div", "brief-empty", "Brief unavailable: " + e.message));
+    // The overwhelmingly common failure on a fresh install is the Calendar
+    // store being unreadable before Full Disk Access is granted, and the raw
+    // detail for that is `unable to open database file` — a sqlite string
+    // rendered into the first screen a stranger sees. Name the cause and the
+    // fix; keep the raw text only for failures we have not accounted for.
+    const raw = e.message || "";
+    body.appendChild(el("div", "brief-empty",
+      /unable to open database|permission|operation not permitted/i.test(raw)
+        ? "The brief reads your calendar, which needs Full Disk Access. "
+          + "Grant it in Config and this fills in on its own."
+        : "Brief unavailable: " + raw));
   }
 }
 
@@ -15783,6 +15793,18 @@ function applyStage(animate, reflow) {
     const slots = computeSlots(ids);
     Object.keys(slotRects).forEach((k) => delete slotRects[k]);
     Object.assign(slotRects, slots);
+  } else {
+    // framedWindows() drops DORMANT modules, which is right for COMPUTING a
+    // ring — an unconfigured module should not be given a slot of its own.
+    // It is wrong for APPLYING a saved one: Reader and Applications open on
+    // a fresh install to show their front doors, and a layout that already
+    // has slots for them was leaving both floating at their default 780x660
+    // over the middle of the arrangement. Only ever adds windows the layout
+    // ALREADY parks, so a true visitor is still free.
+    Object.keys(winState).forEach((id) => {
+      if (winState[id].open && slotRects[id] && !ids.includes(id))
+        ids.push(id);
+    });
   }
   ids.forEach((id) => {
     const node = winState[id].el;
@@ -16539,6 +16561,15 @@ async function boot() {
   // it from a deep link or the grid lands on the door already built.
   (fdState?.modules || []).forEach((m) => { if (!m.ready) fdMount(m.id); });
   if ((fdState?.modules || []).some((m) => !m.ready && m.run)) fdWatch();
+  // Re-assert the frame AFTER everything that opens a window at boot has
+  // run. applyStage only parks what framedWindows() can see, and a module
+  // opened later — a dormant front door, a deep link, the Reader probe —
+  // was never in that set, so it kept a default 780x660 rect and floated
+  // unlocked in the middle of the arrangement. Two of them (Reader and
+  // Applications) were the stray boxes over the centre of a fresh install.
+  // Cheap and idempotent: a window already parked is re-placed to the same
+  // slot, and a genuine visitor still has no slot and stays free.
+  if (isDesktop && layoutMode === "stage") applyStage(false, false);
   firstRunLanding();
   renderPeopleSort();
   loadBrief().catch(() => {});
