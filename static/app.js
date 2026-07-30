@@ -3280,6 +3280,10 @@ async function openGroupChat(ref) {
 // /resume, edited here) + change log (every change per session) ----------
 let ideasCache = [];
 let projectsCache = [];
+// name -> folder on disk, for projects the owner has connected. This is what
+// makes "connect a project" mean something: a dispatch on that project runs
+// THERE instead of asking for a target repo it already knows.
+let projectPathsCache = {};
 let ideaSort = localStorage.getItem("vira-idea-sort") || "grouped";
 let ideaProject = localStorage.getItem("vira-idea-project") || "";  // "" = all
 let ideaAddProject = localStorage.getItem("vira-idea-add-project") || "";
@@ -3325,6 +3329,7 @@ async function loadIdeas() {
   const r = await api("/api/ideas");
   ideasCache = r.items || [];
   projectsCache = r.projects || [];
+  projectPathsCache = r.project_paths || {};
   ideaVocab = r.vocab || {};
   ideaTagStatus = r.tag_status || null;
   if (ideaTagStatus?.axes?.length)
@@ -4708,8 +4713,11 @@ function openIdeaRun(it, mode) {
   $("#idea-run-title").textContent =
     mode === "plan" ? "Plan this idea" : "Implement this idea";
   $("#idea-run-text").textContent = it.text;
-  $("#idea-run-cwd").value =
-    localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
+  // A connected project already answers "which folder?", so the idea's own
+  // project wins over the last-used value — otherwise the owner points at a
+  // folder during setup and is still asked for it on every dispatch.
+  $("#idea-run-cwd").value = projectPathsCache[it.project]
+    || localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
   // The model menu is built from the catalog, not a hand-list in the
   // markup — the same source Setup's defaults and circuit stages read.
   modelCatalog().then((cat) => fillModelSelect(
@@ -6914,7 +6922,17 @@ async function loadBrief() {
     }
   } catch (e) {
     body.innerHTML = "";
-    body.appendChild(el("div", "brief-empty", "Brief unavailable: " + e.message));
+    // The overwhelmingly common failure on a fresh install is the Calendar
+    // store being unreadable before Full Disk Access is granted, and the raw
+    // detail for that is `unable to open database file` — a sqlite string
+    // rendered into the first screen a stranger sees. Name the cause and the
+    // fix; keep the raw text only for failures we have not accounted for.
+    const raw = e.message || "";
+    body.appendChild(el("div", "brief-empty",
+      /unable to open database|permission|operation not permitted/i.test(raw)
+        ? "The brief reads your calendar, which needs Full Disk Access. "
+          + "Grant it in Config and this fills in on its own."
+        : "Brief unavailable: " + raw));
   }
 }
 
@@ -8869,7 +8887,218 @@ function frFinish(pr) {
   setTimeout(aiReveal, REDUCED_MOTION ? 300 : 1900);
 }
 
-// ---- the reveal: the desk comes alive ---------------------------------
+// ---- the Work tour: what you can do with nothing but an AI -------------
+// The reveal used to open six modules and gate three of them, so the first
+// sight of a connected Vira was mostly locked doors. Work is what actually
+// runs on a model alone — add an idea, plan it, implement it — so the tour
+// drives Work's own tabs and ends on a choice: try it now, or connect the
+// folders that make it deeper. Skippable at every beat; a tour you cannot
+// leave is a wall.
+
+const TOUR = [
+  { tab: "queue", title: "Queue",
+    body: "Everything you want Vira to do, in one list. Type an idea and it "
+        + "lands here — searchable, tagged, and grouped so a backlog stays "
+        + "readable at a few hundred items." },
+  { tab: "dispatch", title: "Dispatch",
+    body: "Hand a piece of work to an agent. Plan it read-only first, or "
+        + "send it straight to Implement and let it write the code. Every "
+        + "skill in your library shows up here as a card." },
+  { tab: "live", title: "Live",
+    body: "Sessions running right now, each in its own terminal. You can "
+        + "steer one mid-turn, answer a question it raises, or stop it — "
+        + "it is a conversation, not a job you launched and lost." },
+  { tab: "record", title: "Record",
+    body: "What has already shipped. Every run keeps its transcript, so you "
+        + "can reopen the session that built a thing months later and read "
+        + "exactly what happened." },
+];
+
+let tourStep = -1;
+
+function tourCard() { return $("#tour"); }
+
+// The tour runs against the REAL Work window, driving its real tabs — a
+// mock-up would drift from the app the first time a tab is renamed.
+function startWorkTour() {
+  if (!isDesktop || !winState?.work) return;
+  openWindow("work");
+  focusWin(winState.work.el);
+  tourStep = 0;
+  paintTour();
+}
+
+function endTour({ focusAdd } = {}) {
+  tourStep = -1;
+  tourCard()?.remove();
+  document.body.classList.remove("tour-open");
+  if (focusAdd) {
+    // "Give it a try" has to land ON the thing it invited — the cursor in
+    // the add box, not just the right tab showing.
+    setWorkTab("queue");
+    // #idea-input is the FIELD; #idea-add is the Add button beside it.
+    const box = $("#idea-input");
+    box?.focus();
+    box?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+
+function paintTour() {
+  document.body.classList.add("tour-open");
+  tourCard()?.remove();
+  const last = tourStep >= TOUR.length;
+  const card = el("div", "tour-card");
+  card.id = "tour";
+
+  const head = el("div", "tour-head");
+  head.appendChild(el("span", "tour-kicker",
+    last ? "That's the loop" : `${tourStep + 1} of ${TOUR.length}`));
+  const skip = el("button", "tour-skip", last ? "Close" : "Skip");
+  skip.onclick = () => endTour();
+  head.appendChild(skip);
+  card.appendChild(head);
+
+  if (!last) {
+    const beat = TOUR[tourStep];
+    setWorkTab(beat.tab);              // the tour drives the real tab
+    card.appendChild(el("h3", "tour-title", beat.title));
+    card.appendChild(el("p", "tour-body", beat.body));
+    const row = el("div", "tour-row");
+    if (tourStep > 0) {
+      const back = el("button", "btn", "Back");
+      back.onclick = () => { tourStep--; paintTour(); };
+      row.appendChild(back);
+    }
+    const next = el("button", "btn primary",
+      tourStep === TOUR.length - 1 ? "Finish" : "Next");
+    next.onclick = () => { tourStep++; paintTour(); };
+    row.appendChild(next);
+    card.appendChild(row);
+  } else {
+    setWorkTab("queue");
+    card.appendChild(el("h3", "tour-title", "Give it a try"));
+    card.appendChild(el("p", "tour-body",
+      "Type an idea in the Queue and hit Implement — that works right now, "
+      + "on the AI you just connected. Or point Vira at your own work first, "
+      + "so it plans against what you actually have."));
+    const row = el("div", "tour-row tour-row-wrap");
+    const go = el("button", "btn primary", "Give it a try");
+    go.onclick = () => endTour({ focusAdd: true });
+    row.appendChild(go);
+    const proj = el("button", "btn", "Connect a project…");
+    proj.onclick = () => tourConnect("project");
+    row.appendChild(proj);
+    const vault = el("button", "btn", "Connect your notes…");
+    vault.onclick = () => tourConnect("vault");
+    row.appendChild(vault);
+    card.appendChild(row);
+    card.appendChild(el("p", "tour-note",
+      "A project is a folder Vira writes code in. Your notes are a folder "
+      + "of markdown it can answer from, with citations. Both stay on this "
+      + "machine."));
+  }
+  document.body.appendChild(card);
+  positionTour();
+  // .fwin-move animates left/top/width/height for ~380ms, so a rect measured
+  // now is a FRAME of that animation — the same trap winRect exists for. The
+  // card would centre on where Work was, not where it is going. Re-place once
+  // the move has settled; cheap, and it also catches a tab switch that
+  // resizes the pane under it.
+  clearTimeout(paintTour._settle);
+  paintTour._settle = setTimeout(positionTour, 440);
+}
+
+// The card rides the Work window rather than a screen corner: the tour is
+// ABOUT that card, and a caption parked in the bottom-right corner makes the
+// eye hunt for what it refers to. Centred horizontally on Work and anchored
+// near its foot, so the tabs it is naming stay visible above it.
+function positionTour() {
+  const card = tourCard();
+  const win = winState?.work?.el;
+  if (!card) return;
+  if (!win) {                       // no Work window (shouldn't happen) — centre on screen
+    card.style.left = "50%";
+    card.style.transform = "translateX(-50%)";
+    card.style.bottom = "92px";
+    return;
+  }
+  const r = win.getBoundingClientRect();
+  const w = card.offsetWidth || 360;
+  const h = card.offsetHeight || 220;
+  let left = r.left + (r.width - w) / 2;
+  let top = r.bottom - h - 24;
+  // Keep it on screen whatever the viewport does to the arrangement.
+  left = Math.max(12, Math.min(left, innerWidth - w - 12));
+  top = Math.max(12, Math.min(top, innerHeight - h - 12));
+  card.style.left = `${Math.round(left)}px`;
+  card.style.top = `${Math.round(top)}px`;
+  card.style.right = "auto";
+  card.style.bottom = "auto";
+  card.style.transform = "none";
+}
+addEventListener("resize", () => { if (tourCard()) positionTour(); });
+
+// A real OS folder panel — navigate, select, Open. Never "copy the path".
+// The server opens it (server/pickfolder.py) because Vira is local, and the
+// browser APIs that open a panel refuse to hand back a filesystem path.
+//
+// `local` is decided HERE: only a browser on the same machine should make a
+// window appear on that machine's desktop. The phone over Tailscale gets the
+// text field instead, which is the honest answer rather than a panel opening
+// on a Mac nobody is looking at.
+function browserIsLocal() {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+}
+
+async function chooseFolder(prompt) {
+  return post("/api/pick-folder",
+              { prompt, local: browserIsLocal() }).catch(() => ({
+    unavailable: true, reason: "could not reach Vira to open a folder window",
+  }));
+}
+
+async function tourConnect(kind) {
+  const card = tourCard();
+  const row = card?.querySelector(".tour-row");
+  const busy = el("p", "tour-note", "Pick a folder in the window that just "
+                                    + "opened…");
+  row?.after(busy);
+  const r = await chooseFolder(kind === "vault"
+    ? "Choose the folder your notes live in"
+    : "Choose the folder for this project");
+  busy.remove();
+  if (r.cancelled) return;                       // a cancel is an answer
+  if (r.unavailable || !r.path) {
+    // No panel available (phone, demo, an unsupported platform) — say why
+    // and send them to the field that always works.
+    const p = el("p", "tour-note warn", (r.reason || "no folder window here")
+      + ". Open Config and type the path instead.");
+    row?.after(p);
+    return;
+  }
+  try {
+    if (kind === "vault") {
+      await api("/api/onboard/vault", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: r.path, init: false }),
+      });
+      toast("Notes connected — Vira can answer from them now");
+    } else {
+      // The folder's own name is the obvious project name, and re-typing it
+      // would be the second question this flow exists to remove.
+      const name = r.path.split("/").filter(Boolean).pop() || "Project";
+      await post("/api/ideas/projects/path", { name, path: r.path });
+      toast(`Project "${name}" connected`);
+      loadIdeas?.().catch(() => {});
+    }
+    endTour({ focusAdd: kind !== "vault" });
+  } catch (e) {
+    const p = el("p", "tour-note warn", e.message || "could not connect that "
+                                                     + "folder");
+    row?.after(p);
+  }
+}
+
 // The blur lifts and the modules that run on AI alone pop open live; the
 // ones that need this Mac's data sit in focus but muted gray, wearing a
 // watermark that names the ONE thing that wakes them (click-through to the
@@ -8889,6 +9118,17 @@ function sceneGates(flow) {
   };
 }
 
+// Dress every module the current step flow says is not usable yet. Shared by
+// the first paint (the perimeter behind the welcome) and the reveal, so the
+// two can never disagree about which tiles are grey.
+function applySceneGates() {
+  const gates = sceneGates(frFlow);
+  Object.entries(gates).forEach(([id, g]) => {
+    if (!winState?.[id]?.open) return;
+    if (g) gateWindow(id, g); else ungateWindow(id);
+  });
+}
+
 function aiReveal() {
   const fr = $("#firstrun");
   frMarkDone();
@@ -8905,21 +9145,22 @@ function aiReveal() {
     fr.classList.remove("fr-reveal");
     document.body.classList.remove("fr-open");
   }, REDUCED_MOTION ? 0 : 950);
-  // Gated modules first (they sit behind the lifting blur already dressed),
-  // live ones last so they land on top of the stack.
-  const gates = sceneGates(frFlow);
-  const scene = ["feed", "people", "brief", "work", "reader", "applications"];
-  let delay = REDUCED_MOTION ? 0 : 380;
-  scene.forEach((id) => {
-    if (!winState[id]) return;
-    const show = () => {
-      if (gates[id]) gateWindow(id, gates[id]);
-      else ungateWindow(id);
-      openWindow(id);
-    };
-    if (REDUCED_MOTION) show();
-    else { setTimeout(show, delay); delay += 190; }
-  });
+  // The desk is ALREADY arranged — the perimeter has been sitting behind the
+  // scrim since first paint. So the reveal is not six windows popping open in
+  // sequence any more; it is the blur lifting off a finished arrangement, the
+  // gates re-derived (connecting an AI can unlock a module), and Work growing
+  // into the middle. One card in the centre is what the eye should land on,
+  // rather than a scatter with the important one somewhere in it.
+  applySceneGates();
+  const grow = () => {
+    growTile?.("work");
+    // Let the grow land before the caption arrives — a card that appears
+    // mid-flight and then slides is the app looking unsettled at the exact
+    // moment it is meant to look finished.
+    setTimeout(startWorkTour, REDUCED_MOTION ? 0 : 460);
+  };
+  if (REDUCED_MOTION) grow();
+  else setTimeout(grow, 900);
 }
 
 // Dress a window as gated: content muted and inert (title bar stays live —
@@ -14981,6 +15222,34 @@ function persistSavedLayouts(list) {
 }
 function newLayoutId() { return "ly_" + Math.random().toString(36).slice(2, 10); }
 
+// ---------- the shipped default arrangement ----------
+// Every install starts on the owner's Base Perimeter stage: modules parked
+// around the edges, one grown in the middle. Before this a fresh desktop was
+// freeform with nothing on it, so the first thing a stranger saw after
+// connecting was a scatter of windows in whatever order they opened.
+//
+// It ships as tracked DATA (static/layouts/base-perimeter.json) rather than a
+// literal in here, so re-cutting the default is re-exporting a layout — the
+// same reason skins are files. The layout engine already scales an
+// arrangement to the viewport it lands on, so one export serves every screen.
+const DEFAULT_LAYOUT_URL = "/layouts/base-perimeter.json";
+let defaultLayoutSeeded = false;
+
+async function seedDefaultLayout() {
+  // Only ever on a VIRGIN desktop. An owner who has saved even one layout has
+  // an arrangement of their own, and seeding over it would be the app
+  // rearranging a screen it does not own.
+  if (savedLayouts().length) return null;
+  let l;
+  try {
+    l = await (await fetch(DEFAULT_LAYOUT_URL, { cache: "no-store" })).json();
+  } catch { return null; }
+  if (!l || !l.id || !l.wins) return null;
+  persistSavedLayouts([l]);
+  defaultLayoutSeeded = true;
+  return l;
+}
+
 // A layout saved before the stage flag existed came out of the perimeter/tune
 // flow, so click-to-grow is what it was always meant to do — treat a missing
 // flag as stage. The toggle in edit mode turns any layout into plain placement.
@@ -15563,6 +15832,18 @@ function applyStage(animate, reflow) {
     const slots = computeSlots(ids);
     Object.keys(slotRects).forEach((k) => delete slotRects[k]);
     Object.assign(slotRects, slots);
+  } else {
+    // framedWindows() drops DORMANT modules, which is right for COMPUTING a
+    // ring — an unconfigured module should not be given a slot of its own.
+    // It is wrong for APPLYING a saved one: Reader and Applications open on
+    // a fresh install to show their front doors, and a layout that already
+    // has slots for them was leaving both floating at their default 780x660
+    // over the middle of the arrangement. Only ever adds windows the layout
+    // ALREADY parks, so a true visitor is still free.
+    Object.keys(winState).forEach((id) => {
+      if (winState[id].open && slotRects[id] && !ids.includes(id))
+        ids.push(id);
+    });
   }
   ids.forEach((id) => {
     const node = winState[id].el;
@@ -15646,6 +15927,18 @@ function freeformRect(id, st) {
 // ring), `grows` is id → staged grown rect (omit for the cascade default).
 // activeLayout is set by the caller — a stage can be a saved layout or the
 // computed ring, and the "· current" marker names which.
+// A grown card must sit ABOVE the parked ring. growTile focuses the card it
+// grows, but re-arming a stage on RELOAD restores grownOrder without ever
+// going through growTile — so the centrepiece came back underneath whatever
+// tile happened to hold the top z, and a wide one painted straight over its
+// title bar and tabs. Called from BOTH enterStage and the end-of-boot
+// re-assert, because focusFirst and the late openers both raise after.
+function raiseGrown() {
+  grownOrder.forEach((id) => {
+    if (winState[id]?.open) focusWin(winState[id].el);
+  });
+}
+
 function enterStage(opts) {
   const o = opts || {};
   layoutMode = "stage";
@@ -15667,6 +15960,12 @@ function enterStage(opts) {
     Object.assign(growScroll, o.scrolls.grow || {});
   }
   applyStage(o.animate, stageComputed || !o.parks);
+  // A grown card must sit ABOVE the parked ring. growTile focuses the card it
+  // grows, but re-arming a stage on RELOAD restores grownOrder without ever
+  // going through growTile — so the centrepiece came back underneath whatever
+  // tile happened to hold the top z, and a wide one (Subscriptions) painted
+  // straight over its title bar and tabs.
+  raiseGrown();
   updateLayoutBtn();
   saveLayout();
 }
@@ -16289,7 +16588,18 @@ async function boot() {
   // first. Two fetches is the same pre-paint cost the two lines above
   // already pay, and it buys a first sight that is the finished product.
   await maybeFirstrun();
+  // Fetched before the desk builds so applying it costs no second paint;
+  // applied after, because it needs the windows initDesktop creates.
+  const seeded = isDesktop ? await seedDefaultLayout() : null;
   if (isDesktop) initDesktop();
+  if (seeded) {
+    // The arrangement IS the backdrop the welcome sits over — a complete,
+    // deliberate perimeter with the data-dependent modules greyed, rather
+    // than the blank desk (or the random scatter before it). Modules that
+    // cannot work yet say so in place instead of being absent.
+    applySavedLayout(seeded.id, false);
+    if (frGated) applySceneGates();
+  }
   buildMobileDock();   // the phone's five-app access bar
   initReorg();         // long-press the grid or the bar to rearrange both
   // the brand (upper left) is the Launchpad button: floating window on
@@ -16308,6 +16618,15 @@ async function boot() {
   // it from a deep link or the grid lands on the door already built.
   (fdState?.modules || []).forEach((m) => { if (!m.ready) fdMount(m.id); });
   if ((fdState?.modules || []).some((m) => !m.ready && m.run)) fdWatch();
+  // Re-assert the frame AFTER everything that opens a window at boot has
+  // run. applyStage only parks what framedWindows() can see, and a module
+  // opened later — a dormant front door, a deep link, the Reader probe —
+  // was never in that set, so it kept a default 780x660 rect and floated
+  // unlocked in the middle of the arrangement. Two of them (Reader and
+  // Applications) were the stray boxes over the centre of a fresh install.
+  // Cheap and idempotent: a window already parked is re-placed to the same
+  // slot, and a genuine visitor still has no slot and stays free.
+  if (isDesktop && layoutMode === "stage") { applyStage(false, false); raiseGrown(); }
   firstRunLanding();
   renderPeopleSort();
   loadBrief().catch(() => {});
