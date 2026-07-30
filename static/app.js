@@ -12323,7 +12323,7 @@ function addZoomControls(bar, target, initial, onChange) {
     b.title = dir > 0 ? "Zoom in" : "Zoom out";
     b.addEventListener("click", (e) => {
       e.stopPropagation();
-      z = Math.round(Math.min(1.6, Math.max(0.6, z + dir * 0.1)) * 10) / 10;
+      z = Math.round(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z + dir * 0.1)) * 10) / 10;
       apply();
     });
     return b;
@@ -15342,6 +15342,29 @@ function layoutScrolls(l) {
 // what has to fit, so the whole arrangement scales down to the screen instead
 // of spilling off it. Axes scale independently on purpose: that is what keeps
 // an edge-docked module docked to that edge, which is the point of a frame.
+// Per-window content zoom. The manual floor was 0.6, which is where the owner
+// bottomed out while trying to make his parked tiles read as THUMBNAILS —
+// structure visible, text deliberately not readable, click to open. 0.3 gives
+// that range. ZOOM_SCALED_MIN is lower still because a scaled zoom is derived
+// from the viewport rather than typed by anyone.
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 1.6;
+const ZOOM_SCALED_MIN = 0.1;
+
+// A layout's RECTS scale to the viewport; its content zoom did not. So the
+// same arrangement on a smaller screen gave smaller tiles holding
+// same-size content — which is exactly why the perimeter's tiles clipped and
+// wrapped instead of looking like the owner's. A parked tile is a thumbnail,
+// so its zoom follows the geometry.
+//
+// PARKED ONLY. A grown card is for READING; scaling its zoom down with the
+// viewport would make the one window you opened on purpose unreadable. Uses
+// the smaller axis so content cannot outgrow the tile on either dimension.
+function scaleZoom(z, s) {
+  const k = Math.min(s.sx, s.sy);
+  return Math.max(ZOOM_SCALED_MIN, Math.min(ZOOM_MAX, (z || 1) * k));
+}
+
 function layoutScale(l) {
   let refW = (l && l.vw) || 0, refH = (l && l.vh) || 0;
   Object.values((l && l.wins) || {}).forEach((s) => {
@@ -15371,8 +15394,11 @@ function layoutRects(l) {
   Object.entries(l.wins || {}).forEach(([id, snap]) => {
     if (snap.open) parks[id] = scaleRect(roundRect(snap), s);
     if (snap.grow) grows[id] = scaleRect(roundRect(snap.grow), s);
-    if (snap.z) zooms.park[id] = snap.z;
-    if (snap.grow?.z) zooms.grow[id] = snap.grow.z;
+    // Every OPEN tile gets a scaled zoom, authored or not: a window the owner
+    // never touched the zoom on still has to shrink with the frame, or it sits
+    // in the ring at full size next to thumbnails (Evidence Ledger did).
+    if (snap.open) zooms.park[id] = scaleZoom(snap.z || 1, s);
+    if (snap.grow?.z) zooms.grow[id] = snap.grow.z;   // read at authored size
     if (snap.s) scrolls.park[id] = snap.s;
     if (snap.grow?.s) scrolls.grow[id] = snap.grow.s;
   });
