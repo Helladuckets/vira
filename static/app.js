@@ -15872,9 +15872,15 @@ function initDesktop() {
 // Local wins: a browser with its own saved layout keeps it and mirrors
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
+// Every key here must also be in server/uistate.py KEYS, and vice versa: this
+// array drives BOTH the push and the instance-change ADOPTION loop below, so a
+// key the server accepts but this list omits is written and never re-read —
+// it survives in localStorage after a reset that cleared the server's copy.
+// That is what kept the first-run welcome from ever firing twice on a
+// re-provisioned sandbox (2026-07-30).
 const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
                       "vira-mobile-dock", "vira-setup-opened", "vira-layout",
-                      "vira-layouts"];
+                      "vira-layouts", "vira-firstrun-done"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 
