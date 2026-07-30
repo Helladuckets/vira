@@ -245,17 +245,49 @@ class RefusalTests(Base):
                 roomvault.ingest("demo")
 
 
-class BuildHookTests(Base):
-    def test_build_projects_into_the_vault(self):
-        readingroom.build("demo", "Demo Room", "Sub", [item()])
-        self.assertTrue((self.vault / "wiki" / "demo-reading-room.md").exists())
+class StoreWriteIsolationTests(Base):
+    """build() is a pure store write. Hanging the vault projection off it
+    made every caller that never heard of a vault write to the owner's
+    real Obsidian vault — 11 fixture rooms landed there on 2026-07-29,
+    from tests. The projection belongs to the entry points."""
 
-    def test_a_failing_projection_never_loses_the_room(self):
-        with mock.patch.object(roomvault, "ingest",
-                               side_effect=RuntimeError("boom")):
-            res = readingroom.build("demo", "Demo Room", "Sub", [item()])
+    def test_build_never_touches_the_vault(self):
+        readingroom.build("demo", "Demo Room", "Sub", [item()])
+        self.assertFalse((self.vault / "wiki" / "demo-reading-room.md").exists())
+        self.assertFalse((self.vault / "wiki" / "rooms").exists())
+
+    def test_build_writes_the_store(self):
+        res = readingroom.build("demo", "Demo Room", "Sub", [item()])
         self.assertEqual(res["items"], 1)
         self.assertIsNotNone(readingroom.load_room("demo"))
+
+    def test_no_unpatched_vault_root_reaches_a_real_home(self):
+        # The shape of the original bug: a default vault_root pointing at a
+        # real directory. Nothing in the store path may consult it.
+        with mock.patch.object(vault, "vault_root",
+                               side_effect=AssertionError(
+                                   "build() consulted vault_root")):
+            readingroom.build("demo", "Demo Room", "Sub", [item()])
+
+
+class SyncTests(Base):
+    def test_sync_projects(self):
+        self.room([item()])
+        res = roomvault.sync("demo")
+        self.assertEqual(res["created"], 1)
+        self.assertTrue((self.vault / "wiki" / "demo-reading-room.md").exists())
+
+    def test_sync_swallows_failure(self):
+        self.room([item()])
+        with mock.patch.object(roomvault, "ingest",
+                               side_effect=RuntimeError("boom")):
+            self.assertIsNone(roomvault.sync("demo"))
+
+    def test_sync_is_none_when_the_vault_is_unset(self):
+        self.room([item()])
+        with mock.patch.object(vault, "vault_root",
+                               lambda: self.tmp / "nowhere"):
+            self.assertIsNone(roomvault.sync("demo"))
 
 
 if __name__ == "__main__":
