@@ -1,5 +1,6 @@
 """uistate — the server-persisted desktop arrangement store."""
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -155,6 +156,29 @@ class UiStateTests(unittest.TestCase):
         self.assertEqual(uistate.load(), {"keys": {}})
         uistate.save({"vira-dock-order": "[]"})
         self.assertEqual(uistate.load()["keys"]["vira-dock-order"], "[]")
+
+
+class SyncKeyParity(unittest.TestCase):
+    """The server's KEYS and app.js's UI_SYNC_KEYS must name the same set.
+
+    They are two halves of one contract and they fail independently. A key
+    the server accepts but the client's array omits is PUSHED and never
+    ADOPTED: the instance-change loop in syncUiState iterates UI_SYNC_KEYS,
+    so the stale local value outlives a reset that cleared the server's copy.
+    That is exactly how `vira-firstrun-done` pinned the welcome overlay shut
+    on every re-provisioned sandbox (2026-07-30) — a writer with no reader,
+    silent and looking correct.
+    """
+
+    def _client_keys(self):
+        src = (Path(__file__).resolve().parent.parent
+               / "static" / "app.js").read_text(encoding="utf-8")
+        i = src.index("const UI_SYNC_KEYS")
+        body = src[i:src.index("];", i)]
+        return set(re.findall(r'"([a-z0-9-]+)"', body))
+
+    def test_client_and_server_sync_the_same_keys(self):
+        self.assertEqual(self._client_keys(), set(uistate.KEYS))
 
 
 if __name__ == "__main__":

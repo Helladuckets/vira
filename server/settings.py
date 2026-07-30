@@ -126,6 +126,24 @@ def sandboxed() -> bool:
     return bool(os.environ.get("VIRA_SANDBOX"))
 
 
+def demo() -> bool:
+    """True for a sandbox served with --demo.
+
+    The sandbox's isolation lever is $HOME, and $HOME does not follow the
+    calls that reach the OS: `open`, a System Settings deep link, or a CLI
+    that launches the owner's own browser. So a plain sandbox walks the
+    onboarding right up to the first real action and then ejects the owner
+    into their real machine — the one thing that made the flow untestable.
+
+    Demo mode stubs exactly those calls and simulates their outcome, so the
+    whole path (connect -> splash -> reveal -> gated modules) can be walked
+    end to end. It is NOT the default: a plain sandbox stays a true first
+    boot, because that is what proves a stranger's experience. Demo mode
+    proves the FLOW, and says so in the badge.
+    """
+    return bool(os.environ.get("VIRA_SANDBOX_DEMO"))
+
+
 def fixture_mode():
     flag = raw().get("fixture_mode")
     if isinstance(flag, bool):

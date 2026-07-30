@@ -7,7 +7,13 @@
 # skills library, no backups of yours. Reset wipes it back to virgin.
 #
 #   sandbox.sh new [--force]      clone + venv + empty home (a virgin install)
-#   sandbox.sh serve              run it on :8400 (a real first boot)
+#   sandbox.sh serve [--demo]     run it on :8400 (a real first boot)
+#                                 --demo stubs the calls that escape to the
+#                                 real OS (browser sign-in, System Settings),
+#                                 so onboarding can be walked end to end
+#   sandbox.sh replay [--demo]    back to the FIRST SCREEN, no re-provision:
+#                                 wipes data/ (incl. the once-per-install
+#                                 welcome flag) and serves. Keeps venv + login.
 #   sandbox.sh stop
 #   sandbox.sh status
 #   sandbox.sh login              log the claude CLI in for the sandbox home
@@ -53,7 +59,10 @@ PIDFILE=$ROOT/.instance.json
 LOG=$ROOT/serve.log
 REAL_HOME=$HOME
 
-usage() { sed -n '2,21p' "$SELF"; exit 1; }
+# Line range must cover the whole command block above — it grew twice without
+# this following it, so `sandbox.sh` with no args stopped listing its own
+# newest commands.
+usage() { sed -n '2,24p' "$SELF"; exit 1; }
 die() { print -u2 -- "error: $*"; exit 1; }
 
 instance_pid() {
@@ -117,7 +126,35 @@ cmd_new() {
   echo "next:   scripts/sandbox.sh serve"
 }
 
+# Put the sandbox back to its FIRST SCREEN without re-provisioning.
+#
+# The gap this closes: a plain `serve` resumes wherever you left off, and the
+# first-run welcome is once-per-install BY DESIGN — its seen-flag is stored
+# server-side so the overlay cannot re-pop on every browser. So after one walk
+# there was no way to see the first screen again short of `reset`, which
+# rebuilds the venv and costs minutes. That made the one thing the sandbox
+# exists to show the one thing hardest to look at twice.
+#
+# Resets what VIRA created (data/ — ui-state incl. the welcome flag, config,
+# every index and store) and re-stamps the instance so any browser holding a
+# saved arrangement adopts the fresh one. KEEPS what the MACHINE has: the
+# clone, the venv, a `sandbox.sh login`, and anything you exposed.
+cmd_replay() {
+  local demo=${1:-}
+  [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
+  cmd_stop >/dev/null 2>&1 || true
+  rm -rf "$APP/data"
+  mkdir -p "$APP/data"
+  date +%s.%N > "$APP/data/.instance-stamp"
+  # Vira's own neutral-default homes, created during a walk (an imported CRM
+  # here would keep fixture mode off and skip the whole first-run path).
+  rm -rf "$FAKE_HOME/.vira"
+  echo "replayed — first boot again (login and exposed stores kept)"
+  cmd_serve "$demo"
+}
+
 cmd_serve() {
+  local demo=${1:-}
   [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
   local pid; pid=$(instance_pid)
   [[ -n $pid ]] && { echo "already running (pid $pid) — http://127.0.0.1:$PORT"; exit 0; }
@@ -126,9 +163,23 @@ cmd_serve() {
   # Real first boot: NOT passive. Background workers run, which is the point —
   # they are what a new user's install actually does. The fake HOME is what
   # keeps them harmless, and VIRA_KEYCHAIN_PREFIX keeps live secrets unreachable.
+  #
+  # --demo additionally stubs the calls that reach the real OS. $HOME is the
+  # sandbox's whole isolation lever and it does NOT follow `open`, a System
+  # Settings deep link, or a CLI that launches the owner's own browser — so a
+  # plain sandbox walks onboarding right up to the first real action and then
+  # ejects you onto your actual machine. Demo mode is how the flow gets walked
+  # end to end; it is opt-in because a plain sandbox must stay a TRUE first
+  # boot, and the app badges itself SANDBOX DEMO so a simulation is never
+  # mistaken for the real thing.
+  local demo_env=()
+  [[ $demo == "--demo" ]] && demo_env=(VIRA_SANDBOX_DEMO=1)
   cd "$APP"
+  # The demo var rides `env`, not a bare array expansion: zsh decides where
+  # the command word starts BEFORE expanding, so `${arr[@]}` in assignment
+  # position is run as a command ("command not found: VIRA_SANDBOX_DEMO=1").
   HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" VIRA_SANDBOX=1 \
-    nohup "$APP/.venv/bin/uvicorn" server.main:app \
+    nohup env ${demo_env[@]} "$APP/.venv/bin/uvicorn" server.main:app \
     --host 127.0.0.1 --port "$PORT" >> "$LOG" 2>&1 &
   pid=$!
   print -r -- "{\"pid\": $pid, \"port\": $PORT}" > "$PIDFILE"
@@ -140,8 +191,14 @@ cmd_serve() {
   done
   curl -sf -o /dev/null "http://127.0.0.1:$PORT/" || die "no response on :$PORT — see $LOG"
   echo ""
-  echo "sandbox up:   http://127.0.0.1:$PORT        <- a stranger's Vira"
-  echo "stage view:   http://127.0.0.1:$PORT/stage.html"
+  if [[ $demo == "--demo" ]]; then
+    echo "sandbox up:   http://localhost:$PORT        <- DEMO: OS calls stubbed"
+    echo "              sign-in and the disk-access assist are simulated,"
+    echo "              so the whole flow walks without touching your Mac."
+  else
+    echo "sandbox up:   http://localhost:$PORT        <- a stranger's Vira"
+  fi
+  echo "stage view:   http://localhost:$PORT/stage.html"
   echo "log: $LOG    stop: scripts/sandbox.sh stop"
 }
 
@@ -239,7 +296,8 @@ cmd=$1; shift
 case "$cmd" in
   new)      cmd_new "${1:-}";;
   login)    cmd_login;;
-  serve)    cmd_serve;;
+  serve)    cmd_serve "$@";;
+  replay)   cmd_replay "$@";;
   stop)     cmd_stop;;
   status)   cmd_status;;
   expose)   cmd_expose "$@";;

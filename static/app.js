@@ -5094,9 +5094,15 @@ function providerBadge(j) {
   return { id: p, legend: "Claude Code", auth: "Claude Max" };
 }
 let _instCfg = null;
+// Sandbox demo mode (settings.demo). Latched here rather than read per use:
+// the cards that must NOT narrate an action the server stubbed render inside
+// synchronous builders, and one config fetch already gates every surface.
+let VIRA_DEMO = false;
+
 async function instanceConfig() {
   if (_instCfg === null) {
     try { _instCfg = await api("/api/config"); } catch { _instCfg = {}; }
+    VIRA_DEMO = !!_instCfg.demo;
   }
   return _instCfg;
 }
@@ -7988,7 +7994,8 @@ function loginFlow(pid, subName, mount, onDone, big) {
     if (st.running) {
       btn.textContent = "waiting for the browser…";
       stat.hidden = false;
-      stat.textContent = "Approve in the browser window that just opened, " +
+      stat.textContent = st.demo ||
+        "Approve in the browser window that just opened, " +
         "then paste the code it gives you:";
       row.hidden = false;
       if (st.url && linkP.hidden) {
@@ -8084,9 +8091,19 @@ function cardDisk(card, step, st) {
   card.appendChild(brags);
   const guideBox = el("div", "");
   const fillGuide = () => {
+    if (VIRA_DEMO) {
+      // Demo mode did NOT open System Settings — saying it did would be the
+      // card narrating something that is not on the owner's screen.
+      guideBox.appendChild(el("p", "hint warn",
+        "Demo mode — nothing was opened. On a real install this puts System "
+        + "Settings on the Full Disk Access pane and highlights Vira's "
+        + "Python in Finder, then the card flips green on its own."));
+    }
     const steps = el("ol", "setup-steps");
-    ["System Settings is opening on the Full Disk Access pane, and " +
-       "Finder is highlighting the file to add",
+    [(VIRA_DEMO ? "On a real install: System Settings opens on the Full "
+        + "Disk Access pane, and Finder highlights the file to add"
+      : "System Settings is opening on the Full Disk Access pane, and " +
+       "Finder is highlighting the file to add"),
      "Drag that file into the Full Disk Access list (or use +) and flip " +
        "its toggle on",
      "That's it — Vira notices the grant on its own and this card flips " +
@@ -8487,6 +8504,9 @@ async function frAct(btn, fn) {
 
 async function maybeFirstrun() {
   if (lsGet("vira-firstrun-done", false)) return;
+  // Latches VIRA_DEMO before any screen renders: the copy below must not
+  // claim a real sign-in that demo mode simulated.
+  await instanceConfig().catch(() => {});
   let flow;
   try { flow = await api("/api/onboard/steps"); } catch { return; }
   frFlow = flow;
@@ -8521,10 +8541,13 @@ function frAlready(pr) {
   if (!b) return;
   b.appendChild(el("div", "fr-kicker", "Connected"));
   b.appendChild(el("h1", "fr-title", "You're already set"));
-  b.appendChild(el("p", "fr-sub",
-    `This machine is signed in to ${pr.sub_name}, so Vira connected ` +
-    "itself — replies in your voice, dossiers, and the daily brief all " +
-    "run on your own account. Nothing to configure."));
+  b.appendChild(el("p", "fr-sub", VIRA_DEMO
+    ? `Demo mode — the connection to ${pr.sub_name} is simulated, so ` +
+      "nothing here is running on a real account. This is the screen a " +
+      "stranger sees when their machine is already signed in."
+    : `This machine is signed in to ${pr.sub_name}, so Vira connected ` +
+      "itself — replies in your voice, dossiers, and the daily brief all " +
+      "run on your own account. Nothing to configure."));
   const row = el("div", "fr-row");
   const go = el("button", "btn primary fr-big", "Take me to Vira");
   go.onclick = () => frFinish(pr);   // same splash + reveal as a fresh connect
@@ -15872,9 +15895,15 @@ function initDesktop() {
 // Local wins: a browser with its own saved layout keeps it and mirrors
 // changes up (uiPush, debounced), so the store tracks the owner's most
 // recently used desktop browser.
+// Every key here must also be in server/uistate.py KEYS, and vice versa: this
+// array drives BOTH the push and the instance-change ADOPTION loop below, so a
+// key the server accepts but this list omits is written and never re-read —
+// it survives in localStorage after a reset that cleared the server's copy.
+// That is what kept the first-run welcome from ever firing twice on a
+// re-provisioned sandbox (2026-07-30).
 const UI_SYNC_KEYS = ["vira-desktop", "vira-dock-order", "vira-dock-hidden",
                       "vira-mobile-dock", "vira-setup-opened", "vira-layout",
-                      "vira-layouts"];
+                      "vira-layouts", "vira-firstrun-done"];
 let uiPushTimer = null;
 let uiPushQueue = {};
 
@@ -15987,7 +16016,8 @@ async function boot() {
   // (branch.sh serve), SANDBOX for a virgin install (sandbox.sh serve).
   instanceConfig().then((cfg) => {
     if (!cfg.passive && !cfg.sandbox) return;
-    const label = (cfg.sandbox ? "SANDBOX" : "TEST")
+    const label = (cfg.demo ? "SANDBOX DEMO"
+                 : cfg.sandbox ? "SANDBOX" : "TEST")
       + (location.port ? " :" + location.port : "");
     const badge = $("#inst-badge");
     badge.textContent = label;
