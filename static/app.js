@@ -8875,13 +8875,13 @@ function frFinish(pr) {
   const b = frBody();
   if (!b) return;
   loadSetup().catch(() => {});      // the dashboard behind it goes green
-  b.appendChild(el("div", "fr-kicker", "Connected"));
+  // One word, once. The kicker used to say "Connected" above a splash line
+  // reading "Oh — I've got it." — the flourish said nothing the state did
+  // not, and saying it twice on one screen reads as a bug (owner, 2026-07-30).
   const splash = el("div", "fr-splash");
   splash.appendChild(el("div", "fr-ring"));
-  splash.appendChild(el("h1", "fr-title fr-got", "Oh — I've got it."));
-  splash.appendChild(el("p", "fr-sub",
-    `Vira is running on ${pr.label}, under your own account. ` +
-    "Here's what wakes up right away."));
+  splash.appendChild(el("h1", "fr-title fr-got", "Connected"));
+  splash.appendChild(el("p", "fr-sub", `Vira is running on ${pr.label}.`));
   b.appendChild(splash);
   confettiAt(splash);
   setTimeout(aiReveal, REDUCED_MOTION ? 300 : 1900);
@@ -8901,10 +8901,29 @@ function frFinish(pr) {
 //
 // Skippable at any moment, by the film's own control or by Escape.
 
-let tourStep = -1;          // -1 idle, 0 film playing, 1 the closing card
+// The closing cards. Two, not one (owner, 2026-07-30): trying it and
+// deepening it are separate asks pointing at separate controls, and one card
+// carrying three buttons made them read as a menu. Each one ANCHORS to the
+// control it is talking about — the card sits under that control with a
+// caret aimed at it and the control ringed — so "type an idea" and "add your
+// context" are pointing rather than describing.
+const OUTRO = [
+  { anchor: "#work-queue-pane .runbar", kicker: "That's the loop" },
+  { anchor: "#idea-project-filter", ring: ".sb-pair",
+    kicker: "One more thing" },
+];
+
+let tourStep = -1;          // -1 idle, 0 film playing, 1-2 the closing cards
 
 function tourCard() { return $("#tour"); }
 function tourFilm() { return $("#tour-film"); }
+
+// The ring is cleared on every repaint AND on exit — a highlight that
+// outlives its card is a control left glowing for no reason.
+function clearTourRing() {
+  document.querySelectorAll(".tour-target")
+    .forEach((n) => n.classList.remove("tour-target"));
+}
 
 async function startWorkTour() {
   if (!isDesktop || !winState?.work) return;
@@ -8976,6 +8995,7 @@ function endTour({ focusAdd } = {}) {
   tourCard()?.remove();
   tourFilm()?.remove();
   removeEventListener("resize", fitTourFilm);
+  clearTourRing();
   document.body.classList.remove("tour-open");
   if (focusAdd) {
     // "Give it a try" has to land ON the thing it invited — the cursor in
@@ -8988,34 +9008,49 @@ function endTour({ focusAdd } = {}) {
   }
 }
 
-// The one card that outlives the film: what to do now. It used to be the
-// fifth screen of a five-screen tour; it is now the only card, shown once
-// the film has finished or been skipped.
+// The two cards that outlive the film: what to do now. Both live on the
+// Queue tab, each anchored to the control it names.
 function paintTour() {
   document.body.classList.add("tour-open");
   tourCard()?.remove();
+  clearTourRing();
+  const out = Math.max(0, tourStep - 1);   // 0 = give it a try, 1 = context
+  const beat = OUTRO[out];
   const card = el("div", "tour-card");
   card.id = "tour";
 
   const head = el("div", "tour-head");
-  head.appendChild(el("span", "tour-kicker", "That's the loop"));
+  head.appendChild(el("span", "tour-kicker", beat.kicker));
   const skip = el("button", "tour-skip", "Close");
   skip.onclick = () => endTour();
   head.appendChild(skip);
   card.appendChild(head);
 
-  {
-    setWorkTab("queue");
+  const row = el("div", "tour-row tour-row-wrap");
+  setWorkTab("queue");
+  if (out === 0) {
     card.appendChild(el("h3", "tour-title", "Give it a try"));
     card.appendChild(el("p", "tour-body",
-      "Type an idea in the Queue and hit Implement — that works right now, "
-      + "on the AI you just connected. Or point Vira at your own work first, "
-      + "so it plans against what you actually have."));
-    const row = el("div", "tour-row tour-row-wrap");
+      "Type an idea in this bar and hit Implement — that works right now, "
+      + "on the AI you just connected."));
     const go = el("button", "btn primary", "Give it a try");
     go.onclick = () => endTour({ focusAdd: true });
     row.appendChild(go);
-    const proj = el("button", "btn", "Connect a project…");
+    // No Back on the first card: behind it is the film, which is over.
+    const next = el("button", "btn", "Next");
+    next.onclick = () => { tourStep++; paintTour(); };
+    row.appendChild(next);
+    card.appendChild(row);
+  } else {
+    const back = el("button", "btn", "Back");
+    back.onclick = () => { tourStep--; paintTour(); };
+    card.appendChild(el("h3", "tour-title", "Add your context"));
+    card.appendChild(el("p", "tour-body",
+      "Point Vira at your own work and it plans against what you actually "
+      + "have. Projects show up in this dropdown; your notes become "
+      + "something it can answer from."));
+    row.appendChild(back);
+    const proj = el("button", "btn primary", "Connect a project…");
     proj.onclick = () => tourConnect("project");
     row.appendChild(proj);
     const vault = el("button", "btn", "Connect your notes…");
@@ -9027,6 +9062,10 @@ function paintTour() {
       + "of markdown it can answer from, with citations. Both stay on this "
       + "machine."));
   }
+  // Ring the control the card is pointing at. `ring` climbs to the wrapper
+  // when the label belongs with it (PROJECT + its select are one thing).
+  const t = $(beat.anchor);
+  (t?.closest(beat.ring || "*") || t)?.classList.add("tour-target");
   document.body.appendChild(card);
   positionTour();
   // .fwin-move animates left/top/width/height for ~380ms, so a rect measured
@@ -9038,14 +9077,41 @@ function paintTour() {
   paintTour._settle = setTimeout(positionTour, 440);
 }
 
-// The card rides the Work window rather than a screen corner: the tour is
-// ABOUT that card, and a caption parked in the bottom-right corner makes the
-// eye hunt for what it refers to. Centred horizontally on Work and anchored
-// near its foot, so the tabs it is naming stay visible above it.
+// A card rides its CONTROL, not a screen corner: it sits just under the
+// thing it names with the caret aimed at that thing's centre. Falls back to
+// the foot of the Work window if the control never rendered.
 function positionTour() {
   const card = tourCard();
   const win = winState?.work?.el;
   if (!card) return;
+  const beat = OUTRO[Math.max(0, tourStep - 1)];
+  const anchor = beat && $(beat.anchor);
+  const ar = anchor?.getBoundingClientRect();
+  // The caret is added HERE, not at paint: an anchor that never rendered
+  // falls through to the window placement, and a caret pointing at nothing
+  // is worse than no caret.
+  card.classList.toggle("tour-anchored", !!(ar && ar.width));
+  if (ar && ar.width) {
+    const w = card.offsetWidth || 360;
+    const h = card.offsetHeight || 220;
+    let left = ar.left + (ar.width - w) / 2;
+    left = Math.max(12, Math.min(left, innerWidth - w - 12));
+    let top = ar.bottom + 14;
+    // No room below (a short window, or the control sits low) — sit above it
+    // instead and drop the caret, rather than covering what we point at.
+    const above = top + h > innerHeight - 12;
+    if (above) top = Math.max(12, ar.top - h - 14);
+    card.classList.toggle("tour-above", above);
+    card.style.setProperty("--arrow-x",
+      `${Math.round(Math.min(Math.max(ar.left + ar.width / 2 - left, 20),
+                             w - 20))}px`);
+    card.style.left = `${Math.round(left)}px`;
+    card.style.top = `${Math.round(top)}px`;
+    card.style.right = "auto";
+    card.style.bottom = "auto";
+    card.style.transform = "none";
+    return;
+  }
   if (!win) {                       // no Work window (shouldn't happen) — centre on screen
     card.style.left = "50%";
     card.style.transform = "translateX(-50%)";
