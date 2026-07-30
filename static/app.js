@@ -8936,7 +8936,8 @@ function playTourFilm() {
   const frame = document.createElement("iframe");
   frame.src = "/tour/";
   frame.title = "A tour of the Work window";
-  frame.setAttribute("scrolling", "no");
+  // NOT scrolling="no": the film scrubs on scroll, and this attribute
+  // silently disabled that inside the frame.
   host.appendChild(frame);
   document.body.appendChild(host);
   fitTourFilm();
@@ -17137,7 +17138,39 @@ async function boot() {
     badge.textContent = label;
     badge.hidden = false;
     document.title = "Vira — " + label;
+    // A sandbox exists to watch a FIRST run, and a first run happens once —
+    // after which the only way back was to go and re-run a script. On a
+    // sandbox instance (never a real install) the badge carries its own way
+    // back to a virgin user, so the flow can be walked again immediately.
+    if (cfg.sandbox) mountDemoReset(badge);
   }).catch(() => {});
+}
+
+function mountDemoReset(badge) {
+  if ($("#demo-reset")) return;
+  const b = el("button", "demo-reset", "Reset to a new user");
+  b.id = "demo-reset";
+  b.title = "Wipe onboarding on this sandbox and reload at the first screen";
+  b.onclick = async () => {
+    b.disabled = true;
+    b.textContent = "resetting…";
+    try {
+      await post("/api/demo/reset", {});
+      // The flag lives in BOTH places — the server's ui-state and this
+      // browser's localStorage — and clearing only one leaves a half-reset
+      // instance that reads as onboarded again on the next load.
+      try {
+        ["vira-firstrun-done", "vira-layouts"]
+          .forEach((k) => localStorage.removeItem(k));
+      } catch { /* private mode — the server side is what matters */ }
+      location.replace(location.pathname);
+    } catch (e) {
+      b.disabled = false;
+      b.textContent = "Reset to a new user";
+      toast(e.message || "reset failed");
+    }
+  };
+  badge.after(b);
 }
 boot();
 

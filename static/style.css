@@ -115,6 +115,19 @@ body {
   box-shadow: 0 0 10px var(--red-glow);
 }
 
+/* The sandbox's own way back to a virgin user. Sandbox instances only —
+   mountDemoReset never runs anywhere else, and the endpoint refuses. */
+.demo-reset {
+  align-self: center; flex: none; margin-left: 8px;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ink-dim); background: transparent;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 2px 8px 1px; cursor: pointer;
+}
+.demo-reset:hover:not(:disabled) { color: var(--ink); border-color: var(--red); }
+.demo-reset:disabled { opacity: .55; cursor: default; }
+
 /* AI-backend down banner (deterministic: renders when the model is down) */
 .ai-banner {
   display: flex; align-items: center; gap: 10px;

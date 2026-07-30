@@ -1854,6 +1854,35 @@ def api_onboard_steps():
     return onboard.steps()
 
 
+@app.post("/api/demo/reset")
+def api_demo_reset():
+    """Put a SANDBOX instance back to a brand-new user.
+
+    A first run happens once per install, which makes the one screen a
+    stranger sees hardest to look at twice — reviewing it meant going back to
+    a shell and re-running a script. This is that, as a button on the badge.
+
+    Refused anywhere but a sandbox. The live instance and a branch test
+    instance both carry real arrangements and a real connected account, and
+    an endpoint that wipes onboarding must not be reachable there at all.
+    """
+    if not settings.sandboxed():
+        raise HTTPException(status_code=403,
+                            detail="reset is a sandbox-only control")
+    forgot = uistate.forget(["vira-firstrun-done", "vira-layouts",
+                             "vira-layout", "vira-setup-opened"])
+    # Demo sign-ins live in memory, so a fresh user has to un-connect too —
+    # otherwise the welcome takes its already-set-up path and the four
+    # provider tiles never render.
+    dropped = []
+    try:
+        dropped = sorted(models._demo_connected)
+        models._demo_connected.clear()
+    except Exception:                                          # noqa: BLE001
+        pass
+    return {"ok": True, "forgot": forgot, "disconnected": dropped}
+
+
 @app.post("/api/onboard/ai")
 def api_onboard_ai(req: OnboardAiReq):
     """Select the model provider, and optionally store an API key for it.

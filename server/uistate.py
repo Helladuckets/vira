@@ -120,3 +120,21 @@ def save(keys):
         s["keys"].update(accepted)
         _save(s)
         return s
+
+
+def forget(names):
+    """Drop keys from the store outright.
+
+    Only the sandbox reset uses this: `save` merges, so there was no way to
+    take a key BACK, and a first-run flag that cannot be un-set makes a
+    first run a once-per-install event with no way to watch it twice.
+    """
+    with _lock:
+        st = _load()
+        keys = st.get("keys") or {}
+        gone = [n for n in names if n in keys]
+        for n in gone:
+            keys.pop(n, None)
+        st["keys"] = keys
+        _save(st)
+        return gone

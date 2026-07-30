@@ -48,7 +48,3 @@ bridge/whatsapp/node_modules/
 
 # Session retrospectives: project-local working docs — never on the public repo
 retros/
-
-# The Work-tour film: frames of the owner's own instance, anonymized.
-# Served locally at /tour/; deliberately not on the public repo.
-static/tour/

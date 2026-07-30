@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vira — the Work window</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   This film plays INSIDE Vira, in a box the size of the Work
+   window — roughly 46% x 78% of the frame, so about 660x700 on
+   a laptop. Everything below is sized in rem off a root that
+   scales with the box, so the same film reads correctly whether
+   it is handed 620px or a full screen.
+   ============================================================ */
+:root {
+  --bg: #0a0b0d; --line: #26282e;
+  --ink: #e9e6df; --dim: #9a948a; --faint: #5c574f;
+  --coral: #d97757; --gold: #d9b64a;
+  --serif: "Fraunces", Georgia, serif;
+  --sans: "Inter", -apple-system, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+html { background: var(--bg); font-size: clamp(9.5px, 1.72vw, 16px); }
+* { box-sizing: border-box; }
+/* The scrub driver reads scrollY, so the document MUST be scrollable —
+   `overflow: hidden` here (and scrolling="no" on the host's iframe) is
+   what made scrolling do nothing at all. The spacer supplies the height. */
+body { margin: 0; color: var(--ink); font-family: var(--sans);
+  overflow-x: hidden; overflow-y: auto; scrollbar-width: none; }
+body::-webkit-scrollbar { width: 0; height: 0; }
+
+#stage { position: fixed; inset: 0; overflow: hidden; background: var(--bg); }
+.layer { position: absolute; left: 0; top: 0; transform-origin: 0 0;
+  will-change: transform, opacity; opacity: 0; user-select: none;
+  pointer-events: none; }
+.layer img { display: block; }
+#vignette { position: absolute; inset: 0; pointer-events: none;
+  box-shadow: inset 0 0 9rem 2.6rem rgba(5,6,8,.9); }
+#leader { position: absolute; inset: 0; width: 100%; height: 100%;
+  pointer-events: none; }
+#leader line { stroke: var(--coral); stroke-width: 1.3; }
+#leader circle { fill: none; stroke: var(--coral); stroke-width: 1.3; }
+
+/* ---------- captions ----------
+   Born centred and large over the frame, then docking to the BOTTOM rather
+   than to a corner: the box is portrait and narrow, so a caption parked left
+   or right would cover the very thing it is describing. */
+#cardlayer { position: absolute; inset: 0; pointer-events: none; }
+.card { position: absolute; left: 50%; padding: 1.5rem 1.7rem 1.35rem;
+  background: rgba(11,12,15,.42); border: 1px solid rgba(120,124,134,.26);
+  border-radius: .75rem; backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px); opacity: 0;
+  box-shadow: 0 1rem 3rem rgba(0,0,0,.55);
+  text-shadow: 0 1px 1rem rgba(0,0,0,.75);
+  will-change: left, top, transform, opacity; }
+.card .k { font: 700 .78rem/1 var(--mono); letter-spacing: .2em;
+  color: var(--coral); text-transform: uppercase; margin-bottom: .6rem; }
+.card .t { font: 600 1.95rem/1.18 var(--serif); letter-spacing: -.01em;
+  margin-bottom: .5rem; }
+.card .b { font: 400 1.02rem/1.55 var(--sans); color: #c9c3b8; }
+.card .b b { color: var(--ink); font-weight: 600; }
+.card .b .mono { font-family: var(--mono); font-size: .92rem; color: var(--gold); }
+
+.card.center { top: 50%; transform: translate(-50%, -50%);
+  width: min(34rem, 88%); text-align: center;
+  background: rgba(12,13,16,.9); padding: 2.2rem 2rem 1.9rem; }
+.card.center .t { font-size: 2.5rem; font-weight: 900; margin: .5rem 0 .55rem; }
+.card.center .k { margin-bottom: 0; }
+.typed::after { content: "_"; color: var(--coral);
+  animation: blink 1.05s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+
+/* ---------- the topic rail ----------
+   Named, not dotted: on a walkthrough this long you should be able to see
+   where you are, what is coming, and go back to the one you want. */
+#rail { position: fixed; right: 0; top: 50%; transform: translateY(-50%);
+  z-index: 42; display: flex; flex-direction: column; gap: 1px;
+  padding: .45rem .4rem .45rem .5rem; max-height: 88%;
+  background: rgba(10,11,13,.55); backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(120,124,134,.18); border-right: 0;
+  border-radius: .55rem 0 0 .55rem; overflow: hidden; }
+#rail .r { display: flex; align-items: center; gap: .45rem; cursor: pointer;
+  padding: .2rem .35rem; border-radius: .3rem; color: var(--faint);
+  font: 500 .72rem/1.25 var(--mono); letter-spacing: .04em;
+  white-space: nowrap; transition: color .2s, background .2s; }
+#rail .r .tick { width: .5rem; height: 1px; background: currentColor;
+  flex: none; transition: width .25s, height .25s; }
+#rail .r:hover { color: var(--dim); background: rgba(255,255,255,.04); }
+#rail .r.on { color: var(--coral); }
+#rail .r.on .tick { width: .85rem; height: 2px; }
+#rail .r.done { color: #6f6a61; }
+@media (max-width: 430px) { #rail { display: none; } }
+
+/* ---------- chrome ---------- */
+#progressbar { position: fixed; left: 0; top: 0; height: 2px;
+  background: var(--coral); width: 0; z-index: 40;
+  box-shadow: 0 0 .6rem rgba(217,119,87,.6); }
+#skip { position: fixed; right: .85rem; top: .7rem; z-index: 41;
+  font: 500 .85rem var(--mono); letter-spacing: .12em; color: var(--faint);
+  background: rgba(12,13,16,.75); border: 1px solid var(--line);
+  border-radius: .45rem; padding: .4rem .8rem; cursor: pointer;
+  text-transform: uppercase; }
+#skip:hover { color: var(--ink); border-color: var(--coral); }
+#hud { position: fixed; left: .9rem; bottom: .7rem; z-index: 41;
+  display: flex; align-items: center; gap: .6rem;
+  font: 500 .78rem var(--mono); color: var(--faint); letter-spacing: .06em; }
+#playbtn { width: 1.9rem; height: 1.9rem; border-radius: 50%; cursor: pointer;
+  background: rgba(14,15,18,.9); border: 1px solid var(--line);
+  color: var(--coral); display: flex; align-items: center;
+  justify-content: center; padding: 0; }
+#playbtn svg { width: .8rem; height: .8rem; display: block; }
+#veil { position: fixed; inset: 0; background: var(--bg); z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  font: 500 .85rem var(--mono); color: var(--dim); letter-spacing: .2em;
+  transition: opacity .6s ease; }
+#veil.gone { opacity: 0; pointer-events: none; }
+
+/* ---------- article fallback ----------
+   Only for a genuinely tiny box or reduced motion. The old threshold was
+   880px, which is WIDER than the Work window this film plays in — it would
+   have fallen back to prose every single time. */
+#article { display: none; max-width: 40rem; margin: 0 auto;
+  padding: 1.6rem 1.1rem 4rem; }
+#article h1 { font: 900 2rem/1.12 var(--serif); margin: .5rem 0 .5rem; }
+#article .k { font: 700 .78rem var(--mono); letter-spacing: .2em;
+  color: var(--coral); text-transform: uppercase; }
+#article section { margin: 2rem 0; }
+#article h2 { font: 600 1.3rem/1.3 var(--serif); margin: .7rem 0 .4rem; }
+#article p { color: var(--dim); line-height: 1.6; margin: .4rem 0; }
+#article p b { color: var(--ink); }
+#article .shotcrop { position: relative; overflow: hidden;
+  border-radius: .6rem; border: 1px solid var(--line); background: #000; }
+#article .shotcrop img { position: absolute; display: block; }
+body.article { overflow-y: auto; }
+body.article #stage, body.article #hud, body.article #progressbar,
+body.article #rail,
+body.article #spacer { display: none; }
+body.article #article { display: block; }
+#spacer { position: relative; z-index: -1; }
+@media (prefers-reduced-motion: reduce) { .typed::after { animation: none; } }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div class="layer" id="layerA"><img alt=""></div>
+  <div class="layer" id="layerB"><img alt=""></div>
+  <div id="vignette"></div>
+  <svg id="leader"></svg>
+  <div id="cardlayer"></div>
+</div>
+
+<div id="progressbar"></div>
+<nav id="rail" aria-label="Chapters"></nav>
+<button id="skip">Skip</button>
+<div id="hud">
+  <button id="playbtn" aria-label="Play or pause">
+    <svg viewBox="0 0 16 16" id="playicon"><path d="M4 2.5l9 5.5-9 5.5z" fill="currentColor"/></svg>
+  </button>
+  <span id="hudline">scroll to scrub</span>
+</div>
+<div id="veil">LOADING&hellip;</div>
+<div id="spacer"></div>
+<div id="article"></div>
+
+<script>
+/* One timeline, two drivers: autoplay advances the scroll, a human scroll
+   scrubs the same clock. Beat i owns [i*SEG, (i+1)*SEG). */
+
+const SHOTS = {
+  queue:     { src: "shots/queue.png",     w: 2880, h: 1800 },
+  queueadd:  { src: "shots/queueadd.png",  w: 2880, h: 1800 },
+  queuefind: { src: "shots/queuefind.png", w: 2880, h: 1800 },
+  proposed:  { src: "shots/proposed.png",  w: 2880, h: 1800 },
+  dispatch:  { src: "shots/dispatch.png",  w: 2880, h: 1800 },
+  library:   { src: "shots/library.png",   w: 2880, h: 1800 },
+  schedules: { src: "shots/schedules.png", w: 2880, h: 1800 },
+  live:      { src: "shots/live.png",      w: 2880, h: 1800 },
+  session:   { src: "shots/session.png",   w: 2880, h: 1800 },
+  record:    { src: "shots/record.png",    w: 2880, h: 1800 },
+  ledger:    { src: "shots/ledger.png",    w: 2880, h: 1800 },
+  phone:     { src: "shots/phone.png",     w:  804, h: 1748 },
+};
+
+const BEATS = [
+  { type: "title", dur: 6.5, cps: 64,
+    k: "VIRA",
+    t: "This is Work",
+    b: "One window, four tabs. It is where you put things you want done, hand them to an agent, watch them run, and read what happened afterwards. Two minutes, and you can skip it whenever you like.",
+    type2: "typed" },
+
+  { img: "queue", r: [240, 132, 2360, 480], dur: 5,
+    point: [1420, 276],
+    k: "THE FOUR TABS",
+    t: "Queue, Dispatch, Live, Record",
+    b: "They are one loop, in order. <b>Queue</b> is what you want done. <b>Dispatch</b> is handing a piece of it over. <b>Live</b> is it happening. <b>Record</b> is what came of it. You will spend most of your time in the first one." },
+
+  { img: "queue", r: [274, 620, 2292, 1000], dur: 5.5,
+    point: [800, 700],
+    k: "QUEUE",
+    t: "Everything waiting on your call",
+    b: "The backlog carried across sessions, so nothing lives only in your head or in a chat you closed. It stays readable at a few hundred items because it is grouped by state rather than dumped in one list — here, 151 of them." },
+
+  { img: "queueadd", r: [274, 300, 2292, 240], dur: 5,
+    point: [700, 417],
+    k: "ADDING SOMETHING",
+    t: "Type it, and it is in",
+    b: "One line is enough — you are not filling in a form. The dropdown beside it files the idea against a project, which is what later lets an agent start in the right folder without being told where anything is." },
+
+  { img: "queuefind", r: [274, 440, 2292, 280], dur: 4.5,
+    point: [700, 523],
+    k: "FINDING ONE THING",
+    t: "Search, project, sort, tags",
+    b: "Search reads the text, the tags, the project and your own notes. Sort regroups by state, or by age, or by project. None of it changes anything — it changes what you are looking at." },
+
+  { img: "proposed", r: [274, 700, 2292, 500], dur: 6,
+    point: [680, 1128],
+    k: "VIRA PROPOSES TOO",
+    t: "Nothing acts without your say-so",
+    b: "Vira adds its own ideas to the top of the queue and then waits. Each one carries why it was raised, and three answers: <b>approve</b> to keep it, <b>approve &amp; build</b> to start it now, <b>decline</b> to drop it. Sitting there unanswered is a perfectly good state." },
+
+  { img: "dispatch", r: [274, 300, 2292, 260], dur: 5,
+    point: [700, 381],
+    k: "DISPATCH",
+    t: "Ask for anything, in a sentence",
+    b: "Type what you want and press Run. No ceremony, no picking a template first — if it needs a skill, Vira reaches for one. The cards below are there for the things you do often enough to want a button." },
+
+  { img: "dispatch", r: [274, 420, 2292, 240], dur: 4.5,
+    point: [700, 472],
+    k: "TWO DECISIONS",
+    t: "How it runs, and when",
+    b: "<b>Structure</b> is whether this is one job or a chain of them feeding each other. <b>Schedule</b> is now, or every morning. Both default to the simple answer, so ignoring them runs the obvious thing once." },
+
+  { img: "library", r: [274, 560, 1350, 320], dur: 5,
+    point: [430, 660],
+    k: "YOUR SKILLS",
+    t: "The things you do often, as cards",
+    b: "Every skill in your library shows up here with what it is for. Tap one instead of describing the same task again — and anything you teach Vira later appears in this grid without you wiring it in." },
+
+  { img: "schedules", r: [274, 500, 2292, 320], dur: 4.5,
+    point: [700, 612],
+    k: "STANDING LOOPS",
+    t: "Work that starts without you",
+    b: "Loops Vira runs on their own — proposing ideas each morning, watching something and telling you when it moves. Every run is an ordinary job with an ordinary terminal, so nothing happens where you cannot see it." },
+
+  { img: "live", r: [274, 300, 2292, 460], dur: 5,
+    point: [430, 522],
+    k: "LIVE",
+    t: "What is running, right now",
+    b: "One row per session, with a light that tells you whether it is working, waiting on you, or done. Nothing here is a progress bar you can only watch — each one opens." },
+
+  { img: "session", r: [600, 290, 1660, 1000], dur: 6,
+    point: [900, 340],
+    k: "INSIDE A SESSION",
+    t: "It is a conversation, not a job you lost",
+    b: "Every session has its own terminal, and the whole transcript is there. You can steer it mid-turn — type a note and it reaches the agent at its next step — answer a question it raises, or stop the turn. Closing the window does not stop the work." },
+
+  { img: "record", r: [274, 320, 2292, 420], dur: 5,
+    point: [600, 500],
+    k: "RECORD",
+    t: "What already happened",
+    b: "Finished work, newest first, grouped the way the sessions actually ran. This is the answer to <i>what did I do last week</i> without reconstructing it from memory or from a commit log." },
+
+  { img: "ledger", r: [274, 380, 2292, 340], dur: 4.5,
+    point: [600, 470],
+    k: "AND THE RECEIPTS",
+    t: "Every run keeps its transcript",
+    b: "Each row is one run with the session behind it kept. You can open the thing that built something months later and read exactly what it did — which is what makes it possible to trust the parts you did not watch." },
+
+  { img: "phone", r: [0, 0, 804, 1748], dur: 4.5,
+    point: [400, 380],
+    k: "ON YOUR PHONE",
+    t: "The same queue, one column",
+    b: "There are no floating windows on a phone, so Work is simply the screen. Add something from a platform on the way home, then approve or steer a running session from the same place." },
+
+  { type: "outro", dur: 7, cps: 70,
+    k: "THAT IS THE LOOP",
+    t: "Your turn",
+    b: "Type one thing into the Queue and hand it to Dispatch. That is the whole cycle, and it works right now on the AI you just connected.",
+    type2: "typed" },
+];
+
+BEATS.forEach((b, i) => { b.nav = ['Work', 'Four tabs', 'Queue', 'Adding', 'Finding', 'Proposals', 'Dispatch', 'Run & when', 'Skills', 'Loops', 'Live', 'Session', 'Record', 'Receipts', 'Phone', 'Your turn'][i]; });
+const N = BEATS.length;
+const wantsArticle = () =>
+  matchMedia("(prefers-reduced-motion: reduce)").matches
+  || vw() <= 380 || vh() < 260;
+let booted = false, articleMode = false, bootWaits = 0;
+function vw() { return innerWidth || document.documentElement.clientWidth || 660; }
+function vh() { return innerHeight || document.documentElement.clientHeight || 700; }
+
+/* The film is done: tell whoever embedded it, so the overlay can close and
+   leave the real window underneath. Harmless when opened directly. */
+let told = false;
+function finish(how) {
+  if (told) return;
+  told = true;
+  try { parent.postMessage({ viraTour: "done", how: how }, "*"); } catch (e) {}
+}
+document.getElementById("skip").addEventListener("click", () => finish("skip"));
+
+function boot() {
+  if (booted) return;
+  if ((!innerWidth || !innerHeight) && bootWaits++ < 60) {
+    requestAnimationFrame(boot); return;
+  }
+  booted = true;
+  articleMode = wantsArticle();
+  if (articleMode) buildArticle(); else runStage();
+}
+requestAnimationFrame(() => requestAnimationFrame(boot));
+setTimeout(boot, 60);
+setTimeout(boot, 400);
+addEventListener("resize", () => {
+  if (booted && wantsArticle() !== articleMode) location.reload();
+});
+
+function buildArticle() {
+  document.body.classList.add("article");
+  let html = `<div class="k">VIRA</div><h1>This is Work</h1>
+    <p>One window, four tabs: what you want done, handing it over, watching it
+    run, and reading what came of it.</p>`;
+  BEATS.forEach((bt) => {
+    if (bt.type === "title") return;
+    html += "<section>";
+    if (bt.img) {
+      const S = SHOTS[bt.img];
+      const cw = Math.max(220, Math.min(640, vw() - 28));
+      const s = cw / bt.r[2];
+      const ch = Math.max(120, Math.min(Math.round(bt.r[3] * s),
+                                        Math.round(vh() * .6)));
+      html += `<div class="shotcrop" style="width:${cw}px;height:${ch}px">
+        <img src="${S.src}" style="width:${Math.round(S.w*s)}px;
+        height:${Math.round(S.h*s)}px;left:${-Math.round(bt.r[0]*s)}px;
+        top:${-Math.round(bt.r[1]*s)}px" alt=""></div>`;
+    }
+    if (bt.k) html += `<div class="k" style="margin-top:.6rem">${bt.k}</div>`;
+    if (bt.t) html += `<h2>${bt.t}</h2>`;
+    if (bt.b) html += `<p>${bt.b}</p>`;
+    html += "</section>";
+  });
+  document.getElementById("article").innerHTML = html;
+  document.getElementById("veil").classList.add("gone");
+}
+
+function runStage() {
+let readyCount = 0;
+Object.values(SHOTS).forEach((S) => {
+  const im = new Image();
+  im.src = S.src;
+  im.onload = im.onerror = () => {
+    if (++readyCount >= 3) document.getElementById("veil").classList.add("gone");
+  };
+});
+
+const SEGVH = 1.22;
+let SEG = Math.round(vh() * SEGVH);
+const spacer = document.getElementById("spacer");
+function sizeSpacer() {
+  SEG = Math.round(vh() * SEGVH);
+  spacer.style.height = (N * SEG + vh()) + "px";
+}
+sizeSpacer();
+addEventListener("resize", sizeSpacer);
+
+const layerA = document.getElementById("layerA");
+const layerB = document.getElementById("layerB");
+[layerA, layerB].forEach((l) => { l.cur = null; });
+const cardlayer = document.getElementById("cardlayer");
+const leader = document.getElementById("leader");
+
+const rail = document.getElementById("rail");
+const rails = BEATS.map((bt, i) => {
+  const r = document.createElement("div");
+  r.className = "r";
+  r.innerHTML = `<span class="tick"></span><span>${bt.nav}</span>`;
+  r.addEventListener("click", () => jumpTo(i));
+  rail.appendChild(r);
+  return r;
+});
+
+const cards = BEATS.map((bt) => {
+  const c = document.createElement("div");
+  c.className = "card" + (bt.img ? "" : " center");
+  c.innerHTML = (bt.k ? `<div class="k">${bt.k}</div>` : "")
+    + (bt.t ? `<div class="t">${bt.t}</div>` : "")
+    + (bt.b ? `<div class="b"></div>` : "");
+  if (bt.b) {
+    const body = c.querySelector(".b");
+    if (bt.type2 === "typed") {
+      body.dataset.full = bt.b.replaceAll("&amp;", "&");
+    } else { body.innerHTML = bt.b; }
+  }
+  cardlayer.appendChild(c);
+  return c;
+});
+
+/* ---------- camera ---------- */
+const TR = 0.26;
+function fit(r, dockP) {
+  const w = vw(), h = vh();
+  // A narrow box wants more of itself used than a full screen does.
+  let s = Math.min(w * 0.96 / r[2], h * 0.88 / r[3]);
+  s = Math.min(s, 1.15);
+  const p = dockP == null ? 1 : dockP;
+  const cx = w / 2;
+  // The caption docks along the BOTTOM here, so the subject lifts rather
+  // than slides sideways — sliding would run it off a 660px-wide frame.
+  const cy = lerp(h / 2, h * 0.40, p);
+  return { s, tx: cx - s * (r[0] + r[2] / 2), ty: cy - s * (r[1] + r[3] / 2) };
+}
+const lerp = (a, b, p) => a + (b - a) * p;
+function interpCam(c1, c2, p) {
+  return { s: Math.exp(lerp(Math.log(c1.s), Math.log(c2.s), p)),
+           tx: lerp(c1.tx, c2.tx, p), ty: lerp(c1.ty, c2.ty, p) };
+}
+const smooth = (x) => { x = Math.min(1, Math.max(0, x));
+  return x * x * x * (x * (x * 6 - 15) + 10); };
+function applyCam(layer, cam) {
+  layer.style.transform =
+    `translate(${cam.tx}px, ${cam.ty}px) scale(${cam.s})`;
+}
+
+const typers = new Map();
+function typeInto(el, full, cps) {
+  if (typers.has(el)) return;
+  el.classList.add("typed");
+  let i = 0;
+  const iv = setInterval(() => {
+    i += 2;
+    el.textContent = full.slice(0, i);
+    if (i >= full.length) {
+      clearInterval(iv);
+      typers.set(el, "done");
+      setTimeout(() => el.classList.remove("typed"), 2200);
+    }
+  }, 1000 / (cps || 55) * 2);
+  typers.set(el, iv);
+}
+
+let playing = true, ended = false, lastShownImg = null;
+const playicon = document.getElementById("playicon");
+const hudline = document.getElementById("hudline");
+const PH = { inA: 0.09, inB: 0.19, dockA: 0.44, dockB: 0.60, out: 0.975 };
+
+function render(t) {
+  t = Math.min(N - 0.001, Math.max(0, t));
+  const i = Math.floor(t), f = t - i;
+  const bt = BEATS[i], prev = BEATS[i - 1];
+  const dockP = smooth((f - PH.dockA) / (PH.dockB - PH.dockA));
+  document.getElementById("progressbar").style.width = (t / N * 100) + "%";
+  rails.forEach((r, ri) => {
+    r.classList.toggle("on", ri === i);
+    r.classList.toggle("done", ri < i);
+  });
+
+  const travel = smooth(f / TR);
+  if (bt.img) {
+    const cam = fit(bt.r, dockP);
+    const drift = f > TR ? 1 + 0.012 * smooth((f - TR) / (1 - TR)) : 1;
+    const cx = bt.r[0] + bt.r[2] / 2, cy2 = bt.r[1] + bt.r[3] / 2;
+    const drifted = { s: cam.s * drift,
+      tx: cam.tx - (drift - 1) * cx * cam.s,
+      ty: cam.ty - (drift - 1) * cy2 * cam.s };
+    if (prev && prev.img === bt.img) {
+      const c = interpCam(fit(prev.r, 1), cam, travel);
+      setLayerImg(layerA, bt.img, 1);
+      applyCam(layerA, f > TR ? drifted : c);
+      layerB.style.opacity = 0;
+    } else {
+      setLayerImg(layerB, bt.img, travel);
+      const settle = interpCam(
+        { s: cam.s * 1.05, tx: cam.tx - 0.025 * cx * cam.s * 2,
+          ty: cam.ty - 0.025 * cy2 * cam.s * 2 }, cam, travel);
+      applyCam(layerB, f > TR ? drifted : settle);
+      if (prev && prev.img) {
+        setLayerImg(layerA, prev.img, 1 - travel);
+        applyCam(layerA, fit(prev.r, 1));
+      } else { layerA.style.opacity = Math.max(0, 0.14 * (1 - travel)); }
+      if (travel >= 1) {
+        setLayerImg(layerA, bt.img, 1);
+        applyCam(layerA, drifted);
+        layerB.style.opacity = 0;
+      }
+    }
+    lastShownImg = bt.img;
+  } else {
+    const dimTo = bt.type === "title" ? 0 : 0.12;
+    if (lastShownImg) {
+      setLayerImg(layerA, lastShownImg,
+        Math.max(dimTo, 1 - travel * (1 - dimTo) - travel * 0.87));
+      layerB.style.opacity = 0;
+    } else { layerA.style.opacity = 0; layerB.style.opacity = 0; }
+  }
+
+  cards.forEach((c, ci) => {
+    if (!BEATS[ci].img) {
+      const on = ci === i && f > 0.14 && f < 0.985;
+      c.style.opacity = on ? 1 : 0;
+      c.style.transform = "translate(-50%, -50%)";
+      if (on) {
+        const body = c.querySelector(".b");
+        if (body && body.dataset.full)
+          typeInto(body, body.dataset.full, BEATS[ci].cps || 60);
+      }
+      return;
+    }
+    if (ci !== i) { c.style.opacity = 0; return; }
+    let op = 1;
+    if (f < PH.inA) op = 0;
+    else if (f < PH.inB) op = (f - PH.inA) / (PH.inB - PH.inA);
+    else if (f > PH.out) op = Math.max(0, 1 - (f - PH.out) / (1 - PH.out));
+    c.style.opacity = op;
+    if (op <= 0) return;
+    c.style.width = lerp(vw() * 0.86, vw() * 0.94, dockP) + "px";
+    const h = c.offsetHeight;
+    const y0 = vh() * 0.5, y1 = vh() - h / 2 - vh() * 0.035;
+    const y = lerp(y0, y1, dockP);
+    const scale = lerp(1, 0.94, dockP);
+    c.style.left = "50%";
+    c.style.top = y + "px";
+    c.style.transform = `translate(-50%, -50%) scale(${scale})`;
+    c.style.background = `rgba(11,12,15,${lerp(0.42, 0.93, dockP)})`;
+  });
+
+  leader.innerHTML = "";
+  if (bt.img && bt.point && dockP > 0.85 && f < 0.97) {
+    const cam = fit(bt.r, dockP);
+    const drift = f > TR ? 1 + 0.012 * smooth((f - TR) / (1 - TR)) : 1;
+    const cx = bt.r[0] + bt.r[2] / 2, cy2 = bt.r[1] + bt.r[3] / 2;
+    const s = cam.s * drift;
+    const px = bt.point[0] * s + cam.tx - (drift - 1) * cx * cam.s;
+    const py = bt.point[1] * s + cam.ty - (drift - 1) * cy2 * cam.s;
+    const cr = cards[i].getBoundingClientRect();
+    leader.innerHTML = `<circle cx="${px}" cy="${py}" r="6"></circle>
+      <line x1="${vw() / 2}" y1="${cr.top - 4}" x2="${px}" y2="${py + 9}"
+       opacity="0.7"></line>`;
+  }
+}
+
+function setLayerImg(layer, name, opacity) {
+  if (layer.cur !== name) {
+    const S = SHOTS[name];
+    const im = layer.querySelector("img");
+    im.src = S.src; im.style.width = S.w + "px"; im.style.height = S.h + "px";
+    layer.cur = name;
+  }
+  layer.style.opacity = Math.min(1, Math.max(0, opacity));
+}
+
+let selfScroll = false;
+const tFromScroll = () => scrollY / SEG;
+let raf, lastTs = 0, lastTickAt = 0;
+function tick(ts) {
+  cancelAnimationFrame(raf);
+  raf = requestAnimationFrame(tick);
+  lastTickAt = performance.now();
+  const dt = Math.min(0.25, (ts - lastTs) / 1000 || 0);
+  lastTs = ts;
+  if (playing && !ended) {
+    const t = tFromScroll();
+    const i = Math.min(N - 1, Math.floor(t));
+    let y = scrollY + (SEG / BEATS[i].dur) * dt;
+    if (y >= (N - 0.02) * SEG) {
+      y = (N - 0.02) * SEG;
+      setPlaying(false); ended = true;
+      hudline.textContent = "done";
+      setTimeout(() => finish("end"), 900);
+    }
+    selfScroll = true;
+    scrollTo(0, y);
+  }
+  render(tFromScroll());
+}
+raf = requestAnimationFrame(tick);
+setInterval(() => {
+  if (performance.now() - lastTickAt > 350) tick(performance.now());
+}, 200);
+
+addEventListener("scroll", () => {
+  if (selfScroll) { selfScroll = false; return; }
+  if (playing) setPlaying(false);
+  if (ended && tFromScroll() < N - 0.5) ended = false;
+}, { passive: true });
+["wheel", "touchstart"].forEach((ev) =>
+  addEventListener(ev, () => { if (playing) setPlaying(false); ended = false; },
+    { passive: true }));
+
+function setPlaying(p) {
+  playing = p;
+  playicon.innerHTML = p
+    ? '<rect x="3" y="2.5" width="3.4" height="11" fill="currentColor"/><rect x="9.6" y="2.5" width="3.4" height="11" fill="currentColor"/>'
+    : '<path d="M4 2.5l9 5.5-9 5.5z" fill="currentColor"/>';
+  if (!ended) hudline.textContent = p ? "scroll to scrub" : "paused";
+}
+setPlaying(true);
+document.getElementById("playbtn").addEventListener("click", () => {
+  if (ended) { ended = false; selfScroll = true; scrollTo(0, 0); }
+  setPlaying(!playing);
+});
+function jumpTo(i) {
+  ended = false; selfScroll = true;
+  scrollTo(0, i * SEG + SEG * 0.5);
+  render(tFromScroll());
+}
+
+addEventListener("keydown", (e) => {
+  if (e.key === " ") { e.preventDefault(); document.getElementById("playbtn").click(); }
+  if (e.key === "Escape") finish("skip");
+  if (e.key === "ArrowRight") { e.preventDefault(); jumpTo(Math.min(N - 1, Math.floor(tFromScroll()) + 1)); }
+  if (e.key === "ArrowLeft") { e.preventDefault(); jumpTo(Math.max(0, Math.floor(tFromScroll()) - 1)); }
+});
+scrollTo(0, 0);
+}
+</script>
+</body>
+</html>
