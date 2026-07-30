@@ -442,6 +442,23 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ctx-sep { height: 1px; background: var(--line); margin: 4px 8px; }
+/* the head's second line names the exact thing under the cursor, so the menu
+   reads without looking back at the card it came from */
+.ctx-head .ctx-sub {
+  display: block; text-transform: none; letter-spacing: 0; font-size: 11px;
+  color: var(--text-dim); font-style: italic; margin-top: 3px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* a row's destination, right-aligned: "new tab" / "in Vira" / "Find" */
+.ctx-item { display: flex; align-items: center; gap: 10px; }
+.ctx-hint {
+  margin-left: auto; font-family: var(--mono); font-size: 10px;
+  color: var(--text-faint); flex: none;
+}
+.ctx-item:hover .ctx-hint { color: var(--accent); }
+/* an informational row states a fact and is deliberately not a button */
+.ctx-item.off { color: var(--text-faint); cursor: default; }
+.ctx-item.off:hover { background: none; color: var(--text-faint); }
 
 /* the mini composer the menu opens (new idea / ask Vira) */
 .ctx-pop {
@@ -2404,6 +2421,17 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   #win-map .map-frame { flex: 1; height: auto; min-height: 260px; }
   .fwin .section-head h2 { display: none; }
   .fwin .section-head { margin: 0 0 8px; }
+
+  /* ---------- note windows: the KEEP tier ----------
+     A vault note as its own floating window, so a chain of wikilinks stays
+     on screen instead of repainting one shared panel. Same chrome as every
+     other fwin; only the body needs to be told to scroll inside the flex
+     column. */
+  .note-window .fwin-body { padding: 0; display: flex; flex-direction: column;
+    overflow: hidden; }
+  .note-window .note-body { flex: 1; min-height: 0; }
+  .note-window .fwin-title { text-transform: none; letter-spacing: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* ---------- per-job terminal windows (multi-window cockpit) ---------- */
   .term-window { background: var(--term-bg); border-color: var(--term-line); }
