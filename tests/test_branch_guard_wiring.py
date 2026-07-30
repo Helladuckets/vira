@@ -29,11 +29,12 @@ import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import joblog, session, viratools, worktree
+from server import jobfiles, joblog, session, viratools, worktree
 from server import runner as runner_mod
 
 
@@ -66,10 +67,19 @@ def make_branch_first_repo(root):
     _git("config", "user.email", "test@example.com", cwd=root)
     _git("config", "user.name", "Test", cwd=root)
     (root / "scripts").mkdir()
-    real = Path(__file__).resolve().parent.parent / "scripts" / "branch.sh"
+    here = Path(__file__).resolve().parent.parent
+    real = here / "scripts" / "branch.sh"
     (root / "scripts" / "branch.sh").write_text(
         real.read_text(encoding="utf-8"), encoding="utf-8")
     (root / "scripts" / "branch.sh").chmod(0o755)
+    # The repo's REAL .gitignore, because provisioning depends on it. branch.sh
+    # drops a CLAUDE.md copy, a .venv symlink and .claude/launch.json into every
+    # worktree it makes; all three are gitignored in production, and without
+    # that a freshly-created worktree reads as holding uncommitted work — which
+    # is exactly what tidy() refuses to remove. It also keeps .worktrees/ from
+    # dirtying the live tree, the way it does live.
+    (root / ".gitignore").write_text(
+        (here / ".gitignore").read_text(encoding="utf-8"), encoding="utf-8")
     (root / "server").mkdir()
     (root / "server" / "main.py").write_text("# live\n", encoding="utf-8")
     _git("add", "-A", cwd=root)
@@ -126,6 +136,91 @@ class SpecReachesDisk(unittest.TestCase):
                          self.root.resolve())
         self.assertTrue(worktree.is_worktree(spec["cwd"]))
         self.assertTrue(spec["branch"].startswith("claude/"))
+
+    def test_the_worktree_lands_inside_the_repo(self):
+        """Since 2026-07-29 worktrees live in .worktrees/<slug> rather than
+        beside the checkout, where they read as sibling projects in
+        ~/workspace. Asserted through the REAL branch.sh, so the path this
+        pins is the one production creates."""
+        _, spec = self.launch()
+        wt = Path(spec["worktree"]).resolve()
+        self.assertEqual(wt.parent, (self.root / ".worktrees").resolve())
+        # nested placement is only safe because the guard tests the worktree
+        # before the live root — the two facts belong together
+        self.assertFalse(worktree.violates(
+            str(wt / "server" / "main.py"), self.root, wt))
+
+    def test_place_then_tidy_round_trip_with_the_real_script(self):
+        """Watched to FIRE, not read: the real branch.sh creates the worktree
+        and the real branch.sh takes it away, leaving the live tree exactly
+        as it was. The stand-in tests in test_worktree.py cover the refusal
+        rules; this one proves the production script cooperates."""
+        _, spec = self.launch()
+        wt = Path(spec["worktree"])
+        self.assertTrue(wt.is_dir())
+        removed, detail = worktree.tidy(
+            spec["live_root"], spec["worktree"], spec["branch"])
+        self.assertTrue(removed, detail)
+        self.assertFalse(wt.exists())
+        listed = subprocess.run(
+            ["git", "-C", str(self.root), "worktree", "list"],
+            capture_output=True, text=True, check=False).stdout
+        self.assertNotIn(".worktrees", listed)
+        self.assertEqual(
+            subprocess.run(["git", "-C", str(self.root), "status",
+                            "--porcelain"], capture_output=True, text=True,
+                           check=False).stdout.strip(), "")
+
+    def test_tidy_keeps_a_worktree_the_session_left_work_in(self):
+        """The case that matters: the implement prompt tells sessions NOT to
+        commit, so uncommitted changes are the normal shape of delivered
+        work — and the reason keeping is the default."""
+        _, spec = self.launch()
+        wt = Path(spec["worktree"])
+        (wt / "server" / "main.py").write_text("# the session's work\n",
+                                               encoding="utf-8")
+        removed, detail = worktree.tidy(
+            spec["live_root"], spec["worktree"], spec["branch"])
+        self.assertFalse(removed)
+        self.assertTrue(wt.is_dir())
+        self.assertIn("uncommitted", detail)
+        self.assertEqual(
+            (wt / "server" / "main.py").read_text(encoding="utf-8"),
+            "# the session's work\n")
+
+    def test_the_branch_is_named_after_the_ask_not_the_preamble(self):
+        """Every machine-composed dispatch opens with its own preamble, so
+        slugging the prompt's FIRST LINE named six different Implement jobs
+        `you-are-vira-s-coding-agent-work-<jobid>` on 2026-07-29. The branch
+        now reads like the ledger row and the terminal title, because it is
+        built by the same joblog.command()."""
+        reg = session.Sessions()
+        jid = reg.launch(
+            "You are Vira's coding agent, working in the git repository at "
+            + str(self.root) + ".\n"
+            "Nothing pauses for approval — you have full autonomy.\n"
+            "\nThis task comes from the owner's Vira idea backlog:\n\n"
+            '"""\nFix the avatar alignment in the feed cards\n"""\n'
+            "Carry it out end to end:\n",
+            cwd=str(self.root), idea_id="idea_abc123")
+        spec = json.loads(
+            (self.jobs / jid / "job.json").read_text(encoding="utf-8"))
+        self.assertIn("avatar", spec["branch"])
+        self.assertNotIn("you-are", spec["branch"])
+        self.assertNotIn("coding-agent", spec["branch"])
+        # still unique per dispatch — two concurrent runs of one idea must
+        # never share a tree
+        self.assertTrue(spec["branch"].endswith(jid[:6]))
+
+    def test_a_routine_dispatch_is_named_for_the_routine(self):
+        """joblog.command() covers every dispatch shape, so the fix is not
+        idea-specific: a circuit step names its step."""
+        reg = session.Sessions()
+        jid = reg.launch("You are Vira's coding agent. Do the thing.",
+                         cwd=str(self.root), meta={"stage": "build"})
+        spec = json.loads(
+            (self.jobs / jid / "job.json").read_text(encoding="utf-8"))
+        self.assertIn("circuit-step-build", spec["branch"])
 
     def test_the_gate_is_actually_armed_by_what_landed(self):
         """Feed the real job.json to a real Runner and drive one gate call.
@@ -205,6 +300,108 @@ class SpecReachesDisk(unittest.TestCase):
         r = runner_mod.Runner(self.jobs / jid)
         self.addCleanup(r.out.close)
         self.assertFalse(r.disarmed)
+
+
+class TidyIsWired(unittest.TestCase):
+    """The supervisor must actually CALL tidy.
+
+    Its own lesson, from this repo: worktree/branch/live_root sat on the
+    launch dict for four days while `_spawn_runner` rebuilt job.json as a
+    hand-typed literal that never named them, so the guard read correct and
+    ran never. A reader with no writer fails silently and looks fine — so
+    what is pinned here is the CALL, driven through the real _poll_once, not
+    the helper in isolation."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.jdir = Path(self.tmp.name) / "job"
+        self.jdir.mkdir()
+        (self.jdir / "output.log").write_text("work\n", encoding="utf-8")
+        self.calls = []
+        mock.patch.object(
+            session.worktree, "tidy",
+            lambda *a: (self.calls.append(a), (True, "removed"))[1]).start()
+        self.addCleanup(mock.patch.stopall)
+        self.reg = session.Sessions()
+
+    def _handle(self, status, awaiting=None):
+        spec = {"id": "j1", "worktree": "/tmp/wt", "branch": "claude/x",
+                "live_root": "/tmp/live"}
+        h = session.DetachedJob("j1", self.jdir, spec)
+        h.last_state = {"id": "j1", "status": "running"}
+        st = {"id": "j1", "status": status, "awaiting": awaiting,
+              "heartbeat": time.time(), "pid": os.getpid(), "pending": []}
+        jobfiles.write_json_atomic(self.jdir / "state.json", st)
+        self.reg.sessions["j1"] = h
+        return h
+
+    def test_a_finished_session_gets_its_worktree_tidied(self):
+        self._handle("done")
+        self.reg._poll_once()
+        self.assertEqual(len(self.calls), 1, "tidy was never called")
+        self.assertEqual(self.calls[0], ("/tmp/live", "/tmp/wt", "claude/x"))
+
+    def test_the_outcome_is_written_to_the_transcript(self):
+        self._handle("done")
+        self.reg._poll_once()
+        self.assertIn("[vira] worktree:",
+                      (self.jdir / "output.log").read_text(encoding="utf-8"))
+
+    def test_a_kept_worktree_says_where_it_is_and_why(self):
+        mock.patch.object(session.worktree, "tidy",
+                          lambda *a: (False, "2 uncommitted change(s)")).start()
+        self._handle("done")
+        self.reg._poll_once()
+        log = (self.jdir / "output.log").read_text(encoding="utf-8")
+        self.assertIn("/tmp/wt", log)
+        self.assertIn("uncommitted", log)
+
+    def test_a_parked_session_is_left_alone(self):
+        """The reply window keeps status `running` on purpose: the session is
+        still the owner's to answer and its tree still theirs to look at."""
+        self._handle("running", awaiting="reply")
+        self.reg._poll_once()
+        self.assertEqual(self.calls, [])
+
+    def test_an_unplaced_session_is_a_no_op(self):
+        h = session.DetachedJob("j1", self.jdir, {"id": "j1"})
+        h.last_state = {"id": "j1", "status": "running"}
+        jobfiles.write_json_atomic(self.jdir / "state.json",
+                                   {"id": "j1", "status": "done"})
+        self.reg.sessions["j1"] = h
+        self.reg._poll_once()
+        self.assertEqual(self.calls, [])
+
+    def test_an_orphaned_runner_gets_its_worktree_tidied(self):
+        """A separate call site from the normal transition — the runner died
+        without writing a finish, so the supervisor declares it. Its worktree
+        needs collecting for the same reason, and more so: nobody is coming
+        back to look at it."""
+        spec = {"id": "j1", "worktree": "/tmp/wt", "branch": "claude/x",
+                "live_root": "/tmp/live"}
+        h = session.DetachedJob("j1", self.jdir, spec)
+        st = {"id": "j1", "status": "running", "awaiting": None,
+              "pending": [], "heartbeat": 1.0, "pid": 2147483646}
+        jobfiles.write_json_atomic(self.jdir / "state.json", st)
+        h.last_state = dict(st)
+        # no file movement since the last tick, which is what sends the
+        # supervisor looking for a live runner in the first place
+        h._state_mtime = (self.jdir / "state.json").stat().st_mtime
+        h._out_size = (self.jdir / "output.log").stat().st_size
+        self.reg.sessions["j1"] = h
+        self.reg._poll_once()
+        self.assertEqual(h.status(), "orphaned")
+        self.assertEqual(len(self.calls), 1, "tidy was never called")
+
+    def test_a_raising_tidy_never_takes_the_supervisor_down(self):
+        def boom(*a):
+            raise RuntimeError("git exploded")
+        mock.patch.object(session.worktree, "tidy", boom).start()
+        self._handle("error")
+        self.reg._poll_once()   # must not raise
+        self.assertIn("tidy failed",
+                      (self.jdir / "output.log").read_text(encoding="utf-8"))
 
 
 class SpecDerivationContract(unittest.TestCase):

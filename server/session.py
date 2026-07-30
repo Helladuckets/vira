@@ -561,9 +561,27 @@ class Sessions:
                     and not worktree.is_worktree(root)):
                 # Name it after what was asked, suffixed with the job id so
                 # two dispatches of the same idea never collide on a branch.
-                head = (prompt or "").strip().splitlines()[:1]
-                branch_slug = worktree.slugify(
-                    " ".join(head)[:60], fallback="session")
+                #
+                # The FIRST LINE of the prompt is not what was asked. Every
+                # machine-composed dispatch opens with its own preamble — an
+                # Implement job leads with "You are Vira's coding agent,
+                # working in the git repository at ~/workspace/vira." and the
+                # idea text sits ten lines down — so six dispatches on
+                # 2026-07-29 all slugged to `you-are-vira-s-coding-agent-work`
+                # and only the job id told them apart. joblog.command() already
+                # solves this for the ledger, the terminal title bar and the
+                # change log ("Implement — <the idea>", "Routine — muse",
+                # "Circuit step — build"), so the branch reads the same as
+                # every other surface naming the same job rather than carrying
+                # a second, worse implementation of the same idea.
+                try:
+                    head = joblog.command({
+                        "prompt": prompt, "idea_id": idea_id,
+                        "publish_plan": publish_plan, "meta": meta or {}})
+                except Exception:  # noqa: BLE001 — a name must never block a run
+                    head = (prompt or "").strip().splitlines()[:1]
+                    head = " ".join(head)
+                branch_slug = worktree.slugify(head[:60], fallback="session")
                 branch_slug = f"{branch_slug}-{jid[:6]}"[:40].strip("-")
                 wt_path, made, detail = worktree.ensure(root, branch_slug)
                 if wt_path:
@@ -941,6 +959,34 @@ class Sessions:
                 pass
             time.sleep(SUPERVISOR_TICK)
 
+    def _tidy_worktree(self, h):
+        """A finished session's worktree goes away if it held nothing.
+
+        Called on every path out of `running` — done, error, orphaned, a
+        spawn that never started. NOT on the reply-window park, which keeps
+        status `running` on purpose: the session is still the owner's to
+        answer, and its tree is still theirs to look at.
+
+        The outcome is appended to the transcript either way. A directory
+        that silently appears and silently vanishes is how the owner ended
+        up asking where these came from; a kept one has a reason, and that
+        reason is the thing worth reading."""
+        spec = h.spec or {}
+        wt, root, branch = (spec.get("worktree"), spec.get("live_root"),
+                            spec.get("branch"))
+        if not (wt and root and branch):
+            return
+        try:
+            removed, detail = worktree.tidy(root, wt, branch)
+        except Exception as e:  # noqa: BLE001 — the supervisor never dies
+            removed, detail = False, f"tidy failed: {e}"
+        try:
+            with (h.dir / "output.log").open("a", encoding="utf-8") as f:
+                f.write(f"\n[vira] worktree: {detail}\n" if removed else
+                        f"\n[vira] worktree kept at {wt} — {detail}\n")
+        except OSError:
+            pass
+
     def _poll_once(self):
         with self.lock:
             handles = [x for x in self.sessions.values()
@@ -965,6 +1011,7 @@ class Sessions:
                 if jobfiles.runner_dead(st):
                     self._finalize_dead(h.dir, dict(st))
                     h.read_state()
+                    self._tidy_worktree(h)
                     self._emit("status", h.id, status="orphaned")
                 elif (h.proc is not None and h.proc.poll() is not None
                       and st_m < 0):
@@ -982,6 +1029,7 @@ class Sessions:
                     jobfiles.write_json_atomic(h.dir / "state.json", dead)
                     h.last_state = dead
                     joblog.record_finish(h.id, "error", dead["error"])
+                    self._tidy_worktree(h)
                     self._emit("status", h.id, status="error")
                 continue
             prev_status = (h.last_state or {}).get("status")
@@ -989,6 +1037,10 @@ class Sessions:
             h._out_size = out_sz
             st = h.read_state() or {}
             if st.get("status") != prev_status and st.get("status") != "running":
+                # The transition out of `running` is the one moment the
+                # supervisor sees a session end. Tidy BEFORE the emit so the
+                # client's refetch already carries the transcript's verdict.
+                self._tidy_worktree(h)
                 self._emit("status", h.id, status=st.get("status"))
             else:
                 self._emit("update", h.id)
@@ -1056,6 +1108,19 @@ class Sessions:
             _mark_idea(d, ok)
         d["finished"] = time.time()
         joblog.record_finish(d["id"], d["status"], result_text)
+        # Same cleanup as the detached path — placement happens in launch()
+        # for every session, so the legacy --print fallback leaves worktrees
+        # behind too. Its transcript lives in memory, not output.log, so the
+        # note goes through _append rather than _tidy_worktree.
+        if d.get("worktree") and d.get("live_root") and d.get("branch"):
+            try:
+                removed, detail = worktree.tidy(
+                    d["live_root"], d["worktree"], d["branch"])
+            except Exception as e:  # noqa: BLE001 — never fail a finish
+                removed, detail = False, f"tidy failed: {e}"
+            self._append(s, f"\n[vira] worktree: {detail}\n" if removed else
+                         f"\n[vira] worktree kept at {d['worktree']} — "
+                         f"{detail}\n")
         self._emit("status", d["id"], status=d["status"])
 
 

@@ -315,5 +315,151 @@ class EnsureAgainstARealRepo(unittest.TestCase):
             str(Path(path) / "server" / "main.py"), self.root, path))
 
 
+@unittest.skipUnless(os.name == "posix",
+                     "executes a /bin/sh stand-in for branch.sh")
+class TidyAgainstARealRepo(unittest.TestCase):
+    """tidy() — a finished session's worktree goes away only when empty.
+
+    Against a real git repo, because every refusal here is a git question
+    (is it dirty, does the branch carry commits) and a mocked git would only
+    prove the mock. Keeping is the default: the asymmetry is that a stale
+    directory is untidy while a wrongly-removed one destroys the only copy
+    of a session's work, and the implement prompt tells sessions not to
+    commit, so uncommitted IS the normal shape of delivered work."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / "repo"
+        (self.root / "scripts").mkdir(parents=True)
+        _git("init", "-q", "-b", "main", cwd=self.root)
+        _git("config", "user.email", "t@example.com", cwd=self.root)
+        _git("config", "user.name", "T", cwd=self.root)
+        (self.root / "README.md").write_text("x\n", encoding="utf-8")
+        # The production .gitignore entries tidy() depends on. Not fixture
+        # dressing: without `.test-instance.*` ignored, a worktree that was
+        # ever served carries an untracked pidfile and would read as holding
+        # work forever — so a stopped instance could pin its worktree for
+        # good. Same for the `data/` clone and the `.venv` symlink.
+        (self.root / ".gitignore").write_text(
+            ".test-instance.*\ndata/\n.venv\n.worktrees/\n", encoding="utf-8")
+        _git("add", "-A", cwd=self.root)
+        _git("commit", "-qm", "init", cwd=self.root)
+        # Stand-in for branch.sh: start puts the worktree INSIDE the repo
+        # (.worktrees/<slug>, where the real script puts it since
+        # 2026-07-29), discard removes it and the branch.
+        sh = self.root / "scripts" / "branch.sh"
+        sh.write_text(
+            "#!/bin/sh\n"
+            'case "$1" in\n'
+            '  start) mkdir -p .worktrees && git worktree add -b "claude/$2" '
+            '".worktrees/$2" >/dev/null 2>&1 ;;\n'
+            '  discard) rm -rf ".worktrees/$2/data"; '
+            'git worktree remove --force ".worktrees/$2" >/dev/null 2>&1; '
+            'git branch -D "claude/$2" >/dev/null 2>&1 ;;\n'
+            'esac\n', encoding="utf-8")
+        sh.chmod(0o755)
+
+    def _place(self, slug="my-feature"):
+        path, created, detail = worktree.ensure(self.root, slug)
+        self.assertIsNotNone(path, detail)
+        return Path(path)
+
+    def test_an_empty_worktree_is_removed_with_its_branch(self):
+        wt = self._place()
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertTrue(removed, detail)
+        self.assertFalse(wt.is_dir())
+        branches = _git("branch", "--list", "claude/my-feature",
+                        cwd=self.root).stdout
+        self.assertEqual(branches.strip(), "")
+
+    def test_it_lands_inside_the_repo_not_beside_it(self):
+        """The whole point of the move: a worktree is an implementation
+        detail of a branch, so it must not sit in ~/workspace looking like
+        a project. Nested placement is safe only because violates() tests
+        the worktree first — pinned here alongside it."""
+        wt = self._place()
+        self.assertTrue(worktree._inside(wt, self.root))
+        self.assertFalse(worktree.violates(str(wt / "a.py"), self.root, wt))
+
+    def test_uncommitted_work_is_kept_and_said_so(self):
+        wt = self._place()
+        (wt / "README.md").write_text("edited by the session\n",
+                                      encoding="utf-8")
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertFalse(removed)
+        self.assertTrue(wt.is_dir())
+        self.assertIn("uncommitted", detail)
+
+    def test_an_untracked_file_also_counts_as_work(self):
+        """`git status --porcelain` reports untracked files too, and it
+        should: a session's new module is untracked until someone adds it."""
+        wt = self._place()
+        (wt / "new_module.py").write_text("x = 1\n", encoding="utf-8")
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertFalse(removed)
+        self.assertIn("uncommitted", detail)
+
+    def test_a_branch_with_commits_is_kept(self):
+        wt = self._place()
+        (wt / "README.md").write_text("committed\n", encoding="utf-8")
+        _git("add", "-A", cwd=wt)
+        _git("commit", "-qm", "session work", cwd=wt)
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertFalse(removed)
+        self.assertTrue(wt.is_dir())
+        self.assertIn("commit", detail)
+
+    def test_a_live_test_instance_stops_it(self):
+        """Discarding kills the instance, and a served instance is the owner
+        looking at the work."""
+        wt = self._place()
+        (wt / ".test-instance.json").write_text(
+            '{"pid": %d, "port": 8378}' % os.getpid(), encoding="utf-8")
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertFalse(removed)
+        self.assertIn("test instance", detail)
+
+    def test_a_dead_instance_pid_does_not_stop_it(self):
+        """A leftover pidfile from a stopped instance must not pin the
+        worktree forever."""
+        wt = self._place()
+        (wt / ".test-instance.json").write_text(
+            '{"pid": 2147483646, "port": 8378}', encoding="utf-8")
+        removed, detail = worktree.tidy(self.root, wt, "claude/my-feature")
+        self.assertTrue(removed, detail)
+
+    def test_it_refuses_the_live_checkout(self):
+        removed, detail = worktree.tidy(self.root, self.root, "claude/main")
+        self.assertFalse(removed)
+        self.assertTrue(self.root.is_dir())
+
+    def test_it_refuses_a_branch_it_did_not_name(self):
+        """Only claude/<slug> branches are session branches. Anything else
+        is the owner's own, and branch.sh discard would delete it."""
+        wt = self._place()
+        for branch in ("main", "feature/x", "claude/../../etc"):
+            removed, detail = worktree.tidy(self.root, wt, branch)
+            self.assertFalse(removed, branch)
+            self.assertTrue(wt.is_dir())
+
+    def test_missing_pieces_are_a_no_op(self):
+        for args in ((None, None, None), (self.root, "", "claude/x"),
+                     (self.root, str(self.root / "nope"), "claude/x")):
+            removed, _ = worktree.tidy(*args)
+            self.assertFalse(removed)
+
+    def test_a_plain_directory_is_never_removed(self):
+        """is_worktree() is the check: a path that is not a linked worktree
+        is somebody else's directory."""
+        d = self.root.parent / "not-a-worktree"
+        d.mkdir()
+        removed, detail = worktree.tidy(self.root, d, "claude/x")
+        self.assertFalse(removed)
+        self.assertTrue(d.is_dir())
+        self.assertIn("not a linked worktree", detail)
+
+
 if __name__ == "__main__":
     unittest.main()
