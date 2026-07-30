@@ -2605,6 +2605,10 @@ def api_config():
     # would otherwise badge itself LIVE, which is exactly the mistake the
     # badge exists to prevent, so it gets its own marker.
     cfg["sandbox"] = settings.sandboxed()
+    # Demo mode stubs the calls that reach the real OS, so what is on screen
+    # is partly simulated. That MUST be visible in the badge — an unlabelled
+    # simulation is worse than no simulation.
+    cfg["demo"] = settings.demo()
     # Deterministic AI-backend health, for the header banner. Compact: the
     # client shows a bar only when state == "red".
     cfg["ai_health"] = aihealth.summary()

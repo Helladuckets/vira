@@ -520,6 +520,12 @@ def fda_assist():
         raise RuntimeError("passive test instance — not opening windows "
                            "on the owner's desktop")
     py = sys.executable
+    if settings.demo():
+        # `open` does not follow $HOME — this would put System Settings and a
+        # Finder window on the owner's REAL desktop, mid-walkthrough.
+        return {"opened": False, "python": py, "demo": True,
+                "would": "Open System Settings at Privacy > Full Disk Access "
+                         "and reveal Vira's Python in Finder."}
     subprocess.run(["open", "-R", py], check=False, timeout=10)
     subprocess.run(["open", "x-apple.systempreferences:"
                     "com.apple.preference.security?Privacy_AllFiles"],

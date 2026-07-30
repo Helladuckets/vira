@@ -7,7 +7,10 @@
 # skills library, no backups of yours. Reset wipes it back to virgin.
 #
 #   sandbox.sh new [--force]      clone + venv + empty home (a virgin install)
-#   sandbox.sh serve              run it on :8400 (a real first boot)
+#   sandbox.sh serve [--demo]     run it on :8400 (a real first boot)
+#                                 --demo stubs the calls that escape to the
+#                                 real OS (browser sign-in, System Settings),
+#                                 so onboarding can be walked end to end
 #   sandbox.sh stop
 #   sandbox.sh status
 #   sandbox.sh login              log the claude CLI in for the sandbox home
@@ -118,6 +121,7 @@ cmd_new() {
 }
 
 cmd_serve() {
+  local demo=${1:-}
   [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
   local pid; pid=$(instance_pid)
   [[ -n $pid ]] && { echo "already running (pid $pid) — http://127.0.0.1:$PORT"; exit 0; }
@@ -126,8 +130,20 @@ cmd_serve() {
   # Real first boot: NOT passive. Background workers run, which is the point —
   # they are what a new user's install actually does. The fake HOME is what
   # keeps them harmless, and VIRA_KEYCHAIN_PREFIX keeps live secrets unreachable.
+  #
+  # --demo additionally stubs the calls that reach the real OS. $HOME is the
+  # sandbox's whole isolation lever and it does NOT follow `open`, a System
+  # Settings deep link, or a CLI that launches the owner's own browser — so a
+  # plain sandbox walks onboarding right up to the first real action and then
+  # ejects you onto your actual machine. Demo mode is how the flow gets walked
+  # end to end; it is opt-in because a plain sandbox must stay a TRUE first
+  # boot, and the app badges itself SANDBOX DEMO so a simulation is never
+  # mistaken for the real thing.
+  local demo_env=()
+  [[ $demo == "--demo" ]] && demo_env=(VIRA_SANDBOX_DEMO=1)
   cd "$APP"
   HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" VIRA_SANDBOX=1 \
+    ${demo_env[@]} \
     nohup "$APP/.venv/bin/uvicorn" server.main:app \
     --host 127.0.0.1 --port "$PORT" >> "$LOG" 2>&1 &
   pid=$!
@@ -140,8 +156,14 @@ cmd_serve() {
   done
   curl -sf -o /dev/null "http://127.0.0.1:$PORT/" || die "no response on :$PORT — see $LOG"
   echo ""
-  echo "sandbox up:   http://127.0.0.1:$PORT        <- a stranger's Vira"
-  echo "stage view:   http://127.0.0.1:$PORT/stage.html"
+  if [[ $demo == "--demo" ]]; then
+    echo "sandbox up:   http://localhost:$PORT        <- DEMO: OS calls stubbed"
+    echo "              sign-in and the disk-access assist are simulated,"
+    echo "              so the whole flow walks without touching your Mac."
+  else
+    echo "sandbox up:   http://localhost:$PORT        <- a stranger's Vira"
+  fi
+  echo "stage view:   http://localhost:$PORT/stage.html"
   echo "log: $LOG    stop: scripts/sandbox.sh stop"
 }
 
@@ -239,7 +261,7 @@ cmd=$1; shift
 case "$cmd" in
   new)      cmd_new "${1:-}";;
   login)    cmd_login;;
-  serve)    cmd_serve;;
+  serve)    cmd_serve "$@";;
   stop)     cmd_stop;;
   status)   cmd_status;;
   expose)   cmd_expose "$@";;

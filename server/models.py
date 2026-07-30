@@ -303,6 +303,12 @@ _login_lock = threading.Lock()
 _login = {"pid": "", "proc": None, "out": None, "started": 0.0, "error": ""}
 _LOGIN_URL_RE = re.compile(r"https://\S+")
 
+# Demo mode only (settings.demo — a sandbox served with --demo). Providers the
+# owner has "connected" while walking the flow. In-process and deliberately not
+# persisted: a demo connection is a stage prop, and one that outlived the
+# process would be a lie told to the next boot.
+_demo_connected = set()
+
 
 def _login_pump(proc, buf):
     try:
@@ -332,6 +338,12 @@ def login_start(pid):
     spec = PROVIDERS.get(pid)
     if not spec or not spec.get("login_args"):
         raise ValueError(f"{pid}: no sign-in flow — connect with an API key")
+    if settings.demo():
+        # The real flow spawns a CLI that opens the OWNER'S browser against
+        # their REAL account — the escape that makes a plain sandbox
+        # untestable. Nothing is spawned here; the paste-code screen still
+        # renders, because reviewing it is part of reviewing onboarding.
+        return login_status(pid)
     binary = find_binary(pid)
     if not binary:
         raise ValueError(f"{spec['bin']} is not installed yet")
@@ -363,6 +375,9 @@ def login_code(pid, code):
     code = (code or "").strip()
     if not code:
         raise ValueError("paste the code first")
+    if settings.demo():
+        _demo_connected.add(pid)
+        return {"submitted": True, "demo": True}
     with _login_lock:
         proc = _login["proc"]
         if _login["pid"] != pid or not proc or proc.poll() is not None:
@@ -388,6 +403,11 @@ def login_status(pid):
     """Where the driven sign-in stands: running, the OAuth URL once the CLI
     prints it, and — after the process exits cleanly — whether the login
     actually took (asked of the CLI itself, never inferred from output)."""
+    if settings.demo():
+        return {"provider": pid, "running": pid not in _demo_connected,
+                "url": "", "connected": pid in _demo_connected, "error": "",
+                "demo": "Demo mode — the real flow opens your browser here. "
+                        "Paste anything to continue."}
     with _login_lock:
         mine = _login["pid"] == pid
         proc = _login["proc"] if mine else None
@@ -479,7 +499,11 @@ def probe(pid):
         return None
     binary = find_binary(pid)
     key = api_key(pid)
-    if binary:
+    if settings.demo() and pid in _demo_connected:
+        # Stage prop, labelled as one: the whole point of demo mode is that
+        # `ai` reaches done so the splash and the reveal actually run.
+        auth, detail = SIGNED_IN, "demo mode — not a real sign-in"
+    elif binary:
         auth, detail = _probe_auth(pid, binary)
         # A logged-out CLI with a key on file is still usable, via the API.
         if auth == LOGGED_OUT and key:

@@ -766,5 +766,53 @@ class LoginDriverTest(unittest.TestCase):
                 self.assertIn("timed out", st["error"])
 
 
+class DemoModeTest(unittest.TestCase):
+    """A sandbox served with --demo must not reach the real OS.
+
+    $HOME is the sandbox's only isolation lever and it does not follow a
+    browser launch, so the real sign-in flow ejects the owner onto their
+    actual machine mid-walkthrough (reported 2026-07-30). Demo mode stubs it
+    and simulates the outcome, so the flow can be walked end to end.
+    """
+
+    def setUp(self):
+        models._demo_connected.clear()
+        self._demo = mock.patch.object(models.settings, "demo",
+                                       return_value=True)
+        self._demo.start()
+
+    def tearDown(self):
+        self._demo.stop()
+        models._demo_connected.clear()
+
+    def test_login_start_spawns_nothing(self):
+        with mock.patch.object(models.subprocess, "Popen") as popen:
+            st = models.login_start("anthropic")
+        popen.assert_not_called()
+        self.assertTrue(st["running"])
+        self.assertIn("Demo mode", st["demo"])
+
+    def test_any_code_connects_and_probe_agrees(self):
+        models.login_start("anthropic")
+        models.login_code("anthropic", "anything")
+        self.assertTrue(models.login_status("anthropic")["connected"])
+        # probe() must agree, or the `ai` step never reaches done and the
+        # splash + reveal — the whole reason demo mode exists — never run.
+        rec = models.probe("anthropic")
+        self.assertTrue(rec["connected"])
+        self.assertIn("demo", rec["detail"])
+
+    def test_demo_connection_does_not_leak_to_other_providers(self):
+        models.login_code("anthropic", "x")
+        self.assertNotIn("openai", models._demo_connected)
+
+    def test_off_by_default(self):
+        self._demo.stop()
+        try:
+            self.assertFalse(models.settings.demo())
+        finally:
+            self._demo.start()
+
+
 if __name__ == "__main__":
     unittest.main()

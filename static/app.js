@@ -5094,9 +5094,15 @@ function providerBadge(j) {
   return { id: p, legend: "Claude Code", auth: "Claude Max" };
 }
 let _instCfg = null;
+// Sandbox demo mode (settings.demo). Latched here rather than read per use:
+// the cards that must NOT narrate an action the server stubbed render inside
+// synchronous builders, and one config fetch already gates every surface.
+let VIRA_DEMO = false;
+
 async function instanceConfig() {
   if (_instCfg === null) {
     try { _instCfg = await api("/api/config"); } catch { _instCfg = {}; }
+    VIRA_DEMO = !!_instCfg.demo;
   }
   return _instCfg;
 }
@@ -7988,7 +7994,8 @@ function loginFlow(pid, subName, mount, onDone, big) {
     if (st.running) {
       btn.textContent = "waiting for the browser…";
       stat.hidden = false;
-      stat.textContent = "Approve in the browser window that just opened, " +
+      stat.textContent = st.demo ||
+        "Approve in the browser window that just opened, " +
         "then paste the code it gives you:";
       row.hidden = false;
       if (st.url && linkP.hidden) {
@@ -8084,9 +8091,19 @@ function cardDisk(card, step, st) {
   card.appendChild(brags);
   const guideBox = el("div", "");
   const fillGuide = () => {
+    if (VIRA_DEMO) {
+      // Demo mode did NOT open System Settings — saying it did would be the
+      // card narrating something that is not on the owner's screen.
+      guideBox.appendChild(el("p", "hint warn",
+        "Demo mode — nothing was opened. On a real install this puts System "
+        + "Settings on the Full Disk Access pane and highlights Vira's "
+        + "Python in Finder, then the card flips green on its own."));
+    }
     const steps = el("ol", "setup-steps");
-    ["System Settings is opening on the Full Disk Access pane, and " +
-       "Finder is highlighting the file to add",
+    [(VIRA_DEMO ? "On a real install: System Settings opens on the Full "
+        + "Disk Access pane, and Finder highlights the file to add"
+      : "System Settings is opening on the Full Disk Access pane, and " +
+       "Finder is highlighting the file to add"),
      "Drag that file into the Full Disk Access list (or use +) and flip " +
        "its toggle on",
      "That's it — Vira notices the grant on its own and this card flips " +
@@ -15993,7 +16010,8 @@ async function boot() {
   // (branch.sh serve), SANDBOX for a virgin install (sandbox.sh serve).
   instanceConfig().then((cfg) => {
     if (!cfg.passive && !cfg.sandbox) return;
-    const label = (cfg.sandbox ? "SANDBOX" : "TEST")
+    const label = (cfg.demo ? "SANDBOX DEMO"
+                 : cfg.sandbox ? "SANDBOX" : "TEST")
       + (location.port ? " :" + location.port : "");
     const badge = $("#inst-badge");
     badge.textContent = label;
