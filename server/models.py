@@ -657,6 +657,17 @@ def _shape_models(pid, rows):
     return out[:MODELS_CAP]
 
 
+def auth_headers(pid, key):
+    """How a bare API call to this provider authenticates. Shared by
+    _fetch_models and aihealth's key probe so the two cannot drift on how
+    a provider is spoken to."""
+    if pid == "anthropic":
+        return {"x-api-key": key, "anthropic-version": "2023-06-01"}
+    if pid == "google":
+        return {"x-goog-api-key": key}
+    return {"authorization": f"Bearer {key}"}
+
+
 def _fetch_models(pid, key):
     """Ask the provider itself. Returns (models, detail); ([], reason) on
     any failure — a stale or missing live list falls back to the curated
@@ -665,12 +676,8 @@ def _fetch_models(pid, key):
     url = spec.get("models_url")
     if not url:
         return [], "no models endpoint"
-    headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"}
-               if pid == "anthropic" else
-               {"x-goog-api-key": key} if pid == "google" else
-               {"authorization": f"Bearer {key}"})
     try:
-        req = urllib.request.Request(url, headers=headers)
+        req = urllib.request.Request(url, headers=auth_headers(pid, key))
         with urllib.request.urlopen(req, timeout=MODELS_TIMEOUT) as r:
             payload = json.loads(r.read())
     except Exception as e:  # noqa: BLE001 — never raise out of a lookup
