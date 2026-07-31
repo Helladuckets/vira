@@ -95,6 +95,11 @@ class Watcher:
         self.stalls = []          # newest last, capped at KEEP
         self.worst_lag = 0.0
         self.started = None
+        # A stall in progress, visible while it lasts — a record only
+        # exists after the clear, so anything that needs to see the stall
+        # AS IT HAPPENS (the health payload, a test holding a block open
+        # until the watchdog has noticed) reads this, not `stalls`.
+        self.stalling = False
 
     # ----- the two halves -----
 
@@ -108,12 +113,12 @@ class Watcher:
         return max(0.0, time.monotonic() - self._beat - self.interval)
 
     def _run(self):
-        in_stall, began, noticed, peak, frames = False, 0.0, "", 0.0, None
+        began, noticed, peak, frames = 0.0, "", 0.0, None
         while not self._stop.is_set():
             lag = self.lag()
             if lag >= self.threshold:
-                if not in_stall:
-                    in_stall, noticed = True, _now()
+                if not self.stalling:
+                    self.stalling, noticed = True, _now()
                     # The stall began `lag` seconds ago, not now: the
                     # watchdog only learns of it once the stamp is already
                     # stale, so back-date the start or every stall reads
@@ -122,8 +127,8 @@ class Watcher:
                     peak, frames = lag, _thread_frames()
                 else:
                     peak = max(peak, lag)
-            elif in_stall:
-                in_stall = False
+            elif self.stalling:
+                self.stalling = False
                 self._record(noticed, time.monotonic() - began, peak, frames)
             self._stop.wait(self.tick)
 
@@ -177,6 +182,7 @@ class Watcher:
             "started": self.started,
             "threshold_s": self.threshold,
             "lag_now_s": round(self.lag(), 3),
+            "stalling": self.stalling,
             "worst_lag_s": round(self.worst_lag, 2),
             "stall_count": len(stalls),
             "stalls": list(reversed(stalls)),     # newest first for the UI
