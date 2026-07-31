@@ -220,6 +220,17 @@ class Explain(unittest.TestCase):
                 continue          # composed further down dispatch, same file
             self.assertIn(tok, src, f"{tok} is not dispatched")
 
+    def test_every_dispatched_token_has_a_table_row(self):
+        # the REVERSE direction, added after __orphan_sweep__ shipped
+        # dispatched but unexplained: the one-way check above cannot see
+        # a token that exists only in dispatch()
+        import re
+        src = routinesrc.read_symbol("routines", "dispatch")
+        for tok in set(re.findall(r'"(__[a-z_]+__)"', src)):
+            self.assertIn(tok, routinesrc.TOKENS,
+                          f"{tok} is dispatched but has no table row — "
+                          "the hood cannot explain it")
+
     def test_every_link_in_every_token_chain_resolves(self):
         for tok, chain in routinesrc.TOKENS.items():
             self.assertTrue(chain, f"{tok} has no chain")
