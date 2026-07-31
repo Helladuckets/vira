@@ -242,34 +242,37 @@ class CliExecRunTest(unittest.TestCase):
         self.assertNotIn("running inside Vira", argv2[-1])
 
     def test_lost_thread_reply_recarries_the_preamble(self):
-        # No thread.started ever arrives, so the reply cannot resume — it
+        # No thread id ever arrives, so the reply cannot resume — it
         # starts a FRESH conversation. Without the preamble re-prepended
         # that turn runs with no Vira context at all, only whatever the
         # provider CLI auto-loaded from cwd.
-        with tempfile.TemporaryDirectory() as tmp:
-            binary = _fake_codex(tmp, [
-                [{"type": "item.completed",
-                  "item": {"type": "agent_message", "text": "first"}},
-                 {"type": "turn.completed"}],
-                [{"type": "item.completed",
-                  "item": {"type": "agent_message", "text": "second"}},
-                 {"type": "turn.completed"}],
-            ])
-            spec = {"id": "j5", "provider": "openai", "cwd": tmp,
-                    "mode": "interactive", "prompt": "start"}
-            runner = _FakeRunner(spec, replies=["more"])
-            with mock.patch("server.joblog.record_session"):
-                text, ok = self._run(runner, binary)
-            argv1 = json.loads(
-                Path(tmp, "calls.argv0").read_text(encoding="utf-8"))
-            argv2 = json.loads(
-                Path(tmp, "calls.argv1").read_text(encoding="utf-8"))
+        #
+        # Asserted at the _run_turn seam, not through the fake binary:
+        # cmd's %* re-parse drops everything past the first newline of a
+        # multiline argument, so on Windows the argv recorder can only
+        # ever see a prompt's first line — the loop's composition is
+        # pinned here deterministically on both platforms instead.
+        prompts = []
+
+        async def fake_turn(runner, binary, prompt, thread_id):
+            prompts.append((prompt, thread_id))
+            return None, "text-%d" % len(prompts), True
+
+        spec = {"id": "j5", "provider": "openai", "cwd": "/tmp",
+                "mode": "interactive", "prompt": "start"}
+        runner = _FakeRunner(spec, replies=["more"])
+        with mock.patch.object(agentbackend, "_run_turn", fake_turn), \
+             mock.patch.object(models, "find_binary", return_value="codex"):
+            text, ok = asyncio.run(agentbackend.run_cliexec(runner))
         self.assertTrue(ok)
-        self.assertEqual(text, "second")
-        self.assertNotEqual(argv2[:2], ["exec", "resume"])
-        self.assertIn("running inside Vira", argv1[-1])
-        self.assertIn("running inside Vira", argv2[-1])
-        self.assertIn("more", argv2[-1])
+        self.assertEqual(text, "text-2")
+        self.assertEqual(len(prompts), 2)
+        first, second = prompts[0][0], prompts[1][0]
+        self.assertIn("running inside Vira", first)
+        self.assertIn("start", first)
+        self.assertIn("running inside Vira", second)
+        self.assertIn("more", second)
+        self.assertIsNone(prompts[1][1])
 
     def test_failed_turn_reports_not_ok(self):
         with tempfile.TemporaryDirectory() as tmp:
