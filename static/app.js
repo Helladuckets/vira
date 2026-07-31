@@ -6220,10 +6220,11 @@ function renderRules() {
 }
 
 function fmtDay(d) {
-  if (!d) return "";
-  const t = Date.parse(d);
-  if (!t) return d;
-  return new Date(t).toLocaleDateString(undefined,
+  // a bare YYYY-MM-DD through Date.parse is UTC midnight, which is the
+  // PREVIOUS day in this timezone — construct a local date instead
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(d || "");
+  if (!m) return d || "";
+  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined,
     { month: "short", day: "numeric" });
 }
 
