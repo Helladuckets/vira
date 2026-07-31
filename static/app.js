@@ -9217,7 +9217,18 @@ async function maybeFirstrun() {
     // whose Vira already runs.
     const pr = (ai.providers || []).find((p) => p.connected);
     let fresh = false;
-    try { fresh = !!(await api("/api/onboard")).fixture_mode; } catch { }
+    try {
+      fresh = !!(await api("/api/onboard")).fixture_mode;
+    } catch {
+      // Could not tell whether this install is fresh. Adopting the flag here
+      // would burn the once-per-install welcome on a question we never
+      // answered — and it is write-once, so no later load recovers it. Caught
+      // on a sandbox reset: the page reloaded the instant the restarted server
+      // answered /api/config, while this probe (which reads the machine) was
+      // still cold, and the welcome the reset exists to show never appeared.
+      // Leave the flag alone and try again next load.
+      return;
+    }
     if (fresh && pr) {
       frAi = ai;
       openFirstrun();
@@ -17971,27 +17982,66 @@ function mountDemoReset(badge) {
   if ($("#demo-reset")) return;
   const b = el("button", "demo-reset", "Reset to a new user");
   b.id = "demo-reset";
-  b.title = "Wipe onboarding on this sandbox and reload at the first screen";
+  b.title = "Pull the latest Vira and come back as a brand-new user";
   b.onclick = async () => {
     b.disabled = true;
-    b.textContent = "resetting…";
+    b.textContent = "updating…";
+    let res;
     try {
-      await post("/api/demo/reset", {});
-      // The flag lives in BOTH places — the server's ui-state and this
-      // browser's localStorage — and clearing only one leaves a half-reset
-      // instance that reads as onboarded again on the next load.
-      try {
-        ["vira-firstrun-done", "vira-layouts"]
-          .forEach((k) => localStorage.removeItem(k));
-      } catch { /* private mode — the server side is what matters */ }
-      location.replace(location.pathname);
+      res = await post("/api/demo/reset", { update: true });
     } catch (e) {
       b.disabled = false;
       b.textContent = "Reset to a new user";
       toast(e.message || "reset failed");
+      return;
     }
+    // The flag lives in BOTH places — the server's ui-state and this
+    // browser's localStorage — and clearing only one leaves a half-reset
+    // instance that reads as onboarded again on the next load. The wipe
+    // re-stamps the instance too, so syncUiState drops the rest on adopt.
+    try {
+      ["vira-firstrun-done", "vira-layouts", "vira-layout", "vira-desktop"]
+        .forEach((k) => localStorage.removeItem(k));
+    } catch { /* private mode — the server side is what matters */ }
+    if (!res || !res.restarting) {
+      // No supervising loop: nothing restarts, so reload straight away and
+      // let the server's own note explain what it could not do.
+      if (res && res.note) toast(res.note);
+      location.replace(location.pathname);
+      return;
+    }
+    // The server is exiting into its relaunch loop, which wipes data/ before
+    // starting the next one. Reloading now would hit a closed port, so wait
+    // for the new process to answer.
+    b.textContent = "restarting…";
+    await waitForServer();
+    location.replace(location.pathname);
   };
   badge.after(b);
+}
+
+// Poll until the instance answers again (used across a deliberate restart).
+//
+// The probe is /api/onboard, not /api/config, and that is the whole point:
+// the first screen is decided by what the onboarding probe says, and that
+// call reads the MACHINE (contact stores, chat.db, the provider CLIs), so it
+// is cold for a moment after a restart while /api/config already answers.
+// Reloading on the cheaper signal lands the boot mid-warm-up — measured: the
+// welcome the reset exists to show did not appear.
+//
+// Gives up after ~60s and reloads anyway: a stuck button tells the owner
+// nothing, while a reload at least shows whatever state the sandbox is in.
+async function waitForServer(ms = 60000) {
+  const until = Date.now() + ms;
+  await new Promise((r) => setTimeout(r, 1500));   // let the old one die first
+  while (Date.now() < until) {
+    try {
+      const r = await fetch("/api/onboard", { cache: "no-store" });
+      if (r.ok) return true;
+    } catch { /* still down */ }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  return false;
 }
 boot();
 

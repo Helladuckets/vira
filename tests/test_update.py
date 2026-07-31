@@ -15,6 +15,18 @@ from unittest import mock
 from server import update
 
 
+class NoSandboxLoop(unittest.TestCase):
+    """supervisor() asks the ENVIRONMENT whether a sandbox relaunch loop is
+    watching, and that branch outranks the config ones. A suite run from
+    inside a sandbox would otherwise answer differently from one run outside
+    it — the precondition is pinned rather than inherited from the machine."""
+
+    def setUp(self):
+        p = mock.patch.object(update.settings, "sandbox_loop", return_value="")
+        p.start()
+        self.addCleanup(p.stop)
+
+
 class ReqNameTests(unittest.TestCase):
     def test_parses_common_shapes(self):
         self.assertEqual(update._req_name("fastapi"), "fastapi")
@@ -80,7 +92,7 @@ def _fake_git(*args, **kw):
     return mock.Mock(returncode=0, stdout="abc1234\n", stderr="")
 
 
-class ApplyDepsGateTests(unittest.TestCase):
+class ApplyDepsGateTests(NoSandboxLoop):
     # Platform pinned: these run on the Windows CI runner too, where the
     # supervisor seam would otherwise demand windows_task_name instead.
     def test_deps_failure_blocks_restart(self):
@@ -117,7 +129,7 @@ class ApplyDepsGateTests(unittest.TestCase):
         self.assertEqual(out["deps"], "dependencies synced")
 
 
-class SupervisorSeamTests(unittest.TestCase):
+class SupervisorSeamTests(NoSandboxLoop):
     """One restart contract, two supervisors: launchd on a Mac,
     a Task Scheduler relaunch loop on Windows. The refuse-without-a-
     supervisor rule (bucket-A #6) must hold identically on both."""
@@ -162,7 +174,7 @@ class SupervisorSeamTests(unittest.TestCase):
         self.assertTrue(out["updated"])
 
 
-class WindowsRestartTests(unittest.TestCase):
+class WindowsRestartTests(NoSandboxLoop):
     """_restart on Windows: exit into the scheduled task's relaunch loop
     (run.ps1 -Serve), plus a detached best-effort `schtasks /Run` so a
     task whose action runs the server directly also comes back. Never
@@ -200,6 +212,86 @@ class WindowsRestartTests(unittest.TestCase):
              mock.patch.object(update.os, "_exit") as ex:
             update._restart()
         ex.assert_called_once_with(0)
+
+
+class SandboxLoopSupervisorTests(unittest.TestCase):
+    """A sandbox is supervised by scripts/sandbox.sh's relaunch loop, which
+    announces itself in the ENVIRONMENT rather than in config — a sandbox has
+    no config.json until someone sets one up, and booting without one is the
+    whole point of it."""
+
+    def test_loop_outranks_config(self):
+        with mock.patch.object(update.settings, "sandbox_loop",
+                               return_value="/tmp/x/.maintenance"), \
+             mock.patch.object(update.settings, "IS_WIN", False), \
+             mock.patch.object(update.settings, "raw",
+                               return_value={"launchd_label": "com.x.vira"}):
+            kind, name = update.supervisor()
+        self.assertEqual(kind, "loop")
+        self.assertTrue(name)          # non-empty == supervised == apply() ok
+
+    def test_restart_under_a_loop_just_exits(self):
+        # No kickstart, no schtasks: exiting IS the restart, because the loop
+        # is already waiting on this process.
+        with mock.patch.object(update.settings, "sandbox_loop",
+                               return_value="/tmp/x/.maintenance"), \
+             mock.patch.object(update.subprocess, "run") as run, \
+             mock.patch.object(update.subprocess, "Popen") as popen, \
+             mock.patch.object(update.os, "_exit") as ex:
+            update._restart()
+        run.assert_not_called()
+        popen.assert_not_called()
+        ex.assert_called_once_with(0)
+
+
+class PullApplySplitTests(NoSandboxLoop):
+    """pull() does the code work and stops; apply() is pull() plus the
+    restart. The split exists so a caller that must NOT restart yet (the
+    sandbox reset, which has a wipe to queue first) can reuse the refusals
+    rather than growing a second copy of them."""
+
+    def test_pull_does_not_restart(self):
+        with mock.patch.object(update, "status",
+                               return_value={"git": True, "remote": True,
+                                             "behind": 1}), \
+             mock.patch.object(update, "_git", side_effect=_fake_git), \
+             mock.patch.object(update, "_install_deps",
+                               return_value="dependencies synced"), \
+             mock.patch.object(update.threading, "Timer") as timer:
+            out = update.pull()
+        timer.assert_not_called()
+        self.assertTrue(out["updated"])
+        self.assertNotIn("restarting", out)
+
+    def test_pull_needs_no_supervisor(self):
+        # The refuse-without-a-supervisor rule guards the RESTART. Updating
+        # the checkout harms nothing on its own, so pull() must not inherit it.
+        with mock.patch.object(update.settings, "IS_WIN", False), \
+             mock.patch.object(update.settings, "raw", return_value={}), \
+             mock.patch.object(update, "status",
+                               return_value={"git": True, "remote": True,
+                                             "behind": 0, "sha": "abc1234"}):
+            out = update.pull()
+        self.assertFalse(out["updated"])
+
+    def test_deps_failure_is_its_own_error_class(self):
+        # A caller that shrugs off an ordinary refusal must still stop here:
+        # the code moved and its dependencies did not.
+        with mock.patch.object(update, "status",
+                               return_value={"git": True, "remote": True,
+                                             "behind": 1}), \
+             mock.patch.object(update, "_git", side_effect=_fake_git), \
+             mock.patch.object(update, "_install_deps",
+                               side_effect=RuntimeError("offline")):
+            with self.assertRaises(update.DepsError):
+                update.pull()
+
+    def test_a_refusal_is_not_a_deps_error(self):
+        with mock.patch.object(update, "status",
+                               return_value={"git": False}):
+            with self.assertRaises(ValueError) as ctx:
+                update.pull()
+        self.assertNotIsInstance(ctx.exception, update.DepsError)
 
 
 if __name__ == "__main__":

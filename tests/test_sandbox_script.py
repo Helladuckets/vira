@@ -53,16 +53,52 @@ class SandboxScriptContract(unittest.TestCase):
         self.assertGreaterEqual(end, last,
                                 "usage() cuts off before the last command")
 
+    def test_serve_starts_the_relaunch_loop_not_uvicorn(self):
+        # The loop IS the sandbox's supervisor: the app's own reset button
+        # queues a wipe and exits, and something has to bring it back. If
+        # serve ever ran uvicorn directly again, the reset would kill the
+        # sandbox dead — and the endpoint would still report success, because
+        # it cannot see who started it.
+        body = self.src[self.src.index("cmd_serve()"):]
+        body = body[:body.index("\n# Sign the sandbox")]
+        self.assertIn('"$SELF" supervise', body)
+        self.assertNotIn("uvicorn", body)
+
+    def test_the_loop_tells_the_server_where_to_queue_maintenance(self):
+        # VIRA_SANDBOX_LOOP carries both facts at once — a loop is watching,
+        # and here is the file it reads. update.supervisor() keys on it, so
+        # dropping it silently turns the restart into a refusal.
+        body = self.src[self.src.index("serve_once()"):]
+        body = body[:body.index("\ncmd_serve()")]
+        self.assertIn('VIRA_SANDBOX_LOOP="$MAINT"', body)
+
+    def test_the_wipe_queue_lives_outside_the_directory_it_wipes(self):
+        # A maintenance file under app/data would be deleted by the very
+        # wipe it asks for, half-done, leaving the loop nothing to read.
+        self.assertRegex(self.src, r"MAINT=\$ROOT/")
+        self.assertNotRegex(self.src, r"MAINT=\$APP/data")
+
+    def test_stop_sets_the_flag_before_killing_the_server(self):
+        # Kill first and the loop dutifully starts another one.
+        body = self.src[self.src.index("cmd_stop()"):]
+        body = body[:body.index("\ncmd_status()")]
+        self.assertLess(body.index("$STOPFLAG"), body.index('kill "'))
+
     def test_replay_resets_the_welcome_flag_and_restamps(self):
         # The two things that make a replay a FIRST BOOT rather than a
         # restart: data/ (which holds the server-side once-per-install flag)
         # and a fresh instance stamp (so a browser adopts instead of pushing
         # its stale copy back up).
-        body = self.src[self.src.index("cmd_replay()"):]
-        body = body[:body.index("\ncmd_serve()")]
+        body = self.src[self.src.index("wipe_data() {"):]
+        body = body[:body.index("\n# Fast-forward")]
         self.assertIn('rm -rf "$APP/data"', body)
         self.assertIn(".instance-stamp", body)
         self.assertNotIn('rm -rf "$APP/.venv"', body)   # keeps the venv
+        # …and replay goes through that one implementation, so the button and
+        # the command cannot drift into resetting different things.
+        replay = self.src[self.src.index("cmd_replay()"):]
+        replay = replay[:replay.index("\n# The one implementation")]
+        self.assertIn("wipe_data", replay)
 
 
 if __name__ == "__main__":

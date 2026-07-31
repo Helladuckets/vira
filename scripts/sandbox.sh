@@ -11,7 +11,8 @@
 #                                 --demo stubs the calls that escape to the
 #                                 real OS (browser sign-in, System Settings),
 #                                 so onboarding can be walked end to end
-#   sandbox.sh replay [--demo]    back to the FIRST SCREEN, no re-provision:
+#   sandbox.sh replay [--demo]    back to the FIRST SCREEN on the LATEST code,
+#                                 no re-provision: fast-forwards the clone,
 #                                 wipes data/ (incl. the once-per-install
 #                                 welcome flag) and serves. Keeps venv + login.
 #   sandbox.sh stop
@@ -22,6 +23,20 @@
 #                                   contacts | messages | calendar | photos | all
 #   sandbox.sh unexpose           take them all back
 #   sandbox.sh reset [--force]    wipe and re-provision from scratch
+#   sandbox.sh supervise [--demo] (internal) the relaunch loop `serve` starts —
+#                                 runs uvicorn, performs any maintenance the
+#                                 app queued, starts it again. See SUPERVISOR.
+#
+# SUPERVISOR: `serve` does not run uvicorn directly — it starts a relaunch
+# loop (the scripts/run.ps1 -Serve pattern), so the sandbox has what every
+# other Vira install has: something that brings it back after a deliberate
+# exit. That is what makes the app's own "Reset to a new user" button able
+# to pull the latest code and hand back a genuinely virgin install: the
+# server does the git work, queues the wipe in a file the loop reads, and
+# exits. Wiping data/ from INSIDE the process that holds those sqlite files
+# open is the one thing this arrangement avoids. The queue path rides
+# VIRA_SANDBOX_LOOP, which is also how update.supervisor() knows a loop is
+# watching (an unsupervised sandbox refuses the restart instead).
 #
 # WHY THE FAKE HOME: Path.home() follows $HOME, and every machine-level
 # store Vira reads hangs off it — ~/Library/Messages/chat.db, AddressBook,
@@ -55,14 +70,17 @@ ROOT=${VIRA_SANDBOX_ROOT:-$HOME/vira-sandbox}
 APP=$ROOT/app
 FAKE_HOME=$ROOT/home
 PORT=${VIRA_SANDBOX_PORT:-8400}
-PIDFILE=$ROOT/.instance.json
+PIDFILE=$ROOT/.instance.json      # the supervising loop
+SRVPID=$ROOT/.server.pid          # the uvicorn child it is currently running
+STOPFLAG=$ROOT/.stop              # set by `stop`; the loop reads it and exits
+MAINT=$ROOT/.maintenance          # what the app has asked the loop to do next
 LOG=$ROOT/serve.log
 REAL_HOME=$HOME
 
 # Line range must cover the whole command block above — it grew twice without
 # this following it, so `sandbox.sh` with no args stopped listing its own
 # newest commands.
-usage() { sed -n '2,24p' "$SELF"; exit 1; }
+usage() { sed -n '2,27p' "$SELF"; exit 1; }
 die() { print -u2 -- "error: $*"; exit 1; }
 
 instance_pid() {
@@ -143,23 +161,67 @@ cmd_replay() {
   local demo=${1:-}
   [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
   cmd_stop >/dev/null 2>&1 || true
+  # A first boot means TODAY's code. This is also the one-time step that
+  # gets an existing sandbox onto a build carrying the app's own reset
+  # button — after which the button keeps itself current.
+  pull_latest
+  wipe_data
+  echo "replayed — first boot again (login and exposed stores kept)"
+  cmd_serve "$demo"
+}
+
+# The one implementation of "put this sandbox back to a virgin install".
+# Used by `replay`, and by the loop when the app's own Reset button queues it.
+wipe_data() {
   rm -rf "$APP/data"
   mkdir -p "$APP/data"
   date +%s.%N > "$APP/data/.instance-stamp"
   # Vira's own neutral-default homes, created during a walk (an imported CRM
   # here would keep fixture mode off and skip the whole first-run path).
   rm -rf "$FAKE_HOME/.vira"
-  echo "replayed — first boot again (login and exposed stores kept)"
-  cmd_serve "$demo"
 }
 
-cmd_serve() {
-  local demo=${1:-}
-  [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
-  local pid; pid=$(instance_pid)
-  [[ -n $pid ]] && { echo "already running (pid $pid) — http://127.0.0.1:$PORT"; exit 0; }
-  lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1 && die "port $PORT is busy"
+# Fast-forward the clone. The app's Reset does its OWN pull (so a refusal —
+# a dirty tree, no network — is reported in the browser rather than swallowed
+# by a background loop); this is the belt-and-braces path for a reset queued
+# by an older server, and a no-op when the clone is already current.
+pull_latest() {
+  [[ -d $APP/.git ]] || return 0
+  git -C "$APP" fetch --quiet || { echo "[loop] fetch failed — staying on $(git -C "$APP" rev-parse --short HEAD)"; return 0; }
+  git -C "$APP" merge --ff-only '@{upstream}' --quiet 2>/dev/null || {
+    echo "[loop] not fast-forwardable — staying on $(git -C "$APP" rev-parse --short HEAD)"; return 0; }
+  "$APP/.venv/bin/pip" install --quiet -r "$APP/requirements.txt" \
+    || echo "[loop] WARNING: dependency install failed"
+  echo "[loop] updated to $(git -C "$APP" rev-parse --short HEAD)"
+}
 
+# Whatever the app queued for the gap between two runs. The file is written
+# by POST /api/demo/reset just before the server exits; it lives OUTSIDE
+# app/data so a wipe cannot delete the instruction to wipe.
+run_maintenance() {
+  [[ -f $MAINT ]] || return 0
+  local want; want=$(cat "$MAINT" 2>/dev/null || true)
+  rm -f "$MAINT"
+  [[ $want == *pull* ]] && pull_latest
+  [[ $want == *wipe* ]] && { wipe_data; echo "[loop] wiped to a new user"; }
+  return 0
+}
+
+# The supervisor. Serve, and when the process exits do the queued work and
+# serve again — unless `stop` asked for the exit.
+cmd_supervise() {
+  local demo=${1:-}
+  while [[ ! -f $STOPFLAG ]]; do
+    run_maintenance
+    serve_once "$demo"
+    [[ -f $STOPFLAG ]] && break
+    sleep 2
+  done
+  rm -f "$STOPFLAG" "$SRVPID"
+}
+
+serve_once() {
+  local demo=${1:-}
   # Real first boot: NOT passive. Background workers run, which is the point —
   # they are what a new user's install actually does. The fake HOME is what
   # keeps them harmless, and VIRA_KEYCHAIN_PREFIX keeps live secrets unreachable.
@@ -179,8 +241,23 @@ cmd_serve() {
   # the command word starts BEFORE expanding, so `${arr[@]}` in assignment
   # position is run as a command ("command not found: VIRA_SANDBOX_DEMO=1").
   HOME="$FAKE_HOME" VIRA_KEYCHAIN_PREFIX="sandbox-" VIRA_SANDBOX=1 \
-    nohup env ${demo_env[@]} "$APP/.venv/bin/uvicorn" server.main:app \
-    --host 127.0.0.1 --port "$PORT" >> "$LOG" 2>&1 &
+    VIRA_SANDBOX_LOOP="$MAINT" \
+    env ${demo_env[@]} "$APP/.venv/bin/uvicorn" server.main:app \
+    --host 127.0.0.1 --port "$PORT" &
+  local sp=$!
+  print -r -- "$sp" > "$SRVPID"
+  wait "$sp" 2>/dev/null || true
+}
+
+cmd_serve() {
+  local demo=${1:-}
+  [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
+  local pid; pid=$(instance_pid)
+  [[ -n $pid ]] && { echo "already running (pid $pid) — http://localhost:$PORT"; exit 0; }
+  lsof -nP -iTCP:$PORT -sTCP:LISTEN >/dev/null 2>&1 && die "port $PORT is busy"
+
+  rm -f "$STOPFLAG"
+  nohup "$SELF" supervise "$demo" >> "$LOG" 2>&1 &
   pid=$!
   print -r -- "{\"pid\": $pid, \"port\": $PORT}" > "$PIDFILE"
 
@@ -216,10 +293,35 @@ cmd_login() {
   echo "restart the instance to clear Vira's AI-paused banner: sandbox.sh stop && sandbox.sh serve"
 }
 
+# TERM, then KILL if it is still there. Measured: a TERMed Vira releases the
+# port immediately but the process can outlive the signal by minutes (a
+# background thread that does not come home), and one left behind per stop
+# accumulates. The app's own restart path exits outright and leaks nothing —
+# this is only for the signal path.
+kill_server() {
+  local sp=$1 i
+  kill "$sp" 2>/dev/null || return 0
+  for i in $(seq 1 20); do
+    kill -0 "$sp" 2>/dev/null || return 0
+    sleep 0.25
+  done
+  kill -9 "$sp" 2>/dev/null || true
+}
+
 cmd_stop() {
   local pid; pid=$(instance_pid)
-  if [[ -n $pid ]]; then kill "$pid" && echo "stopped (pid $pid)"; else echo "not running"; fi
-  rm -f "$PIDFILE"
+  # The flag FIRST: the loop's whole job is to bring the server back, so
+  # killing the server without it would just start another one.
+  [[ -n $pid || -f $SRVPID ]] && : > "$STOPFLAG"
+  local sp; sp=$(cat "$SRVPID" 2>/dev/null || true)
+  [[ -n $sp ]] && kill_server "$sp"
+  if [[ -n $pid ]]; then
+    kill "$pid" 2>/dev/null || true
+    echo "stopped (pid $pid)"
+  else
+    echo "not running"
+  fi
+  rm -f "$PIDFILE" "$SRVPID" "$STOPFLAG" "$MAINT"
 }
 
 cmd_status() {
@@ -297,6 +399,7 @@ case "$cmd" in
   new)      cmd_new "${1:-}";;
   login)    cmd_login;;
   serve)    cmd_serve "$@";;
+  supervise) cmd_supervise "$@";;
   replay)   cmd_replay "$@";;
   stop)     cmd_stop;;
   status)   cmd_status;;
