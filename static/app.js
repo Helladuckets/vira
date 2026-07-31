@@ -9509,7 +9509,8 @@ function frFinish(pr) {
 // because connecting notes and a project is what makes every later answer
 // worth reading. Two cards side by side is the whole encouragement.
 const OUTRO = [
-  { anchor: "#work-queue-pane .runbar", kicker: "That's the loop" },
+  { anchor: "#work-queue-pane .runbar", side: "below", align: "start",
+    kicker: "That's the loop" },
   { anchor: "#idea-project-filter", ring: ".sb-pair",
     kicker: "Your own work" },
 ];
@@ -9701,25 +9702,24 @@ function buildTourCard(i) {
 // it names with the caret aimed at that thing's centre. Falls back to the
 // foot of the Work window if the control never rendered.
 //
-// With both cards up they SANDWICH the controls: the lowest anchor's card
-// hangs under it, every card above that sits ABOVE its own anchor. Two
-// cards both hanging below would overlap — the anchors are one bar apart
-// and a card is far taller than that — and hiding one behind the other is
-// the exact failure showing them together is meant to end.
+// The first card is deliberately below and left-aligned to the full-width
+// idea bar: that puts it in the open Queue area instead of above the window.
+// Other cards still sandwich close controls by default, so a future pair
+// cannot silently stack on top of one another.
 function positionTour() {
   const cards = tourCards();
   if (!cards.length) return;
   const items = cards.map((card) => {
     const beat = OUTRO[Number(card.dataset.beat)] || OUTRO[0];
     const r = $(beat.anchor)?.getBoundingClientRect();
-    return { card, a: r && r.width ? r : null,
+    return { card, beat, a: r && r.width ? r : null,
              w: card.offsetWidth || 360, h: card.offsetHeight || 220 };
   });
   const anchored = items.filter((p) => p.a).sort((x, y) => x.a.top - y.a.top);
   const placed = [];
   anchored.forEach((p, idx) => {
     const last = idx === anchored.length - 1;
-    let above = !last;
+    let above = p.beat.side ? p.beat.side === "above" : !last;
     let top = above ? p.a.top - p.h - 14 : p.a.bottom + 14;
     // No room on the chosen side — take the other one rather than running
     // off the screen, and flip the caret with it.
@@ -9729,7 +9729,8 @@ function positionTour() {
       if (up >= 12) { above = true; top = up; }
       else top = Math.max(12, innerHeight - p.h - 12);
     }
-    let left = p.a.left + (p.a.width - p.w) / 2;
+    let left = p.beat.align === "start"
+      ? p.a.left : p.a.left + (p.a.width - p.w) / 2;
     left = Math.max(12, Math.min(left, innerWidth - p.w - 12));
     // A short viewport can push a flipped card onto the one already placed,
     // and a card hidden behind another is the exact failure this feature
@@ -9742,8 +9743,11 @@ function positionTour() {
     // nothing is worse than no caret.
     p.card.classList.add("tour-anchored");
     p.card.classList.toggle("tour-above", above);
+    const arrowAt = p.beat.align === "start"
+      ? p.a.left + Math.min(p.a.width, p.w) / 2
+      : p.a.left + p.a.width / 2;
     p.card.style.setProperty("--arrow-x",
-      `${Math.round(Math.min(Math.max(p.a.left + p.a.width / 2 - box.left, 20),
+      `${Math.round(Math.min(Math.max(arrowAt - box.left, 20),
                              p.w - 20))}px`);
     placeTourCard(p.card, box.left, box.top);
   });
