@@ -413,16 +413,10 @@
   <section id="view-atlas" class="view">
     <div class="section-head"><h2>Visual Network</h2>
       <span class="hint" id="atlas-meta" style="margin-left:auto"></span>
-      <button class="fchip sm" id="atlas-rescan">Rescan</button>
+      <button class="atlas-gear" id="atlas-gear" title="Controls"
+              aria-expanded="false" aria-controls="atlas-chrome"><svg
+        viewBox="0 0 24 24" aria-hidden="true"><path d="M12 9.2a2.8 2.8 0 1 0 0 5.6 2.8 2.8 0 0 0 0-5.6zM12 5.4a6.6 6.6 0 1 0 0 13.2 6.6 6.6 0 0 0 0-13.2zM18.2 12h2.2M3.6 12h2.2M12 5.8V3.6M12 20.4v-2.2M16.38 7.62l1.56-1.56M6.06 17.94l1.56-1.56M16.38 16.38l1.56 1.56M6.06 6.06l1.56 1.56"/></svg></button>
     </div>
-    <div class="atlas-bar">
-      <input id="atlas-search" class="search" type="search"
-             placeholder="Find a person… (Enter adds to selection)"
-             autocomplete="off">
-      <button class="fchip" id="atlas-path" title="Shortest connection between two people — click two nodes">Path</button>
-      <button class="fchip" id="atlas-ego" title="Hide the center node — the pure contact-to-contact mesh">Hide me</button>
-    </div>
-    <div class="atlas-legend" id="atlas-legend"></div>
     <div class="atlas-stage" id="atlas-stage">
       <canvas id="atlas-canvas"></canvas>
       <div class="atlas-iso" id="atlas-iso" style="display:none"></div>
@@ -430,6 +424,16 @@
       <div class="atlas-card" id="atlas-card" style="display:none"></div>
       <div class="atlas-status" id="atlas-status" style="display:none"></div>
       <div class="atlas-empty" id="atlas-empty" style="display:none"></div>
+    </div>
+    <div class="atlas-chrome" id="atlas-chrome">
+      <div class="atlas-legend" id="atlas-legend"></div>
+      <div class="atlas-bar">
+        <input id="atlas-search" class="search" type="search"
+               placeholder="Find a person… (Enter adds to selection)"
+               autocomplete="off">
+        <button class="fchip" id="atlas-ego" title="Hide the center node — the pure contact-to-contact mesh">Hide me</button>
+        <button class="fchip" id="atlas-rescan">Rescan</button>
+      </div>
     </div>
   </section>
 

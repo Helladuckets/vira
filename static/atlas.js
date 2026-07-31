@@ -1136,7 +1136,9 @@
 
   function setPathMode(on) {
     S.path = { mode: on, from: null, result: null };
-    $("#atlas-path").classList.toggle("on", on);
+    // No Path button any more — path mode is reached by right-clicking a
+    // node ("Path from here…"), so the toggle is optional-chained.
+    $("#atlas-path")?.classList.toggle("on", on);
     statusEl.style.display = on ? "" : "none";
     statusEl.textContent = on ? "Path: click the first person" : "";
     if (!on) draw();
@@ -1332,8 +1334,19 @@
     }
   });
 
-  $("#atlas-path")?.addEventListener("click", () =>
-    setPathMode(!S.path.mode));
+  // The gear is the phone's control surface: the legend, the search and
+  // the toggles live behind it so the web owns the column.
+  $("#atlas-gear")?.addEventListener("click", () => {
+    const chrome = $("#atlas-chrome");
+    const open = !chrome.classList.contains("open");
+    chrome.classList.toggle("open", open);
+    $("#atlas-gear").setAttribute("aria-expanded", open ? "true" : "false");
+    // The panel opens below a stage that fills the column, so bring it into
+    // view — never focus the search here: on a phone that throws the
+    // keyboard up over the chips the gear was opened to reach.
+    if (open) chrome.scrollIntoView({ block: "end", behavior: "smooth" });
+  });
+
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !S.visible) return;
     if (S.path.mode) setPathMode(false);

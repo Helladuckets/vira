@@ -1989,7 +1989,6 @@ body.lp-open .mdock { z-index: 960; }
     height: calc(100dvh - 190px - var(--mdock-h));
   }
   .subsviz-frame { height: calc(100dvh - 230px - var(--mdock-h)); }
-  .atlas-stage { height: calc(100dvh - 320px - var(--mdock-h)); }
 }
 
 /* ---------- mobile nav drawer (the Launchpad as a left column) ----------
@@ -2209,13 +2208,39 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   background: var(--bg-frame); height: calc(100dvh - 190px); display: block;
 }
 
-/* ---------- visual network (the face-graph) ---------- */
-.atlas-bar { display: flex; gap: 8px; align-items: center; margin: 0 0 8px; }
-.atlas-bar .search { flex: 1; margin: 0; }
+/* ---------- visual network (the face-graph) ----------
+   The web IS the module, so the stage leads and every control sits under
+   it: legend chips first, then the search last. The search is dimmed at
+   rest — it is the least-used control on a surface whose whole point is
+   the picture above it — and comes up to full weight on hover or focus. */
+.atlas-chrome { margin-top: 8px; }
+.atlas-bar { display: flex; gap: 8px; align-items: center; margin: 0; }
+.atlas-bar .search {
+  flex: 1; margin: 0; min-width: 0;
+  opacity: .45; background: transparent;
+  transition: opacity .16s ease, background .16s ease;
+}
+.atlas-bar .search:hover,
+.atlas-bar .search:focus { opacity: 1; background: var(--bg-card); }
 .atlas-bar .fchip.on { color: var(--accent); border-color: var(--accent); }
 .atlas-legend {
   display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px;
 }
+.atlas-legend:empty { display: none; }
+/* The gear is the phone's whole control surface — hidden at the desk,
+   where the chrome is always on screen. */
+.atlas-gear {
+  display: none; flex: none; width: 30px; height: 30px; padding: 0;
+  align-items: center; justify-content: center; cursor: pointer;
+  background: var(--bg-card); border: 1px solid var(--line);
+  border-radius: 50%;
+}
+.atlas-gear svg {
+  width: 17px; height: 17px; fill: none; stroke: var(--text-dim);
+  stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round;
+}
+.atlas-gear[aria-expanded="true"] { border-color: var(--accent); }
+.atlas-gear[aria-expanded="true"] svg { stroke: var(--accent); }
 .atlas-chip {
   display: inline-flex; align-items: center; gap: 6px;
   background: var(--bg-card); border: 1px solid var(--line);
@@ -2309,6 +2334,27 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   overflow: hidden; min-width: 30px;
 }
 .atlas-w { display: block; height: 100%; background: var(--accent); }
+
+/* The phone gives the whole column to the web and folds every control
+   behind the gear — a legend, a search box and two buttons stacked above
+   the stage is a control panel with a picture attached. This block sits
+   AFTER the base rules on purpose: the mobile media query earlier in the
+   file loses to `.atlas-gear { display: none }` on source order at equal
+   specificity, which is exactly how the first cut shipped a dead gear. */
+@media (max-width: 1099px) {
+  .atlas-stage { height: calc(100dvh - 200px - var(--mdock-h)); }
+  #view-atlas:has(#atlas-chrome.open) .atlas-stage {
+    height: calc(100dvh - 340px - var(--mdock-h));
+  }
+  .atlas-gear { display: flex; }
+  .atlas-chrome { display: none; }
+  /* The scroll fade is 74px of gradient sitting on the access bar, so the
+     last row needs somewhere to scroll clear of it — without this padding
+     the search box is permanently washed out under the fade. */
+  .atlas-chrome.open { display: block; padding-bottom: 78px; }
+  /* Nothing is dimmed on a surface you had to open on purpose. */
+  .atlas-bar .search { opacity: 1; background: var(--bg-card); }
+}
 
 /* ---------- desktop: dock + floating windows over a constellation ---------- */
 @media (min-width: 1100px) {
@@ -2494,9 +2540,19 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   #win-subsviz #view-subsviz { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   #win-subsviz .subsviz-frame { flex: 1; height: auto; min-height: 220px; }
   /* the atlas canvas fills its window the same way */
-  #win-atlas .fwin-body { display: flex; flex-direction: column; overflow: hidden; }
+  /* The body SCROLLS: the chrome now sits under the stage, so a short
+     window would otherwise clip the search bar off the bottom with no way
+     to reach it. The stage grows into spare room but never shrinks past
+     its floor (`flex: 1 0 auto`), and the body scrolls when the two
+     together outgrow the window. */
+  #win-atlas .fwin-body { display: flex; flex-direction: column; overflow-y: auto; }
   #win-atlas #view-atlas { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  #win-atlas .atlas-stage { flex: 1; height: auto; min-height: 240px; }
+  #win-atlas .atlas-stage { flex: 1 0 auto; height: auto; min-height: 240px; }
+  #win-atlas .atlas-chrome { flex: none; }
+  /* The chrome sits under a stage that is fighting it for a fixed window
+     height, so the legend scrolls rather than growing — twenty groups in
+     a narrow window would otherwise take more room than the web. */
+  #win-atlas .atlas-legend { max-height: 88px; overflow-y: auto; }
   /* the system-map iframe fills its window the same way */
   #win-map .fwin-body { display: flex; flex-direction: column; overflow: hidden; }
   #win-map #view-map { display: flex; flex-direction: column; flex: 1; min-height: 0; }
