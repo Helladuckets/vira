@@ -63,10 +63,46 @@ CLI_EXEC = {
         "label": "Codex",
         "argv": _codex_argv,
     },
-    # xAI's grok CLI advertises the whole headless surface
-    # (--single / --output-format streaming-json / --permission-mode) but a
-    # live probe hung before its first byte on 2026-07-28, so it does NOT
-    # get a row until a verified run exists. Honesty over reach.
+    # xAI's grok CLI advertises the whole headless surface (--single /
+    # --output-format streaming-json / --permission-mode) and still does NOT
+    # get a row: the blocker is measured below, not a guess.
+    #
+    # The 2026-07-28 "hung before its first byte" note was imprecise. Probed
+    # again on 2026-07-30 (grok 0.2.14, signed OUT): it emits bytes fine and
+    # then blocks on an INTERACTIVE OAUTH FLOW — it prints an auth.x.ai
+    # sign-in URL and waits on a loopback browser callback that never comes.
+    # So the failure is an auth flow, not a wedged transport, and that is the
+    # dangerous shape: a detached runner has no terminal and nobody to click,
+    # so it would park at that prompt with a live heartbeat, doing nothing —
+    # the silent-stall class ask_owner exists to end. Whoever lands this row
+    # needs an auth PRECHECK before spawn, not just an argv function; the
+    # CLI offers no cheap `auth status` (hence status_cmd None in
+    # models.PROVIDERS), and `grok models` answering "You are not
+    # authenticated" is the cheapest tell found so far.
+    #
+    # The mechanism Vira would actually use IS verified: exporting
+    # XAI_API_KEY diverts it off OAuth straight to api.x.ai/v1/responses
+    # ("the API key takes precedence over browser credentials"), which is why
+    # the xai row already carries api_env + key_url. A deliberately bogus key
+    # failed fast and honestly — exit 1, one JSONL line on stdout. Wire shape
+    # for the renderer: stdout is JSONL in a {"type": ...} envelope, the same
+    # family _run_turn already parses (an error turn is
+    # {"type":"error","message":...}); stderr is ANSI tracing noise and must
+    # be drained concurrently exactly as codex's is. The permission ladder
+    # also maps nearly 1:1 — grok's --permission-mode takes default,
+    # acceptEdits, auto, dontAsk, bypassPermissions and plan, so three of
+    # Vira's rungs are spelled identically, and it has its own --sandbox
+    # profile for sandbox_for() to target.
+    #
+    # What is still UNMEASURED is precisely what a row needs: the event names
+    # of a SUCCESSFUL turn (assistant message, tool call, thread/session id)
+    # and whether -r/--resume continues a conversation — the two things
+    # _render_item and the resume argument are built out of. No xAI credential
+    # exists on this machine (no env var, no shell profile, no keychain entry,
+    # nothing in the secrets ladder), so a successful turn could not be run.
+    # Guessing those names would ship a renderer that blanks transcripts.
+    # Honesty over reach: a key pasted in Config, or `grok login
+    # --device-auth`, is all that stands between this comment and a row.
 }
 
 
