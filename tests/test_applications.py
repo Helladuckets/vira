@@ -8,10 +8,19 @@ Run: .venv/bin/python -m unittest tests.test_applications
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 from server import applications, jobboards
+
+
+def fresh_seen():
+    """A sighting inside jobboards.VERIFY_DAYS on any run date. A literal
+    date here is a time bomb: availability degrades a stale last_seen to
+    `unverified`, so hardcoded sightings rotted 48 hours after they were
+    written."""
+    return (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
 
 
 TEARDOWN = {
@@ -321,7 +330,7 @@ class UniverseTest(ApplicationsBase):
         a posting that comes down is marked, not dropped."""
         self._seed_boards_state({
             "g-examplelabs-1234567": {"closed": "2026-07-22T10:00:00+00:00"},
-            "g-examplelabs-777": {"last_seen": "2026-07-29T10:00:00+00:00"},
+            "g-examplelabs-777": {"last_seen": fresh_seen()},
         })
         by = {r["uid"]: r for r in applications.load_universe()}
         gone = by["g-examplelabs-1234567"]
@@ -347,7 +356,7 @@ class UniverseTest(ApplicationsBase):
         role has to invalidate the catalog cache — or the module keeps
         serving it as live until some unrelated file happens to change."""
         self._seed_boards_state(
-            {"g-examplelabs-1234567": {"last_seen": "2026-07-29T10:00:00+00:00"}})
+            {"g-examplelabs-1234567": {"last_seen": fresh_seen()}})
         first = {r["uid"]: r for r in applications.load_universe()}
         self.assertEqual(first["g-examplelabs-1234567"]["availability"],
                          "open")
