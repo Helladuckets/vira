@@ -11,7 +11,8 @@
 #                                 --demo stubs the calls that escape to the
 #                                 real OS (browser sign-in, System Settings),
 #                                 so onboarding can be walked end to end
-#   sandbox.sh replay [--demo]    back to the FIRST SCREEN, no re-provision:
+#   sandbox.sh replay [--demo]    back to the FIRST SCREEN on the LATEST code,
+#                                 no re-provision: fast-forwards the clone,
 #                                 wipes data/ (incl. the once-per-install
 #                                 welcome flag) and serves. Keeps venv + login.
 #   sandbox.sh stop
@@ -160,6 +161,10 @@ cmd_replay() {
   local demo=${1:-}
   [[ -d $APP ]] || die "no sandbox at $APP (run: sandbox.sh new)"
   cmd_stop >/dev/null 2>&1 || true
+  # A first boot means TODAY's code. This is also the one-time step that
+  # gets an existing sandbox onto a build carrying the app's own reset
+  # button — after which the button keeps itself current.
+  pull_latest
   wipe_data
   echo "replayed — first boot again (login and exposed stores kept)"
   cmd_serve "$demo"
@@ -288,13 +293,28 @@ cmd_login() {
   echo "restart the instance to clear Vira's AI-paused banner: sandbox.sh stop && sandbox.sh serve"
 }
 
+# TERM, then KILL if it is still there. Measured: a TERMed Vira releases the
+# port immediately but the process can outlive the signal by minutes (a
+# background thread that does not come home), and one left behind per stop
+# accumulates. The app's own restart path exits outright and leaks nothing —
+# this is only for the signal path.
+kill_server() {
+  local sp=$1 i
+  kill "$sp" 2>/dev/null || return 0
+  for i in $(seq 1 20); do
+    kill -0 "$sp" 2>/dev/null || return 0
+    sleep 0.25
+  done
+  kill -9 "$sp" 2>/dev/null || true
+}
+
 cmd_stop() {
   local pid; pid=$(instance_pid)
   # The flag FIRST: the loop's whole job is to bring the server back, so
   # killing the server without it would just start another one.
   [[ -n $pid || -f $SRVPID ]] && : > "$STOPFLAG"
   local sp; sp=$(cat "$SRVPID" 2>/dev/null || true)
-  [[ -n $sp ]] && kill "$sp" 2>/dev/null || true
+  [[ -n $sp ]] && kill_server "$sp"
   if [[ -n $pid ]]; then
     kill "$pid" 2>/dev/null || true
     echo "stopped (pid $pid)"

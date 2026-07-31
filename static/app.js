@@ -9217,7 +9217,18 @@ async function maybeFirstrun() {
     // whose Vira already runs.
     const pr = (ai.providers || []).find((p) => p.connected);
     let fresh = false;
-    try { fresh = !!(await api("/api/onboard")).fixture_mode; } catch { }
+    try {
+      fresh = !!(await api("/api/onboard")).fixture_mode;
+    } catch {
+      // Could not tell whether this install is fresh. Adopting the flag here
+      // would burn the once-per-install welcome on a question we never
+      // answered — and it is write-once, so no later load recovers it. Caught
+      // on a sandbox reset: the page reloaded the instant the restarted server
+      // answered /api/config, while this probe (which reads the machine) was
+      // still cold, and the welcome the reset exists to show never appeared.
+      // Leave the flag alone and try again next load.
+      return;
+    }
     if (fresh && pr) {
       frAi = ai;
       openFirstrun();
@@ -18010,14 +18021,22 @@ function mountDemoReset(badge) {
 }
 
 // Poll until the instance answers again (used across a deliberate restart).
-// Gives up after ~60s and reloads anyway — a stuck button tells the owner
+//
+// The probe is /api/onboard, not /api/config, and that is the whole point:
+// the first screen is decided by what the onboarding probe says, and that
+// call reads the MACHINE (contact stores, chat.db, the provider CLIs), so it
+// is cold for a moment after a restart while /api/config already answers.
+// Reloading on the cheaper signal lands the boot mid-warm-up — measured: the
+// welcome the reset exists to show did not appear.
+//
+// Gives up after ~60s and reloads anyway: a stuck button tells the owner
 // nothing, while a reload at least shows whatever state the sandbox is in.
 async function waitForServer(ms = 60000) {
   const until = Date.now() + ms;
   await new Promise((r) => setTimeout(r, 1500));   // let the old one die first
   while (Date.now() < until) {
     try {
-      const r = await fetch("/api/config", { cache: "no-store" });
+      const r = await fetch("/api/onboard", { cache: "no-store" });
       if (r.ok) return true;
     } catch { /* still down */ }
     await new Promise((r) => setTimeout(r, 700));
