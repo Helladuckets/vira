@@ -310,12 +310,17 @@ async def run_cliexec(runner):
                   f"--sandbox {sandbox}\n")
 
     # The deep Vira connection, HTTP flavor: no in-process MCP tools here,
-    # so the preamble names the API on :8377 instead.
-    prompt = viratools.preamble(
+    # so the preamble names the API on :8377 instead. Held separately
+    # because continuity on this path is `exec resume <thread_id>` — when
+    # the thread is lost, a steering/reply turn starts a FRESH conversation
+    # and must re-carry the preamble or that turn runs with no Vira context
+    # at all (only whatever the CLI auto-loaded from cwd).
+    pre = viratools.preamble(
         native=False,
         worktree_path=spec.get("worktree") or "",
         branch=spec.get("branch") or "",
-        live_root=spec.get("live_root") or "") + "\n\n" + spec["prompt"]
+        live_root=spec.get("live_root") or "")
+    prompt = pre + "\n\n" + spec["prompt"]
 
     thread_id = None
     result_text = ""
@@ -345,6 +350,7 @@ async def run_cliexec(runner):
             if not thread_id:
                 runner.append("[vira] note: no session thread to resume — "
                               "starting a fresh one with your message\n")
+                prompt = pre + "\n\n" + prompt
             continue
         reply = (await runner.await_reply()
                  if ok and runner.parks_at_turn_end() else None)
@@ -353,5 +359,5 @@ async def run_cliexec(runner):
         else:
             runner.finished_cleanly = False
             runner.append("[vira] reply delivered\n")
-            prompt = reply
+            prompt = reply if thread_id else pre + "\n\n" + reply
     return result_text, ok
