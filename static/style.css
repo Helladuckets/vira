@@ -777,6 +777,52 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 /* a resolved "needs a session" line, kept in the Journal as complete */
 .jn-unap.resolved { text-decoration: line-through; opacity: .5; }
 .jn-unap.resolved .jn-unap-area { text-decoration: none; }
+
+/* ---------- RECORD > Rules — the lesson-recurrence counter ----------
+   Tokens only, so every skin reaches it. The rule text is the FLEXIBLE
+   column (min-width: 0 — the documented flex trap); tier chip and count
+   are fixed. */
+.lw-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 2px 2px 8px; }
+.lw-headline { font-size: 11.5px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: .05em; min-width: 180px; }
+.lw-note { font-size: 11.5px; color: var(--text-faint);
+  margin: 0 2px 10px; }
+.lw-rule { border: 1px solid var(--line-warm); border-radius: var(--radius);
+  background: var(--bg-raised); padding: 10px 12px; margin-bottom: 8px; }
+.lw-rule.t1flag { border-color: var(--red); }
+.lw-rule.dim { opacity: .55; }
+.lw-top { display: flex; align-items: flex-start; gap: 10px; }
+.lw-tier { flex: none; font-size: 10.5px; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--text-faint);
+  border: 1px solid var(--line-warm-bright); border-radius: var(--radius);
+  padding: 2px 7px; margin-top: 1px; }
+.lw-tier.warn { color: var(--red); border-color: var(--red); }
+.lw-text { flex: 1 1 auto; min-width: 0; font-size: 13px;
+  line-height: 1.45; color: var(--text); }
+.lw-count { flex: none; font-size: 11.5px; color: var(--text-dim);
+  margin-top: 2px; white-space: nowrap; }
+.lw-last { color: var(--text-faint); }
+.lw-tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; }
+.lw-tag { font-size: 10.5px; color: var(--text-faint);
+  border: 1px solid var(--line-warm); border-radius: var(--radius);
+  padding: 1px 7px; }
+.lw-tag.warn { color: var(--red); border-color: var(--red); }
+.lw-prop { font-size: 12px; color: var(--oxidized); margin-top: 7px; }
+.lw-prop a { color: var(--oxidized); }
+.lw-breaks { margin-top: 9px; border-top: 1px solid var(--line-warm);
+  padding-top: 7px; display: flex; flex-direction: column; gap: 8px; }
+.lw-break { font-size: 12px; }
+.lw-bmeta { font-size: 11px; color: var(--text-faint);
+  text-transform: uppercase; letter-spacing: .04em; }
+.lw-bquote { color: var(--text-dim); margin: 3px 0 4px;
+  border-left: 2px solid var(--line-warm-bright); padding-left: 8px; }
+.lw-bacts { display: flex; gap: 8px; }
+@media (max-width: 1099px) {
+  /* the count wraps under the text rather than shoving it off a phone */
+  .lw-top { flex-wrap: wrap; }
+  .lw-count { white-space: normal; }
+}
 .dispatch-ctl {
   display: flex; align-items: center; flex-wrap: wrap;
   gap: 8px; margin: 0 0 12px;

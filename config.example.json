@@ -99,5 +99,15 @@
   "sms_fallback": true,
   "_sms_fallback": "When an iMessage is not delivered (an Android/iMessage-less recipient), re-send it as a plain text. Needs Text Message Forwarding to the paired iPhone so Messages owns an SMS account. send_verify_seconds (default 8) is how long Vira watches chat.db for the delivery error before giving up (0 disables the reactive check). A contact can also be marked SMS on their person page, which sends as a text from the start.",
   "evidence_retro_dir": "",
-  "_evidence_retro_dir": "Directory the Evidence Ledger mines session retros from (glob \"* vira.md\"). Empty = ~/TC-IL/Sessions. The ledger also reads this checkout's own git-ignored retros/*.md when present."
+  "_evidence_retro_dir": "Directory the Evidence Ledger mines session retros from (glob \"* vira.md\"). Empty = ~/TC-IL/Sessions. The ledger also reads this checkout's own git-ignored retros/*.md when present.",
+  "lessons_ledger_path": "",
+  "_lessons_ledger_path": "The corrections ledger the lesson-recurrence counter reads (server/lessonwatch.py, Work > RECORD > Rules). Empty = ~/.claude/LESSONS.md; a missing file leaves the module dormant. Vira only ever READS this file.",
+  "lessons_state_dir": "",
+  "_lessons_state_dir": "The provenance stores beside the ledger: results/<day>/*.json session digests plus lessons-proposed.jsonl / lessons-decided.jsonl. Empty = ~/.claude/sessions.",
+  "lessons_retro_dirs": "",
+  "_lessons_retro_dirs": "Comma-separated retro directories the counter reads as the markdown fallback (ALL projects, not just Vira). Empty = evidence_retro_dir (or its default) plus this checkout's retros/.",
+  "lesson_promote_at": 3,
+  "_lesson_promote_at": "Distinct sessions that must describe breaking a tier-2 rule before the counter stages a promotion proposal (a `proposed` idea in the Queue — never a ledger write).",
+  "lesson_candidates_per_rule": 12,
+  "_lesson_candidates_per_rule": "Rung-2 cost ceiling: at most this many candidate reversals are adjudicated per rule per pass (newest first; drops are counted in the run record, never silent)."
 }
