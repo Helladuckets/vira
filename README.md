@@ -105,26 +105,38 @@ Local-first by design, with every egress path named and opt-in:
 
 ## Quickstart (macOS)
 
+You need **git** and **Python 3.10+**. You do not need a GitHub account -
+this repo is public, so cloning it takes no login, no SSH key, and no
+signup. If `git` is missing, `xcode-select --install` adds it.
+
 One command - it picks a python, creates the venv, installs dependencies,
 serves http://localhost:8377, and opens the app:
 
 ```sh
-git clone <this repo> vira && cd vira
+git clone https://github.com/Helladuckets/vira.git vira && cd vira
 bash scripts/agent-install.sh
 ```
 
 Or the same steps by hand:
 
 ```sh
-git clone <this repo> vira && cd vira
+git clone https://github.com/Helladuckets/vira.git vira && cd vira
 python3 -m venv --copies .venv
 .venv/bin/pip install -r requirements.txt
 ./run.sh                      # serves http://localhost:8377
 sh scripts/install-hooks.sh   # pre-commit guard (if you'll be committing)
 ```
 
-(A GitHub ZIP download runs fine too, but the in-app updater needs a git
-clone to pull updates - prefer the clone.)
+**Would rather not use a terminal?** Hand this repo to an AI agent you
+already have - Claude Code, Claude Desktop, ChatGPT desktop - and point it
+at [AGENTS.md](AGENTS.md). That file is the contract written for it:
+install, connect an AI, stop. It is the shortest path if the commands
+above are not your thing.
+
+(A ZIP download from the GitHub page works too, but `git` still has to be
+installed - one dependency installs from a git URL and pip shells out to
+git to fetch it - and the in-app updater can only fast-forward a real
+clone. Prefer the clone.)
 
 A fresh clone boots into **fixture mode**: one demo contact - Vira themself
 - whose conversation is the usage tour, whose open loops are your setup
@@ -153,7 +165,7 @@ radar, the cockpit's live agent sessions, and in-app updates.
 2. Clone and run, in a regular PowerShell window:
 
    ```powershell
-   git clone <this repo> vira
+   git clone https://github.com/Helladuckets/vira.git vira
    cd vira
    powershell -ExecutionPolicy Bypass -File scripts\run.ps1
    ```
