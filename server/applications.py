@@ -588,14 +588,37 @@ def find_role(uid):
 
 def apply_prompt(role, note=""):
     """The prompt an Apply dispatch hands the agent session. cwd is the
-    self-record so its CLAUDE.md (claim gate, confidentiality) auto-loads.
-    Universe roles ride with their adjudicated dossier read (tier, lane,
-    why_fit, lead_with, caveat) — the package build starts from that, not
-    from scratch."""
+    self-record; on Claude its CLAUDE.md (claim gate, confidentiality)
+    auto-loads, but the load-bearing rules are EMBEDDED in the prompt text
+    below so they survive every backend — a codex/gemini session loads no
+    CLAUDE.md, and before 2026-07-31 such a run received none of the claim
+    gate or the confidentiality walls (the jobboards.score_prompt pattern,
+    applied here). Universe roles ride with their adjudicated dossier read
+    (tier, lane, why_fit, lead_with, caveat) — the package build starts
+    from that, not from scratch."""
+    record = self_record()
+    facts = record / "FACTS.md"
     lines = [
         "Run the application-package skill "
         f"(read {SKILL_MD} and follow it end to end) for this role. "
         "Build the FULL package. Draft only — never submit anything.",
+        "",
+        "GROUND RULES — these bind regardless of what else your harness "
+        "loaded:",
+        f"- {facts} is the ONLY claim source and wins every conflict "
+        "(authority order: FACTS.md, then self.json, then nothing else). "
+        "Read it before writing any claim about the owner's background, "
+        "and never emit anything from its DO-NOT-USE register.",
+        "- A claim you cannot anchor to a FACTS.md row gets REMOVED from "
+        "the artifact, not flagged. A rendering (an existing resume, bio, "
+        "or deck) is never a source — older PDFs in this record predate "
+        "corrections and are not claim-safe.",
+        f"- Nothing from {record / '07-sentinel'} or "
+        f"{record / '13-personal'} may appear in any outward artifact — "
+        "no quotes, no paraphrases, no figures. Grounding context at "
+        "most. Internal deal figures never appear anywhere.",
+        f"- The full rulebook is {record / 'CLAUDE.md'} — read it first "
+        "if your harness did not load it for you.",
         "",
         "ROLE:",
         json.dumps({k: role.get(k) for k in

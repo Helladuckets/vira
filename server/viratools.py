@@ -74,19 +74,29 @@ def preamble(native=True, worktree_path="", branch="", live_root=""):
         "ARE your calendar/email/contacts/knowledge access — use them "
         "instead of reporting that no connector is available.\n\n"
         if native else "")
-    # The two rules a session must not silently break. Both are ENFORCED
-    # elsewhere (the runner's gate denies live-tree writes; ask_owner blocks
-    # on a real card) — this paragraph exists so the agent understands the
-    # enforcement rather than fighting it.
+    # The two rules a session must not silently break. On the SDK path both
+    # are ENFORCED elsewhere (the runner's gate denies live-tree writes;
+    # ask_owner blocks on a real card) — this paragraph exists so the agent
+    # understands the enforcement rather than fighting it. On the CLI-exec
+    # path (native=False) there IS no gate — containment is the provider
+    # CLI's own sandbox — so the paragraph must not claim one: telling a
+    # codex session an enforcement mechanism exists that, for it, does not
+    # is exactly the honesty failure the grade split exists to avoid.
     branch_para = ""
     if worktree_path:
+        enforcement = (
+            "any Write/Edit aimed there is denied by the permission "
+            "gate, and retrying it will fail the same way"
+            if native else
+            "never create or change a file there — your work belongs in "
+            "the worktree, and an edit to the live tree is the one "
+            "mistake the owner cannot easily undo")
         branch_para = (
             "BRANCH-FIRST — THIS IS ENFORCED, NOT ADVISORY. You are in a "
             f"worktree at {worktree_path} on branch {branch}. Every file you "
             f"create or change must be under that directory. The live "
             f"checkout at {live_root} is READ-ONLY for you: read it freely, "
-            "but any Write/Edit aimed there is denied by the permission "
-            "gate, and retrying it will fail the same way. Do not merge, do "
+            f"but {enforcement}. Do not merge, do "
             "not push, and do not run `scripts/branch.sh merge` — the owner "
             "decides that after reviewing your work.\n\n"
             "FINISH WHAT YOU START. A half-applied change is worse than no "

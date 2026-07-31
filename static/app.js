@@ -4564,8 +4564,9 @@ function ideaImplementPrompt(it, extra, cwd, perm, fold) {
     ideaFoldBlock(fold),
     ideaExtraBlock(extra),
     "Carry it out end to end:",
-    "- First read the repo (its CLAUDE.md and the relevant modules) so your",
-    "  changes fit the existing code and conventions.",
+    "- First read the repo's agent contract (AGENTS.md, and CLAUDE.md where",
+    "  present) and the relevant modules, so your changes fit the existing",
+    "  code and conventions.",
     "- Make the real code changes needed to accomplish the task.",
     "- Verify your work by actually exercising it (run the app, tests, or build",
     "  as appropriate) and fix what you find.",
@@ -4595,7 +4596,8 @@ function ideaPlanPrompt(it, extra, cwd, fold) {
     '"""', it.text, '"""',
     ideaFoldBlock(fold),
     ideaExtraBlock(extra),
-    "Read the repo (its CLAUDE.md and the relevant modules) so the plan is",
+    "Read the repo's agent contract (AGENTS.md, and CLAUDE.md where present)",
+    "and the relevant modules, so the plan is",
     "grounded in the real code, then produce a thorough, well-structured",
     "implementation plan.",
     "",
@@ -4662,7 +4664,8 @@ function copyIdeaPrompt(it) {
   copyText(
     "cd " + cwd + "\n\n" +
     "(If this was pasted into an already-running session: cd to the path " +
-    "above and read its CLAUDE.md before building.)\n\n" + prompt,
+    "above and read its agent contract — AGENTS.md, and CLAUDE.md where " +
+    "present — before building.)\n\n" + prompt,
   ).then(() => toast("Prompt copied — paste into a terminal or Claude Code session"))
     .catch((e) => toast("Copy failed: " + e.message));
 }
@@ -12594,7 +12597,8 @@ $("#app-run-copy").addEventListener("click", async () => {
     await copyText(
       `cd ${cwd}\n\n` +
       "(If this was pasted into an already-running session: cd to the path " +
-      "above and read its CLAUDE.md before building.)\n\n" + prompt);
+      "above and read its agent contract — AGENTS.md, and CLAUDE.md where " +
+      "present — before building.)\n\n" + prompt);
     appRunSheet.close();
     toast("Prompt copied — paste into a terminal or Claude Code session");
   } catch (e) {

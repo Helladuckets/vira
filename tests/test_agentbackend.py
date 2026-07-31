@@ -237,6 +237,39 @@ class CliExecRunTest(unittest.TestCase):
         self.assertEqual(argv2[:2], ["exec", "resume"])
         self.assertEqual(argv2[2], "tid-1")
         self.assertNotIn("--sandbox", argv2)
+        # A resumed thread already holds its context — the preamble rides
+        # only the first turn, never a resume.
+        self.assertNotIn("running inside Vira", argv2[-1])
+
+    def test_lost_thread_reply_recarries_the_preamble(self):
+        # No thread.started ever arrives, so the reply cannot resume — it
+        # starts a FRESH conversation. Without the preamble re-prepended
+        # that turn runs with no Vira context at all, only whatever the
+        # provider CLI auto-loaded from cwd.
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = _fake_codex(tmp, [
+                [{"type": "item.completed",
+                  "item": {"type": "agent_message", "text": "first"}},
+                 {"type": "turn.completed"}],
+                [{"type": "item.completed",
+                  "item": {"type": "agent_message", "text": "second"}},
+                 {"type": "turn.completed"}],
+            ])
+            spec = {"id": "j5", "provider": "openai", "cwd": tmp,
+                    "mode": "interactive", "prompt": "start"}
+            runner = _FakeRunner(spec, replies=["more"])
+            with mock.patch("server.joblog.record_session"):
+                text, ok = self._run(runner, binary)
+            argv1 = json.loads(
+                Path(tmp, "calls.argv0").read_text(encoding="utf-8"))
+            argv2 = json.loads(
+                Path(tmp, "calls.argv1").read_text(encoding="utf-8"))
+        self.assertTrue(ok)
+        self.assertEqual(text, "second")
+        self.assertNotEqual(argv2[:2], ["exec", "resume"])
+        self.assertIn("running inside Vira", argv1[-1])
+        self.assertIn("running inside Vira", argv2[-1])
+        self.assertIn("more", argv2[-1])
 
     def test_failed_turn_reports_not_ok(self):
         with tempfile.TemporaryDirectory() as tmp:

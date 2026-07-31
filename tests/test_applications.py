@@ -410,6 +410,22 @@ class UniverseTest(ApplicationsBase):
 
 
 class PromptTest(ApplicationsBase):
+    def test_apply_prompt_embeds_the_claim_gate_and_walls(self):
+        # These rules must ride the PROMPT TEXT, not only the self-record's
+        # CLAUDE.md: a non-Claude backend (codex) auto-loads no CLAUDE.md,
+        # so a run there receives exactly what this string carries. Before
+        # 2026-07-31 that was the draft-only rule and nothing else — no
+        # claim gate, no confidentiality walls.
+        roles, _ = applications.load_roles()
+        p = applications.apply_prompt(roles[0])
+        self.assertIn("GROUND RULES", p)
+        self.assertIn("FACTS.md", p)
+        self.assertIn("DO-NOT-USE", p)
+        self.assertIn("07-sentinel", p)
+        self.assertIn("13-personal", p)
+        self.assertIn("Draft only", p)
+        self.assertIn("never a source", p)
+
     def test_apply_prompt_shape(self):
         roles, _ = applications.load_roles()
         role = roles[0]

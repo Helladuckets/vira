@@ -72,6 +72,21 @@ class TestPreamble(unittest.TestCase):
             self.assertIn("Never restart", p)
             self.assertIn("nyc.durham.vira", p)
 
+    def test_branch_para_claims_the_gate_only_where_one_exists(self):
+        kw = dict(worktree_path="/tmp/wt", branch="claude/x",
+                  live_root="/tmp/live")
+        gated = viratools.preamble(True, **kw)
+        best_effort = viratools.preamble(False, **kw)
+        for p in (gated, best_effort):
+            self.assertIn("BRANCH-FIRST", p)
+            self.assertIn("/tmp/wt", p)
+            self.assertIn("/tmp/live", p)
+        # The SDK path really has runner.gate behind it; the CLI-exec path
+        # has none (containment is the provider CLI's own sandbox), and
+        # telling that session a gate exists is a false enforcement claim.
+        self.assertIn("permission gate", gated)
+        self.assertNotIn("permission gate", best_effort)
+
 
 class TestCalendar(unittest.TestCase):
     def test_renders_local_events_and_clamps_days(self):
