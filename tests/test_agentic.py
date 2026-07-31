@@ -832,5 +832,66 @@ class ProposedIdeaTests(unittest.TestCase):
         self.assertIn("Staged", out)
 
 
+class DeferredProposalTests(unittest.TestCase):
+    """Defer is the third answer to a proposal: not now, but keep it. It
+    only means something if Vira stops offering the idea back — otherwise
+    tomorrow's muse re-proposes what the owner just set aside."""
+
+    def setUp(self):
+        from server import ideatags
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        for p in (mock.patch.object(ideas, "STORE",
+                                    Path(self.tmp.name) / "ideas.json"),
+                  mock.patch.object(ideatags, "STORE",
+                                    Path(self.tmp.name) / "idea-index.json"),
+                  mock.patch.object(ideatags.localmodels, "ollama_embed",
+                                    side_effect=AssertionError("no network"))):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_deferred_is_a_real_status(self):
+        it = ideas.add("build the thing", status="proposed", source="muse")
+        moved = ideas.update(it["id"], status="deferred")
+        self.assertEqual(moved["status"], "deferred")
+        self.assertEqual(ideas.list_items()[0]["status"], "deferred")
+
+    def test_an_unknown_status_still_falls_back(self):
+        """The whitelist is what keeps a typo from minting a status no
+        surface knows how to render."""
+        it = ideas.add("x", status="deferrred")     # typo
+        self.assertEqual(it["status"], "open")
+
+    def test_the_muse_is_shown_deferred_ideas(self):
+        """Excluded from the backlog it studies, a deferred idea is one the
+        muse cannot know it already offered."""
+        from server import routines
+        ideas.add("set this aside", status="deferred", source="muse")
+        prompt = routines._muse_prompt()
+        self.assertIn("set this aside", prompt)
+        self.assertIn("[deferred]", prompt)
+        self.assertIn("never propose it again", prompt)
+
+    def test_a_deferred_idea_cannot_be_re_proposed(self):
+        from server.viratools import _propose_idea_text
+        ideas.add("Ping me when a subscription renews", status="deferred",
+                  source="muse", project="Vira")
+        out = _propose_idea_text("ping me when a subscription renews",
+                                 "Vira", "why now")
+        self.assertIn("already on the backlog", out)
+        self.assertIn("deferred", out)             # names WHY it is refused
+        self.assertEqual(len(ideas.list_items()), 1)
+
+    def test_a_deferred_idea_stays_in_the_tag_and_similarity_space(self):
+        """Unlike done/dropped: the duplicate nudge has to be able to say
+        'you deferred this', and a reopened idea must arrive tagged."""
+        from server import ideatags
+        ideas.add("a deferred one", status="deferred", source="muse")
+        ideas.add("a dropped one", status="dropped", source="muse")
+        live = [i["text"] for i in ideatags.live_items(ideas.list_items())]
+        self.assertIn("a deferred one", live)
+        self.assertNotIn("a dropped one", live)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -109,6 +109,23 @@ still even both after before again once too own off out up down again
 """.split())
 
 
+# Which ideas this layer works over. "done" and "dropped" are settled, so
+# tagging or scoring them is spend on questions nobody asks. "DEFERRED IS
+# LIVE" — deliberately: a deferred idea is one the owner means to revisit,
+# so the duplicate nudge has to be able to say "you deferred this", and a
+# reopened one must arrive already tagged. One definition, three readers
+# (related / duplicates / check_candidate), so they cannot drift.
+_SETTLED = ("done", "dropped")
+
+
+def _is_live(item):
+    return item.get("status") not in _SETTLED
+
+
+def live_items(items):
+    return [i for i in items if _is_live(i)]
+
+
 def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -526,7 +543,7 @@ def related(idea_id, items=None, limit=15, floor=RELATED_FLOOR,
     if embed:
         ensure_vector(target)
     pool = items if include_parked else [
-        i for i in items if i.get("status") not in ("done", "dropped")]
+        i for i in items if _is_live(i)]
     rows = [r for r in score_pairs(target, pool) if r["score"] >= floor]
     return {"id": idea_id, "text": target.get("text") or "",
             "related": rows[:limit],
@@ -538,7 +555,7 @@ def duplicates(items=None, floor=DUP_FLOOR, limit=60):
     """Near-identical pairs across the live backlog, strongest first —
     "you already had this idea", computed rather than remembered."""
     items = ideas.list_items() if items is None else items
-    live = [i for i in items if i.get("status") not in ("done", "dropped")]
+    live = live_items(items)
     s = _read()
     space = _space(live, s)          # built once, scored against n times
     seen, out = set(), []
@@ -596,7 +613,7 @@ def check_candidate(text, project="", items=None, floor=DUP_FLOOR, limit=5,
     if not text:
         return {"text": "", "matches": [], "basis": "text"}
     items = ideas.list_items() if items is None else items
-    live = [i for i in items if i.get("status") not in ("done", "dropped")]
+    live = live_items(items)
     target = {"id": _CANDIDATE_ID, "text": text, "project": project or ""}
     s = _read()
     space = _space(live, s)
