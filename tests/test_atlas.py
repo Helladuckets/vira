@@ -1,6 +1,6 @@
 """Contact Atlas engine tests: signal fusion over a synthetic CRM +
 faces fixture — edge symmetry, weight thresholding, ego/degree BFS,
-shortest_path, cluster assignment (anchor org, family components), and
+degree assignment, clusters (anchor org, family components), and
 graceful degradation when the media/vault indexes are absent.
 
 Run: .venv/bin/python -m unittest tests.test_atlas
@@ -178,20 +178,14 @@ class AtlasTests(unittest.TestCase):
             self.cache, {p["id"] for p in atlas.select_nodes(self.cache)}),
             [])
 
-    # ---------- degrees / path ----------
+    # ---------- degrees ----------
 
-    def test_degrees_and_shortest_path(self):
+    def test_degrees_from_ego(self):
         g = atlas.build_graph()
         deg = {n["id"]: n["degree"] for n in g["nodes"]}
         self.assertEqual(deg["p_alice"], 1)       # direct history
         self.assertEqual(deg["p_dave"], 1)
         self.assertEqual(deg["p_erin"], 2)        # only via Dave's group
-        path = atlas.shortest_path(g, "p_erin", "p_alice")
-        self.assertEqual(path, ["p_erin", "p_dave", "p_alice"])
-        res = atlas.path_between("p_erin", "p_carol")
-        self.assertTrue(res["found"])
-        self.assertEqual([p["pid"] for p in res["path"]],
-                         ["p_erin", "p_dave", "p_carol"])
 
     def test_ego_edges(self):
         g = atlas.build_graph()

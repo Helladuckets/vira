@@ -437,7 +437,7 @@ def _ego_edges(c, pid_set, own_pid):
     return out
 
 
-# ---------- degrees / paths / clusters ----------
+# ---------- degrees / clusters ----------
 
 def degrees_from_ego(pids, edges, ego_edges):
     """BFS hops from the owner: degree 1 = a direct ego edge; deeper
@@ -460,36 +460,6 @@ def degrees_from_ego(pids, edges, ego_edges):
     return deg
 
 
-def shortest_path(graph, a, b):
-    """Fewest-hops path over the CONTACT mesh (the ego is excluded — every
-    pair trivially connects through the owner). Ties prefer heavier edges."""
-    if a == b:
-        return [a]
-    adj = defaultdict(list)
-    for e in graph.get("edges", []):
-        adj[e["a"]].append((e["b"], e["weight"]))
-        adj[e["b"]].append((e["a"], e["weight"]))
-    best = {a: (0, 0.0, None)}       # pid -> (hops, -sum weight, prev)
-    frontier = [a]
-    while frontier:
-        nxt = []
-        for pid in sorted(frontier):
-            hops, negw, _ = best[pid]
-            for other, w in adj[pid]:
-                cand = (hops + 1, negw - w, pid)
-                if other not in best or cand < best[other]:
-                    best[other] = cand
-                    nxt.append(other)
-        frontier = nxt
-    if b not in best:
-        return None
-    path, cur = [], b
-    while cur is not None:
-        path.append(cur)
-        cur = best[cur][2]
-    return list(reversed(path))
-
-
 STRUCTURAL = {"photo_cooccur", "group_cochat", "family", "colleague"}
 
 
@@ -508,6 +478,10 @@ def clusters(c, pids, edges, anchor_org=None):
     label = {pid: i for i, pid in enumerate(sorted(pids))}
     pinned = set()
     seed_names = {}                       # fixed label -> cluster name
+    # ...and what KIND of thing seeded it. The Groups and Circles lenses
+    # are exactly this distinction, so it is recorded where it is known
+    # rather than sniffed back out of the label later.
+    seed_kinds = {}
 
     def pin(pid, lab):
         label[pid] = lab
@@ -519,6 +493,7 @@ def clusters(c, pids, edges, anchor_org=None):
             if org and (anchor_norm in org or org in anchor_norm):
                 pin(pid, -1)
         seed_names[-1] = anchor_org or "anchor"
+        seed_kinds[-1] = "anchor"
 
     by_org = defaultdict(list)
     for pid in sorted(pids):
@@ -535,6 +510,7 @@ def clusters(c, pids, edges, anchor_org=None):
             pin(pid, next_seed)
         seed_names[next_seed] = (
             (c["master"][members_[0]].get("company") or org).strip()[:40])
+        seed_kinds[next_seed] = "org"
         next_seed -= 1
 
     # family components over the family edges (union-find)
@@ -569,6 +545,7 @@ def clusters(c, pids, edges, anchor_org=None):
         tops = [s for s, _ in surnames.most_common(2)]
         seed_names[next_seed] = ("–".join(tops) + " family") if tops \
             else "family"
+        seed_kinds[next_seed] = "family"
         next_seed -= 1
 
     adj = defaultdict(list)
@@ -624,7 +601,8 @@ def clusters(c, pids, edges, anchor_org=None):
             if surnames and surnames.most_common(1)[0][1] >= 3:
                 name = surnames.most_common(1)[0][0] + " circle"
         meta.append({"id": cid, "label": name or f"circle {len(meta) + 1}",
-                     "anchor": lab == -1, "size": len(pids_in)})
+                     "anchor": lab == -1, "size": len(pids_in),
+                     "kind": seed_kinds.get(lab, "circle")})
         for pid in pids_in:
             out_label[pid] = cid
     return out_label, meta
@@ -806,6 +784,11 @@ def compose():
     apply_overrides(graph)
     graph["status"] = "ok"
     graph["building"] = _building.is_set()
+    # Lenses are a regroup of the nodes this payload already carries, so
+    # they are derived per read rather than stored — an override applied
+    # a line above can never be a rebuild behind the legend.
+    from . import atlaslens
+    graph["lenses"] = atlaslens.lenses(graph)
     return graph
 
 
@@ -884,7 +867,11 @@ def _overlay_payload(gid=None):
     g = compose()
     if g.get("status") != "ok":
         raise ValueError("atlas not built yet")
-    out = {"clusters": g["clusters"], "node_cluster": g["node_cluster"]}
+    # lenses ride along: an edited group changes what the Groups lens
+    # bands, and a client left patching clusters alone would paint the
+    # legend from a lens one edit stale.
+    out = {"clusters": g["clusters"], "node_cluster": g["node_cluster"],
+           "lenses": g.get("lenses", [])}
     if gid:
         out["gid"] = gid
     return out
@@ -1027,28 +1014,6 @@ def node_detail(pid):
     return {"node": node, "edges": edges, "ego": ego}
 
 
-def path_between(a, b):
-    graph = compose()
-    if graph.get("status") != "ok":
-        return None
-    names = {n["id"]: n["name"] for n in graph["nodes"]}
-    path = shortest_path(graph, a, b)
-    if not path:
-        return {"found": False, "from": a, "to": b}
-    by_pair = {_pair(e["a"], e["b"]): e for e in graph["edges"]}
-    hops = []
-    for x, y in zip(path, path[1:]):
-        e = by_pair.get(_pair(x, y), {})
-        hops.append({"a": x, "b": y, "weight": e.get("weight"),
-                     "signals": e.get("signals", []),
-                     "narrative": e.get("narrative")})
-    return {"found": True,
-            "path": [{"pid": p, "name": names.get(p, p)} for p in path],
-            "hops": hops}
-
-
-# ---------- face crops ----------
-
 def _face_pids():
     """People with at least one named face row (crop candidates)."""
     if not mediaindex.DB.exists():
@@ -1064,6 +1029,8 @@ def _face_pids():
     except sqlite3.Error:
         return set()
 
+
+# ---------- face crops ----------
 
 def face_crop(pid):
     """Best media-index face for a contact, cropped with sips (native HEIC,

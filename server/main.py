@@ -2750,14 +2750,6 @@ def api_atlas_refresh(req: AtlasRefreshReq | None = None):
     return {"refreshing": True}
 
 
-@app.get("/api/atlas/path")
-def api_atlas_path(a: str, b: str):
-    res = atlas.path_between(a, b)
-    if res is None:
-        raise HTTPException(409, "atlas not built yet")
-    return res
-
-
 @app.get("/api/atlas/node/{pid}")
 def api_atlas_node(pid: str):
     detail = atlas.node_detail(pid)
