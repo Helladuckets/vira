@@ -66,6 +66,14 @@ class _RepoCase(unittest.TestCase):
         jp = mock.patch("server.joblog.list_records", return_value=[])
         jp.start()
         self.addCleanup(jp.stop)
+        # update.status reads the REAL checkout's git (its ROOT is not
+        # orphanwork.ROOT), so without this stub the live tree's own
+        # unpushed-main state leaks an extra row into every fixture sweep
+        # — found by running the suite in the live tree, where main was
+        # transiently ahead; the worktree run was green only by luck
+        up = mock.patch("server.update.status", return_value={"git": False})
+        up.start()
+        self.addCleanup(up.stop)
         np = mock.patch("server.notify.agent_ping", return_value=True)
         self.ping = np.start()
         self.addCleanup(np.stop)
