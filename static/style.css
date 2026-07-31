@@ -284,10 +284,13 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 }
 .fchip.on { border-color: var(--sel-line); color: var(--sel-text); background: var(--sel-bg); }
 
-/* stacking auto-dismiss toasts */
+/* stacking auto-dismiss toasts — CENTERED on the screen, both widths
+   (owner's call, 2026-07-31): a confirmation chip tucked in a corner or
+   under the thumb bar is a confirmation missed. Transient and
+   click-through around the cards, so mid-screen costs nothing. */
 #toasts {
-  position: fixed; left: 50%; transform: translateX(-50%);
-  bottom: calc(var(--mdock-h) + 14px); z-index: 1200;   /* clears the bar */
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  z-index: 1200;
   display: flex; flex-direction: column; align-items: center; gap: 8px;
   pointer-events: none;
 }
@@ -1502,7 +1505,9 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
    on working is the point. */
 .alert-layer {
   position: fixed; z-index: 4100;
-  left: 12px; right: 12px; bottom: calc(var(--mdock-h) + 12px);
+  /* centered, not cornered (owner's call, 2026-07-31) — a decision card is
+     the most important thing on screen, so it sits where the eye already is */
+  left: 12px; right: 12px; top: 50%; transform: translateY(-50%);
   pointer-events: none;
 }
 .alert-layer[hidden] { display: none; }
@@ -1595,10 +1600,11 @@ body.nd-open .alert-layer, body.lp-open .alert-layer { display: none; }
   .alert-card { animation: none; }
 }
 @media (min-width: 1100px) {
-  /* at the desk it docks bottom-right at a width that fits an ask card's
-     option rows without wrapping them. 96px clears the dock, which is
-     centred and can be wide enough to reach under this corner. */
-  .alert-layer { left: auto; right: 18px; bottom: 96px; width: 420px; }
+  /* at the desk it centers at a width that fits an ask card's option rows
+     without wrapping them */
+  .alert-layer {
+    left: 50%; right: auto; transform: translate(-50%, -50%); width: 420px;
+  }
   .alert-stack { max-height: min(72dvh, 720px); }
 }
 
@@ -1634,13 +1640,20 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 .cc-chev { color: var(--claude); font-weight: 500; margin-right: 2px; }
 
 /* The owner's first command, echoed under the welcome box the way Claude
-   Code shows the opening message. */
-.cc-firstcmd { display: flex; gap: 8px; align-items: flex-start;
-  margin: 11px 2px 2px; line-height: 1.55; word-break: break-word;
+   Code shows the opening message — and STICKY: once the stream scrolls past
+   it, it pins as a second row under the title bar and the rest runs beneath,
+   so what the session was asked to do is never off screen. Sticking needs it
+   to be a sibling of the stream in the scroller, not a child of the banner
+   (a sticky element only sticks while its own parent is in view). */
+.cc-firstcmd { position: sticky; top: 0; z-index: 3;
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 11px 16px 10px; line-height: 1.55; word-break: break-word;
+  background: var(--term-bg); border-bottom: 1px solid var(--term-line);
   font-family: "SF Mono", ui-monospace, Menlo, monospace;
   font-size: 12.5px; color: var(--term-fg); }
+.cc-firstcmd:empty { display: none; }
 .cc-fc-chev { color: var(--claude); font-weight: 500; flex: none; }
-.cc-firstcmd > span:last-child { min-width: 0; }
+.cc-fc-text { min-width: 0; }
 
 /* Editable session title in a job window bar — click to rename. */
 .fwin-title-edit { cursor: text; }
@@ -1693,13 +1706,19 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 .sheet-card h3.sheet-sub { margin-top: 20px; }
 /* the card's header doubles as its title bar (desktop drag) */
 @media (min-width: 1100px) {
-  .sheet-head { cursor: grab; user-select: none; -webkit-user-select: none; }
-  .sheet-head:active { cursor: grabbing; }
-  /* dragged off the bottom dock: a free-floating card, bordered all round */
-  .sheet-card.floating {
-    position: fixed; border-radius: 2px; border-bottom: 1px solid var(--line);
+  /* Sheets rest CENTERED on the desk (owner's call, 2026-07-31): the
+     bottom dock is the phone's shape, where the card rises to meet the
+     thumb. Centered, the card wears its full floating dress at rest —
+     four corners, a bottom border, a real shadow. */
+  .sheet { align-items: center; }
+  .sheet-card {
+    border-radius: 2px; border-bottom: 1px solid var(--line);
     padding-bottom: 20px; box-shadow: 0 24px 70px rgba(0, 0, 0, .55);
   }
+  .sheet-head { cursor: grab; user-select: none; -webkit-user-select: none; }
+  .sheet-head:active { cursor: grabbing; }
+  /* dragged off the resting spot: pinned wherever the drag left it */
+  .sheet-card.floating { position: fixed; }
 }
 .mail-acct {
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
@@ -2445,6 +2464,10 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
     color: var(--text-dim); text-transform: uppercase;
     flex: 1;
   }
+  /* A terminal window's bar carries no title, so this empty stretch is the
+     grab surface between the brand and the zoom controls — and it holds the
+     bar at the height a title used to give it. */
+  .fwin-fill { flex: 1; min-width: 0; min-height: 15px; }
   .fwin-zoomgrp { display: flex; gap: 2px; margin-left: auto; flex: none; }
   .fwin-zoom {
     width: 22px; height: 20px; border-radius: 2px; padding: 0;
@@ -2496,9 +2519,6 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   .term-window { background: var(--term-bg); border-color: var(--term-line); }
   .term-window .fwin-bar { background: var(--term-chrome); border-bottom: 1px solid var(--term-line);
     font-family: "SF Mono", ui-monospace, Menlo, monospace; }
-  .term-window .fwin-title { color: var(--term-mut); font-size: 12px;
-    font-weight: 400; text-transform: none; letter-spacing: 0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .term-window .fwin-body { padding: 0; display: flex; flex-direction: column;
     overflow: hidden; background: var(--term-bg); }
   .term-window .term-scroll { flex: 1; min-height: 0; overflow-y: auto; }
@@ -2628,10 +2648,6 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   }
   .thread { max-height: 52vh; }
 
-  #toasts {
-    left: auto; right: 26px; transform: none;
-    bottom: 92px; align-items: flex-end;
-  }
 }
 
 @media (prefers-reduced-motion: reduce) {

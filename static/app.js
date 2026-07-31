@@ -5490,17 +5490,27 @@ function renderCCBanner(host, j, defModel, inst) {
         <div class="cc-dim" data-model2></div>
         <div class="cc-dim">Streaming live below</div>
       </div>
-    </div></div>
-    <div class="cc-firstcmd"><span class="cc-fc-chev">&gt;</span><span data-command></span></div>`;
+    </div></div>`;
   host.querySelector(".cc-legend").textContent = badge.legend;
   host.querySelector("[data-model]").textContent = model + " · " + badge.auth;
   host.querySelector("[data-cwd]").textContent = j.cwd || "~";
   host.querySelector("[data-mode]").textContent = "Mode: " + mode;
   host.querySelector("[data-model2]").textContent = "Model: " + model;
-  // The owner's first command, echoed inline the way Claude Code shows the
-  // opening message under its welcome box.
-  host.querySelector("[data-command]").textContent =
-    j.command || (j.prompt || "").replace(/\s+/g, " ").slice(0, 200);
+}
+
+// The owner's first command, echoed under the welcome box the way Claude
+// Code shows the opening message — and it is the session's IDENTITY on the
+// desktop, which is why it lives in its own element rather than inside the
+// banner: a sticky row can only stick for as long as its own parent is on
+// screen, so nested in the banner it would scroll away with the welcome box.
+// As a sibling in the scroller it pins under the title bar and the whole
+// stream runs beneath it (2026-07-29).
+function renderFirstCmd(host, j) {
+  const text = j.command || (j.prompt || "").replace(/\s+/g, " ").slice(0, 200);
+  host.innerHTML = "";
+  if (!text) return;
+  host.appendChild(el("span", "cc-fc-chev", ">"));
+  host.appendChild(el("span", "cc-fc-text", text));
 }
 
 // One inline Approve/Deny card per pending permission request. Buttons post
@@ -5731,14 +5741,19 @@ function createJobTerm(jid, refs) {
       if (!this.banded) {
         renderCCBanner(r.banner, j, await defaultModelLabel(),
           await instanceConfig());
+        if (r.cmd) renderFirstCmd(r.cmd, j);
         this.banded = true;
       }
-      // The session title in the window bar — auto-named, click to rename.
-      // Skip while the owner is mid-edit so the 800ms poll can't clobber
-      // their typing.
+      // The session title — auto-named, editable. Skip while the owner is
+      // mid-edit so the 800ms poll can't clobber their typing.
+      const name = j.title
+        || (j.prompt || "").replace(/\s+/g, " ").slice(0, 90);
       if (r.title && !r.title.classList.contains("editing"))
-        r.title.textContent = j.title
-          || (j.prompt || "").replace(/\s+/g, " ").slice(0, 90);
+        r.title.textContent = name;
+      // A desktop terminal has no title in its bar (the bar is all drag
+      // surface), so the name is carried on the window for the right-click
+      // menu and the rename popup to read.
+      r.onName?.(name);
       const waiting = j.status === "running" && j.awaiting === "permission";
       // Blocked mid-work on a DECISION only the owner can make. Named
       // separately from a permission because it reads differently: nothing
@@ -5891,10 +5906,11 @@ function openJobPanel(jid) {
     panelTerm.stop();
   }
   $("#job-banner").innerHTML = "";
+  $("#job-cmd").innerHTML = "";
   $("#job-output").innerHTML = "";
   $("#job-pending").innerHTML = "";
   panelTerm = createJobTerm(jid, {
-    banner: $("#job-banner"), output: $("#job-output"),
+    banner: $("#job-banner"), cmd: $("#job-cmd"), output: $("#job-output"),
     pending: $("#job-pending"), composebar: $("#job-composebar"),
     say: $("#job-say"), send: $("#job-send"), stopBtn: $("#job-stop"),
     statusbar: $("#job-statusbar"), led: $("#job-runled"),
@@ -5913,7 +5929,117 @@ makeTitleEditable($("#job-title"), () => panelTerm && panelTerm.jid);
 // ----- desktop: one floating terminal window per job -----
 
 const jobWindows = {};   // jid -> { win, term }
-let jobCascade = 0;
+
+// Terminal windows keep a HOME: parked sessions TILE the right side of the
+// desk instead of piling up. One terminal takes the column; a second splits
+// it top/bottom with no overlap (owner's call, 2026-07-31 — the overlapping
+// 34px stack read as clutter, not a place); past what one column holds,
+// further columns step left, each staggered a third of a row down, so many
+// sessions interlock as a mosaic with every head still readable. A new
+// session still spawns CENTERED — the run you just launched is the thing
+// you are watching — and retreats to its home on the first click outside.
+// Dragging a window by hand UNHOMES it: the owner's placement wins, the
+// layout never touches it again, and its slot heals behind it.
+const TERM_TOP = 70;    // below the topbar
+const TERM_M = 24;      // desk margin
+const TERM_GAP = 10;    // between stacked windows
+// The tile floor sits a touch under the manual resize floor (320) on
+// purpose: at 300 a stock 720-tall viewport still splits two sessions
+// top/bottom, which is the arrangement the tiling exists for — a 308px
+// tile beats a mosaic of two half-eclipsed 560s.
+const TERM_MINH = 300;
+const TERM_MAXH = 560;  // a lone terminal keeps the familiar size
+
+function termHomedWins() {
+  return Object.values(jobWindows).map((x) => x.win)
+    .filter((w) => w.dataset.termParked || w.dataset.termHoming)
+    .sort((a, b) => Number(a.dataset.termSlot) - Number(b.dataset.termSlot));
+}
+
+// Rects for n homed terminals. Rows per column come from what actually
+// fits at the resize floor, so a short viewport degrades to fewer, taller
+// rows rather than unusably squat windows.
+function termLayout(n) {
+  const w = Math.min(680, innerWidth - 48);
+  const availH = Math.max(TERM_MINH, innerHeight - TERM_TOP - TERM_M);
+  const maxRows = Math.max(1,
+    Math.floor((availH + TERM_GAP) / (TERM_MINH + TERM_GAP)));
+  const rows = Math.min(Math.max(n, 1), maxRows);
+  const h = Math.min(TERM_MAXH,
+    Math.floor((availH - (rows - 1) * TERM_GAP) / rows));
+  const rects = [];
+  for (let i = 0; i < n; i++) {
+    const col = Math.floor(i / rows), row = i % rows;
+    // odd columns ride lower so the mosaic interlocks instead of eclipsing
+    const drop = (col % 2) ? Math.round((h + TERM_GAP) / 3) : 0;
+    rects.push({
+      x: Math.max(12, innerWidth - w - TERM_M - col * Math.round(w * 0.52)),
+      y: Math.min(TERM_TOP + row * (h + TERM_GAP) + drop,
+                  Math.max(TERM_TOP, innerHeight - h - TERM_M)),
+      w, h,
+    });
+  }
+  return rects;
+}
+
+// Re-tile every homed terminal: slots compact (a closed or hand-dragged
+// window's gap heals), parked windows animate to their new rects, and a
+// still-centered one just learns where it will retreat to.
+function reflowTermHomes() {
+  // Self-heal first: a parked window that is not where its tile put it was
+  // hand-moved by a drag whose pointerup the handler never saw (scaled
+  // panes and synthesized pointers can eat it). Treat it exactly as if the
+  // drag's own unhome had fired — the owner's placement wins.
+  for (const win of termHomedWins()) {
+    const hm = win._termHome;
+    if (win.dataset.termParked && hm &&
+        (Math.abs(parseFloat(win.style.left) - hm.x) > 8 ||
+         Math.abs(parseFloat(win.style.top) - hm.y) > 8))
+      termUnhome(win);
+  }
+  const wins = termHomedWins();
+  const rects = termLayout(wins.length);
+  wins.forEach((win, i) => {
+    win.dataset.termSlot = String(i);
+    win._termHome = rects[i];
+    if (win.dataset.termParked) setWinRect(win, rects[i], true);
+  });
+}
+
+let termReflowT = 0;
+addEventListener("resize", () => {
+  clearTimeout(termReflowT);
+  termReflowT = setTimeout(() => {
+    if (isDesktop && termHomedWins().length) reflowTermHomes();
+  }, 160);
+});
+
+function termUnhome(win) {
+  if (win.dataset.termHoming) {
+    delete win.dataset.termHoming;
+    document.removeEventListener("pointerdown", win._termAway, true);
+  }
+  delete win.dataset.termParked;
+}
+
+function sendTermHome(win) {
+  if (!win.dataset.termHoming) return;
+  delete win.dataset.termHoming;
+  document.removeEventListener("pointerdown", win._termAway, true);
+  win.dataset.termParked = "1";
+  setWinRect(win, win._termHome || termLayout(1)[0], true);
+}
+
+// One-shot: the next press outside this window sends it home. Cancelled by
+// a drag (see the onEnd below) and by the window closing.
+function armTermRetreat(win) {
+  win.dataset.termHoming = "1";
+  win._termAway = (e) => {
+    if (e.target instanceof Element && e.target.closest(".fwin") === win) return;
+    sendTermHome(win);
+  };
+  document.addEventListener("pointerdown", win._termAway, true);
+}
 
 function openJobWindow(jid) {
   const ex = jobWindows[jid];
@@ -5941,15 +6067,19 @@ function openJobWindow(jid) {
   bar.appendChild(brand);
   const led = el("span", "term-dot");
   bar.appendChild(led);
-  const title = el("div", "fwin-title", "job");
-  makeTitleEditable(title, jid);
-  bar.appendChild(title);
+  // No title text here on purpose: the bar is entirely drag surface, so the
+  // window can be grabbed anywhere along it. The session's name lives on
+  // win.dataset.wname (right-click to read or rename it) and its first
+  // command is the sticky row below (2026-07-29).
+  bar.appendChild(el("div", "fwin-fill"));
   const body = el("div", "fwin-body");
   const scroll = el("div", "term-scroll");
   const banner = el("div", "cc-bannerwrap");
+  const cmd = el("div", "cc-firstcmd");
   const output = el("div", "term-screen");
   const pending = el("div", "perm-stack");
   scroll.appendChild(banner);
+  scroll.appendChild(cmd);
   scroll.appendChild(output);
   scroll.appendChild(pending);
   const composebar = el("div", "term-composebar off");
@@ -5972,29 +6102,53 @@ function openJobWindow(jid) {
   win.appendChild(body);
   addZoomControls(bar, () => scroll, 1);
   win.addEventListener("pointerdown", () => focusWin(win));
-  makeDraggable(win, bar);
+  // A hand-placed window is not homed — the owner's placement wins, and
+  // the tiles left behind re-spread into the freed room.
+  makeDraggable(win, bar, () => {
+    const homed = win.dataset.termHoming || win.dataset.termParked;
+    termUnhome(win);
+    if (homed) reflowTermHomes();
+  });
   makeResizable(win, null, 460, 320);
+  win.dataset.jid = jid;
   document.body.appendChild(win);
   const w = Math.min(680, innerWidth - 48);
   const h = Math.min(560, innerHeight - 140);
-  const n = jobCascade++ % 7;
+  // Centered — nudged if another session is still sitting in the middle, so
+  // two launched back to back don't land exactly on top of each other.
+  const stacked = Object.values(jobWindows)
+    .filter((x) => x.win.dataset.termHoming).length;
   win.style.width = w + "px";
   win.style.height = h + "px";
-  win.style.left = Math.max(12, innerWidth - w - 60 - n * 34) + "px";
-  win.style.top = (70 + n * 30) + "px";
+  win.style.left = Math.round((innerWidth - w) / 2 + stacked * 24) + "px";
+  win.style.top = Math.max(56,
+    Math.round((innerHeight - h) / 2) + stacked * 24) + "px";
   win.style.display = "flex";
   requestAnimationFrame(() => win.classList.add("open"));
   focusWin(win);
+  armTermRetreat(win);
   const term = createJobTerm(jid, {
-    banner, output, pending, composebar, say, send, stopBtn,
-    statusbar, led, title, scroller: scroll,
+    banner, cmd, output, pending, composebar, say, send, stopBtn,
+    statusbar, led, scroller: scroll,
+    onName: (n) => { win.dataset.wname = n; },
   });
   jobWindows[jid] = { win, term };
+  // The newcomer joins the tiling last — registered above first, or the
+  // reflow cannot see it. The already-parked windows make room for it NOW,
+  // so the desk behind the centered card is already arranged by the time
+  // it retreats.
+  const homed = termHomedWins().filter((x) => x !== win);
+  win.dataset.termSlot = String(homed.length
+    ? Math.max(...homed.map((x) => Number(x.dataset.termSlot))) + 1 : 0);
+  reflowTermHomes();
   close.addEventListener("click", () => {
     term.stop();
+    termUnhome(win);
     win.classList.remove("open");
     setTimeout(() => win.remove(), 220);
     delete jobWindows[jid];
+    // the closed window's tile heals — survivors re-spread into the room
+    reflowTermHomes();
   });
   term.start();
 }
@@ -12684,7 +12838,12 @@ function ctxDescribe(target) {
   } else if (target.closest("#job-panel")) {
     ctx.component = "Claude session";
   } else if (fwin) {
-    ctx.component = fwin.querySelector(".fwin-title")?.textContent || "Window";
+    // A terminal window carries its name on the element (its bar is all drag
+    // surface and holds no title text); every other window names itself in
+    // the bar.
+    ctx.component = fwin.dataset.wname
+      ? "Session: " + fwin.dataset.wname
+      : fwin.querySelector(".fwin-title")?.textContent || "Window";
   } else if (view) {
     ctx.component = WIN_TITLES[view.id.replace(/^view-/, "")] || "Vira";
   } else {
@@ -12891,6 +13050,16 @@ document.addEventListener("contextmenu", (e) => {
     items.push({ sep: true });
   }
 
+  // A terminal window's bar has no title to click, so renaming the session
+  // lives here. The name is the job's ONE canonical name — the Jobs list,
+  // the change log and the retro all read it.
+  const termWin = t.closest(".term-window");
+  if (termWin?.dataset.jid) {
+    items.push({ label: "Rename session…",
+                 run: () => renameSessionPopup(termWin, e.clientX, e.clientY) });
+    items.push({ sep: true });
+  }
+
   // dock icons: open / remove from the dock (Launchpad + palette stay put;
   // add-back lives in the Launchpad grid)
   const dockBtn = t.closest(".dock-item");
@@ -13072,6 +13241,29 @@ function makeDraggable(node, bar, onEnd) {
     bar.addEventListener("pointermove", move);
     bar.addEventListener("pointerup", up);
     bar.addEventListener("pointercancel", up);
+  });
+}
+
+// Rename a live session from its window's right-click menu — the desktop
+// entry point since the terminal bar stopped carrying a title (the bar is
+// all drag surface now). Clearing the name back to the auto-derived default
+// stays an API/mobile move: the popup refuses an empty name.
+function renameSessionPopup(win, x, y) {
+  layoutNamePopup({
+    title: "Rename session",
+    value: win.dataset.wname || "",
+    placeholder: "Session name",
+    cta: "Rename", x, y,
+    onName: async (name) => {
+      try {
+        const res = await put("/api/jobs/" + win.dataset.jid + "/title",
+                              { title: name });
+        win.dataset.wname = res.title || name;
+        refreshJobs().catch(() => {});
+        if ($("#work-record-list")?.offsetParent != null)
+          loadRecord().catch(() => {});
+      } catch (e) { toast("Rename failed"); }
+    },
   });
 }
 
