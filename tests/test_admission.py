@@ -168,22 +168,47 @@ class LoopWatchTests(unittest.TestCase):
     def test_a_blocked_loop_is_recorded_with_thread_stacks(self):
         """The hole this closes: on 2026-07-27 the server went dark and
         left nothing behind. A stall must now name itself — how long, how
-        bad, and what the threads were executing while it happened."""
+        bad, and what the threads were executing while it happened.
+
+        Flaked on windows-latest (2026-07-31): a fixed 1.0s block gives
+        the watchdog thread a fixed window to get scheduled in, and a slow
+        shared VM does not guarantee that. So the block is held OPEN until
+        the watchdog has actually noticed (`stalling`), and the clear is
+        polled rather than slept past — which OS runs the suite must not
+        decide whether this behavior is tested."""
         w = loopwatch.Watcher(threshold=0.3, interval=0.05, tick=0.05)
+        unblock = threading.Event()
+
+        def release_once_noticed():
+            deadline = time.monotonic() + 10
+            while not w.stalling and time.monotonic() < deadline:
+                time.sleep(0.01)
+            unblock.set()
+
+        helper = threading.Thread(target=release_once_noticed)
 
         async def main():
             w.start()
-            await asyncio.sleep(0.2)
-            time.sleep(1.0)          # block the loop, exactly like GIL starvation
-            await asyncio.sleep(0.6)  # let the watchdog see it clear
+            await asyncio.sleep(0.2)   # a few healthy heartbeats first
+            helper.start()
+            # Block the loop, exactly like GIL starvation — held until the
+            # watchdog has seen it, however late the VM schedules it.
+            unblock.wait(15)
+            deadline = time.monotonic() + 10
+            while not w.snapshot()["stall_count"] and time.monotonic() < deadline:
+                await asyncio.sleep(0.02)  # heartbeat resumes; watchdog records
             w.stop()
 
         asyncio.run(main())
+        helper.join(5)
         snap = w.snapshot()
         self.assertGreaterEqual(snap["stall_count"], 1)
-        stall = snap["stalls"][0]
-        self.assertGreater(stall["duration_s"], 0.3)
-        self.assertGreater(stall["peak_lag_s"], 0.3)
+        stall = snap["stalls"][-1]     # oldest — the one this test staged
+        # >= not >: peak is the lag at the notice tick, which can land ON
+        # the threshold, and round(x, 2) on a coarse clock can quantize to
+        # exactly 0.3 — a strict > here is the granularity flake again.
+        self.assertGreaterEqual(stall["duration_s"], 0.3)
+        self.assertGreaterEqual(stall["peak_lag_s"], 0.3)
         self.assertTrue(stall["threads"], "no thread stacks captured")
         self.assertIn("gate", stall)
 
