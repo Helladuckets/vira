@@ -96,6 +96,13 @@ TOKENS = {
          "What a refresh is told to do with a room it is rebuilding — "
          "carry everything forward, research only what is new."),
     ],
+    "__orphan_sweep__": [
+        ("orphanwork", "refresh", "What this loop runs", ""),
+        ("orphanwork", "sweep", "The inventory itself",
+         "Every worktree and claude/* branch carrying unlanded work — "
+         "plain git plus a job-ledger join, no model call. A branch a "
+         "live session owns is not orphan work and is excluded."),
+    ],
     "__lesson_recurrence__": [
         ("lessonwatch", "run_pass", "What this loop runs",
          "Rung 1 is deterministic (gather, score, count restatements); "
@@ -141,6 +148,10 @@ EFFECTS = {
     "__room_scout__":
         "each reading room, rebuilt in place. You are pinged per room "
         "that gained items.",
+    "__orphan_sweep__":
+        "data/orphan-work.json — the unlanded-work rows in Work · Live. "
+        "You are pinged when a genuinely new orphan appears, never on "
+        "the first-ever sweep.",
     "__lesson_recurrence__":
         "data/lesson-recurrence.json — the Rules panel under Work · "
         "RECORD; a tier-2 rule at threshold stages a proposed idea in "
