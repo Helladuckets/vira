@@ -42,6 +42,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                joblog,
                journal,
                judge,
+               lessonwatch,
                loopwatch,
                mail,
                media,
@@ -547,6 +548,63 @@ def api_evidence_delete(cid: str):
 @app.get("/api/evidence/export")
 def api_evidence_export_all():
     return {"text": evidence.export_approved()}
+
+
+# ---------- lesson recurrence (the corrections-ledger read-back: how often
+# each standing rule has actually been broken — Work > RECORD > Rules) ----
+
+@app.get("/api/lessons")
+def api_lessons():
+    return lessonwatch.report()
+
+
+class LessonRefreshReq(BaseModel):
+    adjudicate: bool = True
+
+
+@app.post("/api/lessons/refresh")
+def api_lessons_refresh(req: LessonRefreshReq):
+    threading.Thread(target=lessonwatch.run_pass,
+                     kwargs={"adjudicate": req.adjudicate},
+                     daemon=True, name="lesson-recurrence-pass").start()
+    return {"started": True}
+
+
+class LessonDismissReq(BaseModel):
+    dismissed: bool = True
+
+
+@app.post("/api/lessons/{rule_id}/dismiss")
+def api_lessons_dismiss(rule_id: str, req: LessonDismissReq):
+    try:
+        return lessonwatch.set_dismissed(rule_id, req.dismissed)
+    except KeyError:
+        raise HTTPException(404, "unknown rule")
+
+
+@app.post("/api/lessons/{rule_id}/propose")
+def api_lessons_propose(rule_id: str):
+    try:
+        return lessonwatch.force_propose(rule_id)
+    except KeyError:
+        raise HTTPException(404, "unknown rule")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+class LessonBreakReq(BaseModel):
+    rule_id: str
+    evidence_id: str
+    breaks: bool
+
+
+@app.post("/api/lessons/break")
+def api_lessons_break(req: LessonBreakReq):
+    try:
+        return lessonwatch.set_break(req.rule_id, req.evidence_id,
+                                     req.breaks)
+    except KeyError:
+        raise HTTPException(404, "unknown rule or evidence")
 
 
 @app.get("/api/evidence/{cid}/export")

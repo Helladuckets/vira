@@ -106,6 +106,24 @@ SEEDS = [
                        "room gains items, the applications-watch pattern.",
     },
     {
+        "id": "lesson-recurrence",
+        "name": "Lesson recurrence — count what keeps being broken",
+        "kind": "digest",
+        "every_hours": 168,
+        "enabled": True,
+        "notify": False,   # a tier-1 recurrence pings on its own edge
+        "model": "",
+        "prompt": "__lesson_recurrence__",  # in-process, but rung 2 spends
+                                            # model calls — NOT an
+                                            # _INTERNAL_TOKENS row, so the
+                                            # _ai_ready gate applies
+        "description": "Weekly pass over the corrections ledger and the "
+                       "session retros: how many times has each standing "
+                       "rule actually been broken since it was written, "
+                       "and which tier-2 rules have earned a real "
+                       "mechanism.",
+    },
+    {
         "id": "system-map",
         "name": "System map — refresh from the change log",
         "kind": "digest",
@@ -391,6 +409,17 @@ def dispatch(r):
         _stamp(r["id"], last_run=_now_iso(), last_job=None,
                last_run_id=None, last_status="done")
         return {"internal": "refresh_reconnect"}
+    if (r.get("prompt") or "") == "__lesson_recurrence__":
+        # in-process like the refresh tokens, but deliberately NOT in
+        # _INTERNAL_TOKENS: rung 2 spends model calls, so the _ai_ready
+        # gate above applies. Rung 1 alone stays reachable through the
+        # manual refresh route on a machine with no AI.
+        from . import lessonwatch
+        threading.Thread(target=lessonwatch.run_pass, daemon=True,
+                         name="vira-lesson-recurrence").start()
+        _stamp(r["id"], last_run=_now_iso(), last_job=None,
+               last_run_id=None, last_status="done")
+        return {"internal": "lesson_recurrence"}
     prompt = _muse_prompt() if r["kind"] == "muse" else (r.get("prompt") or "")
     if prompt == "__module_map__":       # composed fresh per run, like muse
         from . import modulemap

@@ -86,6 +86,15 @@ DEFAULTS = {
                                          # delivery error before giving up (0 = off)
     "evidence_retro_dir": "",            # Evidence Ledger's session-retro source;
                                          # empty = ~/TC-IL/Sessions
+    "lessons_ledger_path": "",           # corrections ledger; empty = ~/.claude/LESSONS.md
+                                         # (missing file = lesson counter dormant)
+    "lessons_state_dir": "",             # provenance stores (results/, proposed/decided
+                                         # jsonl); empty = ~/.claude/sessions
+    "lessons_retro_dirs": "",            # comma list of retro dirs for the counter;
+                                         # empty = evidence_retro_dir + repo retros/
+    "lesson_promote_at": 3,              # distinct sessions before a tier-2 rule
+                                         # proposes building its mechanism
+    "lesson_candidates_per_rule": 12,    # rung-2 adjudication cost ceiling per rule
 }
 
 

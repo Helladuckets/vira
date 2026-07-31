@@ -32,7 +32,11 @@ FILES = ("ideas.json", "config.json", "subscriptions.json",
          # The Reader's queue: which documents are worth reading and which are
          # read. The documents themselves live at their sources, but the
          # curation and the read-state are only here.
-         "reading-list.json")
+         "reading-list.json",
+         # Lesson recurrence: rules/verdicts/evidence are regenerable from
+         # the ledger + retros, but owner verdict overrides, dismissals and
+         # aliases exist nowhere else.
+         "lesson-recurrence.json")
 KEEP = 14
 
 

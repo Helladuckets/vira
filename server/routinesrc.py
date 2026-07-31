@@ -96,6 +96,16 @@ TOKENS = {
          "What a refresh is told to do with a room it is rebuilding — "
          "carry everything forward, research only what is new."),
     ],
+    "__lesson_recurrence__": [
+        ("lessonwatch", "run_pass", "What this loop runs",
+         "Rung 1 is deterministic (gather, score, count restatements); "
+         "rung 2 adjudicates candidates with one model call per rule, "
+         "every verdict grounded by a verbatim quote or dropped."),
+        ("lessonwatch", "_propose_promotion", "The proposal it can stage",
+         "At threshold a tier-2 rule stages the WORK of building its "
+         "mechanism as a proposed idea in the Queue. It never writes "
+         "the corrections ledger itself."),
+    ],
 }
 
 # Tokens whose function COMPOSES a prompt and hands it to a model session,
@@ -103,6 +113,13 @@ TOKENS = {
 # difference between "free, works with no AI connected" and "spends a
 # model call", so the panel must never blur it.
 COMPOSERS = {"__module_map__", "__room_scout__"}
+
+# Internal tokens that SPEND MODEL CALLS in process — a third shape the
+# panel must not blur into either neighbour: no session is dispatched
+# (unlike a composer), but "free, works with no AI connected" would be
+# false (unlike the refresh tokens), and dispatch() gates them behind
+# _ai_ready for exactly that reason.
+MODEL_INTERNAL = {"__lesson_recurrence__"}
 
 # What a run actually changes. Keyed by token, then by kind. Plain English
 # on purpose: this is the line that answers "what happens if I let it run?"
@@ -124,6 +141,11 @@ EFFECTS = {
     "__room_scout__":
         "each reading room, rebuilt in place. You are pinged per room "
         "that gained items.",
+    "__lesson_recurrence__":
+        "data/lesson-recurrence.json — the Rules panel under Work · "
+        "RECORD; a tier-2 rule at threshold stages a proposed idea in "
+        "the Queue, and a tier-1 recurrence pings you (the guard did "
+        "not hold). It NEVER writes the corrections ledger itself.",
 }
 KIND_EFFECTS = {
     "muse":
@@ -352,11 +374,15 @@ def facts(r) -> list:
         {"label": "Runs", "value": cad},
         {"label": "Next", "value": nxt_label,
          "tone": "dim" if not r.get("enabled") else ""},
-        {"label": "Engine", "value": {
-            "internal": "in process — no model call, no cost",
-            "circuit": "a multi-stage recipe",
-            "session": "a live agent session, with a terminal",
-        }[engine]},
+        {"label": "Engine", "value": (
+            "in process — spends model calls for its adjudication step, "
+            "so it waits for a connected AI"
+            if engine == "internal"
+            and (r.get("prompt") or "").strip() in MODEL_INTERNAL else {
+                "internal": "in process — no model call, no cost",
+                "circuit": "a multi-stage recipe",
+                "session": "a live agent session, with a terminal",
+            }[engine])},
     ]
     if engine == "session":
         rows.append({"label": "Permission",
@@ -405,12 +431,22 @@ def steps(r) -> list:
                 "than started twice."}]
     if engine == "internal":
         module, symbol = TOKENS[token][0][:2]
-        out.append({
-            "title": "It runs in process",
-            "body": f"No prompt and no session: Vira calls "
-                    f"{module}.{symbol}() directly, in its own thread. "
-                    "That is why this loop costs nothing and keeps working "
-                    "on a machine with no AI connected."})
+        if token in MODEL_INTERNAL:
+            out.append({
+                "title": "It runs in process",
+                "body": f"No session is dispatched: Vira calls "
+                        f"{module}.{symbol}() directly, in its own "
+                        "thread. Its first rung is deterministic, but "
+                        "its adjudication step spends model calls, so "
+                        "the scheduler skips this loop until an AI is "
+                        "connected."})
+        else:
+            out.append({
+                "title": "It runs in process",
+                "body": f"No prompt and no session: Vira calls "
+                        f"{module}.{symbol}() directly, in its own thread. "
+                        "That is why this loop costs nothing and keeps "
+                        "working on a machine with no AI connected."})
         out.append({"title": "It writes", "body": effect_of(r)})
         out.append({
             "title": "You see the result where it lives",

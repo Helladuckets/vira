@@ -349,6 +349,26 @@ DEFAULT_MODULES = [
      "keywords": ["evidence ledger", "case study", "build provenance",
                   "interview"],
      "updated": TODAY},
+    {"id": "lesson-recurrence", "name": "Lesson recurrence", "layer": "engine",
+     "group": "operate", "kind": "derived counter + grounded adjudication",
+     "what": "Reads the corrections ledger (~/.claude/LESSONS.md) back: "
+             "matches every session retrospective's reversal entries "
+             "against each standing rule and counts how many DISTINCT "
+             "SESSIONS have broken it since it became active. Rung 1 is "
+             "deterministic (verbatim restatements count with no model); "
+             "rung 2 adjudicates candidates with one model call per rule, "
+             "every breaks-verdict grounded by a verbatim quote or "
+             "demoted. A tier-2 rule at threshold stages the WORK of "
+             "building its mechanism as a proposed idea in the Queue; a "
+             "tier-1 recurrence is flagged — the guard did not hold. It "
+             "NEVER writes the ledger. Store data/lesson-recurrence.json; "
+             "surface Work > RECORD > Rules; weekly routine.",
+     "links": [{"to": "retros-src", "how": "reads reversal sections of"},
+               {"to": "ideas-store", "how": "stages promotion proposals in"}],
+     "endpoints": ["/api/lessons", "/api/lessons/refresh"],
+     "keywords": ["lessons", "corrections ledger", "recurrence", "tier 1",
+                  "tier 2", "promotion", "guard did not hold"],
+     "updated": TODAY},
     {"id": "housekeeping", "name": "Housekeeping", "layer": "engine",
      "group": "operate", "kind": "notify + updater + backups",
      "what": "iMessage pings when something needs eyes, the in-app git "

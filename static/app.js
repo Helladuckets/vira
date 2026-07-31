@@ -6092,6 +6092,10 @@ function setRecordFilter(f) {
   recordFilter = f;
   $("#record-filter")?.querySelectorAll(".seg-btn")
     .forEach((b) => b.classList.toggle("on", b.dataset.rec === f));
+  const rec = $("#work-record-list"), rules = $("#work-rules-list");
+  if (rec) rec.style.display = f === "rules" ? "none" : "";
+  if (rules) rules.style.display = f === "rules" ? "" : "none";
+  if (f === "rules") { loadRules().catch(() => {}); return; }
   renderRecord();
 }
 $("#record-filter")?.querySelectorAll(".seg-btn").forEach((b) =>
@@ -6148,6 +6152,181 @@ function renderRecord() {
   }
   items.sort((a, b) => b.t - a.t);
   items.forEach((it) => it.nodes.forEach((n) => host.appendChild(n)));
+}
+
+// ---------- RECORD > Rules — the lesson-recurrence counter ----------
+// How often each standing rule in the corrections ledger has actually
+// been broken, per the sessions' own retrospectives. Read-only surface
+// over GET /api/lessons; the counts come from server/lessonwatch.py.
+
+let rulesCache = null;
+const rulesOpen = new Set();        // expanded rule ids, session-only
+
+async function loadRules() {
+  const host = $("#work-rules-list");
+  if (!host) return;
+  if (!rulesCache) {
+    host.innerHTML = "";
+    host.appendChild(el("div", "empty left", "Reading the ledger…"));
+  }
+  rulesCache = await api("/api/lessons").catch(() => null);
+  renderRules();
+}
+
+function renderRules() {
+  const host = $("#work-rules-list");
+  if (!host || host.style.display === "none") return;
+  host.innerHTML = "";
+  if (!rulesCache) {
+    host.appendChild(el("div", "empty left", "Rules unavailable."));
+    return;
+  }
+  const st = rulesCache.status || {};
+  if (!st.ledger_exists) {
+    // dormant state names the reason, never an empty list
+    host.appendChild(el("div", "empty left",
+      "No corrections ledger at " + (st.ledger_path || "~/.claude/LESSONS.md")
+      + " — this machine has no standing rules to count against."));
+    return;
+  }
+  const rules = rulesCache.rules || [];
+  const head = el("div", "lw-head");
+  const recurring = rules.filter((r) => r.count > 0).length;
+  const atThresh = rules.filter((r) => r.at_threshold).length;
+  const bits = [`${rules.length} rules`, `${recurring} recurring`,
+                `${atThresh} at threshold`];
+  if (st.last_run?.at) bits.push("swept " + st.last_run.at.slice(11, 16));
+  if (st.pending_adjudication)
+    bits.push(`${st.pending_adjudication} awaiting adjudication`);
+  head.appendChild(el("span", "lw-headline", bits.join(" · ")));
+  const rf = el("button", "btn small", "Refresh");
+  rf.addEventListener("click", async () => {
+    rf.disabled = true; rf.textContent = "Sweeping…";
+    try {
+      await post("/api/lessons/refresh", {});
+      setTimeout(() => { rulesCache = null; loadRules().catch(() => {}); },
+                 4000);
+      toast("Recurrence pass started");
+    } catch (e) { alert("Refresh failed: " + e.message); rf.disabled = false; }
+  });
+  head.appendChild(rf);
+  host.appendChild(head);
+  if (st.note) host.appendChild(el("div", "lw-note", st.note));
+  if (!rules.length) {
+    host.appendChild(el("div", "empty left", "The ledger is empty."));
+    return;
+  }
+  rules.forEach((r) => host.appendChild(ruleRow(r)));
+}
+
+function fmtDay(d) {
+  if (!d) return "";
+  const t = Date.parse(d);
+  if (!t) return d;
+  return new Date(t).toLocaleDateString(undefined,
+    { month: "short", day: "numeric" });
+}
+
+function ruleRow(r) {
+  const row = el("div", "lw-rule");
+  row.dataset.ruleId = r.id;
+  if (r.guard_did_not_hold) row.classList.add("t1flag");
+  if (r.dismissed || r.retired) row.classList.add("dim");
+  const top = el("div", "lw-top");
+  const tier = el("span", "lw-tier" + (r.tier === 1 ? " warn" : ""),
+                  "tier " + r.tier);
+  top.appendChild(tier);
+  const text = el("div", "lw-text", r.text);
+  top.appendChild(text);
+  const count = el("div", "lw-count",
+    r.count ? `${r.count} session${r.count === 1 ? "" : "s"} since `
+              + fmtDay(r.active_from)
+            : "no breaks counted");
+  if (r.last_broken)
+    count.appendChild(el("span", "lw-last", " · last " + fmtDay(r.last_broken)));
+  top.appendChild(count);
+  row.appendChild(top);
+  const tags = [];
+  if (r.guard_did_not_hold) tags.push(["warn", "the guard did not hold"]);
+  if (r.at_threshold && !r.proposal) tags.push(["", "at threshold"]);
+  if (r.retired) tags.push(["", "retired from the ledger"]);
+  if (r.dismissed) tags.push(["", "dismissed"]);
+  if (r.pending) tags.push(["", `${r.pending} awaiting adjudication`]);
+  if (tags.length) {
+    const tr = el("div", "lw-tags");
+    tags.forEach(([tone, t]) =>
+      tr.appendChild(el("span", "lw-tag " + tone, t)));
+    row.appendChild(tr);
+  }
+  if (r.proposal?.idea_id) {
+    const p = el("div", "lw-prop");
+    p.appendChild(el("span", "", "proposed — "));
+    const a = el("a", "", "build the mechanism (in the Queue)");
+    a.href = "#";
+    a.addEventListener("click", (e) => { e.preventDefault(); openApp("ideas"); });
+    p.appendChild(a);
+    row.appendChild(p);
+  }
+  if (rulesOpen.has(r.id) && r.breaks?.length) {
+    const box = el("div", "lw-breaks");
+    r.breaks.forEach((b) => box.appendChild(breakRow(r, b)));
+    row.appendChild(box);
+  }
+  // whole-card activation (the Vira-wide rule): anywhere on the row
+  // expands it; controls and links are excluded by cardAction itself
+  cardAction(row, () => {
+    if (rulesOpen.has(r.id)) rulesOpen.delete(r.id);
+    else rulesOpen.add(r.id);
+    renderRules();
+  });
+  return row;
+}
+
+function rulePrompt(r) {
+  // self-contained: names the ledger, the evidence, and the finish line
+  const brk = (r.breaks || []).slice(0, 6)
+    .map((b) => `- ${b.project || "?"} ${b.day || "?"}: `
+                + (b.quote || b.text || "")).join("\n");
+  return `The standing rule "${r.text}" (tier ${r.tier}, in `
+    + `~/.claude/LESSONS.md since ${r.active_from}) has been described as `
+    + `broken in ${r.count} session retrospectives:\n${brk}\n\n`
+    + "Build the mechanism that makes this mistake impossible — a "
+    + "preflight row (scripts/preflight.sh) for a repo invariant, a "
+    + "session hook under ~/.claude for session behaviour, or a test / "
+    + "runner-gate branch for an app-internal invariant. Only after the "
+    + "mechanism ships and is observed firing should the ledger line "
+    + "move to tier 1, by hand, via python3 ~/.claude/scripts/lessons.py "
+    + "— never write LESSONS.md from this session.";
+}
+
+function breakRow(rule, b) {
+  const sub = el("div", "lw-break");
+  const meta = el("div", "lw-bmeta",
+    (b.project || "?") + " · " + (b.day || "?")
+    + (b.kind === "restated" ? " · restated the rule" : "")
+    + (b.owner ? " · owner-marked" : ""));
+  sub.appendChild(meta);
+  sub.appendChild(el("div", "lw-bquote", b.quote || b.text || ""));
+  const acts = el("div", "lw-bacts");
+  if (b.note) {
+    const open = el("button", "fchip", "open retro");
+    open.addEventListener("click", () => openNote(b.note));
+    acts.appendChild(open);
+  }
+  const not = el("button", "fchip", "not a break");
+  not.addEventListener("click", async () => {
+    not.disabled = true;
+    try {
+      await post("/api/lessons/break",
+                 { rule_id: rule.id, evidence_id: b.id, breaks: false });
+      rulesCache = null;
+      loadRules().catch(() => {});
+      toast("Marked not-a-break — the owner mark is sticky");
+    } catch (e) { alert("Failed: " + e.message); not.disabled = false; }
+  });
+  acts.appendChild(not);
+  sub.appendChild(acts);
+  return sub;
 }
 
 // ---------- settings, merged into the Setup window (2026-07-21) ----------
@@ -12336,6 +12515,13 @@ function ctxDescribe(target) {
       ctx.component = "Reader: " + (rmRoom?.title || "room");
       ctx.target = { menu: "this item", note: "Reading item", text: it.title };
     }
+  } else if (target.closest(".lw-rule")) {
+    // a standing-rule row (RECORD > Rules) is the subject, not the window
+    const rr = target.closest(".lw-rule");
+    const rl = rulesCache?.rules?.find((x) => x.id === rr.dataset.ruleId);
+    ctx.component = "Standing rule";
+    if (rl) ctx.target = { menu: "this rule", note: "Standing rule",
+                           text: rl.text };
   } else if (target.closest("#viewer-panel")) {
     ctx.component = "Media viewer";
   } else if (target.closest("#job-panel")) {
@@ -12581,6 +12767,37 @@ document.addEventListener("contextmenu", (e) => {
         } catch (err) { alert("Update failed: " + err.message); }
       } });
     }
+    items.push({ sep: true });
+  }
+
+  // standing-rule rows (RECORD > Rules): dismiss / propose / copy. The
+  // pass itself never touches the ledger; these only steer the counter.
+  const ruleEl = t.closest(".lw-rule");
+  const ctxRule = ruleEl
+    && rulesCache?.rules?.find((x) => x.id === ruleEl.dataset.ruleId);
+  if (ctxRule) {
+    if (ctxRule.tier === 2) items.push({
+      label: "Propose promotion now",
+      run: async () => {
+        try {
+          await post(`/api/lessons/${ctxRule.id}/propose`, {});
+          rulesCache = null; loadRules().catch(() => {});
+          toast("Proposal staged in the Queue");
+        } catch (err) { alert("Propose failed: " + err.message); }
+      } });
+    items.push({
+      label: ctxRule.dismissed ? "Resume proposing for this rule"
+                               : "Dismiss this rule",
+      run: async () => {
+        try {
+          await post(`/api/lessons/${ctxRule.id}/dismiss`,
+                     { dismissed: !ctxRule.dismissed });
+          rulesCache = null; loadRules().catch(() => {});
+        } catch (err) { alert("Failed: " + err.message); }
+      } });
+    items.push({ label: "Copy as prompt",
+                 run: () => { copyText(rulePrompt(ctxRule));
+                              toast("Copied"); } });
     items.push({ sep: true });
   }
 

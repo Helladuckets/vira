@@ -108,6 +108,14 @@ def _parse_retro_full(path):
             "goal": sections.get("Goal", "")}
 
 
+def parse_retro(path):
+    """Public alias for the generic retro parser, so a second consumer
+    (lessonwatch) does not grow a parser of its own. Note the section
+    bodies come back whitespace-COLLAPSED (changelog._clean) — a caller
+    that needs line structure should cut the raw text with SECTION_RE."""
+    return _parse_retro_full(path)
+
+
 def _retro_files():
     """Every session retro across both sources, newest first: the primary
     `* vira.md` glob in the retro dir, and this repo's own git-ignored
