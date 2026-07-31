@@ -32,6 +32,13 @@ from . import models, settings, viratools
 # renders generically — a CLI release must not blank the transcript.
 _SKIP_ITEMS = {"reasoning"}          # keep the log readable, as the SDK path does
 
+# A completed CLI tool call is one JSONL event and may carry its entire
+# captured output in that single line.  asyncio's subprocess default is only
+# 64 KiB; a normal repository read crossed it and killed the session before
+# the event could be parsed.  Keep a deliberate memory bound, but size it for
+# real agent tool output rather than the generic StreamReader default.
+CLI_JSONL_LIMIT = 8 * 1024 * 1024
+
 
 def _codex_argv(binary, spec, resume_id, prompt):
     """One codex turn. `resume_id` continues the same conversation, which is
@@ -214,7 +221,7 @@ async def _run_turn(runner, binary, prompt, resume_id):
     proc = await asyncio.create_subprocess_exec(
         *argv, cwd=spec["cwd"],
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        env=settings.strip_env())
+        env=settings.strip_env(), limit=CLI_JSONL_LIMIT)
     runner.exec_proc = proc
 
     # Drain stderr CONCURRENTLY — codex logs progress there, and an unread
