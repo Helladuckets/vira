@@ -18,7 +18,6 @@
   const stage = $("#atlas-stage");
   const tip = $("#atlas-tip");
   const card = $("#atlas-card");
-  const statusEl = $("#atlas-status");
   const emptyEl = $("#atlas-empty");
   const ctx = canvas.getContext("2d");
 
@@ -52,10 +51,11 @@
     neighbors: new Set(),    // ids connected to any selected node
     chains: [],              // [{a, b, nodes}] bridge chains for the card
     adj: new Map(),          // id -> [{n, e}] adjacency for BFS
-    iso: { ids: new Set(), ring: 0 },  // isolate: show only these groups
+    lens: null,           // active lens id (see LENS_KEY)
+    bands: [],            // the active lens's bands
+    iso: { ids: new Set(), ring: 0 },  // isolate: show only these bands
     shown: null,             // Set of visible node ids (null = everyone)
     hideEgo: false,
-    path: { mode: false, from: null, result: null },
     match: "",            // search filter
     loading: false,
     loadedGen: null,
@@ -109,19 +109,89 @@
     $("#atlas-meta").textContent = "";
   }
 
+  // ---------- lenses ----------
+  //
+  // ONE web, four questions asked of it. The server bands the same node
+  // set four ways (server/atlaslens.py); the client picks which banding
+  // paints the map. The LAYOUT never moves between lenses on purpose —
+  // the web stays where the eye left it, and a company whose people sit
+  // in three different corners is exactly the thing worth seeing.
+
+  const LENS_KEY = "vira-atlas-lens";
+
+  function activeLens() {
+    const ls = S.graph?.lenses || [];
+    return ls.find((l) => l.id === S.lens) || ls[0] || null;
+  }
+
   function assignColors() {
     S.colors.clear();
-    const cs = S.graph.clusters || [];
-    cs.forEach((c, i) => {
-      S.colors.set(c.id, c.anchor ? "#a39c8d"
-        : CLUSTER_COLORS[(i + (cs.some((x) => x.anchor) ? 0 : 1))
+    S.bands.forEach((b, i) => {
+      S.colors.set(b.id, b.anchor ? "#a39c8d"
+        : CLUSTER_COLORS[(i + (S.bands.some((x) => x.anchor) ? 0 : 1))
                          % CLUSTER_COLORS.length]);
     });
   }
 
+  function applyLens(redraw = true) {
+    const lens = activeLens();
+    S.lens = lens?.id || null;
+    S.bands = lens?.bands || [];
+    const map = lens?.node_band || {};
+    for (const p of S.nodes) p.band = map[p.id] || null;
+    // an isolate is a set of band ids, and band ids do not survive a lens
+    // change — carrying them over would filter the web down to nothing
+    for (const id of [...S.iso.ids])
+      if (!S.bands.some((b) => b.id === id)) S.iso.ids.delete(id);
+    assignColors();
+    renderLenses();
+    renderLegend();
+    renderCoverage();
+    if (redraw) isoChanged(false);
+  }
+
+  function setLens(id) {
+    if (id === S.lens) return;
+    if (editorId) closeGroupEditor();
+    S.lens = id;
+    lsSet(LENS_KEY, id);
+    S.iso = { ids: new Set(), ring: 0 };
+    applyLens();
+  }
+
+  function renderLenses() {
+    const host = $("#atlas-lenses");
+    if (!host) return;
+    host.innerHTML = "";
+    (S.graph?.lenses || []).forEach((l) => {
+      const b = el("button", "atlas-lens" + (l.id === S.lens ? " on" : ""),
+                   l.label);
+      b.title = l.blurb || "";
+      b.addEventListener("click", () => setLens(l.id));
+      host.appendChild(b);
+    });
+  }
+
+  function renderCoverage() {
+    const host = $("#atlas-coverage");
+    if (!host) return;
+    const lens = activeLens();
+    if (!lens) { host.textContent = ""; return; }
+    // Companies and Locations read fields most contacts leave empty, so
+    // the count is stated rather than implied — a chip row that bands a
+    // tenth of the web must not read as the whole picture.
+    const left = lens.total - lens.placed;
+    host.textContent = lens.bands.length
+      ? `${lens.placed} of ${lens.total} people in ${lens.bands.length} `
+        + `${lens.bands.length === 1 ? "band" : "bands"}`
+        + (left ? ` · ${left} unplaced` : "")
+      : `Nothing to band — no ${lens.label.toLowerCase()} on file for `
+        + `these ${lens.total} people.`;
+  }
+
   function initGraph(g) {
     S.graph = g;
-    assignColors();
+    S.lens = lsGet(LENS_KEY, null) || (g.lenses || [])[0]?.id || null;
 
     const n = g.nodes.length;
     const ring = (d) => d === 1 ? 240 + 7 * Math.sqrt(n)
@@ -179,10 +249,8 @@
     S.shown = null;
     editorId = null;
     recomputeSel();
-    S.path = { mode: false, from: null, result: null };
-    $("#atlas-path")?.classList.remove("on");
     card.style.display = "none";
-    renderLegend();
+    applyLens(false);
     updateIsoBar();
     $("#atlas-meta").textContent =
       `${g.nodes.length} people · ${g.edges.length} ties · built `
@@ -345,7 +413,7 @@
     if (!S.iso.ids.size) { S.shown = null; return; }
     const shown = new Set();
     for (const p of S.nodes)
-      if (p.cluster && S.iso.ids.has(p.cluster)) shown.add(p.id);
+      if (p.band && S.iso.ids.has(p.band)) shown.add(p.id);
     // ring expansions: people directly connected to what is shown
     for (let r = 0; r < S.iso.ring; r++) {
       const add = [];
@@ -393,7 +461,7 @@
     bar.style.display = "";
     bar.innerHTML = "";
     const labels = [...S.iso.ids].map((id) =>
-      S.graph.clusters.find((c) => c.id === id)?.label || id);
+      S.bands.find((b) => b.id === id)?.label || id);
     const n = S.shown ? S.shown.size : 0;
     bar.appendChild(el("span", "atlas-iso-label",
       `Showing ${labels.join(" + ")} — ${n} ${n === 1 ? "person" : "people"}`
@@ -436,17 +504,10 @@
       && !(node.name || "").toLowerCase().includes(S.match);
   }
 
-  function pathSet() {
-    const ids = new Set();
-    (S.path.result?.path || []).forEach((p) => ids.add(p.pid));
-    return ids;
-  }
-
   function draw() {
     if (!S.graph) return;
     const W = canvas.clientWidth, H = canvas.clientHeight;
     ctx.clearRect(0, 0, W, H);
-    const inPath = pathSet();
     const hasSel = S.sel.size > 0;
     // hover featuring only when nothing is selected — a selection owns
     // the stage, everything else is just a hint of what's left
@@ -483,15 +544,9 @@
     for (const e of S.edges) {
       if (S.shown && !(S.shown.has(e.an.id) && S.shown.has(e.bn.id)))
         continue;
-      const onPath = inPath.has(e.a) && inPath.has(e.b)
-        && Math.abs((S.path.result.path.findIndex((p) => p.pid === e.a))
-                  - (S.path.result.path.findIndex((p) => p.pid === e.b))) === 1;
       const hot = focus && (e.an === focus || e.bn === focus);
       const w = Math.min(1.5, e.weight) / 1.5;
-      if (onPath) {
-        ctx.strokeStyle = "rgba(163,156,141,.9)";
-        ctx.lineWidth = 2.6;
-      } else if (hasSel && S.selEdges.has(e)) {
+      if (hasSel && S.selEdges.has(e)) {
         // the featured links — ties among the selected
         ctx.strokeStyle = "rgba(222,214,197,.95)";
         ctx.lineWidth = 1.6 + 2.2 * w;
@@ -532,18 +587,18 @@
     // nodes
     for (const p of S.nodes) {
       if (!isShown(p)) continue;
-      drawNode(p, focus, inPath);
+      drawNode(p, focus);
     }
-    if (!S.hideEgo && !S.shown) drawNode(S.ego, focus, inPath);
+    if (!S.hideEgo && !S.shown) drawNode(S.ego, focus);
   }
 
-  function drawNode(p, focus, inPath) {
+  function drawNode(p, focus) {
     const sx = w2sX(p.x), sy = w2sY(p.y);
     const r = Math.max(4, p.r * S.cam.k * (p.ego ? 1 : 1));
     const isSel = S.sel.has(p);
     let alpha = 1;
     if (S.sel.size) {
-      if (isSel || inPath.has(p.id)) alpha = 1;
+      if (isSel) alpha = 1;
       else if (S.selPathNodes.has(p.id)) alpha = 0.95;
       else if (S.shared.has(p.id)) alpha = 0.9;
       else if (S.neighbors.has(p.id)) alpha = S.sel.size === 1 ? 0.8 : 0.3;
@@ -558,14 +613,14 @@
 
     // cluster / ego ring
     const color = p.ego ? "#a39c8d"
-      : (p.cluster && S.colors.get(p.cluster)) || "#6a6a64";
+      : (p.band && S.colors.get(p.band)) || "#6a6a64";
     ctx.beginPath();
     ctx.arc(sx, sy, r + (p.ego ? 3 : 2), 0, 7);
     ctx.fillStyle = "#191b19";
     ctx.fill();
-    ctx.lineWidth = isSel || p === S.hover || inPath.has(p.id)
+    ctx.lineWidth = isSel || p === S.hover
       ? 3 : p.ego ? 2.5 : 1.6;
-    ctx.strokeStyle = (isSel || inPath.has(p.id)) ? "#d4ccba" : color;
+    ctx.strokeStyle = isSel ? "#d4ccba" : color;
     ctx.stroke();
 
     // face (clipped) or letter tile
@@ -589,7 +644,7 @@
     // label
     const showLabel = p.ego || p === S.hover || isSel
       || S.selPathNodes.has(p.id) || S.shared.has(p.id)
-      || (S.sel.size === 1 && S.neighbors.has(p.id)) || inPath.has(p.id)
+      || (S.sel.size === 1 && S.neighbors.has(p.id))
       || S.cam.k > 1.15 || (S.match && !matchDim(p));
     if (showLabel && alpha > 0.25) {
       ctx.font = `${p.ego ? 700 : 500} 11px -apple-system, sans-serif`;
@@ -619,21 +674,24 @@
 
   // ---------- legend ----------
 
-  const legendChips = new Map();   // cluster id -> chip element
+  const legendChips = new Map();   // band id -> chip element
   let editorId = null;             // group whose member editor is open
 
   function renderLegend() {
     const host = $("#atlas-legend");
     host.innerHTML = "";
     legendChips.clear();
-    (S.graph.clusters || []).forEach((c) => {
+    const editable = !!activeLens()?.editable;
+    S.bands.forEach((c) => {
       const chip = el("button", "atlas-chip");
       const dot = el("span", "atlas-dot");
       dot.style.background = S.colors.get(c.id);
       chip.appendChild(dot);
       chip.appendChild(el("span", null, `${c.label} (${c.size})`));
-      chip.title = "Show just this group — right-click to rename, edit "
-        + "members, or remove it";
+      chip.title = editable
+        ? "Show just this group — right-click to rename, edit members, "
+          + "or remove it"
+        : "Show just these people — right-click to select them all";
       chip.addEventListener("click", () => {
         S.match = "";
         $("#atlas-search").value = "";
@@ -660,24 +718,35 @@
   // ---------- group curation (rename / members / remove / create) ----------
 
   function groupMenu(x, y, cid) {
-    const c = S.graph.clusters.find((k) => k.id === cid);
+    const lens = activeLens();
+    const c = S.bands.find((k) => k.id === cid);
     if (!c) return;
-    const members = S.nodes.filter((p) => p.cluster === c.id);
-    showContextMenu(x, y, [
-      { head: c.label + (c.custom ? " · your group" : " · auto-detected") },
-      { label: "Show only this group", run: () => {
+    const members = S.nodes.filter((p) => p.band === c.id);
+    const items = [
+      { head: c.label + (c.custom ? " · your group"
+                                  : ` · ${lens?.label || "band"}`) },
+      { label: "Show only these people", run: () => {
           S.iso = { ids: new Set([c.id]), ring: 0 };
           isoChanged();
         } },
-      { label: "Select members", run: () => {
+      // selecting a whole band is how you compare two of them: the
+      // selection card already draws the ties BETWEEN what is selected,
+      // so two company chips answer "how do these firms connect?"
+      { label: "Select everyone here", run: () => {
           members.forEach((p) => S.sel.add(p));
           selectionChanged();
         } },
-      { label: "Edit members…", run: () => openGroupEditor(c.id) },
-      { label: "Rename group…", run: () => renameGroup(c) },
-      { sep: true },
-      { label: "Remove group…", run: () => removeGroup(c) },
-    ]);
+    ];
+    // Only the Groups lens is a store the owner owns. Companies, circles
+    // and locations are derived every read, so a rename there would be
+    // an edit with a shelf life of one refresh.
+    if (lens?.editable)
+      items.push(
+        { label: "Edit members…", run: () => openGroupEditor(c.id) },
+        { label: "Rename group…", run: () => renameGroup(c) },
+        { sep: true },
+        { label: "Remove group…", run: () => removeGroup(c) });
+    showContextMenu(x, y, items);
   }
 
   function applyGroups(r) {
@@ -686,15 +755,12 @@
     S.graph.node_cluster = r.node_cluster || {};
     for (const p of S.nodes)
       p.cluster = S.graph.node_cluster[p.id] || null;
-    assignColors();
-    renderLegend();
-    for (const id of [...S.iso.ids])
-      if (!r.clusters.some((c) => c.id === id)) S.iso.ids.delete(id);
+    if (r.lenses) S.graph.lenses = r.lenses;
     if (editorId) {
       editorId = r.gid || editorId;
       if (!r.clusters.some((c) => c.id === editorId)) editorId = null;
     }
-    isoChanged(false);
+    applyLens();
   }
 
   async function renameGroup(c) {
@@ -1077,7 +1143,7 @@
     if (d.node.degree)
       chips.appendChild(el("span", "atlas-deg",
         ["1st", "2nd", "3rd"][d.node.degree - 1] || d.node.degree + "th"));
-    const clab = S.graph.clusters.find((c) => c.id === d.node.cluster);
+    const clab = S.bands.find((b) => b.id === S.byId.get(d.node.id)?.band);
     if (clab) {
       const cc = el("span", "atlas-deg");
       cc.textContent = clab.label;
@@ -1132,44 +1198,6 @@
     draw();
   }
 
-  // ---------- path mode ----------
-
-  function setPathMode(on) {
-    S.path = { mode: on, from: null, result: null };
-    $("#atlas-path").classList.toggle("on", on);
-    statusEl.style.display = on ? "" : "none";
-    statusEl.textContent = on ? "Path: click the first person" : "";
-    if (!on) draw();
-  }
-
-  async function pathClick(p) {
-    if (!p || p.ego) return;
-    if (!S.path.from) {
-      S.path.from = p;
-      statusEl.textContent =
-        `Path: ${firstLast(p.name)} → click the second person`;
-      return;
-    }
-    if (S.path.from === p) return;
-    try {
-      const res = await api(
-        `/api/atlas/path?a=${S.path.from.id}&b=${p.id}`);
-      S.path.result = res;
-      if (!res.found) {
-        statusEl.textContent = `No contact-to-contact path — `
-          + `${firstLast(S.path.from.name)} and ${firstLast(p.name)} `
-          + `only connect through you.`;
-      } else {
-        statusEl.textContent =
-          res.path.map((x) => firstLast(x.name)).join("  →  ");
-      }
-      S.path.from = null;
-      draw();
-    } catch (e) {
-      statusEl.textContent = "Path failed: " + e.message;
-    }
-  }
-
   // ---------- input ----------
 
   let panning = null;
@@ -1216,7 +1244,7 @@
         tip.style.top = (sy + 14) + "px";
         tip.innerHTML = "";
         tip.appendChild(el("div", "atlas-tip-name", p.name));
-        const clab = S.graph.clusters.find((c) => c.id === p.cluster);
+        const clab = S.bands.find((b) => b.id === p.band);
         const bits = [p.degree && ["1st", "2nd", "3rd"][p.degree - 1],
                       clab?.label, p.company].filter(Boolean);
         if (bits.length)
@@ -1240,8 +1268,7 @@
       p.pin = false;
       S.dragNode = null;
       if (!S.dragMoved) {
-        if (S.path.mode) pathClick(p);
-        else if (editorId) editorToggle(p);
+        if (editorId) editorToggle(p);
         else toggleSelect(p);
       } else {
         wake(0.3);
@@ -1252,12 +1279,10 @@
       const moved = Math.hypot(sx - panning.sx, sy - panning.sy) > 4;
       const hitEgo = panning.hitEgo;
       panning = null;
-      if (!moved && !hitEgo && !S.path.mode) {
+      if (!moved && !hitEgo) {
         if (editorId) closeGroupEditor();
         else clearSel();
       }
-      // a missed click in path mode keeps the mode armed — cancel is the
-      // Path button or Escape, not a stray tap
     }
   });
   canvas.addEventListener("pointercancel", () => {
@@ -1302,10 +1327,6 @@
         run: () => toggleSelect(p) },
       { label: "Set group…",
         run: () => groupChooser(e.clientX, e.clientY, p) },
-      { label: "Path from here…", run: () => {
-          setPathMode(true);
-          pathClick(p);
-        } },
       { sep: true },
       { label: "New idea about this…",
         run: () => ctxIdeaComposer(e.clientX, e.clientY, ctxObj) },
@@ -1332,17 +1353,26 @@
     }
   });
 
-  $("#atlas-path")?.addEventListener("click", () =>
-    setPathMode(!S.path.mode));
+  // The gear is the module's whole control surface on both widths.
+  // Deliberately NOT focus-on-open: the panel leads with the lens row and
+  // the bands, and on a phone a focused input throws the keyboard over
+  // the chips the gear was opened to reach.
+  function setChrome(open) {
+    $("#atlas-chrome")?.classList.toggle("open", open);
+    $("#atlas-gear")?.setAttribute("aria-expanded", open ? "true" : "false");
+  }
+  const chromeOpen = () => !!$("#atlas-chrome")?.classList.contains("open");
+  $("#atlas-gear")?.addEventListener("click",
+    () => setChrome(!chromeOpen()));
+
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape" || !S.visible) return;
-    if (S.path.mode) setPathMode(false);
-    else if (editorId) closeGroupEditor();
+    if (editorId) closeGroupEditor();
     else if (S.sel.size) clearSel();
     else if (S.iso.ids.size) {
       S.iso = { ids: new Set(), ring: 0 };
       isoChanged(false);
-    }
+    } else if (chromeOpen()) setChrome(false);
   });
 
   $("#atlas-ego")?.addEventListener("click", (e) => {
