@@ -162,6 +162,33 @@ def is_worktree(root):
     return (Path(root) / ".git").is_file()
 
 
+def primary_root(root):
+    """The primary checkout for any tree — `root` itself, or the repo it is
+    a linked worktree of. Same derivation branch.sh uses at its own top:
+    `--git-common-dir` names the shared .git regardless of which worktree
+    asks, so stripping its trailing `.git` gives the primary checkout path
+    for a linked worktree, and its own path for the primary checkout."""
+    if not root:
+        return None
+    out = _git_out(root, "rev-parse", "--path-format=absolute",
+                    "--git-common-dir")
+    if out is None:
+        return None
+    common = out.strip()
+    if not common:
+        return None
+    p = Path(common)
+    if p.name == ".git":
+        p = p.parent
+    return p if p.is_dir() else None
+
+
+def current_branch(root):
+    """The branch checked out at `root`, or "" on a detached HEAD or error."""
+    out = _git_out(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    return (out or "").strip()
+
+
 def slugify(text, fallback="session"):
     """A branch.sh-legal slug ([a-z0-9-], leading alnum) from free text."""
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")

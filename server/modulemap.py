@@ -369,6 +369,21 @@ DEFAULT_MODULES = [
      "keywords": ["lessons", "corrections ledger", "recurrence", "tier 1",
                   "tier 2", "promotion", "guard did not hold"],
      "updated": TODAY},
+    {"id": "orphan-sweeper", "name": "Orphan-work sweeper", "layer": "engine",
+     "group": "operate", "kind": "plain git + the job ledger, no model call",
+     "what": "Daily inventory of every worktree and claude/* branch for "
+             "work that never landed — uncommitted changes, unpushed "
+             "commits, unmerged branches, a stalled session found by "
+             "joining against the job ledger. Cached in "
+             "data/orphan-work.json, pings the owner when a genuinely new "
+             "orphan appears (never on the first-ever sweep), and surfaces "
+             "stalest-first in Work > Live with one-click Resume (a "
+             "session re-entering that worktree), Merge, or Discard — all "
+             "three delegate to scripts/branch.sh, never reimplemented.",
+     "links": [{"to": "job-ledger", "how": "joins branches against"}],
+     "endpoints": ["/api/orphanwork", "/api/orphanwork/refresh"],
+     "keywords": ["orphan work", "unlanded", "worktree", "stalled session"],
+     "updated": TODAY},
     {"id": "housekeeping", "name": "Housekeeping", "layer": "engine",
      "group": "operate", "kind": "notify + updater + backups",
      "what": "iMessage pings when something needs eyes, the in-app git "

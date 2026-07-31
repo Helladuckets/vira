@@ -138,6 +138,20 @@ SEEDS = [
                        "actually shipped, via the validated "
                        "update_module_map tool.",
     },
+    {
+        "id": "orphan-sweep",
+        "name": "Orphan sweep — unlanded work",
+        "kind": "digest",
+        "every_hours": 24,
+        "enabled": True,
+        "notify": False,
+        "model": "",
+        "prompt": "__orphan_sweep__",     # internal dispatch, no session
+        "description": "Daily inventory of every worktree and branch for "
+                       "work that never landed — uncommitted changes, "
+                       "unpushed commits, unmerged branches, stalled "
+                       "sessions — surfaced in Work > Live.",
+    },
 ]
 
 
@@ -334,7 +348,8 @@ def _muse_prompt():
 # Prompt tokens that resolve to deterministic in-process refreshes — no
 # model session is launched, so they run fine on a machine with no AI.
 _INTERNAL_TOKENS = ("__refresh_groupings__", "__refresh_intros__",
-                    "__refresh_atlas__", "__refresh_reconnect__")
+                    "__refresh_atlas__", "__refresh_reconnect__",
+                    "__orphan_sweep__")
 
 
 # _ai_ready's probe shells out per provider, and a skipped routine stays
@@ -420,6 +435,13 @@ def dispatch(r):
         _stamp(r["id"], last_run=_now_iso(), last_job=None,
                last_run_id=None, last_status="done")
         return {"internal": "lesson_recurrence"}
+    if (r.get("prompt") or "") == "__orphan_sweep__":
+        from . import orphanwork
+        threading.Thread(target=orphanwork.refresh, daemon=True,
+                         name="vira-orphan-sweep").start()
+        _stamp(r["id"], last_run=_now_iso(), last_job=None,
+               last_run_id=None, last_status="done")
+        return {"internal": "orphan_sweep"}
     prompt = _muse_prompt() if r["kind"] == "muse" else (r.get("prompt") or "")
     if prompt == "__module_map__":       # composed fresh per run, like muse
         from . import modulemap
