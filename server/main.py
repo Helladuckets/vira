@@ -47,6 +47,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                mail,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
+               orphanwork,
                photos, pickfolder, plans, profilerefresh, radar, reconnect,
                textindex,
                receipts,
@@ -2630,6 +2631,105 @@ def api_reconnect_refresh():
 def api_reconnect_dismiss(req: DismissGroupingReq):
     reconnect.dismiss(req.key, restore=req.restore)
     return {"ok": True}
+
+
+# ---------- orphan-work sweeper (unlanded worktrees/branches, Work > Live) ----------
+
+class OrphanKeyReq(BaseModel):
+    key: str
+
+
+class OrphanDiscardReq(BaseModel):
+    key: str
+    force: bool = False
+
+
+def _orphan_item(key):
+    return next((it for it in orphanwork.compose()["items"] if it["key"] == key),
+               None)
+
+
+@app.get("/api/orphanwork")
+def api_orphanwork():
+    return orphanwork.compose()
+
+
+@app.post("/api/orphanwork/refresh")
+def api_orphanwork_refresh():
+    orphanwork.refresh()
+    return orphanwork.compose()
+
+
+@app.post("/api/orphanwork/dismiss")
+def api_orphanwork_dismiss(req: DismissGroupingReq):
+    orphanwork.dismiss(req.key, restore=req.restore)
+    return {"ok": True}
+
+
+@app.post("/api/orphanwork/resume")
+def api_orphanwork_resume(req: OrphanKeyReq):
+    """Dispatch a session back into the item's own worktree. Refused on a
+    passive instance — it shares the live repo's worktrees, so it must
+    never dispatch a real resume."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — copy the resume prompt "
+                                 "into a session instead (resume-prompt)")
+    it = _orphan_item(req.key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    try:
+        jid = orphanwork.resume(it)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"job_id": jid}
+
+
+@app.get("/api/orphanwork/resume-prompt")
+def api_orphanwork_resume_prompt(key: str):
+    """The composed resume prompt with no side effects — for a passive
+    instance, or anyone who wants to paste it into another session."""
+    it = _orphan_item(key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    return {"prompt": orphanwork.resume_prompt(it),
+            "cwd": it.get("worktree") or str(ROOT)}
+
+
+@app.post("/api/orphanwork/merge")
+def api_orphanwork_merge(req: OrphanKeyReq):
+    """scripts/branch.sh owns preflight and refusals; passive is blocked
+    because a test instance shares the live repo — a merge from there would
+    mutate the real checkout."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — merge from the live "
+                                 "checkout instead")
+    it = _orphan_item(req.key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    if it.get("kind") == "unpushed":
+        raise HTTPException(409, "main has nothing to merge — it needs a push")
+    slug = it["branch"].split("/", 1)[-1]
+    ok, detail = orphanwork.merge(slug)
+    if not ok:
+        raise HTTPException(409, detail)
+    return {"started": True}
+
+
+@app.post("/api/orphanwork/discard")
+def api_orphanwork_discard(req: OrphanDiscardReq):
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — discard from the live "
+                                 "checkout instead")
+    it = _orphan_item(req.key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    if it.get("kind") == "unpushed":
+        raise HTTPException(409, "main can't be discarded")
+    slug = it["branch"].split("/", 1)[-1]
+    ok, detail = orphanwork.discard(slug, force=req.force)
+    if not ok:
+        raise HTTPException(409, detail)
+    return {"started": True}
 
 
 # ---------- contact atlas (the face-graph of interconnection) ----------

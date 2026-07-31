@@ -5044,6 +5044,159 @@ async function refreshJobs() {
   }
 }
 
+// ---------- orphan-work sweeper (Work > Live: unlanded worktrees/branches) ----------
+
+async function loadOrphans() {
+  const list = $("#orphan-list");
+  if (!list) return;
+  let s;
+  try {
+    s = await api("/api/orphanwork");
+    if (s.stale) s = await post("/api/orphanwork/refresh", {});
+  } catch (e) {
+    return;
+  }
+  renderOrphans(s);
+}
+
+function renderOrphans(s) {
+  const list = $("#orphan-list");
+  if (!list) return;
+  list.innerHTML = "";
+  const items = s.items || [];
+  if (!items.length) {
+    list.appendChild(el("div", "empty left",
+      "Nothing unlanded — every branch is merged or clean."));
+    return;
+  }
+  items.forEach((it) => list.appendChild(orphanRow(it)));
+}
+
+function orphanRow(it) {
+  const card = el("div", "orphan-row");
+  const main = el("div", "link-main");
+  main.appendChild(el("div", "link-title", it.branch.replace(/^claude\//, "")));
+  const bits = [];
+  if (it.kind === "unpushed") {
+    bits.push(`main: ${it.ahead} commit${it.ahead === 1 ? "" : "s"} not pushed`);
+  } else {
+    if (it.dirty) bits.push(`${it.dirty} change${it.dirty === 1 ? "" : "s"} uncommitted`);
+    if (it.ahead) bits.push(`${it.ahead} commit${it.ahead === 1 ? "" : "s"} unmerged`);
+    if (it.stalled) bits.push("stalled session");
+    if (it.instance_running) bits.push("test instance running");
+    if (it.job && it.job.title) bits.push(it.job.title);
+    bits.push(`${it.age_days}d old`);
+  }
+  main.appendChild(el("div", "link-sub", bits.join(" · ")));
+  card.appendChild(main);
+
+  if (it.kind !== "unpushed") {
+    const foot = el("div", "orphan-foot");
+    if (it.action && it.action.status === "running") {
+      foot.appendChild(el("span", "hint", it.action.name + "…"));
+    } else {
+      const resume = el("button", "fchip sm", "Resume");
+      resume.addEventListener("click", () => orphanResume(it));
+      const mrg = el("button", "fchip sm", "Merge");
+      mrg.addEventListener("click", () => armOrphanAction(foot, it, "merge"));
+      const disc = el("button", "fchip sm", "Discard");
+      disc.addEventListener("click", () => armOrphanAction(foot, it, "discard"));
+      foot.append(resume, mrg, disc);
+    }
+    card.appendChild(foot);
+    if (it.action && it.action.status && it.action.status !== "running") {
+      const lastLine = (it.action.output || "").trim().split("\n").pop() || "";
+      card.appendChild(el("div", "link-sub orphan-outcome",
+        (it.action.status === "ok" ? "done — " : "failed — ") + lastLine.slice(0, 160)));
+    }
+  }
+
+  const dis = el("button", "idea-del", "×");
+  dis.title = "Dismiss this row";
+  dis.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    await post("/api/orphanwork/dismiss", { key: it.key });
+    card.remove();
+    toast("Dismissed", [["Undo", async () => {
+      await post("/api/orphanwork/dismiss", { key: it.key, restore: true });
+      loadOrphans();
+    }]]);
+  });
+  card.appendChild(dis);
+  return card;
+}
+
+async function orphanResume(it) {
+  try {
+    const r = await post("/api/orphanwork/resume", { key: it.key });
+    openSession(r.job_id);
+    loadOrphans();
+  } catch (e) {
+    if (String(e.message || e).includes("passive")) {
+      try {
+        const { prompt } = await api(
+          "/api/orphanwork/resume-prompt?key=" + encodeURIComponent(it.key));
+        await copyText(prompt);
+        toast("Passive instance — resume prompt copied");
+      } catch (e2) {
+        toast("Couldn't copy the resume prompt: " + e2.message);
+      }
+    } else {
+      toast("Resume failed: " + e.message);
+    }
+  }
+}
+
+// Merge/discard are destructive-adjacent, so the confirm is INLINE on the
+// row's own foot — anchored to the button clicked, the armSkinApply shape.
+function armOrphanAction(foot, it, name) {
+  foot.innerHTML = "";
+  const label = name === "merge"
+    ? `Merge ${it.branch} into live main?`
+    : it.dirty
+      ? `Discard ${it.dirty} uncommitted change${it.dirty === 1 ? "" : "s"}? This destroys them.`
+      : `Discard ${it.branch}? This deletes the branch.`;
+  foot.appendChild(el("span", "orphan-confirm-q", label));
+  const yes = el("button", "fchip sm warn", "Confirm");
+  yes.addEventListener("click", () => runOrphanAction(foot, it, name));
+  const no = el("button", "fchip sm", "Cancel");
+  no.addEventListener("click", () => loadOrphans());
+  foot.append(yes, no);
+}
+
+async function runOrphanAction(foot, it, name) {
+  foot.textContent = name === "merge" ? "Merging…" : "Discarding…";
+  try {
+    const body = name === "discard" ? { key: it.key, force: true } : { key: it.key };
+    await post(`/api/orphanwork/${name}`, body);
+    startPoll(async (h) => {
+      const s = await api("/api/orphanwork");
+      const still = (s.items || []).find((x) => x.key === it.key);
+      if (still && still.action && still.action.status === "running") return;
+      h.stop();
+      renderOrphans(s);
+      if (still && still.action) {
+        const lastLine = (still.action.output || "").trim().split("\n").pop() || "";
+        toast((still.action.status === "ok" ? "Done — " : "Failed — ") + lastLine.slice(0, 160));
+      } else if (!still) {
+        toast(name === "merge" ? "Merged and cleaned up" : "Discarded");
+      }
+    }, 1500, 60000);
+  } catch (e) {
+    toast((name === "merge" ? "Merge" : "Discard") + " failed: " + e.message);
+    loadOrphans();
+  }
+}
+
+$("#orphan-refresh")?.addEventListener("click", async () => {
+  try {
+    const s = await post("/api/orphanwork/refresh", {});
+    renderOrphans(s);
+  } catch (e) {
+    toast("Sweep failed: " + e.message);
+  }
+});
+
 async function loadNotify() {
   const list = $("#notify-list");
   if (!list) return;
@@ -9583,7 +9736,10 @@ function workTabLoad(tab) {
     }
     if (workSub === "schedules") loadRoutines().catch(() => {});
   }
-  if (tab === "live") refreshJobs().catch(() => {});
+  if (tab === "live") {
+    refreshJobs().catch(() => {});
+    loadOrphans().catch(() => {});
+  }
   if (tab === "record") loadRecord().catch(() => {});
 }
 

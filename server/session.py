@@ -557,8 +557,29 @@ class Sessions:
         if (cwd and not read_only and not publish_plan
                 and bool(_scfg("session_branch_first"))):
             root = worktree.repo_root(cwd)
-            if (root and worktree.is_branch_first(root)
-                    and not worktree.is_worktree(root)):
+            if root and worktree.is_branch_first(root) and worktree.is_worktree(root):
+                # RE-ENTRY: cwd is already a linked worktree (the orphan-work
+                # sweeper's Resume action lands here — a leftover worktree
+                # from a stalled session, not a fresh dispatch). Arm the same
+                # guard fields a fresh placement would set, derived from the
+                # worktree itself rather than minted. Without this the spec
+                # ships with worktree/live_root empty and
+                # runner._disarmed_guard fail-closed refuses to start the
+                # session at all.
+                prim = worktree.primary_root(root)
+                br = worktree.current_branch(root)
+                if prim and br.startswith("claude/"):
+                    wt_path = root
+                    live_root = prim
+                    branch_slug = br.split("/", 1)[1]
+                    branch_note = (
+                        f"[vira] branch-first: resuming in existing worktree "
+                        f"{root} on {br}; the live checkout at {prim} is "
+                        "read-only for this session\n")
+                # else: leave everything unset. A worktree whose branch or
+                # primary root can't be derived is exactly the case the
+                # disarmed-guard refusal exists for — loud is correct here.
+            elif root and worktree.is_branch_first(root):
                 # Name it after what was asked, suffixed with the job id so
                 # two dispatches of the same idea never collide on a branch.
                 #

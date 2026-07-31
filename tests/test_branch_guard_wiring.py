@@ -286,7 +286,7 @@ class SpecReachesDisk(unittest.TestCase):
         """Job dirs prune at 400 and the registry forgets on restart, so the
         ledger row is the only durable answer to 'was that session guarded?'"""
         self.launch()
-        row = joblog.record_launch.__wrapped__ if False else self.rows[-1]
+        row = self.rows[-1]
         for key in ("worktree", "branch", "live_root"):
             self.assertTrue(row.get(key), f"{key} missing from the ledger row")
 
@@ -300,6 +300,80 @@ class SpecReachesDisk(unittest.TestCase):
         r = runner_mod.Runner(self.jobs / jid)
         self.addCleanup(r.out.close)
         self.assertFalse(r.disarmed)
+
+
+@unittest.skipUnless(os.name == "posix",
+                     "branch.sh is POSIX-only dev tooling")
+class ReentryIntoExistingWorktree(unittest.TestCase):
+    """The orphan-work sweeper's Resume action launches a session with cwd
+    already pointed at an existing linked worktree — a leftover from a
+    stalled session, not a fresh dispatch. Without arming the guard fields
+    on THIS path too, `_disarmed_guard` fail-closed refuses to start the
+    session at all (see server/orphanwork.py's "critical integration fact").
+    The worktree here is made with raw `git worktree add`, not branch.sh —
+    a worktree made any other way still deserves to be armed."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = make_branch_first_repo(Path(self.tmp.name) / "repo")
+        self.jobs = Path(self.tmp.name) / "jobs"
+        self.jobs.mkdir()
+        self.wt = Path(self.tmp.name) / "existing-wt"
+        _git("worktree", "add", "-b", "claude/leftover-work", str(self.wt),
+             "main", cwd=self.root)
+        mock.patch.object(session.subprocess, "Popen",
+                          runner_only_popen()).start()
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(session.jobfiles, "job_dir",
+                          lambda jid: self.jobs / jid).start()
+        mock.patch.object(session.joblog, "record_launch",
+                          lambda job: None).start()
+        mock.patch.object(session, "SDK_AVAILABLE", True).start()
+
+    def launch(self, **kw):
+        reg = session.Sessions()
+        jid = reg.launch("Resume the stalled work here", cwd=str(self.wt),
+                         **kw)
+        return jid, json.loads(
+            (self.jobs / jid / "job.json").read_text(encoding="utf-8"))
+
+    def test_placement_fields_reach_job_json_present_and_non_empty(self):
+        _, spec = self.launch()
+        for key in ("worktree", "branch", "live_root", "branch_note"):
+            self.assertIn(key, spec, f"{key} never reached job.json")
+            self.assertTrue(spec[key], f"{key} reached job.json empty")
+
+    def test_cwd_stays_the_existing_worktree_and_is_not_re_placed(self):
+        _, spec = self.launch()
+        self.assertEqual(Path(spec["cwd"]).resolve(), self.wt.resolve())
+        self.assertEqual(Path(spec["worktree"]).resolve(), self.wt.resolve())
+        self.assertEqual(Path(spec["live_root"]).resolve(), self.root.resolve())
+        self.assertEqual(spec["branch"], "claude/leftover-work")
+
+    def test_the_note_names_it_a_resume(self):
+        _, spec = self.launch()
+        self.assertIn("resuming in existing worktree", spec["branch_note"])
+        self.assertIn(str(self.wt), spec["branch_note"])
+
+    def test_disarmed_guard_is_not_disarmed(self):
+        jid, _ = self.launch()
+        (self.jobs / jid / "control.jsonl").touch()
+        r = runner_mod.Runner(self.jobs / jid)
+        self.addCleanup(r.out.close)
+        self.assertEqual(r.disarmed, "")
+
+    def test_the_gate_still_denies_the_live_tree_and_allows_the_worktree(self):
+        jid, _ = self.launch(mode="bypassPermissions")
+        (self.jobs / jid / "control.jsonl").touch()
+        r = runner_mod.Runner(self.jobs / jid)
+        self.addCleanup(r.out.close)
+        deny = asyncio.run(r.gate("Write", {
+            "file_path": str(self.root / "server" / "main.py")}, None))
+        self.assertEqual(type(deny).__name__, "PermissionResultDeny")
+        allow = asyncio.run(r.gate("Write", {
+            "file_path": str(self.wt / "server" / "main.py")}, None))
+        self.assertEqual(type(allow).__name__, "PermissionResultAllow")
 
 
 class TidyIsWired(unittest.TestCase):
