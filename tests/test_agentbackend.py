@@ -215,6 +215,32 @@ class CliExecRunTest(unittest.TestCase):
         self.assertIn("best-effort", joined)
         self.assertIn("all done", joined)
 
+    def test_turn_accepts_jsonl_event_larger_than_asyncio_default(self):
+        # Codex includes aggregated shell output in one command_execution
+        # event.  Python's 64 KiB subprocess StreamReader default used to
+        # raise "Separator is found, but chunk is longer than limit" here
+        # and abort the whole Vira session before the event could be parsed.
+        oversized = "x" * (64 * 1024 + 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            binary = _fake_codex(tmp, [[
+                {"type": "thread.started", "thread_id": "tid-large"},
+                {"type": "item.completed", "item": {
+                    "type": "command_execution", "command": "read files",
+                    "aggregated_output": oversized, "exit_code": 0,
+                }},
+                {"type": "item.completed",
+                 "item": {"type": "agent_message", "text": "all done"}},
+                {"type": "turn.completed", "usage": {}},
+            ]])
+            spec = {"id": "j-large", "provider": "openai", "cwd": tmp,
+                    "mode": "autopilot", "prompt": "inspect the repo"}
+            runner = _FakeRunner(spec)
+            with mock.patch("server.joblog.record_session"):
+                text, ok = self._run(runner, binary)
+        self.assertTrue(ok)
+        self.assertEqual(text, "all done")
+        self.assertIn("Bash: read files", "".join(runner.out))
+
     def test_reply_resumes_the_same_thread(self):
         with tempfile.TemporaryDirectory() as tmp:
             binary = _fake_codex(tmp, [
