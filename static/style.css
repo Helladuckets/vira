@@ -4677,8 +4677,8 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   border-radius: var(--radius);
 }
 .tour-row { display: flex; gap: 8px; justify-content: flex-end; }
-/* The closing beat carries three buttons, which will not sit on one line in
-   a 360px card — wrap rather than squeeze them past legibility. */
+/* The context card carries two buttons, which will not sit on one line in a
+   360px card — wrap rather than squeeze them past legibility. */
 .tour-row-wrap { flex-wrap: wrap; }
 .tour-row-wrap .btn { flex: 1 1 auto; }
 

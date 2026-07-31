@@ -9499,15 +9499,22 @@ function frFinish(pr) {
 // control it is talking about — the card sits under that control with a
 // caret aimed at it and the control ringed — so "type an idea" and "add your
 // context" are pointing rather than describing.
+//
+// BOTH APPEAR AT ONCE (owner, 2026-07-31), no Next and no Back. Behind a
+// "Next" the second ask is invisible to anyone who does the first thing and
+// gets on with it — which is exactly the person we most want to see it,
+// because connecting notes and a project is what makes every later answer
+// worth reading. Two cards side by side is the whole encouragement.
 const OUTRO = [
   { anchor: "#work-queue-pane .runbar", kicker: "That's the loop" },
   { anchor: "#idea-project-filter", ring: ".sb-pair",
-    kicker: "One more thing" },
+    kicker: "Your own work" },
 ];
 
-let tourStep = -1;          // -1 idle, 0 film playing, 1-2 the closing cards
+let tourStep = -1;          // -1 idle, 0 film playing, 1 the closing cards
+let tourLive = [];          // which OUTRO beats are still on screen
 
-function tourCard() { return $("#tour"); }
+function tourCards() { return [...document.querySelectorAll(".tour-card")]; }
 function tourFilm() { return $("#tour-film"); }
 
 // The ring is cleared on every repaint AND on exit — a highlight that
@@ -9531,7 +9538,7 @@ async function startWorkTour() {
     there = (await fetch("/tour/", { method: "HEAD" })).ok;
   } catch { /* offline or no route — same answer */ }
   if (tourStep !== 0) return;              // skipped while we were asking
-  if (!there) { tourStep = 1; paintTour(); return; }
+  if (!there) { showOutro(); return; }
   playTourFilm();
 }
 
@@ -9578,75 +9585,101 @@ addEventListener("message", (e) => {
   if (!e.data || e.data.viraTour !== "done" || tourStep !== 0) return;
   tourFilm()?.remove();
   removeEventListener("resize", fitTourFilm);
-  tourStep = 1;
-  paintTour();          // the closing card, with the three ways on
+  showOutro();          // both closing cards, together
 });
+
+// The one entry point to the closing beats, so the film's end and the
+// no-film fallback cannot open different things.
+function showOutro() {
+  tourStep = 1;
+  tourLive = OUTRO.map((_, i) => i);
+  paintTour();
+}
 
 function endTour({ focusAdd } = {}) {
   tourStep = -1;
-  tourCard()?.remove();
+  tourLive = [];
+  tourCards().forEach((n) => n.remove());
   tourFilm()?.remove();
   removeEventListener("resize", fitTourFilm);
   clearTourRing();
   document.body.classList.remove("tour-open");
-  if (focusAdd) {
-    // "Give it a try" has to land ON the thing it invited — the cursor in
-    // the add box, not just the right tab showing.
-    setWorkTab("queue");
-    // #idea-input is the FIELD; #idea-add is the Add button beside it.
-    const box = $("#idea-input");
-    box?.focus();
-    box?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }
+  if (focusAdd) focusIdeaAdd();
 }
 
-// The two cards that outlive the film: what to do now. Both live on the
-// Queue tab, each anchored to the control it names.
+// Dismissing ONE card leaves the other standing — that is the point of
+// showing them together: acting on "give it a try" must not take the
+// context ask off the screen with it.
+function tourDismiss(i, { focusAdd } = {}) {
+  tourLive = tourLive.filter((n) => n !== i);
+  if (!tourLive.length) { endTour({ focusAdd }); return; }
+  paintTour();
+  if (focusAdd) focusIdeaAdd();
+}
+
+// "Give it a try" has to land ON the thing it invited — the cursor in the
+// add box, not just the right tab showing.
+function focusIdeaAdd() {
+  setWorkTab("queue");
+  // #idea-input is the FIELD; #idea-add is the Add button beside it.
+  const box = $("#idea-input");
+  box?.focus();
+  box?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+// The cards that outlive the film: what to do now. Both live on the Queue
+// tab, side by side, each anchored to the control it names.
 function paintTour() {
   document.body.classList.add("tour-open");
-  tourCard()?.remove();
+  tourCards().forEach((n) => n.remove());
   clearTourRing();
-  const out = Math.max(0, tourStep - 1);   // 0 = give it a try, 1 = context
-  const beat = OUTRO[out];
+  setWorkTab("queue");
+  tourLive.forEach((i) => document.body.appendChild(buildTourCard(i)));
+  positionTour();
+  // .fwin-move animates left/top/width/height for ~380ms, so a rect measured
+  // now is a FRAME of that animation — the same trap winRect exists for. The
+  // card would centre on where Work was, not where it is going. Re-place once
+  // the move has settled; cheap, and it also catches a tab switch that
+  // resizes the pane under it.
+  clearTimeout(paintTour._settle);
+  paintTour._settle = setTimeout(positionTour, 440);
+}
+
+function buildTourCard(i) {
+  const beat = OUTRO[i];
   const card = el("div", "tour-card");
-  card.id = "tour";
+  card.dataset.beat = String(i);
 
   const head = el("div", "tour-head");
   head.appendChild(el("span", "tour-kicker", beat.kicker));
+  // Close dismisses THIS card only — with two on screen, one Close that
+  // cleared both would be a button that does more than it says.
   const skip = el("button", "tour-skip", "Close");
-  skip.onclick = () => endTour();
+  skip.onclick = () => tourDismiss(i);
   head.appendChild(skip);
   card.appendChild(head);
 
   const row = el("div", "tour-row tour-row-wrap");
-  setWorkTab("queue");
-  if (out === 0) {
+  if (i === 0) {
     card.appendChild(el("h3", "tour-title", "Give it a try"));
     card.appendChild(el("p", "tour-body",
       "Type an idea in this bar and hit Implement — that works right now, "
       + "on the AI you just connected."));
     const go = el("button", "btn primary", "Give it a try");
-    go.onclick = () => endTour({ focusAdd: true });
+    go.onclick = () => tourDismiss(i, { focusAdd: true });
     row.appendChild(go);
-    // No Back on the first card: behind it is the film, which is over.
-    const next = el("button", "btn", "Next");
-    next.onclick = () => { tourStep++; paintTour(); };
-    row.appendChild(next);
     card.appendChild(row);
   } else {
-    const back = el("button", "btn", "Back");
-    back.onclick = () => { tourStep--; paintTour(); };
     card.appendChild(el("h3", "tour-title", "Add your context"));
     card.appendChild(el("p", "tour-body",
       "Point Vira at your own work and it plans against what you actually "
       + "have. Projects show up in this dropdown; your notes become "
       + "something it can answer from."));
-    row.appendChild(back);
     const proj = el("button", "btn primary", "Connect a project…");
-    proj.onclick = () => tourConnect("project");
+    proj.onclick = () => tourConnect("project", card);
     row.appendChild(proj);
     const vault = el("button", "btn", "Connect your notes…");
-    vault.onclick = () => tourConnect("vault");
+    vault.onclick = () => tourConnect("vault", card);
     row.appendChild(vault);
     card.appendChild(row);
     card.appendChild(el("p", "tour-note",
@@ -9658,73 +9691,103 @@ function paintTour() {
   // when the label belongs with it (PROJECT + its select are one thing).
   const t = $(beat.anchor);
   (t?.closest(beat.ring || "*") || t)?.classList.add("tour-target");
-  document.body.appendChild(card);
-  positionTour();
-  // .fwin-move animates left/top/width/height for ~380ms, so a rect measured
-  // now is a FRAME of that animation — the same trap winRect exists for. The
-  // card would centre on where Work was, not where it is going. Re-place once
-  // the move has settled; cheap, and it also catches a tab switch that
-  // resizes the pane under it.
-  clearTimeout(paintTour._settle);
-  paintTour._settle = setTimeout(positionTour, 440);
+  return card;
 }
 
-// A card rides its CONTROL, not a screen corner: it sits just under the
-// thing it names with the caret aimed at that thing's centre. Falls back to
-// the foot of the Work window if the control never rendered.
+// A card rides its CONTROL, not a screen corner: it sits against the thing
+// it names with the caret aimed at that thing's centre. Falls back to the
+// foot of the Work window if the control never rendered.
+//
+// With both cards up they SANDWICH the controls: the lowest anchor's card
+// hangs under it, every card above that sits ABOVE its own anchor. Two
+// cards both hanging below would overlap — the anchors are one bar apart
+// and a card is far taller than that — and hiding one behind the other is
+// the exact failure showing them together is meant to end.
 function positionTour() {
-  const card = tourCard();
+  const cards = tourCards();
+  if (!cards.length) return;
+  const items = cards.map((card) => {
+    const beat = OUTRO[Number(card.dataset.beat)] || OUTRO[0];
+    const r = $(beat.anchor)?.getBoundingClientRect();
+    return { card, a: r && r.width ? r : null,
+             w: card.offsetWidth || 360, h: card.offsetHeight || 220 };
+  });
+  const anchored = items.filter((p) => p.a).sort((x, y) => x.a.top - y.a.top);
+  const placed = [];
+  anchored.forEach((p, idx) => {
+    const last = idx === anchored.length - 1;
+    let above = !last;
+    let top = above ? p.a.top - p.h - 14 : p.a.bottom + 14;
+    // No room on the chosen side — take the other one rather than running
+    // off the screen, and flip the caret with it.
+    if (above && top < 12) { above = false; top = p.a.bottom + 14; }
+    if (!above && top + p.h > innerHeight - 12) {
+      const up = p.a.top - p.h - 14;
+      if (up >= 12) { above = true; top = up; }
+      else top = Math.max(12, innerHeight - p.h - 12);
+    }
+    let left = p.a.left + (p.a.width - p.w) / 2;
+    left = Math.max(12, Math.min(left, innerWidth - p.w - 12));
+    // A short viewport can push a flipped card onto the one already placed,
+    // and a card hidden behind another is the exact failure this feature
+    // exists to end — so overlap is resolved even at the cost of sitting
+    // beside its control rather than under it.
+    const box = clearOfPlaced({ left, top, w: p.w, h: p.h }, placed);
+    placed.push(box);
+    // The caret is set HERE, not at paint: an anchor that never rendered
+    // falls through to the window placement, and a caret pointing at
+    // nothing is worse than no caret.
+    p.card.classList.add("tour-anchored");
+    p.card.classList.toggle("tour-above", above);
+    p.card.style.setProperty("--arrow-x",
+      `${Math.round(Math.min(Math.max(p.a.left + p.a.width / 2 - box.left, 20),
+                             p.w - 20))}px`);
+    placeTourCard(p.card, box.left, box.top);
+  });
+  // Anchors that never rendered: fall back to the foot of the Work window,
+  // stepped so a second one cannot land on top of the first.
+  const loose = items.filter((p) => !p.a);
   const win = winState?.work?.el;
-  if (!card) return;
-  const beat = OUTRO[Math.max(0, tourStep - 1)];
-  const anchor = beat && $(beat.anchor);
-  const ar = anchor?.getBoundingClientRect();
-  // The caret is added HERE, not at paint: an anchor that never rendered
-  // falls through to the window placement, and a caret pointing at nothing
-  // is worse than no caret.
-  card.classList.toggle("tour-anchored", !!(ar && ar.width));
-  if (ar && ar.width) {
-    const w = card.offsetWidth || 360;
-    const h = card.offsetHeight || 220;
-    let left = ar.left + (ar.width - w) / 2;
-    left = Math.max(12, Math.min(left, innerWidth - w - 12));
-    let top = ar.bottom + 14;
-    // No room below (a short window, or the control sits low) — sit above it
-    // instead and drop the caret, rather than covering what we point at.
-    const above = top + h > innerHeight - 12;
-    if (above) top = Math.max(12, ar.top - h - 14);
-    card.classList.toggle("tour-above", above);
-    card.style.setProperty("--arrow-x",
-      `${Math.round(Math.min(Math.max(ar.left + ar.width / 2 - left, 20),
-                             w - 20))}px`);
-    card.style.left = `${Math.round(left)}px`;
-    card.style.top = `${Math.round(top)}px`;
-    card.style.right = "auto";
-    card.style.bottom = "auto";
-    card.style.transform = "none";
-    return;
+  loose.forEach((p, idx) => {
+    p.card.classList.remove("tour-anchored", "tour-above");
+    const r = win?.getBoundingClientRect();
+    const cx = r ? r.left + r.width / 2 : innerWidth / 2;
+    const base = r ? r.bottom - p.h - 24 : innerHeight - p.h - 92;
+    const left = Math.max(12,
+      Math.min(cx - p.w / 2 + idx * 22, innerWidth - p.w - 12));
+    const top = Math.max(12,
+      Math.min(base - idx * (p.h + 14), innerHeight - p.h - 12));
+    placeTourCard(p.card, left, top);
+  });
+}
+
+// Step a box off anything already placed: beside it if the screen affords
+// it, otherwise under it. Two passes, because moving clear of one box can
+// land on another.
+function clearOfPlaced(box, placed) {
+  const hits = (a, b) => a.left < b.left + b.w && a.left + a.w > b.left
+                      && a.top < b.top + b.h && a.top + a.h > b.top;
+  for (let pass = 0; pass < 2; pass++) {
+    for (const q of placed) {
+      if (!hits(box, q)) continue;
+      const right = q.left + q.w + 14;
+      const leftOf = q.left - box.w - 14;
+      if (right + box.w <= innerWidth - 12) box.left = right;
+      else if (leftOf >= 12) box.left = leftOf;
+      else box.top = Math.min(q.top + q.h + 14, innerHeight - box.h - 12);
+    }
   }
-  if (!win) {                       // no Work window (shouldn't happen) — centre on screen
-    card.style.left = "50%";
-    card.style.transform = "translateX(-50%)";
-    card.style.bottom = "92px";
-    return;
-  }
-  const r = win.getBoundingClientRect();
-  const w = card.offsetWidth || 360;
-  const h = card.offsetHeight || 220;
-  let left = r.left + (r.width - w) / 2;
-  let top = r.bottom - h - 24;
-  // Keep it on screen whatever the viewport does to the arrangement.
-  left = Math.max(12, Math.min(left, innerWidth - w - 12));
-  top = Math.max(12, Math.min(top, innerHeight - h - 12));
+  return box;
+}
+
+function placeTourCard(card, left, top) {
   card.style.left = `${Math.round(left)}px`;
   card.style.top = `${Math.round(top)}px`;
   card.style.right = "auto";
   card.style.bottom = "auto";
   card.style.transform = "none";
 }
-addEventListener("resize", () => { if (tourCard()) positionTour(); });
+addEventListener("resize", () => { if (tourCards().length) positionTour(); });
 
 // A real OS folder panel — navigate, select, Open. Never "copy the path".
 // The server opens it (server/pickfolder.py) because Vira is local, and the
@@ -9745,23 +9808,27 @@ async function chooseFolder(prompt) {
   }));
 }
 
-async function tourConnect(kind) {
-  const card = tourCard();
+async function tourConnect(kind, card) {
   const row = card?.querySelector(".tour-row");
   const busy = el("p", "tour-note", "Pick a folder in the window that just "
                                     + "opened…");
+  // Anything added to a card changes its height, and a card is placed
+  // against its control — so every insertion re-places it, or a grown card
+  // walks over the other one.
   row?.after(busy);
+  positionTour();
   const r = await chooseFolder(kind === "vault"
     ? "Choose the folder your notes live in"
     : "Choose the folder for this project");
   busy.remove();
-  if (r.cancelled) return;                       // a cancel is an answer
+  if (r.cancelled) { positionTour(); return; }    // a cancel is an answer
   if (r.unavailable || !r.path) {
     // No panel available (phone, demo, an unsupported platform) — say why
     // and send them to the field that always works.
     const p = el("p", "tour-note warn", (r.reason || "no folder window here")
       + ". Open Config and type the path instead.");
     row?.after(p);
+    positionTour();
     return;
   }
   try {
@@ -9779,11 +9846,24 @@ async function tourConnect(kind) {
       toast(`Project "${name}" connected`);
       loadIdeas?.().catch(() => {});
     }
-    endTour({ focusAdd: kind !== "vault" });
+    // Connecting ONE of the two is not the end of this card — the other
+    // button is the one the owner most wants clicked, so it stays. The card
+    // only leaves once there is nothing left on it to do.
+    const btn = row?.querySelector(kind === "vault"
+      ? ".btn:not(.primary)" : ".btn.primary");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = kind === "vault" ? "Notes connected" : "Project connected";
+    }
+    const left = [...(row?.querySelectorAll(".btn") || [])]
+      .filter((b) => !b.disabled).length;
+    if (left) { positionTour(); return; }
+    tourDismiss(Number(card.dataset.beat), { focusAdd: true });
   } catch (e) {
     const p = el("p", "tour-note warn", e.message || "could not connect that "
                                                      + "folder");
     row?.after(p);
+    positionTour();
   }
 }
 
