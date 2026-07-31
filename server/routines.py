@@ -318,8 +318,12 @@ def is_due(r, now=None):
 def _muse_prompt():
     from . import ideas, settings
     owner = settings.get("owner_name") or "the owner"
+    # Deferred ideas are on this list ON PURPOSE: the owner already saw
+    # that idea and said "not now", so re-proposing it tomorrow would make
+    # Defer meaningless. They are shown with their status so the muse can
+    # tell "yet to be built" from "already declined for now".
     current = [i for i in ideas.list_items()
-               if i["status"] in ("open", "on-hold", "proposed")]
+               if i["status"] in ("open", "on-hold", "proposed", "deferred")]
     backlog = "\n".join(
         f"- [{i['status']}] ({i.get('project', '?')}) {i['text'][:160]}"
         for i in current[:60]) or "(backlog is empty)"
@@ -330,7 +334,9 @@ def _muse_prompt():
         "projects) more valuable.\n\n"
         "How to work:\n"
         "1. Study the current backlog below — do NOT duplicate or lightly "
-        "rephrase anything on it.\n"
+        "rephrase anything on it. Anything marked [deferred] is an idea "
+        "the owner has already seen and set aside: never propose it "
+        "again, in any wording.\n"
         "2. Use mcp__vira__daily_brief and mcp__vira__vault_search to "
         "ground yourself in what is actually going on — recent themes in "
         f"the vault, who {owner} is talking to, open loops, friction "

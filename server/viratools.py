@@ -576,11 +576,15 @@ def _propose_idea_text(text, project, why):
     if not text:
         return "error: idea text is required"
     items = ideas.list_items()
+    # "deferred" counts here: the owner saw that proposal and set it aside,
+    # so re-staging it is exactly what Defer exists to prevent.
     dupes = [i for i in items
-             if i["status"] in ("proposed", "open", "on-hold")
+             if i["status"] in ("proposed", "open", "on-hold", "deferred")
              and i["text"].strip().lower() == text.lower()]
     if dupes:
-        return "Not staged — an identical idea is already on the backlog."
+        return ("Not staged — an identical idea is already on the backlog"
+                + (" (deferred by the owner)."
+                   if dupes[0]["status"] == "deferred" else "."))
     # Same wording is the easy case; the muse repeats itself by REPHRASING.
     # The refusal names the match, because a refusal that only says no
     # invites a blind retry of the same idea in different words.
@@ -812,7 +816,7 @@ TOOL_SPECS = [
      {"path": str}, _t_vault_note),
     ("list_ideas",
      "The owner's ideas backlog (cross-project). Optional status filter: "
-     "proposed | open | on-hold | done | dropped.",
+     "proposed | open | on-hold | deferred | done | dropped.",
      {"status": str}, _t_list_ideas),
     ("propose_idea",
      "STAGE a new idea on the owner's backlog as status 'proposed' — it "

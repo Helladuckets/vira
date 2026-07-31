@@ -2870,6 +2870,21 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
     return out
 
 
+@app.post("/api/ideas/{idea_id}/defer")
+def api_idea_defer(idea_id: str):
+    """Defer a Vira-proposed idea: proposed -> deferred. Not now, but kept
+    — it leaves the queue for Record > Deferred & Dropped, and the muse
+    keeps seeing it so tomorrow's proposals do not repeat it."""
+    try:
+        from datetime import date as _date
+        return ideas.stamp_note(idea_id,
+                                f"deferred by the owner "
+                                f"{_date.today().isoformat()}",
+                                status="deferred")
+    except KeyError:
+        raise HTTPException(404, "unknown idea")
+
+
 @app.post("/api/ideas/{idea_id}/decline")
 def api_idea_decline(idea_id: str):
     try:

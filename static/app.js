@@ -3287,13 +3287,21 @@ let projectPathsCache = {};
 let ideaSort = localStorage.getItem("vira-idea-sort") || "grouped";
 let ideaProject = localStorage.getItem("vira-idea-project") || "";  // "" = all
 let ideaAddProject = localStorage.getItem("vira-idea-add-project") || "";
-// Done/dropped fold under a toggle in the grouped view; collapsed by default
-// so the queue leads with active work.
-let ideaShowParked = localStorage.getItem("vira-idea-show-parked") === "1";
+// The Done fold inside Record > Deferred & Dropped, collapsed by default:
+// completed work is chronicled under Shipped, so it sits behind one click
+// there. Keeps the old localStorage key — same choice, moved surface.
+let ideaShowFiledDone =
+  localStorage.getItem("vira-idea-show-parked") === "1";
 const ADD_PROJECT = "__add_project__";   // sentinel option value
 const IDEA_STATUSES = [["proposed", "Proposed"],
                        ["open", "Open"], ["on-hold", "On-hold"],
+                       ["deferred", "Deferred"],
                        ["done", "Done"], ["dropped", "Dropped"]];
+// FILED statuses leave the queue entirely — the queue is active work.
+// Deferred and dropped are browsable and reopenable in Record > Deferred
+// & Dropped; done work is chronicled there too, under Shipped.
+const IDEA_FILED = ["deferred", "done", "dropped"];
+const isFiledIdea = (i) => IDEA_FILED.includes(i.status);
 // Each sort names the axis it keys on. "grouped" (default) buckets by status
 // with subheaders; the rest are flat. "Last updated" keys on the last-touched
 // stamp (edits, status flips, note stamps); the two "Date added" orderings key
@@ -3624,6 +3632,19 @@ function ideaRow(it) {
         if (r.run) { openApp("circuits"); loadCircuits().catch(() => {}); }
       } catch (e) { alert("Approve & build failed: " + e.message); }
     });
+    // Defer is the third answer, and the one the other two were missing:
+    // "not now, but keep it". The idea leaves the queue for Record >
+    // Deferred & Dropped, and the muse stops offering it.
+    const later = el("button", "idea-run-btn defer", "Defer");
+    later.title = "Set aside for later — filed under Record > Deferred & "
+                + "Dropped, and Vira stops proposing it";
+    later.addEventListener("click", async () => {
+      try {
+        await post(`/api/ideas/${it.id}/defer`, {});
+        toast("Deferred — filed in Record");
+        await loadIdeas();
+      } catch (e) { alert("Defer failed: " + e.message); }
+    });
     const no = el("button", "idea-run-btn decline", "Decline");
     no.addEventListener("click", async () => {
       try {
@@ -3634,6 +3655,7 @@ function ideaRow(it) {
     });
     bar.appendChild(ok);
     bar.appendChild(build);
+    bar.appendChild(later);
     bar.appendChild(no);
     box.appendChild(bar);
   }
@@ -3738,12 +3760,19 @@ function revealIdea(id) {
     lsSet("vira-idea-tags", ideaTagFilter);
   }
   if (it && !ideaMatchesQuery(it, ideaQuery.trim())) setIdeaQuery("");
-  if (it && (it.status === "done" || it.status === "dropped")
-      && !ideaShowParked) {
-    ideaShowParked = true;
-    localStorage.setItem("vira-idea-show-parked", "1");
+  // A filed idea is not in the queue at all any more, so unhiding it there
+  // is impossible — jump to the tab that actually holds it (opening the
+  // Done fold if that is where it sits).
+  if (it && isFiledIdea(it)) {
+    if (it.status === "done" && !ideaShowFiledDone) {
+      ideaShowFiledDone = true;
+      localStorage.setItem("vira-idea-show-parked", "1");
+    }
+    setWorkTab("record");
+    setRecordFilter("filed");
+  } else {
+    renderIdeas();
   }
-  renderIdeas();
   const node = document.querySelector(`.idea[data-idea-id="${id}"]`);
   if (!node) { toast("That idea is no longer in the queue"); return; }
   node.scrollIntoView({ block: "center", behavior: "smooth" });
@@ -3984,7 +4013,10 @@ function openTagPicker(anchor) {
 function renderIdeaCount(shown, notes) {
   const box = $("#idea-count");
   if (!box) return;
-  const total = ideasCache.length;
+  // The total counts LIVE ideas only, since that is what the list holds:
+  // counting filed ones in would read as "N of M shown" with no way to
+  // reach the difference. The filed pointer at the foot names them.
+  const total = ideasCache.filter((i) => !isFiledIdea(i)).length;
   const bits = [];
   const filtered = shown !== total || ideaTagFilter.length || ideaQuery.trim();
   bits.push(filtered ? `${shown} of ${total} ideas` : `${total} ideas`);
@@ -4023,7 +4055,17 @@ async function runReindex(btn, pending) {
   }
 }
 
+// Filing an idea moves it between two lists that can both be on screen:
+// the queue loses it, Record > Deferred & Dropped gains it. Every caller
+// already re-renders the queue, so the archive rides along here rather
+// than each mutation site having to remember it.
 function renderIdeas() {
+  renderQueue();
+  if (recordFilter === "filed"
+      && $("#work-record-list")?.offsetParent != null) renderRecord();
+}
+
+function renderQueue() {
   const list = $("#ideas-list");
   if (!list) return;
   list.innerHTML = "";
@@ -4031,7 +4073,15 @@ function renderIdeas() {
   // sort WITH the ideas under whatever ordering is active, instead of
   // squatting above the list in their own pinned lane.
   const notes = queueNotes();
-  const scoped = filteredIdeas();
+  // The queue is ACTIVE WORK ONLY. Deferred, done and dropped ideas are
+  // filed in the Record window's Deferred & Dropped tab — they are not
+  // folded in at the bottom here any more (owner's call, 2026-07-31): a
+  // completed-work fold under the live queue is a second place completed
+  // work lives, and the Record tab was already the first. What stays is a
+  // POINTER, so the queue says where they went rather than losing them.
+  const all = filteredIdeas();
+  const filed = all.filter(isFiledIdea);
+  const scoped = all.filter((i) => !isFiledIdea(i));
   renderTagButton();
   renderIdeaCount(scoped.length, notes.length);
   if (!scoped.length && !notes.length) {
@@ -4050,26 +4100,23 @@ function renderIdeas() {
       empty.appendChild(reset);
     }
     list.appendChild(empty);
+    appendFiledPointer(list, filed);
     return;
   }
-  const isParked = (i) => i.status === "done" || i.status === "dropped";
   const wrap = (i) => ({ kind: "idea", it: i, text: i.text || "",
                          created: i.created, updated: i.updated });
   const merged = scoped.map(wrap).concat(notes);
-  const isParkedW = (w) => w.kind === "idea" && isParked(w.it);
   const node = (w) => w.kind === "note"
     ? queueNoteRow(w.e, w.u) : ideaRow(w.it);
   if (ideaSort === "theme" || ideaSort === "module") {
-    renderIdeasByTag(list, merged, ideaSort, node, isParkedW);
+    renderIdeasByTag(list, merged, ideaSort, node);
+    appendFiledPointer(list, filed);
     return;
   }
   const flat = sortedIdeas(merged);
   if (flat) {
-    // Completed items fold here too (collapsed by default), so the queue
-    // leads with active work in EVERY sort — not just the grouped default.
-    flat.filter((w) => !isParkedW(w)).forEach((w) =>
-      list.appendChild(node(w)));
-    appendParkedFold(list, flat.filter(isParkedW).map((w) => w.it));
+    flat.forEach((w) => list.appendChild(node(w)));
+    appendFiledPointer(list, filed);
     return;
   }
   const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
@@ -4079,14 +4126,13 @@ function renderIdeas() {
   // pinned block.
   const active = merged.filter((w) => w.kind === "note"
     || w.it.status === "open" || w.it.status === "on-hold").sort(byUpdated);
-  const parked = scoped.filter(isParked).sort(byUpdated);
   if (proposed.length) {
     list.appendChild(el("div", "ideas-sub proposed",
       `Proposed by Vira — awaiting your call (${proposed.length})`));
     proposed.forEach((it) => list.appendChild(ideaRow(it)));
   }
   active.forEach((w) => list.appendChild(node(w)));
-  appendParkedFold(list, parked);
+  appendFiledPointer(list, filed);
 }
 
 // Group the queue by one tag axis — the "show me everything about the
@@ -4112,13 +4158,11 @@ function setGroupOpen(axis, tag, open) {
   lsSet("vira-idea-groups-" + axis, [...s]);
 }
 
-function renderIdeasByTag(list, merged, axis, node, isParkedW) {
+function renderIdeasByTag(list, merged, axis, node) {
   const label = (IDEA_AXES.find(([a]) => a === axis) || [axis, axis])[1];
   const buckets = new Map();
   const loose = [];
-  const parked = [];
   merged.forEach((w) => {
-    if (isParkedW(w)) { parked.push(w.it); return; }
     const tags = w.kind === "idea" ? ((w.it.tags || {})[axis] || []) : [];
     if (!tags.length) { loose.push(w); return; }
     const k = tags[0];
@@ -4170,33 +4214,30 @@ function renderIdeasByTag(list, merged, axis, node, isParkedW) {
   ordered.forEach(([tag, rows]) => group(tag, tag, rows));
   if (loose.length)
     group("__none__", `No ${label.toLowerCase()} tag`, loose);
-  appendParkedFold(list, parked);
 }
 
-// Fold done/dropped behind a click-to-expand "Done / dropped (N)" subheader,
-// collapsed by default so active work leads and completed items never crowd
-// the queue — one click reveals them (to reopen a mis-marked one). Completed
-// work is chronicled long-term in the Record tab; this fold is only the
-// in-queue escape hatch. Shared by the grouped and flat sort paths so they
-// can't drift. Choice persists across sessions.
-function appendParkedFold(list, parked) {
-  if (!parked.length) return;
-  const head = el("div", "ideas-sub ideas-toggle" + (ideaShowParked ? " open" : ""),
-    `Done / dropped (${parked.length})`);
-  head.setAttribute("role", "button");
-  head.tabIndex = 0;
-  head.setAttribute("aria-expanded", ideaShowParked ? "true" : "false");
-  const toggle = () => {
-    ideaShowParked = !ideaShowParked;
-    localStorage.setItem("vira-idea-show-parked", ideaShowParked ? "1" : "0");
-    renderIdeas();
-  };
-  head.addEventListener("click", toggle);
-  head.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
-  });
-  list.appendChild(head);
-  if (ideaShowParked) parked.forEach((it) => list.appendChild(ideaRow(it)));
+// The foot of the queue names where filed ideas WENT. Removing the fold
+// without this would be a disappearance: an idea marked done would simply
+// vanish from the only list the owner watches, with nothing saying it is
+// still on file. One line, one click through to the tab that holds them —
+// and it states the counts, so a search that only matches filed ideas
+// still reports its hits instead of reading as "nothing found".
+function appendFiledPointer(list, filed) {
+  if (!filed.length) return;
+  const by = (s) => filed.filter((i) => i.status === s).length;
+  const bits = [["deferred", "deferred"], ["dropped", "dropped"],
+                ["done", "done"]]
+    .map(([s, w]) => by(s) ? `${by(s)} ${w}` : "")
+    .filter(Boolean);
+  const foot = el("div", "ideas-filed");
+  foot.appendChild(el("span", "",
+    `${bits.join(" · ")} — filed, not in the queue. `));
+  const go = el("button", "btn small", "Deferred & Dropped");
+  go.title = "Browse and reopen filed ideas in the Record tab";
+  go.addEventListener("click", () => { setWorkTab("record");
+                                       setRecordFilter("filed"); });
+  foot.appendChild(go);
+  list.appendChild(foot);
 }
 
 // ----- change log (read-only, derived from session retros + resolved ideas
@@ -6382,7 +6423,7 @@ function jobHistRow(r) {
   return row;
 }
 
-let recordFilter = "all";           // all | jobs | shipped
+let recordFilter = "all";           // all | jobs | shipped | filed | rules
 let recordCache = { groups: null, jobs: null };
 
 async function loadRecord() {
@@ -6403,6 +6444,9 @@ function setRecordFilter(f) {
   if (rec) rec.style.display = f === "rules" ? "none" : "";
   if (rules) rules.style.display = f === "rules" ? "" : "none";
   if (f === "rules") { loadRules().catch(() => {}); return; }
+  // The filed view renders real idea rows, so it needs the backlog — the
+  // Record window can be opened without the Queue tab ever loading.
+  if (f === "filed" && !ideasCache.length) loadIdeas().catch(() => {});
   renderRecord();
 }
 $("#record-filter")?.querySelectorAll(".seg-btn").forEach((b) =>
@@ -6412,6 +6456,10 @@ function renderRecord() {
   const host = $("#work-record-list");
   if (!host) return;
   host.innerHTML = "";
+  // Filed ideas come from the backlog, not the changelog — this branch
+  // sits ABOVE the "record unavailable" guard so a failed /api/changelog
+  // can't blank a list it has nothing to do with.
+  if (recordFilter === "filed") { renderFiled(host); return; }
   const { groups, jobs } = recordCache;
   if (groups === null && jobs === null) {
     host.appendChild(el("div", "empty left", "Record unavailable."));
@@ -6459,6 +6507,63 @@ function renderRecord() {
   }
   items.sort((a, b) => b.t - a.t);
   items.forEach((it) => it.nodes.forEach((n) => host.appendChild(n)));
+}
+
+// ---------- RECORD > Deferred & Dropped — where filed ideas live ----------
+// The queue is active work; this is the archive behind it, and it is a
+// place to REVISIT rather than a graveyard: every row is a live idea row,
+// so its status dropdown reopens it (deferred -> open) exactly where it is
+// read. Deferred and dropped lead, because those are the ones worth
+// rereading — nothing shipped from them. Done work is chronicled under
+// Shipped and folds away here, named, so it is clear it is filed elsewhere
+// rather than missing.
+function renderFiled(host) {
+  const byUpdated = (a, b) => ideaTs(b.updated) - ideaTs(a.updated);
+  const of = (s) => ideasCache.filter((i) => i.status === s).sort(byUpdated);
+  const deferred = of("deferred"), dropped = of("dropped"), done = of("done");
+  if (!deferred.length && !dropped.length && !done.length) {
+    host.appendChild(el("div", "empty left", ideasCache.length
+      ? "Nothing filed yet — deferred, dropped and completed ideas land here."
+      : "Reading the backlog…"));
+    return;
+  }
+  const head = el("div", "filed-head");
+  head.appendChild(el("span", "",
+    `${deferred.length + dropped.length} idea`
+    + (deferred.length + dropped.length === 1 ? "" : "s")
+    + " set aside. Reopen one by changing its status back to Open."));
+  host.appendChild(head);
+
+  const section = (title, rows) => {
+    if (!rows.length) return;
+    host.appendChild(el("div", "ideas-sub", `${title} (${rows.length})`));
+    rows.forEach((it) => host.appendChild(ideaRow(it)));
+  };
+  section("Deferred — set aside for later", deferred);
+  section("Dropped", dropped);
+
+  // Done work has a home already (Record > Shipped), so it folds — the
+  // label says where it is chronicled, and opening it is the escape hatch
+  // for an idea marked done by mistake.
+  if (!done.length) return;
+  const openFold = ideaShowFiledDone;
+  const foldHead = el("div", "ideas-sub ideas-toggle" + (openFold ? " open" : ""),
+    `Done (${done.length}) — chronicled under Shipped`);
+  foldHead.setAttribute("role", "button");
+  foldHead.tabIndex = 0;
+  foldHead.setAttribute("aria-expanded", openFold ? "true" : "false");
+  const toggle = () => {
+    ideaShowFiledDone = !ideaShowFiledDone;
+    localStorage.setItem("vira-idea-show-parked",
+                         ideaShowFiledDone ? "1" : "0");
+    renderRecord();
+  };
+  foldHead.addEventListener("click", toggle);
+  foldHead.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+  });
+  host.appendChild(foldHead);
+  if (openFold) done.forEach((it) => host.appendChild(ideaRow(it)));
 }
 
 // ---------- RECORD > Rules — the lesson-recurrence counter ----------

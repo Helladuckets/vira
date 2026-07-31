@@ -3504,7 +3504,24 @@ button.cir-chip { font: inherit; color: inherit; text-align: left; }
 }
 .idea-run-btn.decline { border-color: var(--red-line); color: var(--red); }
 .idea-run-btn.decline:hover { background: var(--red-soft); }
+.idea-run-btn.defer:hover { border-color: var(--steel); color: var(--steel); }
 .ideas-sub.proposed { color: var(--accent); }
+
+/* The queue's foot: where filed ideas went. Quiet — it is a signpost, not
+   a section, and it must never read as more work sitting below the list.
+   Wraps rather than overflowing a 402px phone (the flexible span carries
+   min-width: 0 per the standing rule). */
+.ideas-filed {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin: 18px 0 4px; padding-top: 12px;
+  border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--text-faint);
+}
+.ideas-filed span { min-width: 0; flex: 1 1 auto; }
+.filed-head {
+  font-size: 12px; color: var(--text-faint);
+  margin: 2px 0 6px; line-height: 1.5;
+}
 
 /* ============================================================
    TAURID LIVERY — voice layer (taurid-skin branch).

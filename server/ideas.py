@@ -10,7 +10,8 @@ but the canonical backlog in role, so writes are atomic (tmp+rename) and the
 file is worth backing up if it grows valuable.
 
 Item shape:
-  { "id": "idea_<hex>", "text": str, "status": open|on-hold|done|dropped,
+  { "id": "idea_<hex>", "text": str,
+    "status": proposed|open|on-hold|deferred|done|dropped,
     "project": str, "source": str, "note": str,
     "created": ISO8601, "updated": ISO8601 }
 
@@ -30,9 +31,20 @@ from .filelock import locked
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "ideas.json"
 # "proposed" = staged by Vira (the muse routine / propose_idea tool),
-# awaiting the owner's Approve (-> open, optionally auto-built) or
-# Decline (-> dropped). Nothing proposed ever runs without approval.
-STATUSES = ("proposed", "open", "on-hold", "done", "dropped")
+# awaiting the owner's Approve (-> open, optionally auto-built), Defer
+# (-> deferred) or Decline (-> dropped). Nothing proposed ever runs
+# without approval.
+#
+# "deferred" is the third answer to a proposal, and it is deliberately NOT
+# "on-hold": on-hold is live work the owner paused, so it belongs in the
+# queue; deferred is "not now, but do not throw it away" — it leaves the
+# queue for the Record window's Deferred & Dropped tab, where old ideas are
+# browsed and reopened. It is also NOT "dropped": the muse must keep seeing
+# a deferred idea so it does not re-propose it next morning (see
+# routines._muse_prompt and viratools._propose_idea_text), and it stays in
+# the tag/similarity space (server/ideatags.py) so a duplicate nudge can
+# say "you deferred this".
+STATUSES = ("proposed", "open", "on-hold", "deferred", "done", "dropped")
 # Historically every idea was about Vira itself; that stays the default so
 # pre-existing (project-less) items land under "Vira" on migration.
 DEFAULT_PROJECT = "Vira"

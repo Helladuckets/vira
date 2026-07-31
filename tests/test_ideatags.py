@@ -660,6 +660,24 @@ class RouteTests(StoreCase):
             self.client.post("/api/ideas/reindex", json={"batches": 3})
         inproc.assert_not_called()
 
+    def test_defer_route_files_the_idea_and_says_so(self):
+        from server import ideas as ideasstore
+        r = self.client.post("/api/ideas/a/defer").json()
+        self.assertEqual(r["status"], "deferred")
+        self.assertIn("deferred by the owner", r["note"])
+        self.assertEqual(ideasstore.list_items()[0]["status"], "deferred")
+
+    def test_defer_unknown_is_404(self):
+        self.assertEqual(self.client.post("/api/ideas/zz/defer").status_code,
+                         404)
+
+    def test_a_deferred_idea_is_still_scored_for_similarity(self):
+        """Not the done/dropped treatment: deferred work is meant to be
+        revisited, so it must keep showing up as 'like this one'."""
+        self.client.post("/api/ideas/b/defer")
+        r = self.client.get("/api/ideas/a/related?floor=0").json()
+        self.assertIn("b", [x["id"] for x in r["related"]])
+
 
 if __name__ == "__main__":
     unittest.main()
