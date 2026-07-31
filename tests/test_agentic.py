@@ -764,12 +764,23 @@ class RadarTests(unittest.TestCase):
 
 class ProposedIdeaTests(unittest.TestCase):
     def setUp(self):
+        from server import ideatags
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        p = mock.patch.object(ideas, "STORE",
-                              Path(self.tmp.name) / "ideas.json")
-        p.start()
-        self.addCleanup(p.stop)
+        # BOTH stores. propose_idea now runs the near-duplicate check, which
+        # reads the tag/vector sidecar as well — patching only what a
+        # function WRITES isolates nothing about what it READS.
+        for p in (mock.patch.object(ideas, "STORE",
+                                    Path(self.tmp.name) / "ideas.json"),
+                  mock.patch.object(ideatags, "STORE",
+                                    Path(self.tmp.name) / "idea-index.json"),
+                  # No pool vector can exist in a fresh sidecar, so the
+                  # candidate check never reaches Ollama here. Pinned so a
+                  # unit test can never depend on a running daemon.
+                  mock.patch.object(ideatags.localmodels, "ollama_embed",
+                                    side_effect=AssertionError("no network"))):
+            p.start()
+            self.addCleanup(p.stop)
 
     def test_proposed_lifecycle(self):
         it = ideas.add("build the thing", status="proposed", source="muse")
@@ -783,6 +794,42 @@ class ProposedIdeaTests(unittest.TestCase):
         self.assertIn("Staged", out1)
         out2 = _propose_idea_text("do x", "Vira", "again")
         self.assertIn("already on the backlog", out2)
+
+    def test_a_reworded_repeat_is_refused_and_the_match_named(self):
+        """The muse repeats itself by rephrasing, which the exact-match
+        check above cannot see."""
+        from server.viratools import _propose_idea_text
+        first = ideas.add("Let the reader remember which pages I finished",
+                          status="open", source="manual", project="Vira")
+        out = _propose_idea_text(
+            "Let the reader remember which pages I have finished",
+            "Vira", "why now")
+        self.assertIn("near-duplicate", out)
+        self.assertIn(first["id"], out)          # named, not just refused
+        self.assertEqual(len(ideas.list_items()), 1)
+
+    def test_a_genuinely_new_idea_still_stages(self):
+        from server.viratools import _propose_idea_text
+        ideas.add("Let the reader remember which pages I finished",
+                  status="open", source="manual", project="Vira")
+        out = _propose_idea_text("Ping me when a subscription renews",
+                                 "Vira", "why now")
+        self.assertIn("Staged", out)
+        self.assertEqual(len(ideas.list_items()), 2)
+
+    def test_a_broken_similarity_layer_never_blocks_a_proposal(self):
+        """Missing a repeat costs one card in a queue the owner reviews;
+        swallowing a good idea is invisible. So a failure stages."""
+        from server import ideatags
+        from server.viratools import _propose_idea_text
+        ideas.add("Let the reader remember which pages I finished",
+                  status="open", source="manual", project="Vira")
+        with mock.patch.object(ideatags, "check_candidate",
+                               side_effect=RuntimeError("index down")):
+            out = _propose_idea_text(
+                "Let the reader remember which pages I have finished",
+                "Vira", "why now")
+        self.assertIn("Staged", out)
 
 
 if __name__ == "__main__":

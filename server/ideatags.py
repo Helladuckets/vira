@@ -438,6 +438,18 @@ def score_pairs(target, others, s=None, space=None):
     t_tags = tags_for(target, s)
     t_tok = _tokens(target)
     t_flat = _flat_tags(t_tags)
+    # An UNTAGGED target scores tag_j == 0 against the whole pool, and that
+    # is a MISSING signal, not evidence of difference. Letting it keep
+    # W_TAG of the weight caps every score at W_VEC + W_TOK = 0.70, which
+    # sits so close to DUP_FLOOR that a verbatim restatement of an existing
+    # idea cannot clear it — and the ideas with no tags yet are exactly the
+    # ones the duplicate check exists for (a candidate being proposed, an
+    # idea typed seconds ago). So drop it from the denominator, the same
+    # renormalization the missing-cosine branch below applies. Safe by
+    # construction: the divisor is constant across the pool, so this
+    # rescales scores without reordering a single pair.
+    w_tag = W_TAG if t_flat else 0.0
+    vec_den, txt_den = W_VEC + w_tag + W_TOK, w_tag + W_TOK
     out = []
     for o in others:
         if o["id"] == target["id"]:
@@ -452,11 +464,11 @@ def score_pairs(target, others, s=None, space=None):
             # which would bury every un-embedded idea below every
             # embedded one.
             rel = 0.0
-            score = (W_TAG * tag_j + W_TOK * tok_j) / (W_TAG + W_TOK)
+            score = (w_tag * tag_j + W_TOK * tok_j) / txt_den
             basis = "text"
         else:
             rel = _cos_rel(cos, base, top)
-            score = W_VEC * rel + W_TAG * tag_j + W_TOK * tok_j
+            score = (W_VEC * rel + w_tag * tag_j + W_TOK * tok_j) / vec_den
             basis = "vector"
         out.append({
             "id": o["id"], "text": o.get("text") or "",
@@ -543,6 +555,65 @@ def duplicates(items=None, floor=DUP_FLOOR, limit=60):
                         "score": r["score"], "reasons": r["reasons"]})
     out.sort(key=lambda r: -r["score"])
     return out[:limit]
+
+
+# The id a not-yet-staged candidate wears while it is being scored. Ideas
+# are `idea_<hex>`, so this can never collide with a real one.
+_CANDIDATE_ID = "__candidate__"
+
+
+def _candidate_vector(target, timeout):
+    """One in-memory embedding for text that has no idea id yet. Deliberately
+    NOT embed_pending(): that keys the sidecar by id, so a candidate the
+    caller then declines to stage would leave a phantom entry behind for
+    _prune to clean up later."""
+    if np is None:
+        return None
+    try:
+        vecs = localmodels.ollama_embed([_embed_text(target)], timeout=timeout)
+    except Exception:                    # noqa: BLE001 — degrade, never raise
+        return None
+    if not vecs:
+        return None
+    v = vecs[0]
+    return v / (np.linalg.norm(v) + 1e-9)
+
+
+def check_candidate(text, project="", items=None, floor=DUP_FLOOR, limit=5,
+                    timeout=FOREGROUND_EMBED_S):
+    """Near-duplicates of an idea that is NOT on the backlog yet.
+
+    related() and duplicates() both address an idea BY ID, which is no help
+    at the one moment a repeat is cheapest to stop: before it is staged.
+    So the candidate is scored as a first-class target without ever being
+    written anywhere — its vector is appended to the pool's space in
+    memory, and nothing has to be cleaned up if the caller declines.
+
+    Degrades honestly and never raises. `basis` says which answer the
+    caller got, so a thinner comparison never passes itself off as
+    "nothing is similar"."""
+    text = (text or "").strip()
+    if not text:
+        return {"text": "", "matches": [], "basis": "text"}
+    items = ideas.list_items() if items is None else items
+    live = [i for i in items if i.get("status") not in ("done", "dropped")]
+    target = {"id": _CANDIDATE_ID, "text": text, "project": project or ""}
+    s = _read()
+    space = _space(live, s)
+    # Only pay for an embedding there is something to compare it against:
+    # a pool with no current vectors scores on words either way, so the
+    # Ollama round-trip would buy nothing but latency.
+    if space is not None:
+        vec = _candidate_vector(target, timeout)
+        if vec is None:
+            space = None
+        else:
+            ids, M = space
+            space = (list(ids) + [_CANDIDATE_ID], np.vstack([M, vec]))
+    rows = [r for r in score_pairs(target, live, s, space=space)
+            if r["score"] >= floor]
+    return {"text": text, "matches": rows[:limit],
+            "basis": "vector" if space else "text"}
 
 
 # ---------- the tagging pass ----------

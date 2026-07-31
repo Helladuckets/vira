@@ -251,6 +251,138 @@ class RelatedTests(StoreCase):
         self.assertNotIn("c", [p["a"] for p in pairs] + [p["b"] for p in pairs])
 
 
+class CandidateTests(StoreCase):
+    """Scoring an idea that is not on the backlog yet — the one moment a
+    repeat is cheapest to stop, and the one related()/duplicates() cannot
+    reach, because both address an idea by id."""
+
+    def emb(self, *vecs):
+        return mock.patch.object(
+            ideatags.localmodels, "ollama_embed",
+            return_value=[np.array(v, dtype="float32") for v in vecs])
+
+    def seed_space(self, n=20, d=64):
+        """A corpus with a spread of its own, because closeness is scored
+        RELATIVE to it. Two properties are load-bearing and neither survives
+        three hand-written vectors: enough dimensions that unrelated ideas
+        are near-orthogonal, and a high-similarity tail (four near-duplicate
+        pairs, which any real backlog has — that is what duplicates() is
+        for) so p99 sits where a genuine repeat lives rather than where the
+        nearest stranger happens to fall."""
+        rng = np.random.default_rng(7)
+        V = rng.normal(size=(n, d))
+        V /= np.linalg.norm(V, axis=1, keepdims=True)
+        for i in range(1, 5):        # not V[0] — "a" must stay unique
+            V[i] = V[i + 10] + 0.12 * rng.normal(size=d)
+            V[i] /= np.linalg.norm(V[i])
+        self.vecs = V
+        self.typical = rng.normal(size=d)
+        self.typical /= np.linalg.norm(self.typical)
+        items = [idea("a", "remember which reader pages are finished")]
+        items += [idea(f"i{k}", f"unrelated backlog item number {k} here")
+                  for k in range(n - 1)]
+        self.seed(items)
+        for it, v in zip(items, V):
+            self.put_vec(it, v)
+        return items
+
+    def test_a_reworded_repeat_clears_the_duplicate_floor(self):
+        self.seed_space()
+        with self.emb(self.vecs[0]):         # sits right on top of "a"
+            out = ideatags.check_candidate(
+                "remember which pages of the reader I finished", "Vira")
+        self.assertEqual(out["basis"], "vector")
+        self.assertEqual([m["id"] for m in out["matches"]], ["a"])
+
+    def test_a_merely_typical_idea_is_not_a_duplicate(self):
+        """The calibration case: an idea from the same domain sits inside
+        the corpus's own band, and a band is not a repeat."""
+        self.seed_space()
+        with self.emb(self.typical):         # a fresh draw from the same cloud
+            out = ideatags.check_candidate("something else entirely", "Vira")
+        self.assertEqual(out["matches"], [])
+
+    def test_nothing_is_written_to_the_sidecar(self):
+        """A candidate the caller declines to stage must leave no phantom
+        entry behind — which is why this does not go through embed_pending."""
+        self.seed_space()
+        before = ideatags._read()["entries"]
+        with self.emb(self.vecs[0]):
+            ideatags.check_candidate("remember my finished reader pages",
+                                     "Vira")
+        after = ideatags._read()["entries"]
+        self.assertEqual(set(after), set(before))
+        self.assertNotIn(ideatags._CANDIDATE_ID, after)
+
+    def test_no_embedding_is_bought_when_there_is_nothing_to_compare(self):
+        """A pool with no vectors scores on words either way, so the Ollama
+        round-trip would buy nothing but latency."""
+        self.seed([idea("a", "remember which reader pages are finished")])
+        with mock.patch.object(ideatags.localmodels, "ollama_embed",
+                               side_effect=AssertionError("no network")) as m:
+            out = ideatags.check_candidate(
+                "remember which reader pages are finished", "Vira")
+        m.assert_not_called()
+        self.assertEqual(out["basis"], "text")
+        self.assertEqual([x["id"] for x in out["matches"]], ["a"])
+
+    def test_ollama_down_degrades_to_text_and_says_so(self):
+        self.seed_space()
+        with mock.patch.object(ideatags.localmodels, "ollama_embed",
+                               return_value=None):
+            out = ideatags.check_candidate(
+                "remember which reader pages are finished", "Vira")
+        self.assertEqual(out["basis"], "text")
+        self.assertEqual([x["id"] for x in out["matches"]], ["a"])
+
+    def test_parked_ideas_are_not_duplicates(self):
+        """Re-proposing something already shipped or dropped is the owner's
+        call to make from the queue, not a repeat to refuse."""
+        self.seed([idea("a", "remember which reader pages are finished",
+                        status="done")])
+        out = ideatags.check_candidate(
+            "remember which reader pages are finished", "Vira")
+        self.assertEqual(out["matches"], [])
+
+    def test_empty_text_is_not_a_query(self):
+        self.seed_space()
+        self.assertEqual(ideatags.check_candidate("   ", "Vira")["matches"],
+                         [])
+
+
+class UntaggedTargetTests(StoreCase):
+    def test_a_missing_tag_signal_is_dropped_not_counted_as_zero(self):
+        """An untagged target scores tag_j == 0 against everything, which is
+        a missing signal rather than evidence of difference. Counting it
+        capped every score at 0.70 — under which a verbatim repeat could not
+        clear DUP_FLOOR."""
+        a = idea("a", "alpha beta gamma delta")
+        b = idea("b", "alpha beta gamma delta")
+        self.assertGreaterEqual(ideatags.score_pairs(a, [b])[0]["score"],
+                                ideatags.DUP_FLOOR)
+
+    def test_dropping_it_does_not_reorder_the_pool(self):
+        """Safe by construction: a constant divisor rescales, never sorts."""
+        a = idea("a", "reader pages finished remember")
+        pool = [idea("b", "reader pages finished"),
+                idea("c", "reader pages"),
+                idea("d", "wholly unrelated invoice wording")]
+        self.assertEqual([r["id"] for r in ideatags.score_pairs(a, pool)],
+                         ["b", "c", "d"])
+
+    def test_a_tagged_target_is_scored_exactly_as_before(self):
+        a = idea("a", "alpha beta")
+        b = idea("b", "alpha beta")
+        self.put_tags("a", a["text"], {"module": ["reader"]})
+        self.put_tags("b", b["text"], {"module": ["reader"]})
+        row = ideatags.score_pairs(a, [b])[0]
+        # The pre-change text formula, verbatim: no vector for this pair, so
+        # (W_TAG * tag_j + W_TOK * tok_j) / (W_TAG + W_TOK), both jaccards 1.
+        expect = ((ideatags.W_TAG * 1.0 + ideatags.W_TOK * 1.0)
+                  / (ideatags.W_TAG + ideatags.W_TOK))
+        self.assertAlmostEqual(row["score"], expect, places=4)
+
+
 class EmbedTests(StoreCase):
     def test_ollama_down_is_reported_not_swallowed(self):
         self.seed([idea("a", "some idea")])
