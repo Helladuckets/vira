@@ -554,16 +554,44 @@ async def _t_list_ideas(args):
                                         args.get("status")))
 
 
+def _near_duplicate(text, project, items):
+    """The strongest near-duplicate already on the backlog, or None.
+
+    NEVER raises: a similarity layer that is down (no Ollama, no numpy)
+    must not be able to block a legitimate proposal, so every failure here
+    falls through to staging. Missing a repeat costs one card in a queue
+    the owner reviews anyway; swallowing a good idea is invisible."""
+    from . import ideatags
+    try:
+        hits = ideatags.check_candidate(text, project, items=items,
+                                        limit=1)["matches"]
+    except Exception:                    # noqa: BLE001 — degrade, never block
+        return None
+    return hits[0] if hits else None
+
+
 def _propose_idea_text(text, project, why):
     from . import ideas
     text = (text or "").strip()
     if not text:
         return "error: idea text is required"
-    dupes = [i for i in ideas.list_items()
+    items = ideas.list_items()
+    dupes = [i for i in items
              if i["status"] in ("proposed", "open", "on-hold")
              and i["text"].strip().lower() == text.lower()]
     if dupes:
         return "Not staged — an identical idea is already on the backlog."
+    # Same wording is the easy case; the muse repeats itself by REPHRASING.
+    # The refusal names the match, because a refusal that only says no
+    # invites a blind retry of the same idea in different words.
+    near = _near_duplicate(text, project, items)
+    if near:
+        why_ = "; ".join(near.get("reasons") or []) or "same subject"
+        return ("Not staged — this reads as a near-duplicate of an idea "
+                f"already on the backlog: [{near['id']}] "
+                f"({near.get('project') or '?'}) {near['text'][:160]} "
+                f"({why_}). Propose something genuinely different rather "
+                "than rewording this one.")
     item = ideas.add(text, status="proposed", source="muse",
                      note=(why or "").strip()[:400], project=project)
     return (f"Staged for the owner's approval: [{item['id']}] "
@@ -790,7 +818,8 @@ TOOL_SPECS = [
      "STAGE a new idea on the owner's backlog as status 'proposed' — it "
      "runs only if the owner approves it. Use for genuinely new, concrete, "
      "buildable ideas; include the project it belongs to and a short "
-     "'why now' rationale.",
+     "'why now' rationale. Refused, with the match named, when the backlog "
+     "already carries the same idea — including a reworded one.",
      {"text": str, "project": str, "why": str}, _t_propose_idea),
     ("update_module_map",
      "Replace Vira's system-map registry (the Modules atlas page's data) "
