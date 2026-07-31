@@ -153,6 +153,22 @@ def demo() -> bool:
     return bool(os.environ.get("VIRA_SANDBOX_DEMO"))
 
 
+def sandbox_loop() -> str:
+    """Where to ask the sandbox's relaunch loop for maintenance, or "".
+
+    A sandbox served by `sandbox.sh serve` runs under a supervising loop
+    (the run.ps1 -Serve pattern): the loop starts uvicorn, and when the
+    process exits it performs any queued maintenance and starts it again.
+    Set to the path of that queue file, so the value carries both facts at
+    once — a loop supervises this process, and here is how to talk to it.
+
+    Empty means unsupervised: an exit would kill the sandbox dead, so
+    anything that needs a restart must refuse (update.supervisor) or
+    degrade and say so (the demo reset).
+    """
+    return os.environ.get("VIRA_SANDBOX_LOOP", "")
+
+
 def fixture_mode():
     flag = raw().get("fixture_mode")
     if isinstance(flag, bool):

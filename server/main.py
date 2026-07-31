@@ -55,7 +55,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                roomvault,
                routines,
                routinesrc,
-               search as msearch, send, sendpref, session, settings,
+               search as msearch, secrets, send, sendpref, session, settings,
                genreroutes,
                skins,
                subs_visuals,
@@ -1913,13 +1913,40 @@ def api_onboard_steps():
     return onboard.steps()
 
 
+class DemoResetReq(BaseModel):
+    update: bool = True
+
+
 @app.post("/api/demo/reset")
-def api_demo_reset():
-    """Put a SANDBOX instance back to a brand-new user.
+def api_demo_reset(req: DemoResetReq | None = None):
+    """Put a SANDBOX instance back to a brand-new user, on the latest code.
 
     A first run happens once per install, which makes the one screen a
     stranger sees hardest to look at twice — reviewing it meant going back to
     a shell and re-running a script. This is that, as a button on the badge.
+
+    Two things a stranger's first boot has that a re-walk did not: the CURRENT
+    code, and no leftovers. Both are handled here, in that order, because they
+    fail differently.
+
+    The PULL happens in-process, so a refusal is reported in the browser —
+    `update.pull()` already refuses a dirty tree and raises DepsError when the
+    code moved but its dependencies did not. That one is fatal: restarting
+    onto new code with old deps is exactly what update.apply() refuses to do,
+    so the reset stops with the checkout updated and the server untouched. An
+    ordinary refusal (no network, no remote) is reported as a note and the
+    reset carries on — a walk-through blocked by an offline laptop would be a
+    worse failure than a slightly stale one.
+
+    The WIPE is queued for the relaunch loop rather than done here. data/ holds
+    open sqlite handles belonging to this process; deleting it underneath them
+    and then serving from the wreckage is not a virgin install, it is a broken
+    one. So the loop does it in the gap between two runs (see the SUPERVISOR
+    note in scripts/sandbox.sh), and this endpoint exits into it.
+
+    Without a loop there is nothing to exit into, so the reset degrades to the
+    old shallow behaviour — the ui-state keys — and SAYS SO rather than
+    implying it did more.
 
     Refused anywhere but a sandbox. The live instance and a branch test
     instance both carry real arrangements and a real connected account, and
@@ -1928,8 +1955,34 @@ def api_demo_reset():
     if not settings.sandboxed():
         raise HTTPException(status_code=403,
                             detail="reset is a sandbox-only control")
-    forgot = uistate.forget(["vira-firstrun-done", "vira-layouts",
-                             "vira-layout", "vira-setup-opened"])
+    want_update = True if req is None else req.update
+    loop = settings.sandbox_loop()
+
+    updated = None
+    if want_update:
+        try:
+            updated = update.pull()
+        except update.DepsError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        except (ValueError, OSError) as e:                     # noqa: BLE001
+            updated = {"updated": False, "note": f"update skipped: {e}"}
+
+    # Onboarding state that does NOT live in data/: a pasted key went to the
+    # secrets ladder, which on a Mac is the machine Keychain (namespaced by
+    # VIRA_KEYCHAIN_PREFIX, so only this sandbox's keys are reachable). A key
+    # surviving the wipe would leave the app connected while its config said
+    # nothing — the exact half-reset this is fixing.
+    # (`secrets.delete` is best-effort and returns nothing, so what was
+    # actually there is read first — the response says which keys it cleared.)
+    cleared = []
+    svc = settings.keychain_service("vira-model-key")
+    for pid in list(getattr(models, "PROVIDERS", {})):
+        try:
+            if secrets.get(svc, pid):
+                cleared.append(pid)
+            secrets.delete(svc, pid)
+        except Exception:                                      # noqa: BLE001
+            pass
     # Demo sign-ins live in memory, so a fresh user has to un-connect too —
     # otherwise the welcome takes its already-set-up path and the four
     # provider tiles never render.
@@ -1939,7 +1992,21 @@ def api_demo_reset():
         models._demo_connected.clear()
     except Exception:                                          # noqa: BLE001
         pass
-    return {"ok": True, "forgot": forgot, "disconnected": dropped}
+
+    forgot = uistate.forget(["vira-firstrun-done", "vira-layouts",
+                             "vira-layout", "vira-setup-opened"])
+    if not loop:
+        return {"ok": True, "restarting": False, "forgot": forgot,
+                "disconnected": dropped, "keys_cleared": cleared,
+                "update": updated,
+                "note": ("no relaunch loop is supervising this sandbox, so "
+                         "data/ was left in place — restart it with "
+                         "scripts/sandbox.sh replay for a full reset")}
+    Path(loop).write_text("wipe\n", encoding="utf-8")
+    threading.Timer(0.8, lambda: os._exit(0)).start()   # let the response flush
+    return {"ok": True, "restarting": True, "forgot": forgot,
+            "disconnected": dropped, "keys_cleared": cleared,
+            "update": updated}
 
 
 @app.post("/api/onboard/ai")

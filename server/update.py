@@ -71,40 +71,41 @@ def status(fetch=False):
     return out
 
 
+class DepsError(ValueError):
+    """The pull landed but installing its dependencies failed.
+
+    Distinguished from the other refusals because the consequences differ:
+    a refusal leaves the checkout exactly as it was, while this one leaves
+    it on NEW code with OLD dependencies — so a caller that would otherwise
+    shrug off an update failure and carry on must stop here instead.
+    """
+
+
 def supervisor():
-    """The configured process supervisor for this platform — whatever
-    relaunches Vira after a deliberate exit. Returns (kind, name); an empty
-    name means unsupervised. macOS: launchd (config `launchd_label`,
-    restarted via kickstart -k). Windows: a Task Scheduler task whose action
-    is the scripts/run.ps1 -Serve relaunch loop (config `windows_task_name`,
-    registered by scripts/run.ps1 -Register)."""
+    """The configured process supervisor — whatever relaunches Vira after a
+    deliberate exit. Returns (kind, name); an empty name means unsupervised.
+    macOS: launchd (config `launchd_label`, restarted via kickstart -k).
+    Windows: a Task Scheduler task whose action is the scripts/run.ps1
+    -Serve relaunch loop (config `windows_task_name`, registered by
+    scripts/run.ps1 -Register). A sandbox: the scripts/sandbox.sh relaunch
+    loop, which announces itself in the environment rather than in config —
+    a sandbox has no config.json until someone sets one up, and its whole
+    point is to boot without one."""
+    if settings.sandbox_loop():
+        return "loop", "sandbox relaunch loop"
     cfg = settings.raw()
     if settings.IS_WIN:
         return "task", str(cfg.get("windows_task_name") or "").strip()
     return "launchd", str(cfg.get("launchd_label") or "").strip()
 
 
-def apply():
-    """Fast-forward to the upstream and restart. Refuses on modified tracked
-    files (untracked personal state is fine — it is ignored anyway), and
-    refuses outright when no supervisor is configured — without one the
-    post-pull exit would just kill the server dead (audit P1-9). The
-    contract holds on every platform; only the supervisor's name differs."""
-    kind, name = supervisor()
-    if not name:
-        if kind == "task":
-            raise ValueError(
-                "no supervisor configured (windows_task_name is empty) — a "
-                "web-triggered restart would kill the server with nothing "
-                "to relaunch it. Register the startup task first "
-                "(powershell -ExecutionPolicy Bypass -File scripts\\run.ps1 "
-                "-Register), or update from a terminal: git pull, then "
-                "restart the process.")
-        raise ValueError(
-            "no supervisor configured (launchd_label is empty) — a "
-            "web-triggered restart would kill the server with nothing to "
-            "relaunch it. Update from a terminal instead: git pull, then "
-            "restart the process.")
+def pull():
+    """Fast-forward to the upstream and sync dependencies. No restart.
+
+    Refuses on modified tracked files (untracked personal state is fine —
+    it is ignored anyway). Raises DepsError, never a plain ValueError, when
+    the code moved but its dependencies did not.
+    """
     st = status(fetch=True)
     if not st.get("git") or not st.get("remote"):
         raise ValueError("not a git clone with a remote")
@@ -129,12 +130,40 @@ def apply():
     try:
         deps = _install_deps()
     except Exception as e:  # noqa: BLE001 — surface, don't restart onto broken deps
-        raise ValueError(
+        raise DepsError(
             f"code updated to {new_sha}, but installing dependencies failed: "
             f"{str(e)[:300]} — not restarting. Run .venv/bin/pip install -r "
             "requirements.txt, then restart.") from e
+    return {"updated": True, "sha": new_sha, "deps": deps}
+
+
+def apply():
+    """pull(), then restart into the new code.
+
+    Refuses outright when no supervisor is configured — without one the
+    post-pull exit would just kill the server dead (audit P1-9). The
+    contract holds on every platform; only the supervisor's name differs.
+    """
+    kind, name = supervisor()
+    if not name:
+        if kind == "task":
+            raise ValueError(
+                "no supervisor configured (windows_task_name is empty) — a "
+                "web-triggered restart would kill the server with nothing "
+                "to relaunch it. Register the startup task first "
+                "(powershell -ExecutionPolicy Bypass -File scripts\\run.ps1 "
+                "-Register), or update from a terminal: git pull, then "
+                "restart the process.")
+        raise ValueError(
+            "no supervisor configured (launchd_label is empty) — a "
+            "web-triggered restart would kill the server with nothing to "
+            "relaunch it. Update from a terminal instead: git pull, then "
+            "restart the process.")
+    out = pull()
+    if not out.get("updated"):
+        return out
     threading.Timer(0.8, _restart).start()  # let the HTTP response flush first
-    return {"updated": True, "restarting": True, "sha": new_sha, "deps": deps}
+    return {**out, "restarting": True}
 
 
 def _req_name(line):
@@ -193,6 +222,8 @@ def _restart():
     kind, name = supervisor()
     if kind == "task":
         _restart_windows(name)
+    elif kind == "loop":
+        os._exit(0)          # the sandbox loop starts the next one
     else:
         _restart_mac(name)
 

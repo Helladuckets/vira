@@ -17971,27 +17971,58 @@ function mountDemoReset(badge) {
   if ($("#demo-reset")) return;
   const b = el("button", "demo-reset", "Reset to a new user");
   b.id = "demo-reset";
-  b.title = "Wipe onboarding on this sandbox and reload at the first screen";
+  b.title = "Pull the latest Vira and come back as a brand-new user";
   b.onclick = async () => {
     b.disabled = true;
-    b.textContent = "resetting…";
+    b.textContent = "updating…";
+    let res;
     try {
-      await post("/api/demo/reset", {});
-      // The flag lives in BOTH places — the server's ui-state and this
-      // browser's localStorage — and clearing only one leaves a half-reset
-      // instance that reads as onboarded again on the next load.
-      try {
-        ["vira-firstrun-done", "vira-layouts"]
-          .forEach((k) => localStorage.removeItem(k));
-      } catch { /* private mode — the server side is what matters */ }
-      location.replace(location.pathname);
+      res = await post("/api/demo/reset", { update: true });
     } catch (e) {
       b.disabled = false;
       b.textContent = "Reset to a new user";
       toast(e.message || "reset failed");
+      return;
     }
+    // The flag lives in BOTH places — the server's ui-state and this
+    // browser's localStorage — and clearing only one leaves a half-reset
+    // instance that reads as onboarded again on the next load. The wipe
+    // re-stamps the instance too, so syncUiState drops the rest on adopt.
+    try {
+      ["vira-firstrun-done", "vira-layouts", "vira-layout", "vira-desktop"]
+        .forEach((k) => localStorage.removeItem(k));
+    } catch { /* private mode — the server side is what matters */ }
+    if (!res || !res.restarting) {
+      // No supervising loop: nothing restarts, so reload straight away and
+      // let the server's own note explain what it could not do.
+      if (res && res.note) toast(res.note);
+      location.replace(location.pathname);
+      return;
+    }
+    // The server is exiting into its relaunch loop, which wipes data/ before
+    // starting the next one. Reloading now would hit a closed port, so wait
+    // for the new process to answer.
+    b.textContent = "restarting…";
+    await waitForServer();
+    location.replace(location.pathname);
   };
   badge.after(b);
+}
+
+// Poll until the instance answers again (used across a deliberate restart).
+// Gives up after ~60s and reloads anyway — a stuck button tells the owner
+// nothing, while a reload at least shows whatever state the sandbox is in.
+async function waitForServer(ms = 60000) {
+  const until = Date.now() + ms;
+  await new Promise((r) => setTimeout(r, 1500));   // let the old one die first
+  while (Date.now() < until) {
+    try {
+      const r = await fetch("/api/config", { cache: "no-store" });
+      if (r.ok) return true;
+    } catch { /* still down */ }
+    await new Promise((r) => setTimeout(r, 700));
+  }
+  return false;
 }
 boot();
 
