@@ -385,6 +385,59 @@ def sweep() -> dict:
     return {"manifest_plans": len(rows), "new_in_registry": new, **stats}
 
 
+def add_dossier(title: str, source: Path | str, *, summary: str = "",
+                 created: str | None = None) -> dict:
+    """Copy a portable dossier into Vira Documents and register it.
+
+    The source must contain ``index.html``. Symlinks are refused so the copied
+    document remains a self-contained reviewed bundle. A title collision gets
+    a numbered slug instead of overwriting an existing document.
+    """
+    from .blog import slugify
+
+    clean_title = (title or "").strip()
+    if not clean_title:
+        raise ValueError("title required")
+    src = Path(source).expanduser().resolve()
+    if not src.is_dir() or not (src / "index.html").is_file():
+        raise ValueError("dossier source must be a directory with index.html")
+    for p in src.rglob("*"):
+        if p.is_symlink():
+            raise ValueError(f"dossier source contains symlink: {p}")
+
+    base = slugify(clean_title)
+    parent = DOCS_DIR / "dossiers"
+    slug, n = base, 2
+    while (parent / slug).exists():
+        slug, n = f"{base}-{n}", n + 1
+    dst = parent / slug
+    shutil.copytree(src, dst)
+    locator = f"/docs/dossiers/{slug}/"
+    entry = {
+        "id": _doc_id(locator),
+        "kind": "dossier",
+        "title": clean_title,
+        "locator": locator,
+        "summary": (summary or "").strip(),
+        "created": created or datetime.now().strftime("%Y-%m-%d"),
+        "alias": "",
+        # Served registry metadata must not expose a workstation path or user.
+        "provenance": ["local interactive dossier import"],
+        "source": "sitedocs-add",
+    }
+    new = _record(DOCS_DIR, [entry])
+    _write_provenance_sidecar(DOCS_DIR, [entry])
+    stats = _register_direct([entry])
+    write_index(DOCS_DIR)
+    return {
+        "slug": slug,
+        "locator": locator,
+        "files": sum(1 for p in dst.rglob("*") if p.is_file()),
+        "new_in_registry": new,
+        **stats,
+    }
+
+
 def status() -> dict:
     reg = _read_registry(DOCS_DIR)
     kinds: dict[str, int] = {}
@@ -473,8 +526,11 @@ def main(argv: list[str]) -> int:
         out = sweep()
     elif cmd == "status":
         out = status()
+    elif cmd == "add" and len(argv) >= 3:
+        out = add_dossier(argv[1], argv[2])
     else:
-        print("usage: python -m server.sitedocs migrate|sweep|status",
+        print("usage: python -m server.sitedocs migrate|sweep|status | "
+              "add \"<title>\" <directory>",
               file=sys.stderr)
         return 2
     print(json.dumps(out, indent=1))
