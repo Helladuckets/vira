@@ -36,6 +36,7 @@
     output: { mark: "O", name: "Output", inputs: ["result", "metadata"], outputs: ["record"] },
     native: { mark: "N", name: "Native", inputs: ["input", "context"], outputs: ["result"] },
     system: { mark: "S", name: "System", inputs: ["input", "context"], outputs: ["result", "event"] },
+    connector: { mark: "IO", name: "Connector", inputs: ["in"], outputs: ["out"] },
   };
 
   const OUTPUT_KIND = {
@@ -60,6 +61,7 @@
     tool: "M14 5a4 4 0 0 0-5 5L4 15l5 5 5-5a4 4 0 0 0 5-5l-3 3-3-3 3-3z",
     trigger: "M12 3v8l5 3-5 7v-8l-5-3z",
     output: "M5 4h14v16H5zM9 12h6M13 8l4 4-4 4",
+    connector: "M4 8h5l2 3h2l2-3h5M4 16h5l2-3h2l2 3h5",
   };
 
   const state = {
@@ -457,16 +459,23 @@
       description: item.description || "",
       x: clamp(Math.round(p.x), 20, 3900),
       y: clamp(Math.round(p.y), 70, 2550),
-      width: 244,
-      height: 148,
+      width: type === "connector" ? 196 : 244,
+      height: type === "connector" ? 116 : 148,
       expanded: false,
-      model: type === "agent" ? "sonnet" : "",
-      mode: type === "agent" ? "manual" : "",
-      read_only: type === "agent",
-      prompt: type === "agent" ? "Work on the following input carefully and report the result.\n\n{{input}}" : "",
+      model: type === "agent" ? (item.model || "sonnet") : "",
+      mode: type === "agent" ? (item.mode || "manual") : "",
+      read_only: type === "agent" ? item.read_only !== false : false,
+      prompt: item.prompt || (type === "agent" ? "Work on the following input carefully and report the result.\n\n{{input}}" : ""),
       source: item.kind || "forge",
-      source_ref: item.source_ref || item.invoke || item.ref || item.id || "",
+      source_ref: item.source_ref || item.invoke || item.ref || (item.kind === "primitive" ? "" : (item.id || "")),
     };
+    if (type === "connector") {
+      node.connector_mode = item.connector_mode || "through";
+      node.input_ports = copy(item.input_ports || (node.connector_mode === "input" ? [] : ["in"]));
+      node.output_ports = copy(item.output_ports || (node.connector_mode === "output" ? [] : ["out"]));
+      node.data_kind = item.data_kind || "data";
+      node.prompt = item.prompt || "Route this connection without changing its payload.";
+    }
     state.current.nodes.push(node);
     setDirty();
     state.selectedNode = node.id;
@@ -527,9 +536,12 @@
     const card = make("article", "forge-node");
     card.dataset.nodeId = node.id;
     card.dataset.type = node.type;
+    card.dataset.source = node.source === "muse" || String(node.extra || "").startsWith("forge:muse:")
+      || String(node.prompt || "").startsWith("You are Muse operating inside Vira's Forge") ? "muse" : (node.source || "");
     card.style.left = `${node.x}px`;
     card.style.top = `${node.y}px`;
-    card.style.width = `${node.expanded ? Math.max(node.width || 390, 390) : node.width || 244}px`;
+    const compactWidth = node.type === "connector" ? 196 : 244;
+    card.style.width = `${node.expanded ? Math.max(node.width || 390, 390) : node.width || compactWidth}px`;
     card.style.zIndex = node.z || 1;
     if (node.id === state.selectedNode) card.classList.add("is-selected");
     if (node.expanded) card.classList.add("is-expanded");
@@ -561,10 +573,10 @@
     card.appendChild(body);
 
     if (node.expanded) card.appendChild(nodeEditor(node));
-    (meta.inputs || ["input"]).forEach((name, index) =>
-      card.append(port(node, "in", name, index, meta.inputs?.length || 1)));
-    (meta.outputs || ["result"]).forEach((name, index) =>
-      card.append(port(node, "out", name, index, meta.outputs?.length || 1)));
+    const inputs = nodePorts(node, "in");
+    const outputs = nodePorts(node, "out");
+    inputs.forEach((name, index) => card.append(port(node, "in", name, index, inputs.length)));
+    outputs.forEach((name, index) => card.append(port(node, "out", name, index, outputs.length)));
 
     bindNodeDrag(card, head, node);
     card.addEventListener("pointerdown", () => bringNodeFront(node, card));
@@ -572,6 +584,11 @@
       if (event.target.closest("button,input,select,textarea,.forge-port")) return;
       event.stopPropagation();
       toggleNode(node.id);
+    });
+    card.addEventListener("contextmenu", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      showNodeMenu(node, event);
     });
     return card;
   }
@@ -601,10 +618,12 @@
     if (node.type === "judge") detail.appendChild(judgeControls(node));
     if (node.type === "logic") detail.appendChild(logicControls(node));
     if (node.type === "output") detail.appendChild(outputControls(node));
+    if (node.type === "connector") detail.appendChild(connectorControls(node));
     if (node.type !== "judge" && node.type !== "logic" && node.type !== "output") {
       const label = node.type === "approval" ? "Decision request"
         : node.type === "tool" ? "Capability instructions"
-          : node.type === "context" ? "Context note" : "Instructions / source";
+          : node.type === "context" ? "Context note"
+            : node.type === "connector" ? "Routing instructions" : "Instructions / source";
       detail.appendChild(field(label, textareaControl(node.prompt || "", (value) => { node.prompt = value; setDirty(); }, node.type === "agent" ? 10 : 5)));
     }
     if (node.source_ref) detail.appendChild(field("Capability source", inputControl(node.source_ref, (value) => { node.source_ref = value; setDirty(); })));
@@ -760,6 +779,71 @@
     textarea.addEventListener("pointerdown", (event) => event.stopPropagation());
     textarea.addEventListener("wheel", (event) => event.stopPropagation());
     return textarea;
+  }
+
+  function cleanPortList(value) {
+    return [...new Set(String(value || "").split(",")
+      .map((name) => name.trim().replace(/\s+/g, " ").slice(0, 40)).filter(Boolean))].slice(0, 8);
+  }
+
+  function nodePorts(node, direction) {
+    if (node.type !== "connector") {
+      const meta = TYPE[node.type] || TYPE.tool;
+      return copy(direction === "out" ? (meta.outputs || ["result"]) : (meta.inputs || ["input"]));
+    }
+    const fallback = direction === "out" ? ["out"] : ["in"];
+    const key = direction === "out" ? "output_ports" : "input_ports";
+    const values = Array.isArray(node[key]) ? node[key] : fallback;
+    return values.map((name) => String(name || "").trim()).filter(Boolean).slice(0, 8);
+  }
+
+  function connectorControls(node) {
+    const wrap = make("div", "forge-connector-controls");
+    const row = make("div", "forge-node-detail-row");
+    const mode = make("select");
+    [["through", "Adapter · in and out"], ["input", "Input chip · source"], ["output", "Output chip · destination"]]
+      .forEach(([value, label]) => {
+        const option = make("option", "", label); option.value = value; mode.appendChild(option);
+      });
+    mode.value = node.connector_mode || "through";
+    mode.addEventListener("change", () => {
+      node.connector_mode = mode.value;
+      if (mode.value === "input") {
+        node.input_ports = [];
+        if (!node.output_ports?.length) node.output_ports = ["out"];
+      } else if (mode.value === "output") {
+        node.output_ports = [];
+        if (!node.input_ports?.length) node.input_ports = ["in"];
+      } else {
+        if (!node.input_ports?.length) node.input_ports = ["in"];
+        if (!node.output_ports?.length) node.output_ports = ["out"];
+      }
+      setDirty(); renderBoard();
+    });
+    const dataKind = make("select");
+    [["data", "Data"], ["capability", "Tool / capability"], ["context", "Context"],
+      ["signal", "Signal / event"], ["decision", "Decision"]].forEach(([value, label]) => {
+      const option = make("option", "", label); option.value = value; dataKind.appendChild(option);
+    });
+    dataKind.value = node.data_kind || "data";
+    dataKind.addEventListener("change", () => { node.data_kind = dataKind.value; setDirty(); renderBoard(); });
+    row.append(field("Circuit role", mode), field("Payload type", dataKind));
+    wrap.appendChild(row);
+    const ports = make("div", "forge-node-detail-row");
+    ports.append(
+      field("Input ports · comma separated", inputControl(nodePorts(node, "in").join(", "), (value) => {
+        node.input_ports = cleanPortList(value); setDirty();
+      })),
+      field("Output ports · comma separated", inputControl(nodePorts(node, "out").join(", "), (value) => {
+        node.output_ports = cleanPortList(value); setDirty();
+      }))
+    );
+    wrap.appendChild(ports);
+    const apply = make("button", "fchip sm", "Apply port layout");
+    apply.type = "button";
+    apply.addEventListener("click", () => { renderBoard(); renderOutline(); });
+    wrap.appendChild(apply);
+    return wrap;
   }
 
   function typeSelect(node) {
@@ -929,7 +1013,7 @@
     const node = state.current?.nodes.find((item) => item.id === nodeId);
     if (!node) return;
     node.expanded = force == null ? !node.expanded : force;
-    node.width = node.expanded ? Math.max(node.width || 390, 390) : 244;
+    node.width = node.expanded ? Math.max(node.width || 390, 390) : (node.type === "connector" ? 196 : 244);
     state.selectedNode = nodeId;
     state.selectedEdge = null;
     renderBoard();
@@ -943,6 +1027,168 @@
     state.selectedEdge = null;
     qa(".forge-node", q("#forge-nodes")).forEach((item) => item.classList.toggle("is-selected", item === card));
     closeInspector();
+  }
+
+  function closeNodeMenu() {
+    q(".forge-node-context", q("#forge-shell"))?.remove();
+  }
+
+  function contextAction(menu, label, hint, run, danger = false) {
+    const button = make("button", `forge-node-context-action${danger ? " is-danger" : ""}`);
+    button.type = "button";
+    button.append(make("strong", "", label), make("small", "", hint));
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeNodeMenu();
+      run();
+    });
+    menu.appendChild(button);
+  }
+
+  function showNodeMenu(node, event) {
+    const shell = q("#forge-shell");
+    if (!shell) return;
+    closeNodeMenu();
+    bringNodeFront(node, q(`.forge-node[data-node-id="${CSS.escape(node.id)}"]`));
+    const menu = make("div", "forge-node-context");
+    const title = make("div", "forge-node-context-title");
+    title.append(make("span", "forge-kicker", TYPE[node.type]?.name || "Component"), make("strong", "", node.name));
+    menu.appendChild(title);
+    contextAction(menu, "Add connector", "Describe the relationship; Vira builds the right I/O chip.", () => addConnectorFor(node));
+    contextAction(menu, "Attach tools", "Create an expandable capability bus for tools, skills, scripts, and MCP.",
+      () => addConnectorFor(node, "Give this component access to a configurable set of tools and capabilities."));
+    contextAction(menu, "Attach context", "Create a context port for files, folders, references, or live Find results.",
+      () => addConnectorFor(node, "Feed this component a configurable set of files, folders, and reference context."));
+    contextAction(menu, "Ask Muse", "Place a Muse proposal stage in this Flow, focused on this component.", () => addMuseFor(node));
+    contextAction(menu, node.expanded ? "Collapse component" : "Open component", "Show or hide its complete instance configuration.",
+      () => toggleNode(node.id));
+    contextAction(menu, "Duplicate component", "Make an editable instance copy beside this one.", () => duplicateNode(node));
+    if (!node.locked) contextAction(menu, "Remove component", "Delete this instance and its connections.", () => removeNode(node.id), true);
+    shell.appendChild(menu);
+    const shellRect = shell.getBoundingClientRect();
+    const width = 264;
+    const left = clamp(event.clientX - shellRect.left, 8, Math.max(8, shellRect.width - width - 8));
+    const top = clamp(event.clientY - shellRect.top, 8, Math.max(8, shellRect.height - menu.offsetHeight - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+    menu.addEventListener("pointerdown", (click) => click.stopPropagation());
+    setTimeout(() => document.addEventListener("pointerdown", closeNodeMenu, { once: true }), 0);
+  }
+
+  function connectorSpec(intent) {
+    const text = intent.toLowerCase();
+    if (/tool|capabilit|skill|script|mcp|command|plugin/.test(text)) {
+      return { name: "Tool bus", data_kind: "capability", input_ports: ["tool"], output_ports: ["capability"] };
+    }
+    if (/context|reference|file|folder|document|find|reader|source/.test(text)) {
+      return { name: "Context port", data_kind: "context", input_ports: ["source"], output_ports: ["context"] };
+    }
+    if (/trigger|event|schedule|signal|start|launch/.test(text)) {
+      return { name: "Signal port", data_kind: "signal", input_ports: ["event"], output_ports: ["signal"] };
+    }
+    if (/decision|approval|verdict|judge/.test(text)) {
+      return { name: "Decision port", data_kind: "decision", input_ports: ["decision"], output_ports: ["decision"] };
+    }
+    return { name: "Data connector", data_kind: "data", input_ports: ["in"], output_ports: ["out"] };
+  }
+
+  function addQuietEdge(from, to, fromPort, toPort, instructions = "") {
+    if (!from || !to || from === to) return null;
+    const duplicate = state.current.edges.some((edge) => edge.from === from && edge.to === to
+      && edge.from_port === fromPort && edge.to_port === toPort);
+    if (duplicate) return null;
+    const edge = { id: id("edge"), from, to, from_port: fromPort, to_port: toPort,
+      label: "", instructions, direction: "forward" };
+    state.current.edges.push(edge);
+    return edge;
+  }
+
+  function attachConnector(connector, target) {
+    const kind = connector.data_kind || "data";
+    const targetPort = nodePorts(target, "in").find((name) =>
+      (INPUT_ACCEPT[name] || ["data", "signal", "context", "capability", "decision"]).includes(kind));
+    if (targetPort && nodePorts(connector, "out")[0]) {
+      addQuietEdge(connector.id, target.id, nodePorts(connector, "out")[0], targetPort, connector.prompt);
+      return;
+    }
+    const targetOutput = nodePorts(target, "out").find((name) => (OUTPUT_KIND[name] || "data") === kind)
+      || nodePorts(target, "out")[0];
+    if (targetOutput && nodePorts(connector, "in")[0]) {
+      addQuietEdge(target.id, connector.id, targetOutput, nodePorts(connector, "in")[0], connector.prompt);
+    }
+  }
+
+  async function addConnectorFor(target, suggested = "") {
+    const intent = await forgeDialog({
+      title: "Add a connector",
+      message: `What is the connector for around ${target.name}? Vira will choose its payload type, ports, and first connection.`,
+      value: suggested,
+      confirm: "Build connector",
+    });
+    if (!intent) return;
+    const spec = connectorSpec(intent);
+    const connector = addNode({
+      type: "connector", kind: "primitive", ...spec,
+      description: intent, prompt: intent, connector_mode: "through",
+    }, { x: target.x - 250, y: target.y + 18 });
+    attachConnector(connector, target);
+    connector.z = ++state.z;
+    setDirty();
+    renderBoard();
+    renderOutline();
+    toast(`${spec.name} added. Open it to rename ports or change its payload type.`);
+  }
+
+  async function addMuseFor(target) {
+    const intent = await forgeDialog({
+      title: "Ask Muse in this Flow",
+      message: `What should Muse notice, challenge, or improve around ${target.name}? The proposal stage will live here on the breadboard.`,
+      value: `Suggest missing parts, context, tools, or connections around ${target.name}.`,
+      confirm: "Add Muse",
+    });
+    if (!intent) return;
+    const graph = state.current.nodes.map((node) => `${node.name} [${node.type}]`).join("; ");
+    const prompt = [
+      "You are Muse operating inside Vira's Forge visual orchestration system.",
+      `Flow: ${state.current.name}.`,
+      `Visible parts: ${graph}.`,
+      `Focus component: ${target.name} [${target.type}] — ${target.description || "no purpose recorded"}.`,
+      `Owner's request: ${intent}`,
+      "Propose concrete additions or changes. Name the exact connector, context, tool, stage, or wire; explain where it attaches and why. Do not implement or alter the source Flow. Return a short build-ready proposal.",
+      "\nUpstream runtime input:\n{{input}}",
+    ].join("\n");
+    const muse = addNode({
+      type: "agent", kind: "muse", name: "Muse proposal",
+      description: `Forge suggestion for ${target.name}: ${intent}`,
+      model: "sonnet", mode: "manual", read_only: true, prompt,
+    }, { x: target.x + (target.width || 244) + 110, y: target.y + 12 });
+    muse.proposal_for = target.id;
+    muse.extra = `forge:muse:${target.id}`;
+    const output = nodePorts(target, "out")[0];
+    if (output) {
+      const kind = target.type === "connector" ? (target.data_kind || "data") : (OUTPUT_KIND[output] || "data");
+      const musePort = kind === "capability" ? "tools" : (kind === "context" ? "context" : "input");
+      addQuietEdge(target.id, muse.id, output, musePort, "Ask Muse to inspect this component's role and output in the surrounding Flow.");
+    }
+    muse.z = ++state.z;
+    setDirty();
+    renderBoard();
+    renderOutline();
+    toast("Muse now has a proposal stage inside this Flow. Run it like any other agent stage.");
+  }
+
+  function duplicateNode(node) {
+    const clone = copy(node);
+    clone.id = id(clone.type === "agent" ? "stage" : clone.type || "part");
+    clone.name = `${clone.name} copy`;
+    clone.x = clamp((Number(clone.x) || 0) + 42, 0, 3900);
+    clone.y = clamp((Number(clone.y) || 0) + 42, 60, 2550);
+    clone.locked = false;
+    clone.expanded = false;
+    clone.z = ++state.z;
+    state.current.nodes.push(clone);
+    state.selectedNode = clone.id;
+    setDirty(); renderBoard(); renderOutline();
   }
 
   function bindNodeDrag(card, head, node) {
@@ -1019,8 +1265,15 @@
     if (target.dataset.nodeId === source.nodeId || target.dataset.direction === source.direction) return false;
     const output = source.direction === "out" ? source.port : target.dataset.port;
     const input = source.direction === "in" ? source.port : target.dataset.port;
-    const kind = OUTPUT_KIND[output] || "data";
-    return (INPUT_ACCEPT[input] || ["data", "signal", "context", "capability", "decision"]).includes(kind);
+    const outputNodeId = source.direction === "out" ? source.nodeId : target.dataset.nodeId;
+    const inputNodeId = source.direction === "in" ? source.nodeId : target.dataset.nodeId;
+    const outputNode = state.current?.nodes.find((node) => node.id === outputNodeId);
+    const inputNode = state.current?.nodes.find((node) => node.id === inputNodeId);
+    const kind = outputNode?.type === "connector" ? (outputNode.data_kind || "data") : (OUTPUT_KIND[output] || "data");
+    const accepted = inputNode?.type === "connector"
+      ? [inputNode.data_kind || "data"]
+      : (INPUT_ACCEPT[input] || ["data", "signal", "context", "capability", "decision"]);
+    return accepted.includes(kind);
   }
 
   function finishConnection(event) {
@@ -1083,14 +1336,13 @@
   }
 
   function nodeBox(node) {
-    const width = node.expanded ? Math.max(node.width || 390, 390) : node.width || 244;
+    const width = node.expanded ? Math.max(node.width || 390, 390) : node.width || (node.type === "connector" ? 196 : 244);
     const height = node.expanded ? Math.max(node.height || 510, 510) : node.height || 148;
     return { x: node.x, y: node.y, width, height };
   }
 
   function portY(node, direction, name) {
-    const meta = TYPE[node.type] || TYPE.tool;
-    const ports = direction === "out" ? meta.outputs : meta.inputs;
+    const ports = nodePorts(node, direction);
     const index = Math.max(0, (ports || []).indexOf(name));
     return node.y + 58 + index * 25;
   }

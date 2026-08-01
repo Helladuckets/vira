@@ -12,6 +12,7 @@
   --forge-trigger: var(--steel);
   --forge-context: var(--green);
   --forge-output: var(--accent-bright);
+  --forge-connector: var(--steel);
   position: relative;
   min-width: 0;
 }
@@ -344,6 +345,17 @@ body > .forge-library.is-detached .forge-panel-head:active { cursor: grabbing; }
 .forge-node[data-type="trigger"] { --node-accent: var(--forge-trigger); }
 .forge-node[data-type="context"] { --node-accent: var(--forge-context); }
 .forge-node[data-type="output"] { --node-accent: var(--forge-output); }
+.forge-node[data-type="connector"] {
+  --node-accent: var(--forge-connector);
+  min-height: 116px;
+  border-left-color: color-mix(in srgb, var(--forge-connector) 45%, var(--line));
+  border-right-color: color-mix(in srgb, var(--forge-connector) 45%, var(--line));
+  box-shadow: 0 8px 20px var(--scrim), inset 0 0 0 1px color-mix(in srgb, var(--forge-connector) 12%, transparent);
+}
+.forge-node[data-type="connector"] .forge-node-mark { width: 25px; height: 25px; border-radius: 50%; }
+.forge-node[data-type="connector"] .forge-node-head { padding-block: 7px; }
+.forge-node[data-type="connector"] .forge-node-name { font-size: 11px; }
+.forge-node[data-source="muse"] { --node-accent: var(--oxidized); }
 .forge-node[data-type="system"] {
   --node-accent: var(--accent-bright);
   border-color: var(--line-warm);
@@ -424,6 +436,8 @@ body > .forge-library.is-detached .forge-panel-head:active { cursor: grabbing; }
 .forge-node-detail textarea:focus { border-color: var(--sel-line); }
 .forge-node-detail-row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .forge-node-detail-actions { display: flex; justify-content: flex-end; gap: 5px; margin-top: 8px; }
+.forge-connector-controls { margin-bottom: 8px; padding: 7px; border: 1px solid var(--line); background: var(--bg-stage); }
+.forge-connector-controls > .fchip { margin-top: 2px; }
 .forge-source-files { margin: 6px 0; color: var(--text-faint); font: 8px/1.4 var(--mono); }
 
 .forge-component-map {
@@ -594,6 +608,35 @@ body > .forge-library.is-detached .forge-panel-head:active { cursor: grabbing; }
   box-shadow: 0 12px 28px var(--scrim);
   font-size: 10px;
 }
+.forge-node-context {
+  position: absolute;
+  z-index: 58;
+  width: 264px;
+  overflow: hidden;
+  border: 1px solid var(--line-warm);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--bg-window) 94%, transparent);
+  box-shadow: 0 20px 48px var(--scrim-strong);
+  backdrop-filter: blur(12px);
+}
+.forge-node-context-title { padding: 9px 10px 8px; border-bottom: 1px solid var(--line); }
+.forge-node-context-title strong { display: block; margin-top: 2px; overflow: hidden; color: var(--text-head); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.forge-node-context-action {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  color: var(--text);
+  text-align: left;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+}
+.forge-node-context-action:last-child { border-bottom: 0; }
+.forge-node-context-action:hover { background: var(--hover-wash); }
+.forge-node-context-action strong { display: block; font-size: 10px; font-weight: 500; }
+.forge-node-context-action small { display: block; margin-top: 2px; color: var(--text-faint); font-size: 8px; line-height: 1.35; }
+.forge-node-context-action.is-danger strong { color: var(--red); }
 .forge-dialog-backdrop {
   position: absolute;
   z-index: 60;

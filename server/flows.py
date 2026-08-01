@@ -36,7 +36,7 @@ AGENT_NODE_TYPES = {"agent", "judge"}
 EXECUTABLE_NODE_TYPES = AGENT_NODE_TYPES | {"logic", "approval", "output", "native"}
 EDITABLE_NODE_TYPES = EXECUTABLE_NODE_TYPES
 DISPLAY_NODE_TYPES = EDITABLE_NODE_TYPES | {
-    "trigger", "context", "tool", "native", "system"
+    "trigger", "context", "tool", "native", "system", "connector"
 }
 
 
@@ -359,13 +359,35 @@ def _compile(payload):
     stages = []
     incoming = {sid: [] for sid in ids}
     outgoing = {sid: [] for sid in ids}
+    graph_incoming = {str(node.get("id") or ""): [] for node in nodes
+                      if node.get("id")}
     for edge in edges:
         target = edge.get("to")
         if target in incoming:
             incoming[target].append(edge)
+        if target in graph_incoming:
+            graph_incoming[target].append(edge)
         source = edge.get("from")
         if source in outgoing:
             outgoing[source].append(edge)
+
+    def routed_sources(connector_id, seen=None):
+        """Return tool/context parts feeding a chain of visual connectors."""
+        seen = set(seen or ())
+        if connector_id in seen:
+            return []
+        seen.add(connector_id)
+        found = []
+        for edge in graph_incoming.get(connector_id, []):
+            source = by_id.get(str(edge.get("from") or "")) or {}
+            if source.get("type") in {"tool", "context"}:
+                found.append(source)
+            elif source.get("type") == "connector":
+                found.extend(routed_sources(str(source.get("id") or ""), seen))
+        unique = {}
+        for source in found:
+            unique[str(source.get("id") or id(source))] = source
+        return list(unique.values())
     for node in exec_nodes:
         sid = str(node["id"])
         node_type = node.get("type")
@@ -447,6 +469,26 @@ def _compile(payload):
                     "instructions": str(source.get("prompt")
                                         or source.get("description") or "")[:2000],
                 })
+            elif source_type == "connector":
+                for routed in routed_sources(str(source.get("id") or "")):
+                    if routed.get("type") == "context":
+                        saved_context = contexts.get(str(routed.get("id") or ""), {})
+                        attachments["contexts"].append({
+                            "name": str(routed.get("name") or saved_context.get("name")
+                                        or "Context")[:200],
+                            "ref": str(routed.get("source_ref") or saved_context.get("ref")
+                                       or "")[:1000],
+                            "note": str(routed.get("description") or saved_context.get("note")
+                                        or "")[:2000],
+                        })
+                    elif routed.get("type") == "tool":
+                        attachments["tools"].append({
+                            "name": str(routed.get("name") or "Capability")[:200],
+                            "source": str(routed.get("source") or "")[:80],
+                            "source_ref": str(routed.get("source_ref") or "")[:1000],
+                            "instructions": str(routed.get("prompt")
+                                                or routed.get("description") or "")[:2000],
+                        })
         attached_outputs = []
         for edge in outgoing[sid]:
             target = by_id.get(str(edge.get("to") or "")) or {}
@@ -516,6 +558,16 @@ def save_flow(payload, save_as=False):
                 "source_files": list(node.get("source_files") or [])[:100],
                 "source_truncated": bool(node.get("source_truncated")),
             })
+            if node.get("type") == "connector":
+                clean.update({
+                    "connector_mode": str(
+                        node.get("connector_mode") or "through")[:20],
+                    "input_ports": [str(value)[:40] for value in
+                                    list(node.get("input_ports") or [])[:8]],
+                    "output_ports": [str(value)[:40] for value in
+                                     list(node.get("output_ports") or [])[:8]],
+                    "data_kind": str(node.get("data_kind") or "data")[:40],
+                })
         clean_nodes.append(clean)
     clean_edges = [_edge(str(e.get("from") or ""), str(e.get("to") or ""), e)
                    for e in payload.get("edges") or []]
@@ -653,16 +705,32 @@ def kit_catalog():
                 "arg_fields": [],
             })
     primitives = [
-        ("trigger", "Trigger", "Manual, scheduled, or event start"),
-        ("context", "Context", "A reference set from Find or Reader"),
-        ("agent", "Agent", "Model, permission, prompt, and capabilities"),
-        ("logic", "Logic", "Branch, merge, judge, or retry"),
-        ("approval", "Approval", "Pause for an explicit human decision"),
-        ("output", "Output", "Artifact, record, notification, or destination"),
+        ("trigger", "trigger", "Trigger", "Manual, scheduled, or event start", {}),
+        ("context", "context", "Context", "A reference set from Find or Reader", {}),
+        ("agent", "agent", "Agent", "Model, permission, prompt, and capabilities", {}),
+        ("logic", "logic", "Logic", "Branch, merge, judge, or retry", {}),
+        ("approval", "approval", "Approval", "Pause for an explicit human decision", {}),
+        ("output", "output", "Output", "Artifact, record, notification, or destination", {}),
+        ("connector", "connector", "Connector", "Configurable input/output adapter", {
+            "connector_mode": "through", "input_ports": ["in"],
+            "output_ports": ["out"], "data_kind": "data",
+        }),
+        ("input-port", "connector", "Input port", "A source chip that introduces data to a Flow", {
+            "connector_mode": "input", "input_ports": [],
+            "output_ports": ["out"], "data_kind": "data",
+        }),
+        ("output-port", "connector", "Output port", "A destination chip at the edge of a Flow", {
+            "connector_mode": "output", "input_ports": ["in"],
+            "output_ports": [], "data_kind": "data",
+        }),
+        ("tool-bus", "connector", "Tool bus", "Expandable capability bus for tools, skills, scripts, and MCP", {
+            "connector_mode": "through", "input_ports": ["tool"],
+            "output_ports": ["capability"], "data_kind": "capability",
+        }),
     ]
-    for kind, name, description in primitives:
-        items.insert(0, {"id": f"primitive:{kind}", "name": name,
+    for item_id, kind, name, description, defaults in primitives:
+        items.insert(0, {"id": f"primitive:{item_id}", "name": name,
                          "kind": "primitive", "type": kind,
                          "invoke": "", "description": description,
-                         "arg_fields": []})
+                         "arg_fields": [], **defaults})
     return items

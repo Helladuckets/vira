@@ -82,6 +82,40 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(second["revision"], 2)
         self.assertEqual(second["nodes"][0]["x"], 777)
 
+    def test_connector_bus_routes_tools_into_downstream_agent(self):
+        payload = {"name": "Connector bus", "nodes": [
+            {"id": "research", "type": "tool", "name": "Research",
+             "source": "skill", "source_ref": "deep-research",
+             "prompt": "Check primary sources."},
+            {"id": "bus", "type": "connector", "name": "Tool bus",
+             "description": "Expandable capability bus",
+             "connector_mode": "through", "input_ports": ["tool"],
+             "output_ports": ["capability"], "data_kind": "capability"},
+            {"id": "writer", "type": "agent", "name": "Writer",
+             "mode": "manual", "prompt": "Write {{input}}"},
+        ], "edges": [
+            {"from": "research", "to": "bus", "from_port": "capability",
+             "to_port": "tool"},
+            {"from": "bus", "to": "writer", "from_port": "capability",
+             "to_port": "tools", "instructions": "Use this tool bus."},
+        ], "contexts": []}
+        saved = flows.save_flow(payload, save_as=True)
+        writer = next(stage for stage in circuits.get_circuit(saved["id"])["stages"]
+                      if stage["id"] == "writer")
+        self.assertEqual(writer["forge"]["tools"][0]["name"], "Research")
+        self.assertIn("Use this tool bus.", writer["forge"]["wire_instructions"])
+        bus = next(node for node in saved["nodes"] if node["id"] == "bus")
+        self.assertEqual(bus["input_ports"], ["tool"])
+        self.assertEqual(bus["data_kind"], "capability")
+
+    def test_kit_includes_configurable_circuit_parts(self):
+        catalog = {item["id"]: item for item in flows.kit_catalog()}
+        self.assertIn("primitive:connector", catalog)
+        self.assertIn("primitive:input-port", catalog)
+        self.assertIn("primitive:output-port", catalog)
+        self.assertEqual(catalog["primitive:tool-bus"]["data_kind"],
+                         "capability")
+
     def test_anchored_system_compiles_inline_but_stays_one_visual_box(self):
         payload = {"name": "Parent", "nodes": [
             {"id": "box", "type": "system", "name": "Child",
