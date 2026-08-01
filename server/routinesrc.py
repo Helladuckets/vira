@@ -1,6 +1,6 @@
 """Under the hood — what a standing loop actually IS, and editing it.
 
-A routine's row in Work · Dispatch · Schedules said its name, its cadence,
+A trigger part in The Forge · Flows says its name, its cadence,
 and one sentence the seed happened to carry. Everything that decides what
 it DOES — the prompt composed at dispatch, the in-process function an
 internal token resolves to, the scheduler that fires it — lived only in
@@ -110,7 +110,7 @@ TOKENS = {
          "every verdict grounded by a verbatim quote or dropped."),
         ("lessonwatch", "_propose_promotion", "The proposal it can stage",
          "At threshold a tier-2 rule stages the WORK of building its "
-         "mechanism as a proposed idea in the Queue. It never writes "
+         "mechanism as a proposed idea in Cues. It never writes "
          "the corrections ledger itself."),
     ],
 }
@@ -149,18 +149,18 @@ EFFECTS = {
         "each reading room, rebuilt in place. You are pinged per room "
         "that gained items.",
     "__orphan_sweep__":
-        "data/orphan-work.json — the unlanded-work rows in Work · Live. "
+        "data/orphan-work.json — the unlanded-work rows in The Forge · Runs. "
         "You are pinged when a genuinely new orphan appears, never on "
         "the first-ever sweep.",
     "__lesson_recurrence__":
-        "data/lesson-recurrence.json — the Rules panel under Work · "
-        "RECORD; a tier-2 rule at threshold stages a proposed idea in "
-        "the Queue, and a tier-1 recurrence pings you (the guard did "
+        "data/lesson-recurrence.json — the Rules panel under The Forge · "
+        "Record; a tier-2 rule at threshold stages a proposed idea in "
+        "Cues, and a tier-1 recurrence pings you (the guard did "
         "not hold). It NEVER writes the corrections ledger itself.",
 }
 KIND_EFFECTS = {
     "muse":
-        "nothing on its own. Ideas land in Work · Queue as proposals — "
+        "nothing on its own. Ideas land in The Forge · Cues as proposals — "
         "nothing builds until you approve one.",
 }
 
@@ -296,8 +296,8 @@ def parts(r) -> list:
         out.append(_part("field:circuit", "The recipe it runs",
                          r.get("circuit_id") or "(none chosen)",
                          kind="derived",
-                         note="Circuits are edited in Work · Dispatch · "
-                              "Recipes, where each stage has its own tray."))
+                         note="Circuit-backed systems are edited in The "
+                              "Forge · Flows, where every stage unfolds."))
     elif token in TOKENS:
         composes = token in COMPOSERS
         lead = ("Composed fresh at every dispatch and handed to a session."
@@ -472,9 +472,9 @@ def steps(r) -> list:
                     "a multi-stage pipeline — each stage its own session, "
                     "handing its output to the next."})
         out.append({
-            "title": "You watch it in Recipes",
-            "body": "The run appears under Work · Dispatch · Recipes · "
-                    "Runs, as a stage graph you can click into."})
+            "title": "You watch it in Runs",
+            "body": "The run appears under The Forge · Runs as a stage "
+                    "graph you can click into."})
         return out
     if r.get("kind") == "muse":
         out.append({
@@ -497,7 +497,7 @@ def steps(r) -> list:
     out.append({
         "title": "A real session runs it",
         "body": "The run is an ordinary durable job: its own detached "
-                "process, a live terminal under Work · Live, a row in the "
+                "process, a live terminal under The Forge · Runs, a row in the "
                 "ledger, and it survives a Vira restart. It runs on "
                 f"{_mode_label(r.get('mode'))}."})
     out.append({
@@ -508,7 +508,7 @@ def steps(r) -> list:
         "body": ("Vira iMessages you when the run finishes."
                  if r.get("notify") else
                  "It finishes quietly — check the row below, or its "
-                 "terminal under Work · Live.")})
+                 "terminal under The Forge · Runs.")})
     out.append({
         "title": "If no AI is connected",
         "body": "The run is skipped and the loop stays due, so it fires as "

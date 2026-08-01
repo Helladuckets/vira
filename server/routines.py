@@ -150,7 +150,7 @@ SEEDS = [
         "description": "Daily inventory of every worktree and branch for "
                        "work that never landed — uncommitted changes, "
                        "unpushed commits, unmerged branches, stalled "
-                       "sessions — surfaced in Work > Live.",
+                       "sessions — surfaced in The Forge > Runs.",
     },
 ]
 

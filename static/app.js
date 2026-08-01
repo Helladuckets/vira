@@ -4994,7 +4994,7 @@ $("#free-run").addEventListener("click", () => {
     post(`/api/circuits/${cid}/run`, { input: v, cwd: null })
       .then(() => {
         $("#free-prompt").value = "";
-        toast("Circuit running — see Recipes › Runs");
+        toast("Flow running — see The Forge · Runs");
         setWorkSub("recipes");
         setCircuitsTab("runs");
       })
@@ -5072,7 +5072,7 @@ async function refreshJobs() {
   if (full) {
     full.innerHTML = "";
     if (!jobs.length) full.appendChild(el("div", "empty left",
-      "No jobs yet — run one from Dispatch."));
+      "No stage sessions yet — launch a Flow from The Forge."));
     jobs.slice(0, 20).forEach((j) => {
       const row = el("div", "card job-row-full");
       const rph = jobPhase(j);
@@ -6471,7 +6471,7 @@ function renderRecord() {
   if (recordFilter === "jobs") {
     if (!jobs || !jobs.length) {
       host.appendChild(el("div", "empty left",
-        "No jobs on the ledger yet — run one from Dispatch."));
+        "No jobs on the ledger yet — launch a Flow from The Forge."));
       return;
     }
     jobs.forEach((r) => host.appendChild(jobHistRow(r)));
@@ -6677,7 +6677,7 @@ function ruleRow(r) {
   if (r.proposal?.idea_id) {
     const p = el("div", "lw-prop");
     p.appendChild(el("span", "", "proposed — "));
-    const a = el("a", "", "build the mechanism (in the Queue)");
+    const a = el("a", "", "build the mechanism (in Cues)");
     a.href = "#";
     a.addEventListener("click", (e) => { e.preventDefault(); openApp("ideas"); });
     p.appendChild(a);
@@ -9568,7 +9568,7 @@ function playTourFilm() {
   host.id = "tour-film";
   const frame = document.createElement("iframe");
   frame.src = "/tour/";
-  frame.title = "A tour of the Work window";
+  frame.title = "A tour of The Forge";
   // NOT scrolling="no": the film scrubs on scroll, and this attribute
   // silently disabled that inside the frame.
   host.appendChild(frame);
@@ -9991,11 +9991,11 @@ function refreshGates(flow) {
 }
 
 
-// ---------- the Work window: Queue | Dispatch | Live | Record ----------
+// ---------- The Forge: Cues | Flows | Runs | Record ----------
 // Five cockpit windows (Actions, Jobs, Ideas & On-Hold, Circuits, Agent
-// Loops) merged into one surface, 2026-07-21. The folded windows' renderers
-// and element ids are untouched — their DOM chunks live inside the four
-// panes now — so every capability stays where its code already works.
+// Loops) first merged into Work in 2026-07-21. The Forge keeps their aliases
+// and stores while replacing the old Dispatch pane with the visual Flow
+// editor. Internal tab ids stay stable so old deep links remain valid.
 
 let workTab = "queue";        // queue | dispatch | live | record
 let workSub = "library";      // dispatch sub-panel: library | recipes | schedules
@@ -10061,6 +10061,30 @@ function setWorkTab(tab, opts = {}) {
   if (!opts.defer) workTabLoad(tab);
 }
 
+// Forge keeps the long-lived `work` window id so every dock slot, saved link,
+// and folded module alias survives the rename. That also means an existing
+// install can inherit a narrow Work-era freeform rectangle that is sensible
+// for a list but unusable for a node canvas. Upgrade that rectangle once. A
+// staged layout is the owner's composition and is never rewritten here; after
+// this one migration, ordinary resizing remains entirely in the owner's hands.
+function fitForgeWindowOnce() {
+  if (!isDesktop || layoutMode !== "freeform"
+      || lsGet("vira-forge-window-v1", false)) return;
+  const st = winState.work;
+  if (!st?.el) return;
+  const r = st.el.getBoundingClientRect();
+  if (r.width < 900) {
+    const w = Math.min(1180, innerWidth - 24);
+    const h = Math.max(r.height, Math.min(760, innerHeight - 88));
+    const x = Math.max(12, Math.min(r.left, innerWidth - w - 12));
+    const y = Math.max(44, Math.min(r.top, innerHeight - h - 12));
+    setWinRect(st.el, { x, y, w, h }, true);
+    saveWinState("work", { x: Math.round(x), y: Math.round(y),
+                            w: Math.round(w), h: Math.round(h) });
+  }
+  lsSet("vira-forge-window-v1", true);
+}
+
 function setWorkSub(sub, opts = {}) {
   workSub = sub;
   $("#work-sub-tabs")?.querySelectorAll(".seg-btn")
@@ -10071,12 +10095,12 @@ function setWorkSub(sub, opts = {}) {
     const p = $(sel);
     if (p) p.style.display = s === sub ? "" : "none";
   });
-  if (opts.defer) return;
-  if (sub === "recipes") {
-    loadCircuits().catch(() => {});
-    if (circuitsTab === "runs") loadCircuitRuns().catch(() => {});
+  if (window.Forge) {
+    window.Forge.setLibrary(sub === "library" ? "kit" : "flows");
+    window.Forge.openLibrary();
   }
-  if (sub === "schedules") loadRoutines().catch(() => {});
+  if (opts.defer) return;
+  window.loadForge?.().catch(() => {});
 }
 
 function workTabLoad(tab) {
@@ -10085,15 +10109,11 @@ function workTabLoad(tab) {
     loadQueueLane().catch(() => {});
   }
   if (tab === "dispatch") {
-    loadActions().catch(() => {});
-    loadDispatchStructure().catch(() => {});
-    if (workSub === "recipes") {
-      loadCircuits().catch(() => {});
-      if (circuitsTab === "runs") loadCircuitRuns().catch(() => {});
-    }
-    if (workSub === "schedules") loadRoutines().catch(() => {});
+    requestAnimationFrame(fitForgeWindowOnce);
+    window.loadForge?.().catch(() => {});
   }
   if (tab === "live") {
+    window.loadForgeRuns?.();
     refreshJobs().catch(() => {});
     loadOrphans().catch(() => {});
   }
@@ -11246,7 +11266,7 @@ function circuitCard(c, models) {
       await post(`/api/circuits/${c.id}/run`, {
         input, cwd: cwd.value.trim() || null, stages: edits });
       inp.value = "";
-      toast("Circuit running — see Runs");
+      toast("Flow running — see The Forge · Runs");
       setCircuitsTab("runs");
     } catch (e) { alert("Run failed: " + e.message); }
     go.disabled = false;
@@ -12759,8 +12779,8 @@ const WINDOWS = [
   // than the old contacts-only 440 to give the scored rows room.
   { id: "people", title: "People", w: 560, defaultOpen: true,
     icon: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19c.5-3.4 2.7-5 5.5-5s5 1.6 5.5 5M15.5 11.4a2.7 2.7 0 1 0-1.2-5.2M15.8 14.2c2.4.3 4.2 1.8 4.7 4.8" },
-  { id: "work", title: "Work", w: 720,
-    icon: "M4 5h16v14H4zM7.5 9.5l3 2.5-3 2.5M12.5 14.5H16" },
+  { id: "work", title: "The Forge", w: 1180,
+    icon: "M5 5h5v5H5zM14 4h5v5h-5zM14 15h5v5h-5zM10 7.5h2.5c1 0 1.5-.5 1.5-1M10 7.5h1.5c2.5 0 2.5 10 2.5 10" },
   { id: "brief", title: "Daily Brief", w: 520,
     icon: "M12 3v3M5.3 6.3l2.1 2.1M2.5 13.5h3M18.5 13.5h3M16.6 8.4l2.1-2.1M7.5 15.5a4.5 4.5 0 0 1 9 0M3.5 19h17" },
   { id: "journal", title: "Journal", w: 520,
@@ -13086,7 +13106,7 @@ function ctxIdeaComposer(x, y, ctx) {
         { text: text + " [context: " + bits.join(" · ") + "]", source: "right-click" });
       ideasCache.unshift(it);
       renderIdeas();
-      toast("Idea added" + (winState.work?.open ? "" : " — see Work"));
+      toast("Idea added" + (winState.work?.open ? "" : " — see The Forge · Cues"));
     },
   });
 }
@@ -13312,7 +13332,7 @@ document.addEventListener("contextmenu", (e) => {
         try {
           await post(`/api/lessons/${ctxRule.id}/propose`, {});
           rulesCache = null; loadRules().catch(() => {});
-          toast("Proposal staged in the Queue");
+          toast("Proposal staged in Cues");
         } catch (err) { alert("Propose failed: " + err.message); }
       } });
     items.push({
@@ -14857,11 +14877,11 @@ function paletteMatches(q) {
     },
   });
   cmds.push(
-    workCmd("Ideas & On-Hold — Work · Queue", "queue"),
-    workCmd("Actions — Work · Dispatch", "dispatch", "library"),
-    workCmd("Jobs — Work · Live", "live"),
-    workCmd("Circuits — Work · Recipes", "dispatch", "recipes"),
-    workCmd("Agent Loops — Work · Schedules", "dispatch", "schedules"),
+    workCmd("Ideas & proposals — The Forge · Cues", "queue"),
+    workCmd("Kit — The Forge · Flows", "dispatch", "library"),
+    workCmd("Jobs — The Forge · Runs", "live"),
+    workCmd("Circuits — The Forge · Flows", "dispatch", "recipes"),
+    workCmd("Agent Loops — The Forge · Flows", "dispatch", "schedules"),
     // the two folded retrieval windows stay findable by their old names
     { label: "Search — Find · Media", kind: "find",
       run: () => { setFindTab("media"); openWindow("find"); } },
@@ -15131,6 +15151,13 @@ const HASH_ROUTES = {
     const t = rest[0];
     if (["queue", "dispatch", "live", "record"].includes(t))
       setWorkTab(t, { defer: true });
+    openApp("work");
+  },
+  "forge": (rest) => {
+    const names = { cues: "queue", flows: "dispatch", runs: "live",
+                    record: "record", queue: "queue", dispatch: "dispatch",
+                    live: "live" };
+    setWorkTab(names[rest[0]] || "queue", { defer: true });
     openApp("work");
   },
   // #find, #find/notes|media|people|messages — and the two retired
@@ -17921,6 +17948,7 @@ async function boot() {
     else openApp("launchpad");
   });
   initFindView();
+  window.initForge?.();
   initIdeas();
   routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
   readerProbe();   // keep a page-less Reader off the dock and access bar

@@ -33,6 +33,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                evidence,
                feedstate,
                find,
+               flows,
                frontdoor,
                reading,
                readinglist,
@@ -2374,6 +2375,110 @@ def api_session_close(sid: str):
 
 
 # ---------- the agentic OS: vault / circuits / routines / radar / judge ----
+
+
+# The Forge product API. Circuits and routines below remain compatibility
+# routes and execution authorities; /api/flows is the cohesive editor-facing
+# view over both stores.
+
+@app.get("/api/flows")
+def api_flows():
+    return {"flows": flows.list_flows()}
+
+
+@app.get("/api/flows/kit")
+def api_flows_kit():
+    return {"items": flows.kit_catalog()}
+
+
+@app.get("/api/flows/kit/source")
+def api_flows_kit_source(ref: str):
+    try:
+        return flows.kit_source(ref)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except FileNotFoundError:
+        raise HTTPException(404, "Kit source not found")
+
+
+@app.get("/api/flows/native/{routine_id}/source")
+def api_flows_native_source(routine_id: str):
+    try:
+        return flows.native_source(routine_id)
+    except KeyError:
+        raise HTTPException(404, "native Flow source not found")
+
+
+@app.get("/api/flows/{flow_id}")
+def api_flow(flow_id: str):
+    flow = flows.get_flow(flow_id)
+    if not flow:
+        raise HTTPException(404, "unknown flow")
+    return flow
+
+
+class FlowReq(BaseModel):
+    id: str | None = None
+    name: str
+    description: str | None = ""
+    kind: str | None = "flow"
+    nodes: list[dict]
+    edges: list[dict]
+    contexts: list[dict] | None = None
+
+
+@app.post("/api/flows")
+def api_flow_create(req: FlowReq):
+    try:
+        return flows.save_flow(req.model_dump(), save_as=True)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.put("/api/flows/{flow_id}")
+def api_flow_update(flow_id: str, req: FlowReq):
+    payload = req.model_dump()
+    payload["id"] = flow_id
+    try:
+        return flows.save_flow(payload)
+    except KeyError:
+        raise HTTPException(404, "unknown flow")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class FlowRunReq(BaseModel):
+    input: str = ""
+    cwd: str | None = None
+    notify: bool = False
+    output: str | None = ""
+
+
+@app.post("/api/flows/{flow_id}/run")
+def api_flow_run(flow_id: str, req: FlowRunReq):
+    try:
+        return flows.run_flow(flow_id, req.input, cwd=req.cwd,
+                              notify=req.notify, output=req.output or "")
+    except KeyError:
+        raise HTTPException(404, "unknown flow")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class FlowApprovalReq(BaseModel):
+    approved: bool
+    note: str | None = ""
+
+
+@app.post("/api/flows/runs/{run_id}/approval/{stage_id}")
+def api_flow_approval(run_id: str, stage_id: str, req: FlowApprovalReq):
+    try:
+        return _run_with_result(circuits.decide_approval(
+            run_id, stage_id, req.approved, req.note or ""))
+    except KeyError:
+        raise HTTPException(404, "unknown run or approval")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 @app.get("/api/vault/status")
 def api_vault_status():
