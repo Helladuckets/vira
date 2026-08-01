@@ -92,6 +92,8 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         source = BRANCH_SH.read_text(encoding="utf-8")
         self.assertIn('"KeepAlive": True', source)
         self.assertIn('$HOME/Library/LaunchAgents/$label.plist', source)
+        self.assertIn('"/usr/bin/caffeinate", "-i", "-s", "-t", "43200"',
+                      source)
         self.assertIn('launchctl bootstrap "gui/$(id -u)" "$plist"', source)
         self.assertIn('launchctl bootout "gui/$(id -u)/$label"', source)
 

@@ -169,8 +169,12 @@ import sys
 path, label, python, workdir, port, log, path_env = sys.argv[1:]
 payload = {
     "Label": label,
-    "ProgramArguments": [python, "-m", "uvicorn", "server.main:app",
-                         "--host", "127.0.0.1", "--port", port],
+    # Keep the Mac reachable for today's review window. The assertion belongs
+    # to this service, expires after 12 hours, and disappears immediately when
+    # branch.sh stop bootouts the service. The Vira process stays its child.
+    "ProgramArguments": ["/usr/bin/caffeinate", "-i", "-s", "-t", "43200",
+                         python, "-m", "uvicorn", "server.main:app", "--host",
+                         "127.0.0.1", "--port", port],
     "WorkingDirectory": workdir,
     "EnvironmentVariables": {"VIRA_PASSIVE": "1", "PATH": path_env},
     "RunAtLoad": True,
