@@ -2191,6 +2191,98 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 .find-chip-x:hover { opacity: 1; }
 
+/* Find's second mode: one persistent vault conversation, with the exact
+   Brain companions sharing its session state. The companion sections are
+   windows on desktop and internal tabs on phone widths. */
+.find-chat-toolbar {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.find-chat-state { flex: 1; text-align: center; }
+.find-chat-log { min-height: 260px; max-height: calc(100vh - 330px); }
+.find-chat-log .brain-msg.vira { white-space: normal; }
+.find-chat-log .ask-answer {
+  margin: 0; padding: 0; border: 0; background: transparent;
+}
+.find-chat-composer {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px; align-items: end; padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.find-chat-composer textarea {
+  min-height: 58px; max-height: 150px; resize: vertical;
+  padding: 10px 12px; line-height: 1.4;
+}
+.find-chat-composer > .hint { grid-column: 1 / -1; text-align: right; }
+.find-chat-mobile-tabs { display: none; gap: 6px; margin-bottom: 10px; }
+.find-chat-mobile-panel { min-height: 55vh; }
+
+.find-cloud {
+  position: relative; flex: 1; min-height: 360px; overflow: hidden;
+}
+.find-companion-empty {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; padding: 24px; text-align: center;
+  color: var(--text-faint); font-size: 13px; line-height: 1.45;
+}
+.find-concept {
+  position: absolute; transform: translate(-50%, -50%); cursor: pointer;
+  white-space: nowrap; user-select: none; border: 0; background: none;
+  font-family: var(--sans); letter-spacing: -.01em; line-height: 1;
+  transition: filter .12s; padding: 0;
+}
+.find-concept:hover { filter: brightness(1.35); z-index: 10; }
+.find-concept-turns {
+  margin-left: .25em; font-size: .58em; vertical-align: super; opacity: .65;
+}
+.find-related {
+  display: flex; flex-direction: column; gap: 10px; min-height: 360px;
+  overflow-y: auto; padding: 2px;
+}
+.find-related-card {
+  width: 100%; display: flex; flex-direction: column; gap: 4px;
+  padding: 12px; text-align: left; cursor: pointer; color: var(--text);
+  background: var(--bg-card); border: 1px solid var(--line);
+  border-radius: var(--radius); font-family: inherit;
+}
+.find-related-card:hover { border-color: var(--accent-line); }
+.find-related-card.dim { opacity: .55; }
+.find-related-type {
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--text-faint);
+}
+.find-related-type.followup { color: var(--accent-bright); }
+.find-related-type.cluster { color: var(--steel); }
+.find-related-type.cited { color: var(--green); }
+.find-related-body { font-size: 13.5px; line-height: 1.45; }
+.find-related-paths { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.find-related-path {
+  padding: 2px 7px; color: var(--text-faint); background: var(--bg-raised);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  font-family: var(--mono); font-size: 10px;
+}
+
+@media (min-width: 1100px) {
+  #win-find-cloud .fwin-body, #win-find-related .fwin-body {
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #win-find-cloud .find-companion-view,
+  #win-find-related .find-companion-view {
+    display: flex; flex-direction: column; flex: 1; min-height: 0;
+  }
+  #win-find-related .find-related { min-height: 0; }
+  .find-chat-mobile-panel { display: none; }
+}
+
+@media (max-width: 1099px) {
+  .find-bar { flex-wrap: wrap; }
+  .find-bar .search { flex-basis: 100%; }
+  .find-chat-mobile-tabs:not([hidden]) { display: flex; }
+  .find-chat-toolbar .find-chat-state { display: none; }
+  .find-chat-log { max-height: none; min-height: 45vh; }
+  .find-chat-mobile-panel:not([hidden]) { display: flex; }
+  .find-chat-mobile-panel.find-cloud { min-height: 62vh; }
+}
+
 /* ---------- morning picker (subs-visuals) ---------- */
 .subsviz-meta { display: flex; align-items: center; gap: 10px; margin: 0 2px 10px; }
 .subsviz-empty {

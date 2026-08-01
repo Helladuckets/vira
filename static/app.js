@@ -2071,6 +2071,387 @@ function setFindTab(tab) {
 let findSetQuery = null;
 let findPendingQuery = null;
 
+let findChatSession = null;
+let findChatLoaded = false;
+let findChatPending = false;
+let findChatRefs = null;
+let findChatMobileTab = "chat";
+
+function findChatSessionLabel() {
+  const n = findChatSession?.turns?.length || 0;
+  return n ? `Vault chat · ${n} turn${n === 1 ? "" : "s"}` : "Vault chat";
+}
+
+function findChatFill(question) {
+  if (!findChatRefs) return;
+  findChatRefs.input.value = question || "";
+  findChatRefs.send.disabled = findChatPending || !findChatRefs.input.value.trim();
+  findChatRefs.input.focus();
+}
+
+function findChatShowMobileTab(tab) {
+  findChatMobileTab = tab;
+  if (!findChatRefs) return;
+  findChatRefs.mobileTabs.querySelectorAll("button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.tab === tab));
+  findChatRefs.chatBody.hidden = tab !== "chat";
+  findChatRefs.mobileCloud.hidden = tab !== "concepts";
+  findChatRefs.mobileRelated.hidden = tab !== "related";
+  if (tab === "concepts") renderFindClouds();
+  if (tab === "related") renderFindRelated();
+}
+
+function findChatPositionCompanions() {
+  const findEl = winState.find?.el;
+  if (!findEl) return;
+  const r = findEl.getBoundingClientRect();
+  const stored = desktopStore();
+  const places = {
+    "find-related": {x: Math.max(14, Math.round(r.left - 394)),
+                     y: Math.max(48, Math.round(r.top))},
+    "find-cloud": {x: Math.max(14, Math.min(innerWidth - 474,
+                                            Math.round(r.right + 14))),
+                   y: Math.max(48, Math.round(r.top))},
+  };
+  Object.entries(places).forEach(([id, p]) => {
+    if (stored[id]?.x != null || !winState[id]) return;
+    Object.assign(winState[id].el.style, {left: p.x + "px", top: p.y + "px"});
+    saveWinState(id, p);
+  });
+}
+
+function openFindCompanions() {
+  if (!isDesktop) return;
+  findChatPositionCompanions();
+  openWindow("find-cloud");
+  openWindow("find-related");
+  requestAnimationFrame(() => {
+    renderFindClouds();
+    renderFindRelated();
+  });
+}
+
+async function loadFindChat(force = false) {
+  if (findChatLoaded && !force) return findChatSession;
+  const d = await api("/api/find/chat");
+  findChatLoaded = true;
+  findChatSession = d.session || null;
+  renderFindChat();
+  return findChatSession;
+}
+
+async function startNewFindChat() {
+  if (findChatPending) return;
+  const prior = findChatSession?.turns?.length || 0;
+  if (prior && !confirm("Start a new vault chat? The current chat stays saved.")) return;
+  try {
+    const d = await post("/api/find/chat/new", {});
+    findChatLoaded = true;
+    findChatSession = d.session;
+    renderFindChat();
+    findChatFill("");
+  } catch (e) {
+    toast("Could not start chat: " + e.message);
+  }
+}
+
+async function sendFindChat(question) {
+  const q = (question ?? findChatRefs?.input.value ?? "").trim();
+  if (!q || findChatPending || !findChatRefs) return;
+  findChatPending = true;
+  findChatRefs.input.value = "";
+  findChatRefs.send.disabled = true;
+  renderFindChat();
+  const pendingUser = el("div", "brain-msg you", q);
+  const thinking = el("div", "brain-msg vira thinking", "Reading the vault…");
+  findChatRefs.log.appendChild(pendingUser);
+  findChatRefs.log.appendChild(thinking);
+  findChatRefs.log.scrollTop = findChatRefs.log.scrollHeight;
+  try {
+    const d = await post("/api/find/chat", {
+      question: q, session_id: findChatSession?.id || null,
+    });
+    findChatLoaded = true;
+    findChatSession = d.session;
+    renderFindChat();
+  } catch (e) {
+    thinking.classList.remove("thinking");
+    thinking.classList.add("error");
+    thinking.textContent = "Chat failed: " + e.message;
+  } finally {
+    findChatPending = false;
+    findChatRefs.send.disabled = !findChatRefs.input.value.trim();
+    findChatRefs.input.focus();
+  }
+}
+
+async function showFindChat(question = "") {
+  if (!findChatRefs) return;
+  findChatRefs.searchPane.hidden = true;
+  findChatRefs.chatPane.hidden = false;
+  findChatRefs.mobileTabs.hidden = false;
+  findChatShowMobileTab("chat");
+  try {
+    await loadFindChat();
+  } catch (e) {
+    findChatRefs.status.textContent = "Vault chat is unavailable.";
+  }
+  openFindCompanions();
+  if (question.trim()) sendFindChat(question);
+  else findChatRefs.input.focus();
+}
+
+function hideFindChat() {
+  if (!findChatRefs) return;
+  findChatRefs.searchPane.hidden = false;
+  findChatRefs.chatPane.hidden = true;
+  findChatRefs.mobileTabs.hidden = true;
+  findChatRefs.searchInput.focus();
+}
+
+function openFindChatCompanion(id) {
+  openApp("find");
+  showFindChat();
+  if (isDesktop) openWindow(id);
+  else findChatShowMobileTab(id === "find-cloud" ? "concepts" : "related");
+}
+
+function initFindChatShell(root, searchPane, searchInput) {
+  const mobileTabs = el("div", "find-chat-mobile-tabs");
+  [["chat", "Chat"], ["concepts", "Concepts"], ["related", "Related"]]
+    .forEach(([id, label]) => {
+      const b = el("button", "fchip sm" + (id === "chat" ? " on" : ""), label);
+      b.dataset.tab = id;
+      b.addEventListener("click", () => findChatShowMobileTab(id));
+      mobileTabs.appendChild(b);
+    });
+  mobileTabs.hidden = true;
+
+  const chatPane = el("div", "find-chat-pane");
+  chatPane.hidden = true;
+  const toolbar = el("div", "find-chat-toolbar");
+  const back = el("button", "fchip sm", "Back to search");
+  const status = el("span", "hint find-chat-state");
+  const fresh = el("button", "fchip sm", "New chat");
+  back.addEventListener("click", hideFindChat);
+  fresh.addEventListener("click", startNewFindChat);
+  toolbar.appendChild(back);
+  toolbar.appendChild(status);
+  toolbar.appendChild(fresh);
+
+  const chatBody = el("div", "find-chat-body");
+  const log = el("div", "brain-log find-chat-log");
+  const empty = el("div", "brain-empty find-chat-empty");
+  empty.appendChild(el("p", "hint",
+    "Chat with your vault as a continuing research session. Answers stay "
+    + "grounded in indexed notes; Concept Cloud and Related evolve with each turn."));
+  const examples = el("div", "brain-examples");
+  ["What have I concluded about Vira?", "Connect my recent research themes",
+   "What decisions keep recurring in my sessions?"]
+    .forEach((q) => {
+      const b = el("button", "fchip sm", q);
+      b.addEventListener("click", () => findChatFill(q));
+      examples.appendChild(b);
+    });
+  empty.appendChild(examples);
+  const composer = el("div", "find-chat-composer");
+  const input = el("textarea", "search");
+  input.rows = 2;
+  input.placeholder = "Ask the vault a follow-up…";
+  const send = el("button", "btn primary", "Send");
+  send.disabled = true;
+  input.addEventListener("input", () => {
+    send.disabled = findChatPending || !input.value.trim();
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      sendFindChat();
+    }
+  });
+  send.addEventListener("click", () => sendFindChat());
+  composer.appendChild(input);
+  composer.appendChild(send);
+  composer.appendChild(el("span", "hint", "⌘ Enter to send"));
+  chatBody.appendChild(log);
+  chatBody.appendChild(empty);
+  chatBody.appendChild(composer);
+
+  const mobileCloud = el("div", "find-cloud find-chat-mobile-panel");
+  mobileCloud.id = "find-mobile-cloud-root";
+  mobileCloud.hidden = true;
+  const mobileRelated = el("div", "find-related find-chat-mobile-panel");
+  mobileRelated.id = "find-mobile-related-root";
+  mobileRelated.hidden = true;
+
+  chatPane.appendChild(toolbar);
+  chatPane.appendChild(chatBody);
+  chatPane.appendChild(mobileCloud);
+  chatPane.appendChild(mobileRelated);
+  root.appendChild(mobileTabs);
+  root.appendChild(chatPane);
+  findChatRefs = {searchPane, searchInput, mobileTabs, chatPane, toolbar,
+                  status, chatBody, log, empty, input, send,
+                  mobileCloud, mobileRelated};
+}
+
+function renderFindChat() {
+  if (!findChatRefs) return;
+  const turns = findChatSession?.turns || [];
+  findChatRefs.status.textContent = findChatSessionLabel();
+  document.querySelectorAll(".find-chat-session").forEach((n) => {
+    n.textContent = findChatSessionLabel();
+  });
+  findChatRefs.log.innerHTML = "";
+  turns.forEach((turn) => {
+    findChatRefs.log.appendChild(el("div", "brain-msg you", turn.question || ""));
+    const answer = el("div", "brain-msg vira");
+    answer.appendChild(findAnswer(turn));
+    findChatRefs.log.appendChild(answer);
+  });
+  findChatRefs.empty.style.display = turns.length ? "none" : "";
+  requestAnimationFrame(() => {
+    findChatRefs.log.scrollTop = findChatRefs.log.scrollHeight;
+  });
+  renderFindClouds();
+  renderFindRelated();
+}
+
+const FIND_CLOUD_CTX = document.createElement("canvas").getContext("2d");
+const FIND_CLOUD_OBSERVERS = new WeakMap();
+
+function findCloudOverlap(a, b, pad) {
+  return !(a.x + a.w + pad < b.x || b.x + b.w + pad < a.x
+    || a.y + a.h + pad < b.y || b.y + b.h + pad < a.y);
+}
+
+function renderFindCloudInto(target) {
+  if (!target) return;
+  const concepts = [...(findChatSession?.concepts || [])]
+    .sort((a, b) => b.weight - a.weight);
+  if (!concepts.length) {
+    target.innerHTML = '<div class="find-companion-empty">Concepts appear here as you chat.</div>';
+    return;
+  }
+  const W = target.clientWidth, H = target.clientHeight;
+  if (W < 40 || H < 40) return;
+  target.innerHTML = "";
+  const cx = W / 2, cy = H / 2;
+  const placed = [];
+  concepts.forEach((c, i) => {
+    const maxSize = Math.min(40, Math.floor(Math.min(W, H) * 0.16));
+    const baseSize = Math.round(11 + Math.pow(Math.max(0, Math.min(1, c.weight)), .65)
+      * (maxSize - 11));
+    const headline = i < 2;
+    const fontWeight = headline ? 700 : (i < 6 ? 600 : 500);
+    const suffix = c.turns > 1 ? " x" + c.turns : "";
+    const rotated = i >= 2 && ((i * 1373) % 100 < 25);
+    let found = null;
+    const trySize = (size, rotate) => {
+      FIND_CLOUD_CTX.font = `${fontWeight} ${size}px -apple-system, BlinkMacSystemFont, sans-serif`;
+      const tw = Math.ceil(FIND_CLOUD_CTX.measureText(c.term + suffix).width) + 2;
+      const th = Math.ceil(size * 1.16);
+      const bw = rotate ? th : tw, bh = rotate ? tw : th;
+      for (let attempt = 0; attempt < 600; attempt++) {
+        const radius = Math.pow(Math.random(), headline ? 3.5 : (i < 6 ? 2.2 : 1.4))
+          * Math.hypot(W, H) * .55;
+        const angle = Math.random() * Math.PI * 2;
+        const px = placed.length ? cx + radius * Math.cos(angle) : cx;
+        const py = placed.length ? cy + radius * Math.sin(angle) : cy;
+        const box = {x: px - bw / 2, y: py - bh / 2, w: bw, h: bh};
+        if (box.x < 4 || box.y < 4 || box.x + bw > W - 4 || box.y + bh > H - 4)
+          continue;
+        if (placed.some((p) => findCloudOverlap(p, box, headline ? 5 : 2))) continue;
+        return {px, py, box, size, rotate};
+      }
+      return null;
+    };
+    for (let size = baseSize; size >= 11 && !found; size -= 2)
+      found = trySize(size, rotated) || trySize(size, !rotated);
+    if (!found) return;
+    placed.push(found.box);
+    const turns = Math.max(1, c.turns || 1);
+    const node = el("button", "find-concept", c.term);
+    node.style.fontSize = found.size + "px";
+    node.style.fontWeight = fontWeight;
+    node.style.color = `hsl(42, ${Math.min(72, 14 + (turns - 1) * 16
+      + (headline ? 14 : 6))}%, ${headline ? 78 : (i < 6 ? 72 : 64)}%)`;
+    node.style.left = found.px + "px";
+    node.style.top = found.py + "px";
+    if (found.rotate) node.style.transform = "translate(-50%, -50%) rotate(-90deg)";
+    if (turns > 1) node.appendChild(el("span", "find-concept-turns", "x" + turns));
+    node.title = c.primary_path || "";
+    node.addEventListener("click", () => openNote(c.primary_path));
+    target.appendChild(node);
+  });
+  FIND_CLOUD_OBSERVERS.get(target)?.disconnect();
+  target._findCloudWidth = W;
+  target._findCloudHeight = H;
+  const observer = new ResizeObserver(() => {
+    if (Math.abs(target.clientWidth - target._findCloudWidth) < 8
+        && Math.abs(target.clientHeight - target._findCloudHeight) < 8) return;
+    clearTimeout(target._findCloudTimer);
+    target._findCloudTimer = setTimeout(() => renderFindCloudInto(target), 80);
+  });
+  observer.observe(target);
+  FIND_CLOUD_OBSERVERS.set(target, observer);
+}
+
+function renderFindClouds() {
+  renderFindCloudInto($("#find-cloud-root"));
+  renderFindCloudInto($("#find-mobile-cloud-root"));
+}
+
+function renderFindRelatedInto(target) {
+  if (!target) return;
+  const session = findChatSession;
+  const items = [];
+  (session?.follow_up_questions || []).forEach((q) =>
+    items.push({type: "followup", body: q, fresh: true}));
+  (session?.topic_clusters || []).forEach((c) =>
+    items.push({type: "cluster", label: c.label, paths: c.paths, fresh: true}));
+  const turnCount = session?.turns?.length || 0;
+  (session?.cited || []).forEach((c) => items.push({
+    type: "cited", ...c,
+    fresh: turnCount - (c.last_cited_in_turn || 0) < 3,
+  }));
+  if (!items.length) {
+    target.innerHTML = '<div class="find-companion-empty">Follow-ups, cited notes, and topic clusters appear here.</div>';
+    return;
+  }
+  target.innerHTML = "";
+  items.forEach((item) => {
+    const card = el("button", "find-related-card" + (item.fresh ? "" : " dim"));
+    if (item.type === "followup") {
+      card.appendChild(el("span", "find-related-type followup", "follow-up"));
+      card.appendChild(el("span", "find-related-body", item.body));
+      card.addEventListener("click", () => {
+        openApp("find"); showFindChat(); findChatFill(item.body);
+      });
+    } else if (item.type === "cluster") {
+      card.appendChild(el("span", "find-related-type cluster", "cluster"));
+      card.appendChild(el("span", "find-related-body", item.label));
+      const paths = el("span", "find-related-paths");
+      (item.paths || []).forEach((p) => paths.appendChild(
+        el("span", "find-related-path", p.split("/").pop())));
+      card.appendChild(paths);
+      card.addEventListener("click", () => openNote(item.paths?.[0]));
+    } else {
+      card.appendChild(el("span", "find-related-type cited",
+        "cited · " + (item.count > 1 ? item.count + "x" : "turn " + item.last_cited_in_turn)));
+      card.appendChild(el("span", "find-related-body",
+        item.title || item.path.split("/").pop().replace(/\.md$/, "")));
+      card.addEventListener("click", () => openNote(item.path, item.title));
+    }
+    target.appendChild(card);
+  });
+}
+
+function renderFindRelated() {
+  renderFindRelatedInto($("#find-related-root"));
+  renderFindRelatedInto($("#find-mobile-related-root"));
+}
+
 function openFindQuery(q, opts = {}) {
   openApp("find");
   if (findSetQuery) findSetQuery(q, opts);
@@ -2126,14 +2507,18 @@ function initFindView() {
   let last = null;            // the envelope currently rendered
   let seq = 0;                // drops out-of-order responses
 
+  const searchPane = el("div", "find-search-pane");
+  root.appendChild(searchPane);
   const bar = el("div", "runbar find-bar");
   const input = el("input", "search");
   input.type = "text";
   input.autocomplete = "off";
   input.placeholder = "Search or ask across notes, media, people, messages…";
   const askBtn = el("button", "btn primary", "Ask");
+  const chatBtn = el("button", "btn", "Chat with my vault");
   bar.appendChild(input);
   bar.appendChild(askBtn);
+  bar.appendChild(chatBtn);
   const tabs = el("div", "fchips tight");
   const kinds = el("div", "fchips tight");
   const why = el("div", "find-why");
@@ -2152,13 +2537,14 @@ function initFindView() {
     examples.appendChild(c);
   });
   empty.appendChild(examples);
-  root.appendChild(bar);
-  root.appendChild(tabs);
-  root.appendChild(kinds);
-  root.appendChild(why);
-  root.appendChild(status);
-  root.appendChild(results);
-  root.appendChild(empty);
+  searchPane.appendChild(bar);
+  searchPane.appendChild(tabs);
+  searchPane.appendChild(kinds);
+  searchPane.appendChild(why);
+  searchPane.appendChild(status);
+  searchPane.appendChild(results);
+  searchPane.appendChild(empty);
+  initFindChatShell(root, searchPane, input);
 
   const renderTabs = () => {
     tabs.innerHTML = "";
@@ -2247,6 +2633,10 @@ function initFindView() {
     run(last?.plan?.shape === "answer" || looksLikeQuestion(input.value));
   });
   askBtn.addEventListener("click", () => { clearTimeout(timer); run(true); });
+  chatBtn.addEventListener("click", () => {
+    clearTimeout(timer);
+    showFindChat(input.value.trim());
+  });
   findSetTab = (t) => {
     if (!FIND_TABS.some(([k]) => k === t)) return;
     tab = t;
@@ -10117,6 +10507,12 @@ function viewLoad(id) {
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "find") loadFindStatus().catch(() => {});
+  if (id === "find-cloud" || id === "find-related") {
+    loadFindChat().then(() => requestAnimationFrame(() => {
+      if (id === "find-cloud") renderFindClouds();
+      else renderFindRelated();
+    })).catch(() => {});
+  }
   if (id === "people") peopleTabLoad(peopleTab);
   if (id === "atlas") window.atlasLoad?.();
   if (id === "map") {
@@ -12771,6 +13167,12 @@ const WINDOWS = [
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
   { id: "find", title: "Find", w: 720,
     icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
+  { id: "find-cloud", title: "Concept Cloud", w: 460, h: 560,
+    companion: true,
+    icon: "M12 12m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0-4.8 0M5 6m-1.7 0a1.7 1.7 0 1 0 3.4 0A1.7 1.7 0 0 0 5 6M19 7m-1.7 0a1.7 1.7 0 1 0 3.4 0A1.7 1.7 0 0 0 19 7M6 18m-1.7 0a1.7 1.7 0 1 0 3.4 0A1.7 1.7 0 0 0 6 18M18 18m-1.7 0a1.7 1.7 0 1 0 3.4 0A1.7 1.7 0 0 0 18 18M10 10L6.2 7.2M14 10.5l3.6-2.4M10.2 14l-3 2.7M13.8 14l3 2.7" },
+  { id: "find-related", title: "Related", w: 380, h: 560,
+    companion: true,
+    icon: "M5 5h14v4H5zM5 11h14v4H5zM5 17h14v2H5z" },
   { id: "evidence", title: "Evidence Ledger", w: 640,
     icon: "M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6zM9 12l2 2 4-4" },
   // Plans folded into the Reader (2026-07-27). A saved plan is something to
@@ -13693,7 +14095,7 @@ function buildWindow(spec, st, ci) {
   document.body.appendChild(win);
 
   const w = Math.min(st.w ?? spec.w ?? 440, innerWidth - 24);
-  const h = Math.min(st.h ?? 660, innerHeight - 120);
+  const h = Math.min(st.h ?? spec.h ?? 660, innerHeight - 120);
   const defX = { feed: 24, people: 482,
                  work: innerWidth - w - 28,
                  brief: Math.max(24, Math.round((innerWidth - w) / 2)) }[spec.id];
@@ -13796,7 +14198,8 @@ function buildDock() {
 // stored icon order; unknown ids dropped, new windows slot in at their
 // default position so a stale saved order never hides an icon
 function dockOrder() {
-  const def = [...WINDOWS.map((w) => w.id), "palette"];
+  const def = [...WINDOWS.filter((w) => !w.companion).map((w) => w.id),
+               "palette"];
   const stored = lsGet("vira-dock-order", null);
   if (!Array.isArray(stored)) return def;
   const out = stored.filter((id) => def.includes(id));
@@ -13940,7 +14343,7 @@ function rebuildDock() {
 // with the most setup cost the hardest ones to discover.
 function appLive(id) {
   if (DOCK_LOCKED.has(id)) return false;
-  return WINDOWS.some((w) => w.id === id);
+  return WINDOWS.some((w) => w.id === id && !w.companion);
 }
 
 // The canonical app order — the SAME list the desktop dock reads, so
@@ -14845,7 +15248,7 @@ function paletteMatches(q) {
   // every registered window is a command — new WINDOWS entries come free
   const cmds = WINDOWS.map((w) => ({
     label: "Open " + w.title, kind: "window",
-    run: () => openWindow(w.id),
+    run: () => w.companion ? openFindChatCompanion(w.id) : openWindow(w.id),
   }));
   // the five folded cockpit windows stay findable by their old names
   const workCmd = (label, tab, sub) => ({
