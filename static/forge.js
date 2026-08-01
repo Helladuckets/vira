@@ -82,6 +82,8 @@
     connect: null,
     tempPoint: null,
     libraryDrag: null,
+    libraryHome: null,
+    libraryFloatRect: null,
   };
 
   function flowPayload(flow = state.current) {
@@ -1529,21 +1531,86 @@
   }
 
   function closeLibrary() {
-    q("#forge-library")?.classList.add("is-hidden");
+    const panel = q("#forge-library");
+    panel?.classList.add("is-hidden");
     q("#forge-shell")?.classList.add("library-hidden");
+    q("#work-dispatch-pane")?.classList.add("library-away");
   }
 
   function openLibrary() {
-    q("#forge-library")?.classList.remove("is-hidden");
-    q("#forge-shell")?.classList.remove("library-hidden");
+    const panel = q("#forge-library");
+    if (!panel) return;
+    panel.classList.remove("is-hidden");
+    const detached = panel.classList.contains("is-detached");
+    q("#forge-shell")?.classList.toggle("library-hidden", detached);
+    q("#work-dispatch-pane")?.classList.toggle("library-away", detached);
+    if (detached) panel.style.zIndex = "4050";
+  }
+
+  function clampLibraryRect(rect) {
+    const w = Math.min(rect.width, Math.max(320, innerWidth - 24));
+    const h = Math.min(rect.height, Math.max(260, innerHeight - 68));
+    return {
+      left: clamp(rect.left, 12, Math.max(12, innerWidth - w - 12)),
+      top: clamp(rect.top, 48, Math.max(48, innerHeight - h - 12)),
+      width: w,
+      height: h,
+    };
+  }
+
+  function paintDetachedLibrary(rect) {
+    const panel = q("#forge-library");
+    if (!panel) return;
+    const next = clampLibraryRect(rect);
+    panel.style.left = `${next.left}px`;
+    panel.style.top = `${next.top}px`;
+    panel.style.width = `${next.width}px`;
+    panel.style.height = `${next.height}px`;
+    state.libraryFloatRect = next;
+  }
+
+  function detachLibrary() {
+    const panel = q("#forge-library");
+    const shell = q("#forge-shell");
+    if (!panel || !shell || panel.classList.contains("is-detached")) return;
+    const source = panel.getBoundingClientRect();
+    state.libraryHome ||= { parent: panel.parentNode, next: panel.nextSibling };
+    const width = Math.min(680, innerWidth - 24);
+    const height = Math.min(720, innerHeight - 80);
+    let left = shell.getBoundingClientRect().right + 12;
+    if (left + width > innerWidth - 12) left = source.left;
+    const initial = state.libraryFloatRect || {
+      left, top: Math.max(52, source.top), width, height,
+    };
+    panel.classList.remove("is-hidden");
+    panel.classList.add("is-floating", "is-detached");
+    document.body.appendChild(panel);
+    panel.style.zIndex = "4050";
+    paintDetachedLibrary(initial);
+    shell.classList.add("library-hidden");
+    q("#work-dispatch-pane")?.classList.add("library-away");
+    q("#forge-library-float").textContent = "Dock";
+  }
+
+  function dockLibrary() {
+    const panel = q("#forge-library");
+    const shell = q("#forge-shell");
+    if (!panel || !shell || !panel.classList.contains("is-detached")) return;
+    const home = state.libraryHome;
+    (home?.parent || shell).insertBefore(panel, home?.next || shell.firstChild);
+    panel.classList.remove("is-floating", "is-detached");
+    ["left", "top", "width", "height", "z-index"].forEach((name) =>
+      panel.style.removeProperty(name));
+    shell.classList.toggle("library-hidden", panel.classList.contains("is-hidden"));
+    q("#work-dispatch-pane")?.classList.toggle("library-away", panel.classList.contains("is-hidden"));
+    q("#forge-library-float").textContent = "Pop out";
   }
 
   function toggleLibraryFloat() {
     const panel = q("#forge-library");
-    panel.classList.remove("is-hidden");
-    q("#forge-shell").classList.remove("library-hidden");
-    panel.classList.toggle("is-floating");
-    q("#forge-library-float").textContent = panel.classList.contains("is-floating") ? "Dock" : "Float";
+    if (!panel) return;
+    if (panel.classList.contains("is-detached")) dockLibrary();
+    else detachLibrary();
   }
 
   function bindLibraryDrag() {
@@ -1551,20 +1618,30 @@
     const head = q("#forge-library-head");
     let drag = null;
     head.addEventListener("pointerdown", (event) => {
-      if (!panel.classList.contains("is-floating") || event.button !== 0 || event.target.closest("button")) return;
+      if (!panel.classList.contains("is-detached") || event.button !== 0 || event.target.closest("button")) return;
       const rect = panel.getBoundingClientRect();
-      const shell = q("#forge-shell").getBoundingClientRect();
-      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left - shell.left, top: rect.top - shell.top };
+      panel.style.zIndex = "4050";
+      drag = { id: event.pointerId, x: event.clientX, y: event.clientY, left: rect.left, top: rect.top };
       head.setPointerCapture(event.pointerId);
     });
     head.addEventListener("pointermove", (event) => {
       if (!drag || drag.id !== event.pointerId) return;
-      const shell = q("#forge-shell").getBoundingClientRect();
-      panel.style.left = `${clamp(drag.left + event.clientX - drag.x, 0, shell.width - panel.offsetWidth)}px`;
-      panel.style.top = `${clamp(drag.top + event.clientY - drag.y, 0, shell.height - 80)}px`;
+      paintDetachedLibrary({
+        left: drag.left + event.clientX - drag.x,
+        top: drag.top + event.clientY - drag.y,
+        width: panel.offsetWidth,
+        height: panel.offsetHeight,
+      });
     });
     head.addEventListener("pointerup", () => { drag = null; });
     head.addEventListener("pointercancel", () => { drag = null; });
+    panel.addEventListener("pointerdown", () => {
+      if (panel.classList.contains("is-detached")) panel.style.zIndex = "4050";
+    });
+    window.addEventListener("resize", () => {
+      if (!panel.classList.contains("is-detached")) return;
+      paintDetachedLibrary(state.libraryFloatRect || panel.getBoundingClientRect());
+    });
   }
 
   function bind() {

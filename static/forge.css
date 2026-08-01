@@ -16,6 +16,25 @@
   min-width: 0;
 }
 
+/* The Flows tab consumes the Work window's available height. The class is
+   applied only while Flows is active, so Cues, Runs, and Record retain their
+   ordinary document scrolling. */
+#win-work.forge-active .fwin-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#win-work.forge-active #view-work,
+#win-work.forge-active #work-dispatch-pane {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+#win-work.forge-active #work-tabs,
+#win-work.forge-active .forge-head,
+#win-work.forge-active .forge-launchbar { flex: none; }
+
 .forge-head {
   display: flex;
   align-items: flex-start;
@@ -84,6 +103,11 @@
   background: var(--bg-frame);
 }
 
+#win-work.forge-active .forge-shell {
+  flex: 1;
+  min-height: 320px;
+}
+
 .forge-library,
 .forge-inspector {
   z-index: 8;
@@ -94,19 +118,27 @@
 }
 .forge-library.is-hidden { display: none; }
 .forge-shell.library-hidden { grid-template-columns: minmax(0, 1fr); }
-.forge-library.is-floating {
-  position: absolute;
-  top: 44px;
-  left: 18px;
-  width: min(620px, calc(100% - 36px));
-  max-height: calc(100% - 70px);
+.forge.library-away .forge-back { display: inline-block; }
+body > .forge-library.is-detached {
+  position: fixed;
+  z-index: 4050;
+  display: flex;
+  flex-direction: column;
+  min-width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 60px);
   overflow: hidden;
   border: 1px solid var(--line);
+  border-radius: var(--radius);
+  backdrop-filter: blur(20px);
   box-shadow: 0 20px 55px var(--scrim-strong);
 }
-.forge-library.is-floating .forge-library-body {
+body > .forge-library.is-detached.is-hidden { display: none; }
+body > .forge-library.is-detached .forge-library-body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  flex: 1;
+  max-height: none;
   gap: 7px;
 }
 .forge-panel-head {
@@ -120,8 +152,8 @@
   background: var(--bg-titlebar);
   user-select: none;
 }
-.forge-library.is-floating .forge-panel-head { cursor: grab; }
-.forge-library.is-floating .forge-panel-head:active { cursor: grabbing; }
+body > .forge-library.is-detached .forge-panel-head { cursor: grab; }
+body > .forge-library.is-detached .forge-panel-head:active { cursor: grabbing; }
 .forge-panel-head strong { display: block; margin-top: 1px; font-size: 11px; font-weight: 500; }
 .forge-panel-head button,
 .forge-zoom button,
@@ -186,7 +218,8 @@
 
 .forge-workspace {
   position: relative;
-  display: block;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   max-width: none;
   margin: 0;
@@ -222,6 +255,12 @@
   background-color: var(--forge-board);
   background-image: radial-gradient(circle, var(--forge-grid) 1px, transparent 1px);
   background-size: 22px 22px;
+}
+#win-work.forge-active .forge-viewport,
+#win-work.forge-active .forge-outline {
+  flex: 1;
+  height: auto;
+  min-height: 320px;
 }
 .forge-viewport.is-panning { cursor: grabbing; }
 .forge-viewport.connecting { cursor: crosshair; }
@@ -605,8 +644,8 @@
     box-shadow: 16px 0 40px var(--scrim-strong);
   }
   .forge-library.is-hidden { display: none; }
-  .forge-library.is-floating { inset: 12px; width: auto; max-height: calc(100% - 24px); }
-  .forge-library.is-floating .forge-library-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  body > .forge-library.is-detached { min-width: 0; }
+  body > .forge-library.is-detached .forge-library-body { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .forge-viewport,
   .forge-outline { height: min(66vh, 650px); min-height: 430px; }
   .forge-launchbar { grid-template-columns: minmax(0, 1fr) minmax(120px, .7fr) auto; }
@@ -620,7 +659,7 @@
   .forge-status { order: 3; flex-basis: 100%; }
   .forge-node.is-expanded { width: 330px; }
   .forge-node-detail-row { grid-template-columns: 1fr; }
-  .forge-library.is-floating .forge-library-body { grid-template-columns: 1fr; }
+  body > .forge-library.is-detached .forge-library-body { grid-template-columns: 1fr; }
   .forge-launchbar { grid-template-columns: minmax(0, 1fr) auto; }
   .forge-launchbar label:nth-child(2) { display: none; }
 }

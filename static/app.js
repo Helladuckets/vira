@@ -10058,6 +10058,10 @@ function setWorkTab(tab, opts = {}) {
     const p = $(sel);
     if (p) p.style.display = t === tab ? "" : "none";
   });
+  // Flows is a canvas, not a document: while it is active the Work window's
+  // body becomes a height-constrained flex stack so resizing the window grows
+  // the board itself instead of revealing blank scroll area below a 67vh cap.
+  $("#win-work")?.classList.toggle("forge-active", tab === "dispatch");
   if (!opts.defer) workTabLoad(tab);
 }
 
@@ -13449,8 +13453,18 @@ function makeDraggable(node, bar, onEnd) {
     node.style.height = rect.height + "px";
     const ox = e.clientX - rect.left;
     const oy = e.clientY - rect.top;
+    let fitAtStart = node.classList.contains("fwin-fit");
     bar.setPointerCapture(e.pointerId);
     const move = (ev) => {
+      // Pointerdown is also the first half of a double-click. Exit fit only
+      // after an actual move, otherwise that first click would discard the
+      // rectangle the second click is meant to restore.
+      if (fitAtStart && (Math.abs(ev.clientX - e.clientX) > 4
+          || Math.abs(ev.clientY - e.clientY) > 4)) {
+        node.classList.remove("fwin-fit");
+        node._forgeRestore = null;
+        fitAtStart = false;
+      }
       const x = Math.min(Math.max(ev.clientX - ox, 100 - rect.width), innerWidth - 100);
       const y = Math.min(Math.max(ev.clientY - oy, 44), innerHeight - 64);
       node.style.left = x + "px";
@@ -13569,6 +13583,10 @@ function makeResizable(node, onEnd, minW = 340, minH = 240) {
     const grip = el("div", "rz rz-" + d);
     grip.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
+      if (node.classList.contains("fwin-fit")) {
+        node.classList.remove("fwin-fit");
+        node._forgeRestore = null;
+      }
       focusWin(node);
       const rect = node.getBoundingClientRect();
       node.style.left = rect.left + "px";
@@ -13582,15 +13600,22 @@ function makeResizable(node, onEnd, minW = 340, minH = 240) {
       const move = (ev) => {
         const dx = ev.clientX - sx, dy = ev.clientY - sy;
         const mw = minOf(minW), mh = minOf(minH);
+        // CSS also caps floating windows at the viewport. Keep the authored
+        // width and height on the same side of that cap: previously the inline
+        // size kept growing invisibly after the rendered window stopped, so a
+        // long reverse drag appeared to do nothing until it crossed that
+        // hidden overrun.
+        const maxW = Math.max(mw, innerWidth - 40);
+        const maxH = Math.max(mh, innerHeight - 40);
         let L = rect.left, T = rect.top, W = rect.width, H = rect.height;
-        if (d.includes("e")) W = Math.max(mw, rect.width + dx);
-        if (d.includes("s")) H = Math.max(mh, rect.height + dy);
+        if (d.includes("e")) W = Math.min(maxW, Math.max(mw, rect.width + dx));
+        if (d.includes("s")) H = Math.min(maxH, Math.max(mh, rect.height + dy));
         if (d.includes("w")) {
-          W = Math.max(mw, rect.width - dx);
+          W = Math.min(maxW, Math.max(mw, rect.width - dx));
           L = rect.right - W;
         }
         if (d.includes("n")) {
-          H = Math.max(mh, rect.height - dy);
+          H = Math.min(maxH, Math.max(mh, rect.height - dy));
           T = rect.bottom - H;
           if (T < 44) { T = 44; H = rect.bottom - 44; } // keep under the menu bar
         }
@@ -13617,7 +13642,7 @@ function makeResizable(node, onEnd, minW = 340, minH = 240) {
 // Returns a handle so zoom can also be set PROGRAMMATICALLY — a stage layout
 // carries a zoom per state (parked vs grown), so applying one has to be able
 // to drive this control rather than only being driven by it.
-function addZoomControls(bar, target, initial, onChange) {
+function addZoomControls(bar, target, initial, onChange, resetOnBar = true) {
   const group = el("div", "fwin-zoomgrp");
   let z = initial || 1;
   const paint = () => { target().style.zoom = z; };
@@ -13636,14 +13661,63 @@ function addZoomControls(bar, target, initial, onChange) {
   group.appendChild(mk("+", 1));
   bar.appendChild(group);
   if (z !== 1) requestAnimationFrame(paint);
-  bar.addEventListener("dblclick", (e) => {   // double-click the bar resets zoom
-    if (e.target.closest("button")) return;
-    z = 1;
-    apply();
-  });
+  if (resetOnBar) {
+    bar.addEventListener("dblclick", (e) => { // double-click the bar resets zoom
+      if (e.target.closest("button")) return;
+      z = 1;
+      apply();
+    });
+  }
   // set() paints without calling onChange: loading a layout is not an edit
   return { get: () => z, set: (v) => { z = v || 1; paint(); } };
 }
+
+// The Forge is the one module whose normal working surface is legitimately
+// the whole Vira desk. Keep this as a reversible presentation state rather
+// than saving the fitted rectangle: a second double-click returns to the
+// exact composition the owner had before, and saved layouts remain untouched.
+function forgeDesktopRect() {
+  const x = 20, y = 52;
+  const bottom = 92; // leave the dock fully usable
+  return {
+    x, y,
+    w: Math.max(340, innerWidth - x * 2),
+    h: Math.max(240, innerHeight - y - bottom),
+  };
+}
+
+function restoreForgeWindowFit(win, animate = true) {
+  const saved = win._forgeRestore;
+  if (!saved) return;
+  win.classList.remove("fwin-fit");
+  win._forgeRestore = null;
+  const w = Math.min(saved.w, Math.max(340, innerWidth - 40));
+  const h = Math.min(saved.h, Math.max(240, innerHeight - 40));
+  setWinRect(win, {
+    x: Math.min(Math.max(saved.x, 100 - w), innerWidth - 100),
+    y: Math.min(Math.max(saved.y, 44), innerHeight - 64),
+    w, h,
+  }, animate);
+}
+
+function toggleForgeWindowFit(win) {
+  if (editing) return;
+  if (win.classList.contains("fwin-fit")) {
+    restoreForgeWindowFit(win);
+    focusWin(win);
+    return;
+  }
+  const r = win.getBoundingClientRect();
+  win._forgeRestore = { x: r.left, y: r.top, w: r.width, h: r.height };
+  win.classList.add("fwin-fit");
+  setWinRect(win, forgeDesktopRect(), true);
+  focusWin(win);
+}
+
+window.addEventListener("resize", () => {
+  const forge = document.querySelector("#win-work.fwin-fit");
+  if (forge) setWinRect(forge, forgeDesktopRect(), false);
+});
 
 function buildWindow(spec, st, ci) {
   const section = $("#view-" + spec.id);
@@ -13665,7 +13739,15 @@ function buildWindow(spec, st, ci) {
   // back to its parked tile, and an edit-mode zoom persisted before Save.
   // persistZoom routes it the same way persistGeom routes geometry.
   win._zoom = addZoomControls(bar, () => body, st.z,
-    (z) => persistZoom(spec.id, z));
+    (z) => persistZoom(spec.id, z), spec.id !== "work");
+  if (spec.id === "work") {
+    bar.title = "Drag to move. Double-click to fit or restore The Forge.";
+    bar.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button") || win.classList.contains("fwin-locked")) return;
+      e.preventDefault();
+      toggleForgeWindowFit(win);
+    });
+  }
   win.dataset.wid = spec.id;
   win.addEventListener("pointerdown", () => focusWin(win));
   // A parked tile stays LIVE — hover states work and its body scrolls — but
@@ -17724,7 +17806,11 @@ window.addEventListener("resize", () => {
   if (editing || layoutMode !== "stage") return;
   clearTimeout(layoutResizeT);
   layoutResizeT = setTimeout(() => {
-    if (stageComputed) { applyStage(false, true); return; }
+    const restoreForgeFit = () => {
+      const forge = document.querySelector("#win-work.fwin-fit");
+      if (forge) setWinRect(forge, forgeDesktopRect(), false);
+    };
+    if (stageComputed) { applyStage(false, true); restoreForgeFit(); return; }
     if (!stageBase) return;
     // re-scale from the ORIGINAL saved rects (never the on-screen ones, which
     // are already scaled — that would compound on every resize)
@@ -17736,6 +17822,7 @@ window.addEventListener("resize", () => {
     Object.assign(slotZoom, zooms.park);
     Object.assign(growZoom, zooms.grow);
     applyStage(false, false);
+    restoreForgeFit();
   }, 120);
 });
 
