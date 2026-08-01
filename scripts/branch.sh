@@ -7,6 +7,7 @@
 #   branch.sh adopt [slug]     provision a worktree this script didn't create
 #   branch.sh serve <slug>     test instance: cloned data, passive, local + tailnet
 #   branch.sh serve <slug> --fresh   re-clone data before serving
+#   branch.sh serve <slug> --fixture synthetic-data preview (safe to share)
 #   branch.sh stop <slug>      stop the test instance
 #   branch.sh list             all branch worktrees, their state, running ports
 #   branch.sh merge <slug>     fast, clean merge into live main (aborts on conflict)
@@ -78,8 +79,14 @@ provision() {
 }
 
 instance_pid() {  # prints pid if the worktree's instance is alive, else nothing
-  local dir=$1 pid
+  local dir=$1 pid label
   [[ -f "$dir/$PIDFILE" ]] || return 0
+  label=$(python3 -c "import json;print(json.load(open('$dir/$PIDFILE')).get('label',''))" 2>/dev/null || true)
+  if [[ -n "$label" && "$(uname -s)" == "Darwin" ]]; then
+    pid=$(launchctl print "gui/$(id -u)/$label" 2>/dev/null |
+          awk '/^[[:space:]]*pid = /{print $3; exit}')
+    [[ -n "$pid" ]] && { echo "$pid"; return 0; }
+  fi
   pid=$(python3 -c "import json;print(json.load(open('$dir/$PIDFILE'))['pid'])" 2>/dev/null) || return 0
   kill -0 "$pid" 2>/dev/null && echo "$pid" || true
 }
@@ -90,10 +97,9 @@ instance_port() {
   python3 -c "import json;print(json.load(open('$dir/$PIDFILE'))['port'])" 2>/dev/null || true
 }
 
-# The live Vira binds to the network and reaches the phone through this Mac's
-# MagicDNS name. Test instances use the same transport on their own allocated
-# port: passive and disposable does not have to mean trapped on loopback.
-tailnet_host() {
+# Resolve the installed CLI once. The App Store build does not always put its
+# shim on PATH, while the standalone build does.
+tailscale_binary() {
   local binary=""
   if binary=$(command -v tailscale 2>/dev/null); then
     :
@@ -102,6 +108,16 @@ tailnet_host() {
   else
     return 0
   fi
+  echo "$binary"
+}
+
+# Test uvicorn remains loopback-only. Tailscale Serve is the sole bridge out:
+# encrypted, authenticated, and reachable only by this tailnet. Binding the
+# cloned personal data to 0.0.0.0 would also expose it to the local LAN.
+tailnet_host() {
+  local binary
+  binary=$(tailscale_binary)
+  [[ -n "$binary" ]] || return 0
   "$binary" status --json 2>/dev/null | python3 -c '
 import json, sys
 try:
@@ -110,6 +126,101 @@ try:
 except (OSError, ValueError):
     pass
 ' 2>/dev/null || true
+}
+
+tailnet_serve() {
+  local port=$1 binary host
+  binary=$(tailscale_binary)
+  [[ -n "$binary" ]] || return 0
+  host=$(tailnet_host)
+  [[ -n "$host" ]] || return 0
+  "$binary" serve --bg --yes --http="$port" \
+    "http://127.0.0.1:$port" >/dev/null
+}
+
+tailnet_unserve() {
+  local port=$1 binary
+  binary=$(tailscale_binary)
+  [[ -n "$binary" && -n "$port" ]] || return 0
+  "$binary" serve --yes --http="$port" off >/dev/null 2>&1 || true
+}
+
+test_label() {
+  echo "nyc.durham.vira.test.$1"
+}
+
+launchd_pid() {
+  local label=$1
+  launchctl print "gui/$(id -u)/$label" 2>/dev/null |
+    awk '/^[[:space:]]*pid = /{print $3; exit}'
+}
+
+start_test_process() {
+  local slug=$1 dir=$2 port=$3 pid="" label plist
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null; then
+    label=$(test_label "$slug")
+    plist="$HOME/Library/LaunchAgents/$label.plist"
+    mkdir -p "$HOME/Library/LaunchAgents"
+    python3 - "$plist" "$label" "$LIVE/.venv/bin/python" "$dir" \
+      "$port" "$dir/.test-instance.log" "$PATH" <<'PY'
+import plistlib
+import sys
+
+path, label, python, workdir, port, log, path_env = sys.argv[1:]
+payload = {
+    "Label": label,
+    "ProgramArguments": [python, "-m", "uvicorn", "server.main:app",
+                         "--host", "127.0.0.1", "--port", port],
+    "WorkingDirectory": workdir,
+    "EnvironmentVariables": {"VIRA_PASSIVE": "1", "PATH": path_env},
+    "RunAtLoad": True,
+    "KeepAlive": True,
+    "ThrottleInterval": 3,
+    "StandardOutPath": log,
+    "StandardErrorPath": log,
+}
+with open(path, "wb") as handle:
+    plistlib.dump(payload, handle)
+PY
+    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+    launchctl bootstrap "gui/$(id -u)" "$plist"
+    for _ in $(seq 1 20); do
+      pid=$(launchd_pid "$label")
+      [[ -n "$pid" ]] && break
+      sleep 0.1
+    done
+    [[ -n "$pid" ]] || {
+      echo "error: launchd did not start $label" >&2
+      return 1
+    }
+    print -r -- "{\"pid\": $pid, \"port\": $port, \"label\": \"$label\"}" > "$dir/$PIDFILE"
+  else
+    cd "$dir"
+    VIRA_PASSIVE=1 nohup "$LIVE/.venv/bin/uvicorn" server.main:app \
+      --host 127.0.0.1 --port "$port" >> "$dir/.test-instance.log" 2>&1 &
+    pid=$!
+    print -r -- "{\"pid\": $pid, \"port\": $port}" > "$dir/$PIDFILE"
+  fi
+  echo "$pid"
+}
+
+stop_test_process() {
+  local dir=$1 pid label port
+  [[ -f "$dir/$PIDFILE" ]] || return 0
+  port=$(instance_port "$dir")
+  label=$(python3 -c "import json;print(json.load(open('$dir/$PIDFILE')).get('label',''))" 2>/dev/null || true)
+  pid=$(instance_pid "$dir")
+  if [[ -n "$label" && "$(uname -s)" == "Darwin" ]]; then
+    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+  elif [[ -n "$pid" ]]; then
+    kill "$pid" 2>/dev/null || true
+  fi
+  tailnet_unserve "$port"
+  rm -f "$dir/$PIDFILE" "$dir/.test-instance.plist"
+  if [[ -n "$label" ]]; then
+    rm -f "$HOME/Library/LaunchAgents/$label.plist"
+  fi
+  [[ -n "$pid" ]] && echo "stopped (pid $pid)" || echo "not running"
 }
 
 print_instance_urls() {
@@ -219,6 +330,44 @@ clone_data() {
   mv "$stage" "$dst"
 }
 
+# A neutral preview for cases where publishing a personal data clone has not
+# been explicitly approved. It exercises fixture CRM plus a tiny synthetic
+# vault, so Find chat and its companion windows are testable without exposing
+# any owner data to another device or network transport.
+fixture_data() {
+  local dir=$1 dst="$1/data" stage="$1/.data-snapshot.tmp"
+  rm -rf "$dst" "$stage"
+  mkdir -p "$stage/test-vault/wiki" "$stage/test-vault/Sessions"
+  python3 - "$stage/config.json" "$dst/test-vault" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path, vault_path = sys.argv[1:]
+Path(config_path).write_text(json.dumps({
+    "fixture_mode": True,
+    "vault_root": vault_path,
+    "vault_dirs": ["wiki", "Sessions"],
+}, indent=2), encoding="utf-8")
+PY
+  print -r -- '# Durable previews
+
+The preview server stays loopback-only. Tailscale Serve makes it available
+only to authenticated devices in the same tailnet.
+
+The test environment uses synthetic notes unless the owner explicitly approves
+a cloned personal-data snapshot.' > "$stage/test-vault/wiki/Durable previews.md"
+  print -r -- '# Find integration session
+
+Find keeps deterministic search and one-shot Ask. Chat with my vault starts a
+persistent conversation. Concept Cloud and Related are session-linked companion
+windows on desktop and internal tabs on mobile.' > "$stage/test-vault/Sessions/Find integration.md"
+  date > "$stage/.test-snapshot"
+  mv "$stage" "$dst"
+  (cd "$dir" && VIRA_PASSIVE=1 "$LIVE/.venv/bin/python" -c \
+    'from server import vault; print(vault.scan_once())') >/dev/null
+}
+
 cmd_serve() {
   slug_check "$1"
   local fresh=${2:-} dir port pid
@@ -229,7 +378,10 @@ cmd_serve() {
   pid=$(instance_pid "$dir")
   [[ -n "$pid" ]] && { echo "already running (pid $pid, port $(instance_port "$dir"))"; exit 0; }
 
-  if [[ "$fresh" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
+  if [[ "$fresh" == "--fixture" ]]; then
+    echo "building synthetic fixture snapshot..."
+    fixture_data "$dir" || exit 1
+  elif [[ "$fresh" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
     echo "cloning data snapshot (APFS copy-on-write)..."
     clone_data "$LIVE/data" "$dir/data" || exit 1
   fi
@@ -242,13 +394,10 @@ cmd_serve() {
   [[ -n "$port" ]] || { echo "error: no free port in $PORT_MIN-$PORT_MAX" >&2; exit 1; }
 
   # Passive: no background workers, no outbound sends (server-side gate).
-  # Same network posture as live Vira so the owner can review on every device;
-  # the isolated port, cloned data and VIRA_PASSIVE are the test boundary.
-  cd "$dir"
-  VIRA_PASSIVE=1 nohup "$LIVE/.venv/bin/uvicorn" server.main:app \
-    --host 0.0.0.0 --port "$port" >> "$dir/.test-instance.log" 2>&1 &
-  pid=$!
-  print -r -- "{\"pid\": $pid, \"port\": $port}" > "$dir/$PIDFILE"
+  # Uvicorn stays loopback-only; Tailscale Serve is the authenticated bridge.
+  # launchd keeps Mac previews alive after the agent terminal goes away and
+  # restarts them on a crash. Other platforms retain the nohup fallback.
+  pid=$(start_test_process "$1" "$dir" "$port")
 
   for i in $(seq 1 40); do
     curl -sf -o /dev/null "http://127.0.0.1:$port/" && break
@@ -257,6 +406,11 @@ cmd_serve() {
   done
   curl -sf -o /dev/null "http://127.0.0.1:$port/" || {
     echo "error: no response on :$port — see $dir/.test-instance.log" >&2; exit 1; }
+  tailnet_serve "$port" || {
+    stop_test_process "$dir" >/dev/null
+    echo "error: Tailscale could not expose :$port to the tailnet" >&2
+    exit 1
+  }
   echo ""
   # Health checks stay numeric and local. Human links use localhost on this
   # Mac (Browser allows it) and MagicDNS everywhere else.
@@ -266,10 +420,8 @@ cmd_serve() {
 
 cmd_stop() {
   slug_check "$1"
-  local dir pid; dir=$(wt_dir "$1")
-  pid=$(instance_pid "$dir")
-  if [[ -n "$pid" ]]; then kill "$pid" && echo "stopped (pid $pid)"; else echo "not running"; fi
-  rm -f "$dir/$PIDFILE"
+  local dir; dir=$(wt_dir "$1")
+  stop_test_process "$dir"
 }
 
 cmd_list() {
@@ -306,7 +458,10 @@ cmd_merge() {
   if [[ -d "$dir" && -n "$(git -C "$dir" status --porcelain)" ]]; then
     echo "error: worktree $dir has uncommitted changes — commit or stash first" >&2; exit 1; fi
   local pid; pid=$(instance_pid "$dir" 2>/dev/null)
-  [[ -n "$pid" ]] && { echo "stopping test instance (pid $pid)"; kill "$pid"; rm -f "$dir/$PIDFILE"; }
+  [[ -f "$dir/$PIDFILE" ]] && {
+    echo "stopping test instance${pid:+ (pid $pid)}"
+    stop_test_process "$dir"
+  }
 
   # The checks that CLAUDE.md used to only ask for. Each one is a bug that
   # already shipped once; see scripts/preflight.sh --list. A MISSING preflight
@@ -374,7 +529,7 @@ cmd_discard() {
   slug_check "$1"
   local force=${2:-} dir branch="claude/$1"; dir=$(wt_dir "$1")
   local pid; pid=$(instance_pid "$dir" 2>/dev/null)
-  [[ -n "$pid" ]] && { kill "$pid"; rm -f "$dir/$PIDFILE"; }
+  [[ -f "$dir/$PIDFILE" ]] && stop_test_process "$dir"
   if [[ -d "$dir" ]]; then
     # data/ and .venv are gitignored, so remove needs --force even when the
     # tracked tree is clean — but refuse if there are uncommitted TRACKED changes
