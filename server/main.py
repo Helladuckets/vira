@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from . import (actions, admission, agentbackend, aihealth, applecontacts,
                applications,
                atlas,
-               backup, brief,
+               backup, brainchat, brief,
                briefstate, changelog,
                circuits,
                companion,
@@ -937,6 +937,35 @@ def api_find_status():
     return {"media": safe(mediaindex.status), "notes": safe(vault.status),
             "people": safe(crmindex.status),
             "messages": safe(textindex.status)}
+
+
+class FindChatReq(BaseModel):
+    question: str
+    session_id: str | None = None
+
+
+@app.get("/api/find/chat")
+def api_find_chat():
+    """The locally persisted vault conversation, if one has started."""
+    return {"session": brainchat.current()}
+
+
+@app.post("/api/find/chat/new")
+def api_find_chat_new():
+    return {"session": brainchat.new()}
+
+
+@app.post("/api/find/chat")
+def api_find_chat_ask(body: FindChatReq):
+    q = body.question.strip()
+    if not q:
+        raise HTTPException(400, "empty question")
+    try:
+        return {"session": brainchat.ask(q, body.session_id)}
+    except brainchat.Conflict as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:  # noqa: BLE001 — surface configured-model failures
+        raise HTTPException(502, str(e)[:400])
 
 
 @app.get("/api/search/faces")
