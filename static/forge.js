@@ -1644,6 +1644,56 @@
     });
   }
 
+  // A popped-out Library is a Vira surface, so its whole perimeter behaves
+  // like a Vira window: four edges and four corners, not one tiny southeast
+  // affordance. Bounds are position-aware so an edge never grows invisibly
+  // past the viewport and creates a dead reverse-drag zone.
+  function bindLibraryResize() {
+    const panel = q("#forge-library");
+    if (!panel) return;
+    const minWidth = 340, minHeight = 260;
+    let resize = null;
+    const move = (event) => {
+      if (!resize || resize.id !== event.pointerId) return;
+      const { start, direction } = resize;
+      const dx = event.clientX - resize.x, dy = event.clientY - resize.y;
+      let left = start.left, top = start.top;
+      let width = start.width, height = start.height;
+      if (direction.includes("e"))
+        width = clamp(start.width + dx, minWidth, innerWidth - start.left - 12);
+      if (direction.includes("s"))
+        height = clamp(start.height + dy, minHeight, innerHeight - start.top - 12);
+      if (direction.includes("w")) {
+        width = clamp(start.width - dx, minWidth, start.right - 12);
+        left = start.right - width;
+      }
+      if (direction.includes("n")) {
+        height = clamp(start.height - dy, minHeight, start.bottom - 48);
+        top = start.bottom - height;
+      }
+      paintDetachedLibrary({ left, top, width, height });
+    };
+    const end = (event) => {
+      if (resize && resize.id === event.pointerId) resize = null;
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+    ["n", "e", "s", "w", "ne", "nw", "se", "sw"].forEach((direction) => {
+      const grip = make("div", `rz rz-${direction} forge-library-resize`);
+      grip.setAttribute("aria-hidden", "true");
+      grip.addEventListener("pointerdown", (event) => {
+        if (!panel.classList.contains("is-detached") || event.button !== 0) return;
+        event.stopPropagation();
+        panel.style.zIndex = "4050";
+        const start = panel.getBoundingClientRect();
+        resize = { direction, id: event.pointerId, start, x: event.clientX, y: event.clientY };
+        grip.setPointerCapture(event.pointerId);
+      });
+      panel.appendChild(grip);
+    });
+  }
+
   function bind() {
     if (!q("#forge-shell") || state.bound) return;
     state.bound = true;
@@ -1672,6 +1722,7 @@
     q("#forge-runs-refresh")?.addEventListener("click", loadForgeRuns);
     bindViewport();
     bindLibraryDrag();
+    bindLibraryResize();
     setView("board");
   }
 

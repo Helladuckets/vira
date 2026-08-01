@@ -124,22 +124,48 @@ body > .forge-library.is-detached {
   z-index: 4050;
   display: flex;
   flex-direction: column;
-  min-width: min(420px, calc(100vw - 24px));
+  min-width: min(340px, calc(100vw - 24px));
   max-width: calc(100vw - 24px);
   max-height: calc(100vh - 60px);
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   backdrop-filter: blur(20px);
+  container: forge-library / inline-size;
   box-shadow: 0 20px 55px var(--scrim-strong);
 }
 body > .forge-library.is-detached.is-hidden { display: none; }
+.forge-library > .forge-library-resize { display: none; }
+body > .forge-library.is-detached > .forge-library-resize { display: block; z-index: 40; }
+body > .forge-library.is-detached > .forge-library-resize.rz-n,
+body > .forge-library.is-detached > .forge-library-resize.rz-s { height: 14px; }
+body > .forge-library.is-detached > .forge-library-resize.rz-e,
+body > .forge-library.is-detached > .forge-library-resize.rz-w { width: 14px; }
+body > .forge-library.is-detached > .forge-library-resize.rz-ne,
+body > .forge-library.is-detached > .forge-library-resize.rz-nw,
+body > .forge-library.is-detached > .forge-library-resize.rz-se,
+body > .forge-library.is-detached > .forge-library-resize.rz-sw {
+  width: 22px;
+  height: 22px;
+}
+body > .forge-library.is-detached > .forge-library-resize:hover {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
 body > .forge-library.is-detached .forge-library-body {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   flex: 1;
   max-height: none;
   gap: 7px;
+}
+body > .forge-library.is-detached .forge-library-group { grid-column: 1 / -1; }
+@container forge-library (max-width: 560px) {
+  body > .forge-library.is-detached .forge-library-body {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@container forge-library (max-width: 410px) {
+  body > .forge-library.is-detached .forge-library-body { grid-template-columns: 1fr; }
 }
 .forge-panel-head {
   display: flex;
