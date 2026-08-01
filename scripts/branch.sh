@@ -5,7 +5,7 @@
 #
 #   branch.sh start <slug>     new branch claude/<slug> + worktree .worktrees/<slug>
 #   branch.sh adopt [slug]     provision a worktree this script didn't create
-#   branch.sh serve <slug>     test instance: cloned data, passive, port 8378+
+#   branch.sh serve <slug>     test instance: cloned data, passive, local + tailnet
 #   branch.sh serve <slug> --fresh   re-clone data before serving
 #   branch.sh stop <slug>      stop the test instance
 #   branch.sh list             all branch worktrees, their state, running ports
@@ -88,6 +88,40 @@ instance_port() {
   local dir=$1
   [[ -f "$dir/$PIDFILE" ]] || return 0
   python3 -c "import json;print(json.load(open('$dir/$PIDFILE'))['port'])" 2>/dev/null || true
+}
+
+# The live Vira binds to the network and reaches the phone through this Mac's
+# MagicDNS name. Test instances use the same transport on their own allocated
+# port: passive and disposable does not have to mean trapped on loopback.
+tailnet_host() {
+  local binary=""
+  if binary=$(command -v tailscale 2>/dev/null); then
+    :
+  elif [[ -x /Applications/Tailscale.app/Contents/MacOS/Tailscale ]]; then
+    binary=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+  else
+    return 0
+  fi
+  "$binary" status --json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    node = (json.load(sys.stdin).get("Self") or {}).get("DNSName") or ""
+    print(node.rstrip("."))
+except (OSError, ValueError):
+    pass
+' 2>/dev/null || true
+}
+
+print_instance_urls() {
+  local port=$1 host
+  echo "test instance up:  http://localhost:$port  (passive, cloned data)"
+  echo "local stage:       http://localhost:$port/stage.html"
+  host=$(tailnet_host)
+  if [[ -n "$host" ]]; then
+    echo "tailnet stage:     http://$host:$port/stage.html   <- desktop review"
+    echo "tailnet mobile:    http://$host:$port/              <- phone / tablet"
+  fi
+  echo "                   (stage: 1280 desktop canvas + 402x874 mobile side)"
 }
 
 # Record what main was when this branch forked. Cheap now, decisive later: if
@@ -208,10 +242,11 @@ cmd_serve() {
   [[ -n "$port" ]] || { echo "error: no free port in $PORT_MIN-$PORT_MAX" >&2; exit 1; }
 
   # Passive: no background workers, no outbound sends (server-side gate).
-  # Local-only bind; reuses the live checkout's FDA-granted venv.
+  # Same network posture as live Vira so the owner can review on every device;
+  # the isolated port, cloned data and VIRA_PASSIVE are the test boundary.
   cd "$dir"
   VIRA_PASSIVE=1 nohup "$LIVE/.venv/bin/uvicorn" server.main:app \
-    --host 127.0.0.1 --port "$port" >> "$dir/.test-instance.log" 2>&1 &
+    --host 0.0.0.0 --port "$port" >> "$dir/.test-instance.log" 2>&1 &
   pid=$!
   print -r -- "{\"pid\": $pid, \"port\": $port}" > "$dir/$PIDFILE"
 
@@ -223,16 +258,9 @@ cmd_serve() {
   curl -sf -o /dev/null "http://127.0.0.1:$port/" || {
     echo "error: no response on :$port — see $dir/.test-instance.log" >&2; exit 1; }
   echo ""
-  # Printed as localhost, NOT 127.0.0.1, even though that is the bind
-  # address: Claude Code's Browser pane allows localhost URLs and BLOCKS
-  # the numeric loopback form outright ("Link to 127.0.0.1 was blocked"),
-  # so an agent session that copies the URL this script prints cannot open
-  # the instance it was just told to test. The health check above keeps
-  # using 127.0.0.1 because that is what uvicorn actually bound; browsers
-  # and curl resolve localhost to it by fallback (::1 first, then IPv4).
-  echo "test instance up:  http://localhost:$port  (passive, cloned data)"
-  echo "stage view:        http://localhost:$port/stage.html   <- open THIS one"
-  echo "                   (Design Studio format: 1280 desktop canvas + 402x874 mobile side)"
+  # Health checks stay numeric and local. Human links use localhost on this
+  # Mac (Browser allows it) and MagicDNS everywhere else.
+  print_instance_urls "$port"
   echo "log: $dir/.test-instance.log    stop: scripts/branch.sh stop $1"
 }
 
@@ -245,7 +273,8 @@ cmd_stop() {
 }
 
 cmd_list() {
-  local br dir pid port ab
+  local br dir pid port ab tail
+  tail=$(tailnet_host)
   echo "live: $LIVE (port 8377, launchd)"
   git -C "$LIVE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}' |
   while read -r dir br; do
@@ -254,7 +283,11 @@ cmd_list() {
     ab=$(git -C "$LIVE" rev-list --left-right --count "main...$br" 2>/dev/null | awk '{print "behind "$1" / ahead "$2}')
     pid=$(instance_pid "$dir"); port=$(instance_port "$dir")
     if [[ -n "$pid" ]]; then
-      echo "  $br  ->  $dir  [$ab]  RUNNING :$port"
+      if [[ -n "$tail" ]]; then
+        echo "  $br  ->  $dir  [$ab]  RUNNING :$port  http://$tail:$port/"
+      else
+        echo "  $br  ->  $dir  [$ab]  RUNNING :$port"
+      fi
     else
       echo "  $br  ->  $dir  [$ab]"
     fi
