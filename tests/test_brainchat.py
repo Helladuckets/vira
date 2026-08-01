@@ -100,5 +100,31 @@ class BrainChatTest(unittest.TestCase):
         self.assertEqual(brainchat.current()["id"], two["id"])
 
 
+class BrainChatRouteTest(unittest.TestCase):
+    """The static /chat routes must beat the older dynamic Find route."""
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        from server import main
+        cls.client = TestClient(main.app, raise_server_exceptions=False)
+
+    @mock.patch("server.main.brainchat.current", return_value=None)
+    def test_chat_get_has_versioned_session_envelope(self, current):
+        response = self.client.get("/api/find/chat")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"session": None})
+
+    @mock.patch("server.main.brainchat.ask",
+                return_value={"id": "brain_test", "turns": []})
+    def test_chat_post_is_not_captured_as_dynamic_find_query(self, ask):
+        response = self.client.post("/api/find/chat", json={
+            "question": "What changed?", "session_id": "brain_test",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["session"]["id"], "brain_test")
+        ask.assert_called_once_with("What changed?", "brain_test")
+
+
 if __name__ == "__main__":
     unittest.main()

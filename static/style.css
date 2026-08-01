@@ -2235,7 +2235,8 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   margin-left: .25em; font-size: .58em; vertical-align: super; opacity: .65;
 }
 .find-related {
-  display: flex; flex-direction: column; gap: 10px; min-height: 360px;
+  position: relative; display: flex; flex-direction: column; gap: 10px;
+  min-height: 360px;
   overflow-y: auto; padding: 2px;
 }
 .find-related-card {

@@ -2076,6 +2076,8 @@ let findChatLoaded = false;
 let findChatPending = false;
 let findChatRefs = null;
 let findChatMobileTab = "chat";
+let findChatWorkspacePlaced = false;
+const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v2";
 
 function findChatSessionLabel() {
   const n = findChatSession?.turns?.length || 0;
@@ -2101,30 +2103,58 @@ function findChatShowMobileTab(tab) {
   if (tab === "related") renderFindRelated();
 }
 
-function findChatPositionCompanions() {
-  const findEl = winState.find?.el;
-  if (!findEl) return;
-  const r = findEl.getBoundingClientRect();
-  const stored = desktopStore();
-  const places = {
-    "find-related": {x: Math.max(14, Math.round(r.left - 394)),
-                     y: Math.max(48, Math.round(r.top))},
-    "find-cloud": {x: Math.max(14, Math.min(innerWidth - 474,
-                                            Math.round(r.right + 14))),
-                   y: Math.max(48, Math.round(r.top))},
+function findChatReleaseCompanion(id) {
+  grown.delete(id);
+  grownOrder = grownOrder.filter((wid) => wid !== id);
+  [slotRects, growRects, slotZoom, growZoom, slotScroll, growScroll]
+    .forEach((store) => delete store[id]);
+  winState[id]?.el.classList.remove("fwin-locked", "fwin-grown");
+}
+
+// The three Brain surfaces are one workspace, not three unrelated windows.
+// On the first open after this layout version ships, make one non-overlapping
+// desktop: chat full-height at left, Related above Concept Cloud at right.
+// The marker makes this a migration/default, not a magnet — once placed, all
+// three windows remain independently draggable and their geometry persists.
+function findChatTileWorkspace() {
+  if (!isDesktop || findChatWorkspacePlaced) return;
+  // A stage template re-applies Find's parked/grown rect on every reload, so
+  // its first chat open in this page session must establish the workspace
+  // again. Freeform, by contrast, owns persistent user geometry and only
+  // needs the one-time migration from the old cascade.
+  const needsTile = layoutMode === "stage"
+    || !lsGet(FIND_CHAT_LAYOUT_KEY, false);
+  if (!needsTile) { findChatWorkspacePlaced = true; return; }
+  const G = 14, GAP = 12, TOP = 52, BOTTOM = 92;
+  const totalW = innerWidth - 2 * G - GAP;
+  const totalH = innerHeight - TOP - BOTTOM;
+  if (totalW < 760 || totalH < 400) return;
+  findChatWorkspacePlaced = true;
+  const chatW = Math.max(440, Math.min(totalW - 340,
+    Math.round(totalW * .56)));
+  const sideW = totalW - chatW;
+  const sideH = Math.floor((totalH - GAP) / 2);
+  const rects = {
+    find: {x: G, y: TOP, w: chatW, h: totalH},
+    "find-related": {x: G + chatW + GAP, y: TOP, w: sideW, h: sideH},
+    "find-cloud": {x: G + chatW + GAP, y: TOP + sideH + GAP,
+                   w: sideW, h: totalH - sideH - GAP},
   };
-  Object.entries(places).forEach(([id, p]) => {
-    if (stored[id]?.x != null || !winState[id]) return;
-    Object.assign(winState[id].el.style, {left: p.x + "px", top: p.y + "px"});
-    saveWinState(id, p);
+  Object.entries(rects).forEach(([id, r]) => {
+    if (!winState[id]) return;
+    setWinRect(winState[id].el, r, true);
+    saveWinState(id, r);
   });
+  lsSet(FIND_CHAT_LAYOUT_KEY, true);
 }
 
 function openFindCompanions() {
   if (!isDesktop) return;
-  findChatPositionCompanions();
+  findChatReleaseCompanion("find-cloud");
+  findChatReleaseCompanion("find-related");
   openWindow("find-cloud");
   openWindow("find-related");
+  findChatTileWorkspace();
   requestAnimationFrame(() => {
     renderFindClouds();
     renderFindRelated();
@@ -2134,10 +2164,39 @@ function openFindCompanions() {
 async function loadFindChat(force = false) {
   if (findChatLoaded && !force) return findChatSession;
   const d = await api("/api/find/chat");
+  // A newly-written app.js is served immediately, while Python routes do not
+  // change until Vira restarts. On that mixed-version seam the old dynamic
+  // /api/find/{query} route answers this GET, then rejects the chat POST with
+  // a raw 405. Detect the wrong envelope before a question can be lost.
+  if (!Object.prototype.hasOwnProperty.call(d, "session")) {
+    const e = new Error("Restart Vira once to finish enabling vault chat.");
+    e.restartRequired = true;
+    throw e;
+  }
   findChatLoaded = true;
   findChatSession = d.session || null;
+  if (findChatRefs) findChatRefs.input.disabled = false;
   renderFindChat();
   return findChatSession;
+}
+
+function findChatRestartRequired(e) {
+  return !!e?.restartRequired || /Method Not Allowed|\b405\b/i.test(e?.message || "");
+}
+
+function renderFindChatFailure(e) {
+  if (!findChatRefs) return;
+  const restart = findChatRestartRequired(e);
+  findChatRefs.status.textContent = restart ? "Restart required" : "Vault chat unavailable";
+  findChatRefs.log.innerHTML = "";
+  findChatRefs.log.appendChild(el("div", "brain-msg error",
+    restart
+      ? "Vira has the new chat interface but is still running the old backend. Restart Vira once, then reopen vault chat."
+      : "Vault chat could not connect: " + (e?.message || "unknown error")));
+  findChatRefs.empty.style.display = "none";
+  findChatRefs.input.disabled = true;
+  findChatRefs.send.disabled = true;
+  if (restart) restartStrip();
 }
 
 async function startNewFindChat() {
@@ -2175,9 +2234,12 @@ async function sendFindChat(question) {
     findChatSession = d.session;
     renderFindChat();
   } catch (e) {
-    thinking.classList.remove("thinking");
-    thinking.classList.add("error");
-    thinking.textContent = "Chat failed: " + e.message;
+    if (findChatRestartRequired(e)) renderFindChatFailure(e);
+    else {
+      thinking.classList.remove("thinking");
+      thinking.classList.add("error");
+      thinking.textContent = "Chat failed: " + e.message;
+    }
   } finally {
     findChatPending = false;
     findChatRefs.send.disabled = !findChatRefs.input.value.trim();
@@ -2194,7 +2256,8 @@ async function showFindChat(question = "") {
   try {
     await loadFindChat();
   } catch (e) {
-    findChatRefs.status.textContent = "Vault chat is unavailable.";
+    renderFindChatFailure(e);
+    return;
   }
   openFindCompanions();
   if (question.trim()) sendFindChat(question);
@@ -13197,6 +13260,8 @@ const WINDOWS = [
   { id: "reader", title: "Reader", w: 780,
     icon: "M12 6C10.5 4.7 8.5 4 6 4H4v14h2c2.5 0 4.5.7 6 2 1.5-1.3 3.5-2 6-2h2V4h-2c-2.5 0-4.5.7-6 2zM12 6v14" },
 ];
+const isCompanionWindow = (id) =>
+  WINDOWS.some((spec) => spec.id === id && spec.companion === true);
 let zTop = 10;
 const winState = {}; // id -> { el, open }
 
@@ -14130,7 +14195,7 @@ function openWindow(id) {
   // really closes it (see closeWindow). It used to inherit its stale freeform
   // rect, which is why left-out modules appeared at a random spot off to the
   // side and then refused to go away.
-  if (layoutMode === "stage") {
+  if (layoutMode === "stage" && !isCompanionWindow(id)) {
     if (stageComputed) applyStage(true, true);
     growTile(id);
     dockRefresh();
@@ -16840,6 +16905,10 @@ function saveLayout() {
 // desk the owner returns to. Editing the desk by hand also diverges from a
 // loaded saved layout, so the "· current" marker drops back to Freeform.
 function persistGeom(id, patch) {
+  // Find's companions float above a stage layout instead of becoming parked
+  // members of it. Their title bars therefore stay live, and a drag still
+  // belongs to ordinary desktop geometry while the stage is active.
+  if (isCompanionWindow(id)) { saveWinState(id, patch); return; }
   if (editing || layoutMode !== "freeform") return;
   saveWinState(id, patch);
   if (activeLayout.startsWith("saved:")) {
@@ -16854,6 +16923,7 @@ function persistGeom(id, patch) {
 // arranging. Anything else stays in the layout (or the edit draft) and is
 // persisted by Save, never behind the owner's back.
 function persistZoom(id, z) {
+  if (isCompanionWindow(id)) { saveWinState(id, { z }); return; }
   if (editing) {
     if (editPass === "grow" && editTarget === id) editGrowZoom[id] = z;
     else editParkZoom[id] = z;
@@ -16969,6 +17039,7 @@ function captureLayout(grows, parks, zooms, scrolls) {
   const pz = (zooms && zooms.park) || {}, gz = (zooms && zooms.grow) || {};
   const ps = (scrolls && scrolls.park) || {}, gs = (scrolls && scrolls.grow) || {};
   Object.keys(winState).forEach((id) => {
+    if (isCompanionWindow(id)) return;
     const w = winState[id];
     if (w.open) {
       wins[id] = { ...roundRect((parks && parks[id]) || winRect(w.el)), open: true };
@@ -16991,7 +17062,9 @@ function captureLayout(grows, parks, zooms, scrolls) {
 // over an existing one keeps the grow staging instead of wiping it
 function layoutGrows(l) {
   const out = {};
-  Object.entries(l?.wins || {}).forEach(([id, w]) => { if (w.grow) out[id] = w.grow; });
+  Object.entries(l?.wins || {}).forEach(([id, w]) => {
+    if (!isCompanionWindow(id) && w.grow) out[id] = w.grow;
+  });
   return out;
 }
 
@@ -17000,6 +17073,7 @@ function layoutGrows(l) {
 function layoutZooms(l) {
   const park = {}, grow = {};
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
+    if (isCompanionWindow(id)) return;
     if (w.z) park[id] = w.z;
     if (w.grow?.z) grow[id] = w.grow.z;
   });
@@ -17009,6 +17083,7 @@ function layoutZooms(l) {
 function layoutScrolls(l) {
   const park = {}, grow = {};
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
+    if (isCompanionWindow(id)) return;
     if (w.s) park[id] = w.s;
     if (w.grow?.s) grow[id] = w.grow.s;
   });
@@ -17054,7 +17129,8 @@ function scaleZoom(z, s) {
 
 function layoutScale(l) {
   let refW = (l && l.vw) || 0, refH = (l && l.vh) || 0;
-  Object.values((l && l.wins) || {}).forEach((s) => {
+  Object.entries((l && l.wins) || {}).forEach(([id, s]) => {
+    if (isCompanionWindow(id)) return;
     if (!s.open) return;
     refW = Math.max(refW, (s.x || 0) + (s.w || 0));
     refH = Math.max(refH, (s.y || 0) + (s.h || 0));
@@ -17079,6 +17155,7 @@ function layoutRects(l) {
   const zooms = { park: {}, grow: {} };
   const scrolls = { park: {}, grow: {} };
   Object.entries(l.wins || {}).forEach(([id, snap]) => {
+    if (isCompanionWindow(id)) return;
     if (snap.open) parks[id] = scaleRect(roundRect(snap), s);
     if (snap.grow) grows[id] = scaleRect(roundRect(snap.grow), s);
     // Every OPEN tile gets a scaled zoom, authored or not: a window the owner
@@ -17113,6 +17190,7 @@ function currentArrangement() {
     const pScroll = { ...editParkScroll };
     if (editPass === "park") {
       Object.keys(winState).forEach((id) => {
+        if (isCompanionWindow(id)) return;
         if (winState[id].open) pScroll[id] = readWinScroll(id);
       });
     }
@@ -17197,6 +17275,7 @@ function applySavedLayout(id, animate) {
   const stage = layoutIsStage(it);
   const { parks, grows, zooms, scrolls } = layoutRects(it);  // scaled to this viewport
   Object.keys(winState).forEach((wid) => {
+    if (isCompanionWindow(wid)) return;
     const w = winState[wid];
     const snap = it.wins[wid];
     if (!snap) return;
@@ -17226,6 +17305,7 @@ function applySavedLayout(id, animate) {
 function placeArrangement(wins, animate) {
   if (!wins) return;
   Object.keys(winState).forEach((id) => {
+    if (isCompanionWindow(id)) return;
     const st = winState[id];
     const snap = wins[id];
     if (!snap) return;
@@ -17320,6 +17400,7 @@ function setEditPass(pass) {
   if (pass === "grow") {
     editParks = {};                       // hold the arrangement being edited
     Object.keys(winState).forEach((id) => {
+      if (isCompanionWindow(id)) return;
       if (!winState[id].open) return;
       editParks[id] = roundRect(winRect(winState[id].el));
       const z = winState[id].el._zoom?.get();     // and its PARKED zoom
@@ -17337,6 +17418,10 @@ function setEditPass(pass) {
     document.body.classList.remove("layout-edit-grow");
     Object.keys(winState).forEach((id) => {
       const node = winState[id].el;
+      if (isCompanionWindow(id)) {
+        node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
+        return;
+      }
       node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
       if (editParks[id] && winState[id].open) {
         setWinRect(node, editParks[id], true);
@@ -17354,6 +17439,10 @@ function lockEditParks(animate) {
     const w = winState[id];
     if (!w.open) return;
     const node = w.el;
+    if (isCompanionWindow(id)) {
+      node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
+      return;
+    }
     if (id === editTarget) {
       node.classList.remove("fwin-locked");
       node.classList.add("fwin-grown", "fwin-tuning");
@@ -18128,7 +18217,10 @@ function initLayout() {
   const ls = layoutState();
   activeLayout = typeof ls.active === "string" ? ls.active : "freeform";
   if (ls.mode === "stage") {
-    grownOrder = (ls.grown || []).filter((id) => winState[id]?.open);
+    // Companions used to be persisted as grown stage cards, which re-cascaded
+    // and could re-lock them on every reload. They are session overlays now.
+    grownOrder = (ls.grown || []).filter((id) =>
+      winState[id]?.open && !isCompanionWindow(id));
     grownOrder.forEach((id) => grown.add(id));
     const saved = activeLayout.startsWith("saved:")
       ? savedLayouts().find((l) => l.id === activeLayout.slice(6)) : null;
