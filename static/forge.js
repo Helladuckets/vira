@@ -1959,7 +1959,6 @@
     });
     q("#forge-library-filter").addEventListener("change", (event) => { state.filter = event.target.value; renderLibrary(); });
     q("#forge-library-toggle").addEventListener("click", openLibrary);
-    q("#forge-library-close").addEventListener("click", closeLibrary);
     q("#forge-library-float").addEventListener("click", toggleLibraryFloat);
     q("#forge-inspector-close").addEventListener("click", closeInspector);
     q("#forge-new").addEventListener("click", newFlow);
