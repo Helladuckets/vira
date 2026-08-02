@@ -278,14 +278,16 @@ DEFAULT_MODULES = [
      "keywords": ["session", "runner", "terminal", "permission", "durable",
                   "viratools"],
      "updated": TODAY},
-    {"id": "circuits-engine", "name": "Circuits", "layer": "engine",
-     "group": "operate", "kind": "pipeline runner",
-     "what": "Multi-step agent pipelines with handoffs and a fresh-eyes "
+    {"id": "circuits-engine", "name": "Flow execution engine", "layer": "engine",
+     "group": "operate", "kind": "graph compiler + pipeline runner",
+     "what": "Compiles Forge graphs into multi-step agent pipelines with "
+             "visual context, capabilities, handoffs, and a fresh-eyes "
              "judge between steps — grade gates decide retry, continue, or "
              "stop.",
      "links": [{"to": "sessions", "how": "dispatches steps through"}],
-     "endpoints": ["/api/circuits"],
-     "keywords": ["circuit", "judge", "pipeline", "grade"],
+     "endpoints": ["/api/flows", "/api/circuits"],
+     "keywords": ["forge", "flow", "breadboard", "circuit", "judge",
+                  "pipeline", "grade"],
      "updated": TODAY},
     {"id": "scheduler", "name": "Routine scheduler", "layer": "engine",
      "group": "operate", "kind": "60s tick",
@@ -359,10 +361,10 @@ DEFAULT_MODULES = [
              "rung 2 adjudicates candidates with one model call per rule, "
              "every breaks-verdict grounded by a verbatim quote or "
              "demoted. A tier-2 rule at threshold stages the WORK of "
-             "building its mechanism as a proposed idea in the Queue; a "
+             "building its mechanism as a proposed idea in Cues; a "
              "tier-1 recurrence is flagged — the guard did not hold. It "
              "NEVER writes the ledger. Store data/lesson-recurrence.json; "
-             "surface Work > RECORD > Rules; weekly routine.",
+             "surface The Forge > Record > Rules; weekly routine.",
      "links": [{"to": "retros-src", "how": "reads reversal sections of"},
                {"to": "ideas-store", "how": "stages promotion proposals in"}],
      "endpoints": ["/api/lessons", "/api/lessons/refresh"],
@@ -377,7 +379,7 @@ DEFAULT_MODULES = [
              "joining against the job ledger. Cached in "
              "data/orphan-work.json, pings the owner when a genuinely new "
              "orphan appears (never on the first-ever sweep), and surfaces "
-             "stalest-first in Work > Live with one-click Resume (a "
+             "stalest-first in The Forge > Runs with one-click Resume (a "
              "session re-entering that worktree), Merge, or Discard — all "
              "three delegate to scripts/branch.sh, never reimplemented.",
      "links": [{"to": "job-ledger", "how": "joins branches against"}],
@@ -502,8 +504,8 @@ DEFAULT_MODULES = [
      "links": [{"to": "triage-engine", "how": "drives"}],
      "keywords": ["triage window"],
      "updated": TODAY},
-    {"id": "jobs-win", "name": "Jobs", "layer": "surface",
-     "group": "operate", "kind": "dock window",
+    {"id": "jobs-win", "name": "The Forge / Runs", "layer": "surface",
+     "group": "operate", "kind": "Forge tab (legacy window alias)",
      "what": "Live and historical agent runs. Every job opens in its own "
              "floating terminal; history reopens any past run read-only "
              "from the ledger.",
@@ -511,12 +513,11 @@ DEFAULT_MODULES = [
                {"to": "job-ledger", "how": "renders history from"}],
      "keywords": ["jobs window", "history", "terminal"],
      "updated": TODAY},
-    {"id": "ideas-win", "name": "Ideas & On-Hold", "layer": "surface",
-     "group": "operate", "kind": "dock window",
-     "what": "The backlog as a work queue: add, edit, filter by project, "
-             "and dispatch any idea as a Plan or Implement job. The second "
-             "tab is the change log — every shipped change per session, "
-             "Vira-scoped.",
+    {"id": "ideas-win", "name": "The Forge / Cues", "layer": "surface",
+     "group": "operate", "kind": "Forge tab (legacy window alias)",
+     "what": "The collaborative cue list: capture, refine, defer, and move "
+             "an idea into a Flow or a direct run. Record preserves the "
+             "Vira-scoped change log alongside it.",
      "links": [{"to": "ideas-store", "how": "edits"},
                {"to": "changelog-engine", "how": "renders the log from"},
                {"to": "sessions", "how": "dispatches ideas through"}],
@@ -531,18 +532,18 @@ DEFAULT_MODULES = [
      "links": [{"to": "radar-engine", "how": "renders"}],
      "keywords": ["radar window", "groupings"],
      "updated": TODAY},
-    {"id": "circuits-win", "name": "Circuits", "layer": "surface",
-     "group": "operate", "kind": "dock window",
-     "what": "Build and run multi-step pipelines; watch each step's "
-             "terminal and the judge's verdicts between them.",
+    {"id": "circuits-win", "name": "The Forge / Flows", "layer": "surface",
+     "group": "operate", "kind": "Forge tab (legacy window alias)",
+     "what": "Compose, inspect, test, and version visual orchestration "
+             "graphs; existing Circuits remain executable Flow sources.",
      "links": [{"to": "circuits-engine", "how": "drives"}],
      "keywords": ["circuits window"],
      "updated": TODAY},
-    {"id": "routines-win", "name": "Agent Loops", "layer": "surface",
-     "group": "operate", "kind": "dock window",
-     "what": "The standing loops: what runs on what cadence, when it last "
-             "ran, and how it went. Muse's proposals land in Ideas for "
-             "approval.",
+    {"id": "routines-win", "name": "Flow triggers", "layer": "surface",
+     "group": "operate", "kind": "Forge parts (legacy window alias)",
+     "what": "Scheduled trigger parts attached to Flows: cadence, next and "
+             "last run, status, and editable instance configuration. Muse's "
+             "proposals land in Cues for approval.",
      "links": [{"to": "scheduler", "how": "manages"}],
      "keywords": ["agent loops", "routines window"],
      "updated": TODAY},

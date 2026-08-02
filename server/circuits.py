@@ -51,7 +51,9 @@ RUNS_KEEP = 120
 # `session` is imported lazily throughout this module to dodge a circular
 # import) plus "judge", the one stage kind that is a role rather than a
 # rung: read-only, grading the stages it names.
-MODES = ("manual", "acceptEdits", "bypassPermissions", "judge")
+MODES = ("manual", "acceptEdits", "bypassPermissions", "judge",
+         "approval", "logic", "output", "native")
+LOCAL_MODES = ("approval", "logic", "output", "native")
 
 # Stage definitions are DATA, stored in data/circuits.json and in owner-saved
 # retunes, so they hold whatever rung name was current when they were saved.
@@ -331,7 +333,8 @@ def validate_stages(stages):
                 if ref not in known:
                     raise ValueError(
                         f"judge stage {st['id']}: unknown stage {ref!r}")
-        elif not (st.get("prompt") or "").strip():
+        elif norm_stage_mode(st.get("mode")) not in LOCAL_MODES and not (
+                st.get("prompt") or "").strip():
             raise ValueError(f"stage {st['id']}: empty prompt")
     return topo_order(stages)
 
@@ -381,6 +384,9 @@ def apply_overrides(stages, overrides):
         if not isinstance(upd, dict):
             raise ValueError(f"stage {sid}: overrides must be an object")
         is_judge = norm_stage_mode(st.get("mode")) == "judge"
+        is_local = norm_stage_mode(st.get("mode")) in LOCAL_MODES
+        if is_local and upd:
+            raise ValueError(f"stage {sid}: local graph parts are edited in the Forge")
         for key, val in upd.items():
             if key in ("min_grade", "max_retries"):
                 if not is_judge:
@@ -402,7 +408,7 @@ def apply_overrides(stages, overrides):
                 st["read_only"] = bool(val)
             elif key == "mode":
                 mode = str(val or "").strip()
-                if is_judge or mode == "judge":
+                if is_judge or mode == "judge" or mode in LOCAL_MODES:
                     raise ValueError(f"stage {sid}: a stage cannot change "
                                      f"into or out of being a judge")
                 if mode:
@@ -495,7 +501,7 @@ def get_run(run_id):
 
 
 def start_run(cid, input_text, cwd=None, notify=False, source="manual",
-              idea_id=None, overrides=None):
+              idea_id=None, overrides=None, flow_options=None):
     circ = get_circuit(cid)
     if not circ:
         raise KeyError(cid)
@@ -503,6 +509,15 @@ def start_run(cid, input_text, cwd=None, notify=False, source="manual",
     # then validated — so a bad override fails here, before any stage
     # launches, and the definition on disk is untouched either way.
     stages = apply_overrides(json.loads(json.dumps(circ["stages"])), overrides)
+    flow_options = dict(flow_options or {})
+    destination = str(flow_options.get("output") or "").strip()
+    if destination:
+        if destination not in {"record", "decision_brief", "artifact", "notification"}:
+            raise ValueError("unknown Flow output destination")
+        for stage in stages:
+            if norm_stage_mode(stage.get("mode")) == "output":
+                stage["output"] = {**(stage.get("output") or {}),
+                                   "destination": destination}
     validate_stages(stages)
     input_text = (input_text or "").strip()
     if not input_text:
@@ -512,11 +527,13 @@ def start_run(cid, input_text, cwd=None, notify=False, source="manual",
         "circuit_id": cid, "circuit_name": circ["name"],
         "input": input_text, "cwd": cwd or None, "idea_id": idea_id,
         "status": "running", "source": source, "notify": bool(notify),
+        "launch_options": flow_options,
         "started": _now(), "finished": None, "error": "",
         "stages_def": stages,
         "stages": {st["id"]: {"status": "pending", "job_id": None,
                               "attempts": 0, "grade": None, "score": None,
-                              "verdict": None, "feedback": ""}
+                              "verdict": None, "feedback": "",
+                              "result_text": "", "decision": None}
                    for st in stages},
     }
 
@@ -551,12 +568,48 @@ def cancel_run(run_id):
             r["status"] = "canceled"
             r["finished"] = _now()
             for st in r["stages"].values():
-                if st["status"] in ("pending", "ready"):
+                if st["status"] in ("pending", "ready", "waiting"):
                     st["status"] = "skipped"
             return True
         return False
     _mutate_runs(fn)
     return get_run(run_id)
+
+
+def decide_approval(run_id, stage_id, approved, note=""):
+    """Resolve one waiting Approval part; the driver resumes on its next tick."""
+    run = get_run(run_id)
+    if not run:
+        raise KeyError(run_id)
+    stage_def = next((stage for stage in run.get("stages_def") or []
+                      if stage.get("id") == stage_id), None)
+    if not stage_def or norm_stage_mode(stage_def.get("mode")) != "approval":
+        raise KeyError(stage_id)
+    state = (run.get("stages") or {}).get(stage_id) or {}
+    if state.get("status") != "waiting":
+        raise ValueError("approval is not waiting for a decision")
+    note = str(note or "").strip()[:4000]
+    result = "Approved" if approved else "Declined"
+    if note:
+        result += f": {note}"
+
+    def fn(store):
+        row = next((item for item in store["runs"] if item["id"] == run_id), None)
+        if not row:
+            return False
+        stage = row["stages"].get(stage_id)
+        if not stage or stage.get("status") != "waiting":
+            return False
+        stage.update({"status": "done" if approved else "error",
+                      "decision": {"approved": bool(approved), "note": note,
+                                   "decided": _now()},
+                      "result_text": result})
+        return True
+    _mutate_runs(fn)
+    decided = get_run(run_id)
+    if ((decided.get("stages") or {}).get(stage_id) or {}).get("status") == "waiting":
+        raise ValueError("approval changed before the decision was recorded")
+    return decided
 
 
 # ---------- prompt wiring ----------
@@ -565,6 +618,8 @@ def _stage_output(run, sid):
     """Final text of a finished stage: state.json result_text first (rich),
     ledger result as fallback."""
     st = run["stages"].get(sid) or {}
+    if st.get("result_text"):
+        return str(st["result_text"])[:OUTPUT_INJECT_CAP]
     jid = st.get("job_id")
     if not jid:
         return ""
@@ -576,12 +631,66 @@ def _stage_output(run, sid):
     return out[:OUTPUT_INJECT_CAP]
 
 
-def render_prompt(template, run):
+def _forge_brief(stage, run=None):
+    """Render graph attachments once, at the stage boundary they feed."""
+    forge = stage.get("forge") or {}
+    blocks = []
+    contexts = forge.get("contexts") or []
+    if contexts:
+        lines = ["CONNECTED CONTEXT"]
+        for item in contexts:
+            name = item.get("name") or "Context"
+            ref = item.get("ref") or ""
+            note = item.get("note") or ""
+            lines.append(f"- {name}" + (f" [{ref}]" if ref else ""))
+            if note:
+                lines.append(f"  {note}")
+        blocks.append("\n".join(lines))
+    tools = forge.get("tools") or []
+    if tools:
+        lines = ["CONNECTED CAPABILITIES"]
+        for item in tools:
+            name = item.get("name") or "Capability"
+            source = item.get("source_ref") or item.get("source") or ""
+            lines.append(f"- {name}" + (f" — {source}" if source else ""))
+            if item.get("instructions"):
+                lines.append(f"  {item['instructions']}")
+        blocks.append("\n".join(lines))
+    wire_notes = [str(value).strip() for value in forge.get("wire_instructions") or []
+                  if str(value).strip()]
+    if wire_notes:
+        blocks.append("CONNECTION INSTRUCTIONS\n- " + "\n- ".join(wire_notes))
+    outputs = forge.get("outputs") or []
+    if outputs:
+        selected = ((run or {}).get("launch_options") or {}).get("output")
+        labels = {
+            "record": "a durable Vira record",
+            "decision_brief": "a decision brief with the answer first, evidence, tradeoffs, and recommendation",
+            "artifact": "a finished artifact ready to use",
+            "notification": "a concise notification with the decision or action up front",
+        }
+        lines = ["OUTPUT CONTRACT"]
+        for item in outputs:
+            destination = selected or item.get("destination") or "record"
+            lines.append(f"- Shape your final response as {labels.get(destination, destination)}.")
+            if item.get("instructions"):
+                lines.append(f"  {item['instructions']}")
+        blocks.append("\n".join(lines))
+    if not blocks:
+        return ""
+    return ("\n\nFORGE GRAPH ATTACHMENTS\n"
+            "These are explicit inputs and capabilities connected to this "
+            "stage. Use them here; do not silently pass them to unrelated "
+            "stages.\n" + "\n\n".join(blocks))
+
+
+def render_prompt(template, run, stage=None):
     out = template.replace("{{input}}", run["input"])
 
     def sub(m):
         return _stage_output(run, m.group(1))
-    return re.sub(r"\{\{stage\.([\w-]+)\.output\}\}", sub, out)
+    out = re.sub(r"\{\{stage\.([\w-]+)\.output\}\}", sub, out)
+    return out + (_forge_brief(stage or {}, run))
 
 
 # ---------- surfaced run result ----------
@@ -597,7 +706,7 @@ def _built_path(run):
     if not cwd:
         return None
     for st in run.get("stages_def") or []:
-        if norm_stage_mode(st.get("mode")) == "judge":
+        if norm_stage_mode(st.get("mode")) in ("judge",) + LOCAL_MODES:
             continue
         if not st.get("read_only"):
             return cwd
@@ -671,6 +780,17 @@ class Driver(threading.Thread):
         defs = {st["id"]: st for st in run["stages_def"]}
         # 1) refresh running stages from their jobs
         for sid, st in run["stages"].items():
+            if st["status"] == "running" and st.get("child_run_id"):
+                child = get_run(st["child_run_id"])
+                if not child or child.get("status") == "running":
+                    continue
+                changed[sid] = {
+                    "status": "done" if child.get("status") == "done" else "error",
+                    "result_text": json.dumps(run_result(child) or {
+                        "child_run": child.get("id"), "status": child.get("status")},
+                        ensure_ascii=False),
+                }
+                continue
             if st["status"] != "running" or not st["job_id"]:
                 continue
             snap = (session.sessions.get(st["job_id"])
@@ -701,6 +821,10 @@ class Driver(threading.Thread):
                        for n in needs):
                     changed[sid] = {"status": "skipped"}
                 continue
+            mode = norm_stage_mode(st_def.get("mode"))
+            if mode in LOCAL_MODES:
+                changed[sid] = self._run_local_stage(run, st_def)
+                continue
             try:
                 jid = self._launch_stage(run, st_def)
             except ValueError:
@@ -717,7 +841,7 @@ class Driver(threading.Thread):
             run = get_run(run["id"])
         # 3) finalize
         states = [st["status"] for st in run["stages"].values()]
-        if "running" in states or "pending" in states:
+        if "running" in states or "pending" in states or "waiting" in states:
             return
         final = "done" if all(s == "done" for s in states) else "error"
         self._finalize(run, final)
@@ -745,7 +869,7 @@ class Driver(threading.Thread):
             model = st_def.get("model") or judge.judge_model()
             mode, read_only = "manual", True
         else:
-            prompt = render_prompt(st_def.get("prompt") or "", run)
+            prompt = render_prompt(st_def.get("prompt") or "", run, st_def)
             if extra:
                 prompt += ("\n\nADDITIONAL INSTRUCTIONS FROM THE OWNER for "
                            "this run — they take precedence over the brief "
@@ -764,6 +888,66 @@ class Driver(threading.Thread):
             publish_plan=bool(st_def.get("publish_plan")),
             meta={"circuit_run": run["id"], "stage": sid,
                   "circuit": run["circuit_id"]})
+
+    def _run_local_stage(self, run, st_def):
+        """Advance a non-model graph part without launching a session."""
+        sid = st_def["id"]
+        mode = norm_stage_mode(st_def.get("mode"))
+        attempts = int(run["stages"][sid].get("attempts") or 0) + 1
+        needs = st_def.get("needs") or []
+        values = [_stage_output(run, need) for need in needs]
+        combined = "\n\n".join(value for value in values if value)
+        if mode == "approval":
+            request = str((st_def.get("approval") or {}).get("instructions")
+                          or st_def.get("name") or "Approval required")
+            return {"status": "waiting", "attempts": attempts,
+                    "result_text": request}
+        if mode == "logic":
+            rule = st_def.get("logic") or {}
+            operation = str(rule.get("operation") or "always")
+            expected = str(rule.get("value") or "")
+            haystack = combined.casefold()
+            needle = expected.casefold()
+            passed = {
+                "always": True,
+                "contains": needle in haystack,
+                "not_contains": needle not in haystack,
+                "equals": haystack.strip() == needle.strip(),
+                "has_output": bool(combined.strip()),
+            }.get(operation, False)
+            result = (f"Logic gate {operation}"
+                      + (f" {expected!r}" if expected else "")
+                      + (": passed" if passed else ": did not pass"))
+            return {"status": "done" if passed else "error",
+                    "attempts": attempts, "result_text": result}
+        if mode == "native":
+            from . import routines
+            routine_id = str((st_def.get("native") or {}).get("routine_id") or "")
+            row = routines.get_routine(routine_id)
+            if not row:
+                return {"status": "error", "attempts": attempts,
+                        "result_text": f"Unknown native system {routine_id}"}
+            launched = routines.dispatch(row)
+            if launched.get("job_id"):
+                return {"status": "running", "attempts": attempts,
+                        "job_id": launched["job_id"],
+                        "result_text": f"Dispatched native system {routine_id}"}
+            if launched.get("run_id"):
+                return {"status": "running", "attempts": attempts,
+                        "child_run_id": launched["run_id"],
+                        "result_text": f"Dispatched nested Flow {launched['run_id']}"}
+            return {"status": "done" if not launched.get("error") else "error",
+                    "attempts": attempts,
+                    "result_text": json.dumps(launched, ensure_ascii=False)}
+        output = st_def.get("output") or {}
+        destination = output.get("destination") or "record"
+        instructions = str(output.get("instructions") or "").strip()
+        result = combined or run.get("input") or ""
+        if instructions:
+            result = f"{result}\n\nOutput instructions: {instructions}".strip()
+        return {"status": "done", "attempts": attempts,
+                "result_text": result,
+                "decision": {"destination": destination}}
 
     def _finish_judge(self, run, sid, st_def, ok, changed):
         st = run["stages"][sid]

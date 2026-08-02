@@ -20,6 +20,7 @@
 <!-- the glass layer of the currently applied skin (empty for the default
      Taurid skin); the skins picker in the Design Studio overwrites it -->
 <link rel="stylesheet" href="/skin-active.css">
+<link rel="stylesheet" href="/forge.css">
 </head>
 <body>
 <!-- Left nav drawer (mobile): swipe in from the left edge, or tap the brand.
@@ -135,15 +136,13 @@
     </div>
   </section>
 
-  <!-- WORK (the cockpit: Actions + Jobs + Ideas + Circuits + Agent Loops,
-       merged 2026-07-21. Queue = what's waiting on a decision; Dispatch =
-       start work (library cards, circuit recipes, standing schedules);
-       Live = running sessions; Record = the durable ledger + change log.) -->
+  <!-- THE FORGE. The internal id remains work so saved layouts, dock order,
+       deep links and every folded cockpit alias keep their established home. -->
   <section id="view-work" class="view">
     <div class="seg ideas-tabs" id="work-tabs">
-      <button data-tab="queue" class="seg-btn on">Queue</button>
-      <button data-tab="dispatch" class="seg-btn">Dispatch</button>
-      <button data-tab="live" class="seg-btn">Live</button>
+      <button data-tab="queue" class="seg-btn on">Cues</button>
+      <button data-tab="dispatch" class="seg-btn">Flows</button>
+      <button data-tab="live" class="seg-btn">Runs</button>
       <button data-tab="record" class="seg-btn">Record</button>
     </div>
 
@@ -191,67 +190,118 @@
       <div id="ideas-list" class="list"></div>
     </div>
 
-    <div id="work-dispatch-pane" style="display:none">
-      <div class="runbar">
-        <input id="free-prompt" class="search" type="text"
-               placeholder="Ask Claude anything, or tap a card below">
-        <button class="btn primary" id="free-run">Run</button>
-      </div>
-      <div class="dispatch-ctl">
-        <label for="dispatch-structure">Structure</label>
-        <select id="dispatch-structure" class="idea-sort"
-                title="Run as a single job, or feed a circuit"></select>
-        <label for="dispatch-schedule">Schedule</label>
-        <select id="dispatch-schedule" class="idea-sort"
-                title="Run once now, or put it on a standing schedule">
-          <option value="">Run once now</option>
-          <option value="schedule">On a schedule…</option>
-        </select>
-      </div>
-      <div class="seg mini" id="work-sub-tabs">
-        <button data-sub="library" class="seg-btn on">Library</button>
-        <button data-sub="recipes" class="seg-btn">Recipes</button>
-        <button data-sub="schedules" class="seg-btn">Schedules</button>
-      </div>
-      <div id="work-sub-library">
-        <div id="actions-grid" class="grid"></div>
-      </div>
-      <div id="work-sub-recipes" style="display:none">
-        <div class="seg ideas-tabs" id="circuits-tabs">
-          <button data-tab="run" class="seg-btn on">Run</button>
-          <button data-tab="runs" class="seg-btn">Runs</button>
+    <div id="work-dispatch-pane" class="forge" style="display:none">
+      <header class="forge-head">
+        <div class="forge-identity">
+          <span class="forge-kicker">The Forge / Flows</span>
+          <div class="forge-titleline">
+            <button class="forge-back" id="forge-library-toggle" type="button"
+                    aria-label="Show Flow library">Library</button>
+            <h2 id="forge-flow-name">Choose a Flow</h2>
+            <span class="forge-revision" id="forge-flow-revision"></span>
+          </div>
+          <p id="forge-flow-description">Operational systems, reusable starters, and every part that makes them run.</p>
         </div>
-        <div id="circuits-run-pane">
-          <div id="circuits-list"></div>
+        <div class="forge-actions">
+          <button class="fchip sm" id="forge-new" type="button">New</button>
+          <button class="fchip sm" id="forge-save-as" type="button">Save as</button>
+          <button class="fchip sm" id="forge-save" type="button">Save</button>
+          <button class="btn primary" id="forge-test" type="button">Test Flow</button>
         </div>
-        <div id="circuits-runs-pane" style="display:none">
-          <div id="circuit-runs" class="list"></div>
-        </div>
+      </header>
+
+      <div class="forge-shell" id="forge-shell">
+        <aside class="forge-library" id="forge-library">
+          <header class="forge-panel-head" id="forge-library-head">
+            <div><span>Library</span><strong>Flows, Kit, Context</strong></div>
+            <div class="forge-panel-actions">
+              <button type="button" id="forge-library-float" title="Pop the library out into Vira or dock it in The Forge">Pop out</button>
+              <button type="button" id="forge-library-close" aria-label="Close library">Close</button>
+            </div>
+          </header>
+          <div class="seg mini forge-library-tabs" id="forge-library-tabs">
+            <button class="seg-btn on" data-forge-library="flows">My Flows</button>
+            <button class="seg-btn" data-forge-library="starters">Starters</button>
+            <button class="seg-btn" data-forge-library="kit">Kit</button>
+            <button class="seg-btn" data-forge-library="context">Context</button>
+          </div>
+          <div class="forge-library-tools">
+            <input class="search" id="forge-library-search" type="search"
+                   placeholder="Search this library" autocomplete="off">
+            <select class="idea-sort" id="forge-library-filter" aria-label="Filter library"></select>
+          </div>
+          <div class="forge-library-body" id="forge-library-body"></div>
+        </aside>
+
+        <main class="forge-workspace">
+          <div class="forge-boardbar">
+            <div class="seg mini" id="forge-view-toggle">
+              <button class="seg-btn on" data-forge-view="board">Breadboard</button>
+              <button class="seg-btn" data-forge-view="outline">Outline</button>
+            </div>
+            <span class="forge-status" id="forge-status">Live definitions</span>
+            <div class="forge-zoom" aria-label="Breadboard zoom">
+              <button type="button" id="forge-zoom-out" aria-label="Zoom out">−</button>
+              <span id="forge-zoom-value">100%</span>
+              <button type="button" id="forge-zoom-in" aria-label="Zoom in">+</button>
+              <button type="button" id="forge-arrange">Arrange</button>
+            </div>
+          </div>
+          <div class="forge-viewport" id="forge-viewport">
+            <div class="forge-world" id="forge-world">
+              <svg class="forge-wires" id="forge-wires" aria-hidden="true"></svg>
+              <div id="forge-nodes"></div>
+            </div>
+            <div class="forge-empty" id="forge-empty">
+              <strong>Select a Flow or start with a blank board.</strong>
+              <span>Every agent, prompt, model, permission, tool, trigger, and output remains inspectable.</span>
+            </div>
+          </div>
+          <div class="forge-outline" id="forge-outline" hidden></div>
+        </main>
+
+        <aside class="forge-inspector" id="forge-inspector">
+          <header class="forge-panel-head">
+            <div><span>Selection</span><strong id="forge-inspector-title">Nothing selected</strong></div>
+            <button type="button" id="forge-inspector-close" aria-label="Close selection">Close</button>
+          </header>
+          <div class="forge-inspector-body" id="forge-inspector-body">
+            <p class="hint">Select a part or connection. Its complete configuration opens here without leaving the board.</p>
+          </div>
+        </aside>
       </div>
-      <div id="work-sub-schedules" style="display:none">
-        <p class="hint ideas-hint">Standing loops Vira runs on their own —
-          the muse proposes ideas each morning; watchers and digests run on
-          any cadence. Every run is a normal job with a terminal. Click any
-          loop to open the hood: what it does, how it fires, and the full
-          source of everything it runs — all of it editable.</p>
-        <div class="work-subhead">
-          <span class="jobs-sub">Standing loops</span>
-          <button class="fchip sm" id="routine-add-btn"
-                  style="margin-left:auto">New loop</button>
-        </div>
-        <div id="routine-form" class="routine-form" style="display:none"></div>
-        <div id="routines-list" class="list"></div>
+
+      <footer class="forge-launchbar">
+        <label><span>Content</span><input id="forge-run-input" type="text" placeholder="What should this Flow work on?"></label>
+        <label><span>Context</span><select id="forge-run-context"><option value="">Attached context</option></select></label>
+        <label><span>Output</span><select id="forge-run-output"><option value="record">Record</option><option value="decision_brief">Decision brief</option><option value="artifact">Artifact</option><option value="notification">Notification</option></select></label>
+        <button class="btn primary" id="forge-run" type="button">Run Flow</button>
+      </footer>
+
+      <!-- Compatibility anchors for retired Dispatch controls. They keep old
+           command paths inert while every visible path routes through Forge. -->
+      <div hidden>
+        <input id="free-prompt"><button id="free-run"></button>
+        <select id="dispatch-structure"></select><select id="dispatch-schedule"></select>
+        <div id="work-sub-tabs"></div><div id="work-sub-library"><div id="actions-grid"></div></div>
+        <div id="work-sub-recipes"><div id="circuits-tabs"></div><div id="circuits-list"></div><div id="circuit-runs"></div></div>
+        <div id="work-sub-schedules"><button id="routine-add-btn"></button><div id="routine-form"></div><div id="routines-list"></div></div>
       </div>
     </div>
 
     <div id="work-live-pane" style="display:none">
+      <div class="work-subhead">
+        <span class="jobs-sub">Flow runs</span>
+        <button class="fchip sm" id="forge-runs-refresh" style="margin-left:auto">Refresh</button>
+      </div>
+      <div id="forge-runs" class="forge-runs"></div>
       <div id="jobs-strip"></div>
       <div class="work-subhead">
         <span class="jobs-sub">Unlanded work</span>
         <button class="fchip sm" id="orphan-refresh" style="margin-left:auto">Sweep now</button>
       </div>
       <div id="orphan-list" class="list"></div>
-      <div class="jobs-sub">Recent jobs</div>
+      <div class="jobs-sub">Recent stage sessions</div>
       <div id="jobs-list" class="list"></div>
     </div>
 
@@ -763,6 +813,7 @@
   </div>
 </div>
 
+<script src="/forge.js"></script>
 <script src="/app.js"></script>
 <script src="/atlas.js"></script>
 </body>

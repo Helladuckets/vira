@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vira — the Work window</title>
+<title>Vira — The Forge</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
@@ -189,21 +189,21 @@ const SHOTS = {
 const BEATS = [
   { type: "title", dur: 6.5, cps: 64,
     k: "VIRA",
-    t: "This is Work",
-    b: "One window, four tabs. It is where you put things you want done, hand them to an agent, watch them run, and read what happened afterwards. Two minutes, and you can skip it whenever you like.",
+    t: "This is The Forge",
+    b: "One window, four tabs. Capture what is calling for attention, compose the system that should handle it, watch that system run, and keep the record. Two minutes, and you can skip it whenever you like.",
     type2: "typed" },
 
   { img: "queue", r: [240, 132, 2360, 480], dur: 5,
     point: [1420, 276],
     k: "THE FOUR TABS",
-    t: "Queue, Dispatch, Live, Record",
-    b: "They are one loop, in order. <b>Queue</b> is what you want done. <b>Dispatch</b> is handing a piece of it over. <b>Live</b> is it happening. <b>Record</b> is what came of it. You will spend most of your time in the first one." },
+    t: "Cues, Flows, Runs, Record",
+    b: "They are one loop, in order. <b>Cues</b> holds what may deserve action. <b>Flows</b> is where the action is composed. <b>Runs</b> is the work happening. <b>Record</b> is what came of it." },
 
   { img: "queue", r: [274, 620, 2292, 1000], dur: 5.5,
     point: [800, 700],
-    k: "QUEUE",
+    k: "CUES",
     t: "Everything waiting on your call",
-    b: "The backlog carried across sessions, so nothing lives only in your head or in a chat you closed. It stays readable at a few hundred items because it is grouped by state rather than dumped in one list — here, 151 of them." },
+    b: "Your ideas and Vira's proposals stay in one collaborative list. Capture is immediate; approve, defer, connect, or build later. Preservation matters, but the point is knowing what is asking for your attention." },
 
   { img: "queueadd", r: [274, 300, 2292, 240], dur: 5,
     point: [700, 417],
@@ -221,35 +221,35 @@ const BEATS = [
     point: [680, 1128],
     k: "VIRA PROPOSES TOO",
     t: "Nothing acts without your say-so",
-    b: "Vira adds its own ideas to the top of the queue and then waits. Each one carries why it was raised, and three answers: <b>approve</b> to keep it, <b>approve &amp; build</b> to start it now, <b>decline</b> to drop it. Sitting there unanswered is a perfectly good state." },
+    b: "Vira adds its own ideas to Cues and then waits. Each one carries why it was raised. Approve it, set it aside for later, turn it into a Flow, or decline it. Sitting there unanswered is a perfectly good state." },
 
   { img: "dispatch", r: [274, 300, 2292, 260], dur: 5,
     point: [700, 381],
-    k: "DISPATCH",
-    t: "Ask for anything, in a sentence",
-    b: "Type what you want and press Run. No ceremony, no picking a template first — if it needs a skill, Vira reaches for one. The cards below are there for the things you do often enough to want a button." },
+    k: "FLOWS",
+    t: "Build the system, then launch it",
+    b: "A Flow can be one agent or a whole orchestration. Prompts, models, permissions, tools, context, approvals, logic, outputs, and existing Vira systems are independent parts you can inspect and reconnect." },
 
   { img: "dispatch", r: [274, 420, 2292, 240], dur: 4.5,
     point: [700, 472],
-    k: "TWO DECISIONS",
-    t: "How it runs, and when",
-    b: "<b>Structure</b> is whether this is one job or a chain of them feeding each other. <b>Schedule</b> is now, or every morning. Both default to the simple answer, so ignoring them runs the obvious thing once." },
+    k: "LAUNCH CONTROLS",
+    t: "Content, context, output",
+    b: "Use the same Flow with different content, attach a different reference set from Find, and choose a different output shape. A trigger part adds time when the system should start without you." },
 
   { img: "library", r: [274, 560, 1350, 320], dur: 5,
     point: [430, 660],
-    k: "YOUR SKILLS",
-    t: "The things you do often, as cards",
-    b: "Every skill in your library shows up here with what it is for. Tap one instead of describing the same task again — and anything you teach Vira later appears in this grid without you wiring it in." },
+    k: "THE KIT",
+    t: "Every capability is a real part",
+    b: "Skills, scripts, commands, agents, MCP servers, hooks, and primitives appear with their real source. Drag one onto the board, connect it where it belongs, and unfold it when you need the instructions underneath." },
 
   { img: "schedules", r: [274, 500, 2292, 320], dur: 4.5,
     point: [700, 612],
-    k: "STANDING LOOPS",
-    t: "Work that starts without you",
-    b: "Loops Vira runs on their own — proposing ideas each morning, watching something and telling you when it moves. Every run is an ordinary job with an ordinary terminal, so nothing happens where you cannot see it." },
+    k: "TRIGGERS AND LIVE SYSTEMS",
+    t: "Work that already runs",
+    b: "Schedules are trigger parts, and the systems you already use are live native Flows. Open them, inspect every instruction and script, attach new context or output, then save the experiment as a new version without rewriting the source." },
 
   { img: "live", r: [274, 300, 2292, 460], dur: 5,
     point: [430, 522],
-    k: "LIVE",
+    k: "RUNS",
     t: "What is running, right now",
     b: "One row per session, with a light that tells you whether it is working, waiting on you, or done. Nothing here is a progress bar you can only watch — each one opens." },
 
@@ -274,17 +274,17 @@ const BEATS = [
   { img: "phone", r: [0, 0, 804, 1748], dur: 4.5,
     point: [400, 380],
     k: "ON YOUR PHONE",
-    t: "The same queue, one column",
-    b: "There are no floating windows on a phone, so Work is simply the screen. Add something from a platform on the way home, then approve or steer a running session from the same place." },
+    t: "The same Forge, one column",
+    b: "There are no floating desktop windows on a phone, so The Forge becomes the screen. Capture a Cue, launch a Flow, approve a waiting gate, or steer a running session from the same place." },
 
   { type: "outro", dur: 7, cps: 70,
     k: "THAT IS THE LOOP",
     t: "Your turn",
-    b: "Type one thing into the Queue and hand it to Dispatch. That is the whole cycle, and it works right now on the AI you just connected.",
+    b: "Capture one thing in Cues, shape it into a Flow, and launch it. That is the whole cycle, and it works right now on the AI you just connected.",
     type2: "typed" },
 ];
 
-BEATS.forEach((b, i) => { b.nav = ['Work', 'Four tabs', 'Queue', 'Adding', 'Finding', 'Proposals', 'Dispatch', 'Run & when', 'Skills', 'Loops', 'Live', 'Session', 'Record', 'Receipts', 'Phone', 'Your turn'][i]; });
+BEATS.forEach((b, i) => { b.nav = ['Forge', 'Four tabs', 'Cues', 'Adding', 'Finding', 'Proposals', 'Flows', 'Launch controls', 'Kit', 'Triggers', 'Runs', 'Session', 'Record', 'Receipts', 'Phone', 'Your turn'][i]; });
 const N = BEATS.length;
 const wantsArticle = () =>
   matchMedia("(prefers-reduced-motion: reduce)").matches
@@ -321,9 +321,9 @@ addEventListener("resize", () => {
 
 function buildArticle() {
   document.body.classList.add("article");
-  let html = `<div class="k">VIRA</div><h1>This is Work</h1>
-    <p>One window, four tabs: what you want done, handing it over, watching it
-    run, and reading what came of it.</p>`;
+  let html = `<div class="k">VIRA</div><h1>This is The Forge</h1>
+    <p>One window, four tabs: capture the cue, compose the Flow, watch it run,
+    and keep the record.</p>`;
   BEATS.forEach((bt) => {
     if (bt.type === "title") return;
     html += "<section>";
