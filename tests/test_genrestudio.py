@@ -803,5 +803,15 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(self.c.post(f"/api/genre/{gid}/install").status_code, 404)
 
 
+class DesignStudioDoorTests(unittest.TestCase):
+    def test_open_studio_navigates_in_place_not_through_a_popup(self):
+        source = (REPO / "static" / "app.js").read_text(encoding="utf-8")
+        start = source.index("function createGenreCard()")
+        door = source[start:source.index("function skinCard", start)]
+        self.assertIn('const open = el("button", "skin-apply", "Open studio")', door)
+        self.assertIn('location.assign("/genre.html")', door)
+        self.assertNotIn("window.open", door)
+
+
 if __name__ == "__main__":
     unittest.main()

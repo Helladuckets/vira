@@ -10695,9 +10695,11 @@ function createGenreCard() {
   card.appendChild(el("div", "skin-tag",
     "Take reference images apart and build a genre out of the pieces."));
   const foot = el("div", "skin-foot");
-  const b = el("button", "skin-apply", "Open studio");
-  b.addEventListener("click", () => window.open("/genre.html", "_blank", "noopener"));
-  foot.appendChild(b);
+  // New windows are suppressed in some of the browser surfaces Vira runs in.
+  // Navigate this tab to the full-width matrix; Back returns to Vira.
+  const open = el("button", "skin-apply", "Open studio");
+  open.addEventListener("click", () => location.assign("/genre.html"));
+  foot.appendChild(open);
   card.appendChild(foot);
   return card;
 }
