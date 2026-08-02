@@ -4732,26 +4732,6 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 /* Sits ABOVE floating windows (whose z climbs by one per focus, with no
    ceiling) but BELOW the decision layer at 4100 — a permission card must
    never end up behind a tour. */
-/* The tour film: an overlay ON the Work window, at the window's own rect.
-   It is showing you THIS window, so it sits exactly where the window is and
-   hands the real thing back the moment it closes. */
-.tour-film {
-  position: fixed; z-index: 62; border-radius: 12px; overflow: hidden;
-  border: 1px solid var(--line); background: #0a0b0d;
-  box-shadow: 0 30px 90px rgba(0,0,0,.7);
-  animation: tour-film-in .32s cubic-bezier(.2,.7,.2,1) both;
-}
-.tour-film iframe { display: block; width: 100%; height: 100%; border: 0; }
-@keyframes tour-film-in {
-  from { opacity: 0; transform: scale(.985); }
-  to   { opacity: 1; transform: scale(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tour-film { animation: none; }
-}
-/* Below the width where floating windows exist there is no Work window to
-   sit on, and the reveal does not run a tour at all. */
-@media (max-width: 1099px) { .tour-film { display: none; } }
 
 .tour-card {
   position: fixed;

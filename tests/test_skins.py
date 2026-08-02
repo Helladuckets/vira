@@ -54,7 +54,20 @@ class ManifestTests(unittest.TestCase):
         m = skins.load_manifest("taurid")
         self.assertTrue(m.get("default"))
         self.assertEqual(m["id"], "taurid")
+        self.assertEqual(m["name"], "Dark Mode")
+        self.assertEqual(m["genre"], "Taurid Capital")
         self.assertGreaterEqual(len(m["tokens"]), 60)
+
+    def test_real_light_mode_loads_with_structure_and_valid_tokens(self):
+        m = skins.load_manifest("light")
+        self.assertEqual(m["name"], "Light Mode")
+        self.assertEqual(m["genre"], "Card Grid Interface")
+        self.assertEqual(m["register"], "A002")
+        self.assertEqual(m["extras"], "light.css")
+        self.assertEqual(m["tokens"]["--radius"], "14px")
+        self.assertIn("rgba", m["tokens"]["--bg-card"])
+        for k, v in m["tokens"].items():
+            skins._check_token(k, v)
 
     def test_real_phosphor_loads_with_glass_and_valid_tokens(self):
         m = skins.load_manifest("phosphor-console")
@@ -65,6 +78,11 @@ class ManifestTests(unittest.TestCase):
     def test_phosphor_overrides_all_exist_in_the_floor(self):
         floor = set(skins.load_manifest("taurid")["tokens"])
         over = set(skins.load_manifest("phosphor-console")["tokens"])
+        self.assertTrue(over <= floor, over - floor)
+
+    def test_light_overrides_all_exist_in_the_floor(self):
+        floor = set(skins.load_manifest("taurid")["tokens"])
+        over = set(skins.load_manifest("light")["tokens"])
         self.assertTrue(over <= floor, over - floor)
 
     def test_bad_id_and_unknown_id(self):
@@ -96,7 +114,8 @@ class _Tree:
         (tmp / "static" / "skins").mkdir(parents=True)
         (tmp / "data").mkdir()
         real = REPO / "static" / "skins"
-        for name in ("taurid.json", "phosphor-console.json", "phosphor-console.css"):
+        for name in ("taurid.json", "light.json", "light.css",
+                     "phosphor-console.json", "phosphor-console.css"):
             shutil.copy(real / name, tmp / "static" / "skins" / name)
         # a style.css whose :root carries the floor values for the tokens we assert on
         floor = json.loads((real / "taurid.json").read_text(encoding="utf-8"))["tokens"]
@@ -156,6 +175,18 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(skins.SKIN_ACTIVE.read_text(encoding="utf-8"), skins._ACTIVE_HEADER)
         self.assertEqual(skins.active_id(), "taurid")
 
+    def test_apply_light_rewrites_paper_tokens_and_structure_layer(self):
+        out = skins.apply_skin("light")
+        self.assertEqual(out["active"], "light")
+        self.assertIn("--bg: #f2eee3;", self._style())
+        self.assertIn("--accent: #a53b36;", self._style())
+        self.assertIn("--radius: 14px;", self._style())
+        structure = skins.SKIN_ACTIVE.read_text(encoding="utf-8")
+        self.assertIn("counter-reset: light-window", structure)
+        self.assertIn(".fwin-title::before", structure)
+        self.assertIn("backdrop-filter: blur(18px)", structure)
+        self.assertEqual(skins.active_id(), "light")
+
     def test_apply_is_idempotent(self):
         skins.apply_skin("phosphor-console")
         again = skins.apply_skin("phosphor-console")
@@ -168,6 +199,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(listing["active"], "phosphor-console")
         ids = [s["id"] for s in listing["skins"]]
         self.assertEqual(ids[0], "taurid")               # floor/default first
+        self.assertIn("light", ids)
         self.assertIn("phosphor-console", ids)
 
 
@@ -203,7 +235,7 @@ class RouteTests(unittest.TestCase):
         r = self.client.get("/api/skins")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["active"], "taurid")
-        self.assertGreaterEqual(len(r.json()["skins"]), 2)
+        self.assertGreaterEqual(len(r.json()["skins"]), 3)
 
     def test_post_apply_and_unknown(self):
         r = self.client.post("/api/skins/phosphor-console/apply")

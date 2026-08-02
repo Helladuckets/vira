@@ -1,11 +1,11 @@
 {
   "id": "taurid",
-  "name": "Taurid Capital",
+  "name": "Dark Mode",
   "genre": "Taurid Capital",
   "register": "brand-v1",
   "medium": "app-native",
   "tagline": "Stone, charcoal, oxidized metals.",
-  "description": "Vira's home skin \u2014 the Taurid Capital brand book. Bone accent on graphite, engineered corners, no glass. Applying it resets Vira to stock.",
+  "description": "Vira's stock dark mode \u2014 the Taurid Capital brand book. Bone accent on graphite, engineered corners, no glass. Applying it resets Vira to stock.",
   "swatch": [
     "#0d0d0d",
     "#2a2b2d",

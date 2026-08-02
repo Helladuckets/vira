@@ -14,13 +14,14 @@ can't push to.) If the owner wants a skin to become the shipped default, that
 is a deliberate git commit, not a side effect of a click.
 
 Because a skin leaves the tracked stylesheet modified, the in-app updater
-will decline to fast-forward until the skin is reset — applying the Taurid
+will decline to fast-forward until the skin is reset — applying the Dark Mode
 floor restores the pristine files (see update.py, which names this).
 
 Skins ship as tracked data under ``static/skins/<id>.json`` (+ optional
-``<id>.css``), so a new skin is added by dropping files in. The Taurid
-Capital skin is the FLOOR: every apply merges the target skin's overrides
-over it, so applying is idempotent and applying Taurid resets Vira to stock.
+``<id>.css``), so a new skin is added by dropping files in. Dark Mode (the
+Taurid Capital skin) is the FLOOR: every apply merges the target skin's
+overrides over it, so applying is idempotent and applying it resets Vira to
+stock.
 
 The picker lives at the top of the Design Studio module: pick a skin up top,
 tweak it in the studio below.
@@ -51,13 +52,13 @@ EXTRAS_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}\.css$")
 MAX_MANIFEST_BYTES = 128 * 1024
 MAX_EXTRAS_BYTES = designstudio.MAX_FILE_BYTES   # 512 KB, same ceiling as a saved stylesheet
 
-# The default (glass-free) content of skin-active.css. Applying the Taurid
+# The default (glass-free) content of skin-active.css. Applying Dark Mode
 # floor writes exactly this, so a reset-to-stock leaves no git diff. Kept in
 # sync with the shipped static/skin-active.css. Comments only, no rules.
 _ACTIVE_HEADER = (
     "/* skin-active.css — the glass layer of the currently applied skin.\n"
     "   Linked after style.css; the Design Studio's skins picker overwrites\n"
-    "   this file when a skin is applied. The default skin (Taurid Capital)\n"
+    "   this file when a skin is applied. The default skin (Dark Mode)\n"
     "   carries no glass, so until a skin is applied this file has comments\n"
     "   only, no rules. */\n"
 )
