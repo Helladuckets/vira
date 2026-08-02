@@ -1,5 +1,5 @@
 /* skin-active.css — the glass layer of the currently applied skin.
    Linked after style.css; the Design Studio's skins picker overwrites
-   this file when a skin is applied. The default skin (Taurid Capital)
+   this file when a skin is applied. The default skin (Dark Mode)
    carries no glass, so until a skin is applied this file has comments
    only, no rules. */

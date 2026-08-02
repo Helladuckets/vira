@@ -9951,14 +9951,11 @@ function frFinish(pr) {
 // implement it — so once the reveal has grown it, the tour is about that
 // window and nothing else.
 //
-// It used to be four caption cards that drove Work's own tabs. It is now a
-// FILM, played over the Work window at the window's own size: the same four
-// tabs in depth, plus the parts four captions had no room for — what a
-// proposal from Vira offers you, what a session's terminal actually looks
-// like, what the record keeps. It ends the way the cards did, on the same
-// closing choice, so nothing that hung off that card was lost with it.
-//
-// Skippable at any moment, by the film's own control or by Escape.
+// The deeper film walkthrough is deliberately paused. It was captured in a
+// specific skin, so playing it inside a differently skinned app makes first
+// run look stale at exactly the moment Vira is establishing trust. For now
+// the tour begins directly with the two useful closing cards below. The film
+// artifact remains available for a future skin-aware version.
 
 // The closing cards. Two, not one (owner, 2026-07-30): trying it and
 // deepening it are separate asks pointing at separate controls, and one card
@@ -9972,18 +9969,16 @@ function frFinish(pr) {
 // gets on with it — which is exactly the person we most want to see it,
 // because connecting notes and a project is what makes every later answer
 // worth reading. Two cards side by side is the whole encouragement.
-const OUTRO = [
+const TOUR_CARDS = [
   { anchor: "#work-queue-pane .runbar", side: "below", align: "start",
     kicker: "That's the loop" },
   { anchor: "#idea-project-filter", ring: ".sb-pair",
     kicker: "Your own work" },
 ];
 
-let tourStep = -1;          // -1 idle, 0 film playing, 1 the closing cards
-let tourLive = [];          // which OUTRO beats are still on screen
+let tourLive = [];          // which instructional cards are still on screen
 
 function tourCards() { return [...document.querySelectorAll(".tour-card")]; }
-function tourFilm() { return $("#tour-film"); }
 
 // The ring is cleared on every repaint AND on exit — a highlight that
 // outlives its card is a control left glowing for no reason.
@@ -9992,84 +9987,21 @@ function clearTourRing() {
     .forEach((n) => n.classList.remove("tour-target"));
 }
 
-async function startWorkTour() {
+function startWorkTour() {
   if (!isDesktop || !winState?.work) return;
   openWindow("work");
   focusWin(winState.work.el);
-  tourStep = 0;
-  // The film's frames are the owner's own instance, anonymized, and are
-  // deliberately NOT committed to this repo — so a checkout that does not
-  // carry them must not open an empty box at the one moment it is trying to
-  // explain itself. Ask first; fall straight through to the closing card.
-  let there = false;
-  try {
-    there = (await fetch("/tour/", { method: "HEAD" })).ok;
-  } catch { /* offline or no route — same answer */ }
-  if (tourStep !== 0) return;              // skipped while we were asking
-  if (!there) { showOutro(); return; }
-  playTourFilm();
+  showTourCards();
 }
 
-// The film is an overlay ON the Work window, matching its rect — the point
-// is that it is showing you THIS window, so it sits exactly where the window
-// is and hands the real thing back when it closes. A rect measured while
-// .fwin-move is still animating is a frame of that animation, so the overlay
-// re-fits once the move has settled and on every resize after.
-function playTourFilm() {
-  tourFilm()?.remove();
-  const host = el("div", "tour-film");
-  host.id = "tour-film";
-  const frame = document.createElement("iframe");
-  frame.src = "/tour/";
-  frame.title = "A tour of The Forge";
-  // NOT scrolling="no": the film scrubs on scroll, and this attribute
-  // silently disabled that inside the frame.
-  host.appendChild(frame);
-  document.body.appendChild(host);
-  fitTourFilm();
-  clearTimeout(playTourFilm._settle);
-  playTourFilm._settle = setTimeout(fitTourFilm, 440);
-  addEventListener("resize", fitTourFilm);
-}
-
-function fitTourFilm() {
-  const host = tourFilm();
-  const win = winState?.work?.el;
-  if (!host) return;
-  if (!win) {                       // no Work window — centre a sensible box
-    const w = Math.min(680, innerWidth - 48), h = Math.min(720, innerHeight - 90);
-    Object.assign(host.style, { left: `${(innerWidth - w) / 2}px`,
-      top: `${(innerHeight - h) / 2}px`, width: `${w}px`, height: `${h}px` });
-    return;
-  }
-  const r = win.getBoundingClientRect();
-  Object.assign(host.style, { left: `${Math.round(r.left)}px`,
-    top: `${Math.round(r.top)}px`, width: `${Math.round(r.width)}px`,
-    height: `${Math.round(r.height)}px` });
-}
-
-// The film tells us when it is over — whether it ran out or was skipped.
-addEventListener("message", (e) => {
-  if (!e.data || e.data.viraTour !== "done" || tourStep !== 0) return;
-  tourFilm()?.remove();
-  removeEventListener("resize", fitTourFilm);
-  showOutro();          // both closing cards, together
-});
-
-// The one entry point to the closing beats, so the film's end and the
-// no-film fallback cannot open different things.
-function showOutro() {
-  tourStep = 1;
-  tourLive = OUTRO.map((_, i) => i);
+function showTourCards() {
+  tourLive = TOUR_CARDS.map((_, i) => i);
   paintTour();
 }
 
 function endTour({ focusAdd } = {}) {
-  tourStep = -1;
   tourLive = [];
   tourCards().forEach((n) => n.remove());
-  tourFilm()?.remove();
-  removeEventListener("resize", fitTourFilm);
   clearTourRing();
   document.body.classList.remove("tour-open");
   if (focusAdd) focusIdeaAdd();
@@ -10095,8 +10027,8 @@ function focusIdeaAdd() {
   box?.scrollIntoView({ block: "center", behavior: "smooth" });
 }
 
-// The cards that outlive the film: what to do now. Both live on the Queue
-// tab, side by side, each anchored to the control it names.
+// Both cards live on the Queue tab, side by side, each anchored to the
+// control it names.
 function paintTour() {
   document.body.classList.add("tour-open");
   tourCards().forEach((n) => n.remove());
@@ -10114,7 +10046,7 @@ function paintTour() {
 }
 
 function buildTourCard(i) {
-  const beat = OUTRO[i];
+  const beat = TOUR_CARDS[i];
   const card = el("div", "tour-card");
   card.dataset.beat = String(i);
 
@@ -10174,7 +10106,7 @@ function positionTour() {
   const cards = tourCards();
   if (!cards.length) return;
   const items = cards.map((card) => {
-    const beat = OUTRO[Number(card.dataset.beat)] || OUTRO[0];
+    const beat = TOUR_CARDS[Number(card.dataset.beat)] || TOUR_CARDS[0];
     const r = $(beat.anchor)?.getBoundingClientRect();
     return { card, beat, a: r && r.width ? r : null,
              w: card.offsetWidth || 360, h: card.offsetHeight || 220 };
