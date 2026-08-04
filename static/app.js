@@ -2086,11 +2086,21 @@ const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v5";
 // The three session-linked companions, in ONE order every surface reads: the
 // desktop toggle row in Find's toolbar, Find's own mobile tabs, and the nav
 // drawer's sub-rows under Find. Three lists would be three chances to drift.
+//
+// `standalone` is Definition's alone (owner, 2026-08-04), and it carries ONE
+// fact with two consequences: Definition is not ABOUT the chat session.
+// Concepts and Related report on it — left behind they describe a
+// conversation no longer on screen — while a definition is asked for by
+// right-clicking a word ANYWHERE in Vira and banks itself in the vault. So
+// closing the search must not close the dictionary, and raising the
+// dictionary must not announce that you have entered the search workspace.
 const FIND_COMPANIONS = [
-  { id: "find-define", tab: "define", label: "Definition" },
+  { id: "find-define", tab: "define", label: "Definition", standalone: true },
   { id: "find-cloud", tab: "concepts", label: "Concepts" },
   { id: "find-related", tab: "related", label: "Related" },
 ];
+
+const findCompanion = (id) => FIND_COMPANIONS.find((c) => c.id === id);
 
 function findChatSessionLabel() {
   const n = findChatSession?.turns?.length || 0;
@@ -6972,6 +6982,7 @@ function openJobWindow(jid) {
   win.style.display = "flex";
   requestAnimationFrame(() => win.classList.add("open"));
   focusWin(win);
+  markSpawnedClear(win);
   armTermRetreat(win);
   const term = createJobTerm(jid, {
     banner, cmd, output, pending, composebar, say, send, stopBtn,
@@ -11232,6 +11243,7 @@ async function openNoteWindow(path, title) {
   win.style.display = "flex";
   requestAnimationFrame(() => win.classList.add("open"));
   focusWin(win);
+  markSpawnedClear(win);
   noteWindows[path] = { win };
   close.addEventListener("click", () => {
     win.classList.remove("open");
@@ -13630,6 +13642,30 @@ function saveWinState(id, patch) {
 
 function focusWin(node) { node.style.zIndex = ++zTop; }
 
+// A window SPAWNED while a treatment is up INHERITS the exemption of the
+// surface that spawned it (owner, 2026-08-04). Definition is exempt from
+// focus mode and is a Find-cluster member, so it stays legible over both
+// scrims — but "Open note" on its card minted an ordinary floating window,
+// which the very same scrims then blurred and receded. The definition you
+// asked for arrived clear and the note it sent you to arrived unreadable.
+//
+// The mark is TEMPORAL, never a property of note or terminal windows: it is
+// granted at spawn time and dropped the moment every treatment ends, so a
+// window left open and later sat behind a lit profile recedes with the rest
+// of the desk, which is what a backdrop should do.
+function markSpawnedClear(win) {
+  const b = document.body.classList;
+  if (b.contains("focus-mode") || b.contains("find-workspace"))
+    win.classList.add("win-clear");
+}
+
+function dropSpawnedClear() {
+  const b = document.body.classList;
+  if (b.contains("focus-mode") || b.contains("find-workspace")) return;
+  document.querySelectorAll(".fwin.win-clear")
+    .forEach((w) => w.classList.remove("win-clear"));
+}
+
 // ---------- focus stack: profile + media viewer open as "lit" surfaces over
 // a blurred backdrop; opening one while another is up STACKS (the top is lit,
 // the rest recede), and dismissing pops back to the one beneath ----------
@@ -13640,6 +13676,7 @@ function relightFocus() {
     .forEach((p) => p.classList.remove("focus-lit"));
   if (!focusStack.length) {
     document.body.classList.remove("focus-mode");
+    dropSpawnedClear();
     return;
   }
   document.body.classList.add("focus-mode");
@@ -14663,12 +14700,15 @@ function syncFindWorkspace() {
   syncFindCompanionToggles();
   // Opening Find to run a search is an ordinary window open and must leave the
   // desk alone; it is the companions coming up that means "this is a workspace
-  // now" — and only while the owner is actually working in it.
+  // now" — and only while the owner is actually working in it. A `standalone`
+  // companion does not count: Definition outlives Find's close, and a lone
+  // dictionary left on the desk is not a workspace to blur everything for.
   const lit = findWorkspaceLit
-    && FIND_COMPANIONS.some((c) => winState[c.id]?.open);
+    && FIND_COMPANIONS.some((c) => !c.standalone && winState[c.id]?.open);
   document.body.classList.toggle("find-workspace", lit);
   FIND_CLUSTER.forEach((id) =>
     winState[id]?.el.classList.toggle("find-member", lit));
+  dropSpawnedClear();
 }
 
 // One listener decides both directions, in the CAPTURE phase so a handler
@@ -14678,7 +14718,16 @@ function syncFindWorkspace() {
 document.addEventListener("pointerdown", (e) => {
   if (!isDesktop) return;
   const win = e.target.closest?.(".fwin");
-  setFindWorkspaceLit(!!win && FIND_CLUSTER.includes(win.id.replace(/^win-/, "")));
+  const id = win ? win.id.replace(/^win-/, "") : "";
+  if (!FIND_CLUSTER.includes(id)) { setFindWorkspaceLit(false); return; }
+  // Definition is `standalone`, so raising it CHANGES NO MODE (owner,
+  // 2026-08-04): from a plain desk, looking up a word must not blur every
+  // other window — a definition is an annotation, not a declaration that
+  // you have moved into the search workspace. Inside a live workspace it is
+  // an ordinary member, so pressing it keeps the treatment rather than
+  // dropping it, which is why this returns instead of leaving.
+  if (findCompanion(id)?.standalone) return;
+  setFindWorkspaceLit(true);
 }, true);
 
 function openWindow(id) {
@@ -14718,11 +14767,14 @@ function closeWindow(id) {
   const st = winState[id];
   if (!st || !st.open) return;
   // The companions are windows ONTO Find's session, so closing Find closes
-  // them (owner, 2026-08-04) — left behind they are three panels reporting on
-  // a conversation that is no longer on screen, and they were what held the
+  // them (owner, 2026-08-04) — left behind they are panels reporting on a
+  // conversation that is no longer on screen, and they were what held the
   // workspace treatment open forever. Reachable on their own from the
-  // Launchpad; that path does not reopen Find.
-  if (id === "find") FIND_COMPANIONS.forEach((c) => closeWindow(c.id));
+  // Launchpad; that path does not reopen Find. Definition is exempt
+  // (`standalone`): it answers a right-click from anywhere in Vira, so
+  // closing the search it happens to sit beside must not take it down.
+  if (id === "find")
+    FIND_COMPANIONS.forEach((c) => { if (!c.standalone) closeWindow(c.id); });
   // In a stage layout the red button on a grown card retreats it to its park
   // rather than hiding the module — closing a stage card sends it home. A
   // visitor (not part of this layout) has no park, so it just closes.
@@ -18430,24 +18482,49 @@ function addToLayout(id) {
   toast(name + " added to " + (cur ? cur.name : "the layout"));
 }
 
+// Every window that is NOT a WINDOWS entry: note windows and session
+// terminals, appended straight to the body and held in their own registries.
+// Nothing that iterates WINDOWS has ever seen them, which is half of why
+// "close all modules" left a desk with windows still on it. Each is closed
+// through its OWN traffic light rather than by removing the node, so its
+// registry, poll timer and terminal teardown run exactly as they do on a
+// hand click — two implementations of closing would be two chances to leak.
+function spawnedWindows() {
+  return [...Object.values(noteWindows), ...Object.values(jobWindows)]
+    .map((x) => x.win)
+    .filter((w) => w?.isConnected);
+}
+
 // "Close all modules" — what that MEANS depends on the layout. In a stage,
 // clearing the desk is sending every grown card home to its park (the frame is
 // the resting state, so closing them all is a retreat, not a teardown); a
 // visitor with no park really closes. In freeform there is nothing to retreat
 // to, so it clears the desk outright.
 function closeAllModules() {
+  const extras = spawnedWindows();
+  extras.forEach((w) => w.querySelector(".fwin-close")?.click());
   if (layoutMode === "stage") {
     const wasGrown = grownOrder.slice();
     wasGrown.forEach((id) => {
       if (slotRects[id]) retreatTile(id);
       else closeWindow(id);
     });
-    toast(wasGrown.length ? "Modules sent home" : "Nothing open on the stage");
+    // The OTHER half of the miss: openWindow skips the stage path entirely
+    // for a companion, so Definition, Concepts and Related never enter
+    // grownOrder and every previous sweep left them floating over a desk it
+    // had just reported clearing. Anything open with no park to retreat to
+    // is a visitor and really closes.
+    const loose = WINDOWS.filter((w) => winState[w.id]?.open
+      && !slotRects[w.id] && !grown.has(w.id));
+    loose.forEach((w) => closeWindow(w.id));
+    const n = wasGrown.length + loose.length + extras.length;
+    toast(n ? "Modules sent home" : "Nothing open on the stage");
     return;
   }
   const open = WINDOWS.filter((w) => winState[w.id]?.open);
   open.forEach((w) => closeWindow(w.id));
-  toast(open.length ? "Closed " + open.length + " modules" : "Nothing open");
+  const n = open.length + extras.length;
+  toast(n ? "Closed " + n + " modules" : "Nothing open");
 }
 
 function updateLayoutBtn() {
