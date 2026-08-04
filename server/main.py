@@ -29,6 +29,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                contactcard,
                crmindex,
                data as crm,
+               define,
                designstudio,
                evidence,
                feedstate,
@@ -2527,6 +2528,61 @@ def api_vault_note(path: str):
         raise HTTPException(400, str(e))
     except OSError:
         raise HTTPException(404, "note not found")
+
+
+@app.get("/api/vault/resolve")
+def api_vault_resolve(ref: str):
+    """Resolve one [[wikilink]] the way Obsidian does — by exact stem."""
+    hit = vault.resolve_ref(ref)
+    if hit is None:
+        raise HTTPException(404, "no note named " + ref)
+    return hit
+
+
+@app.get("/api/vault/stems")
+def api_vault_stems():
+    """Every note name, so a rendered page can mark its dead links without
+    one request per link — an index page carries thousands."""
+    return {"stems": vault.known_stems()}
+
+
+# ------------------------------------------------------------- definitions
+
+@app.get("/api/define")
+def api_define(term: str):
+    with admission.cpu("define"):
+        try:
+            return define.lookup(term)
+        except define.DefineError as e:
+            raise HTTPException(400, str(e))
+
+
+@app.get("/api/define/status")
+def api_define_status():
+    return define.status()
+
+
+class SourceReq(BaseModel):
+    term: str
+
+
+@app.post("/api/define/source")
+def api_define_source(req: SourceReq):
+    """Rung 4: the only rung allowed to write citations, because it is the
+    only one that actually goes and reads them."""
+    term = define.clean_term(req.term)
+    if not term:
+        raise HTTPException(400, "that selection is not a term")
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance: sourcing writes the "
+                                 "live vault")
+    try:
+        jid = jobs.launch(define.source_prompt(term), cwd=str(ROOT),
+                          mode="acceptEdits",
+                          meta={"define_term": term})
+    except ValueError as e:
+        raise HTTPException(429, str(e))
+    return {"job_id": jid}
 
 
 class AskReq(BaseModel):

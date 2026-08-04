@@ -2077,7 +2077,10 @@ let findChatPending = false;
 let findChatRefs = null;
 let findChatMobileTab = "chat";
 let findChatWorkspacePlaced = false;
-const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v2";
+// v3: the workspace became a four-quadrant rectangle when the Definition
+// window joined it. Bumping the key re-tiles once for anyone already on v2,
+// then goes back to being a one-time migration.
+const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v3";
 
 function findChatSessionLabel() {
   const n = findChatSession?.turns?.length || 0;
@@ -2099,8 +2102,10 @@ function findChatShowMobileTab(tab) {
   findChatRefs.chatBody.hidden = tab !== "chat";
   findChatRefs.mobileCloud.hidden = tab !== "concepts";
   findChatRefs.mobileRelated.hidden = tab !== "related";
+  findChatRefs.mobileDefine.hidden = tab !== "define";
   if (tab === "concepts") renderFindClouds();
   if (tab === "related") renderFindRelated();
+  if (tab === "define") renderDefines();
 }
 
 function findChatReleaseCompanion(id) {
@@ -2130,15 +2135,21 @@ function findChatTileWorkspace() {
   const totalH = innerHeight - TOP - BOTTOM;
   if (totalW < 760 || totalH < 400) return;
   findChatWorkspacePlaced = true;
-  const chatW = Math.max(440, Math.min(totalW - 340,
-    Math.round(totalW * .56)));
-  const sideW = totalW - chatW;
-  const sideH = Math.floor((totalH - GAP) / 2);
+  // Four quadrants, one rectangle: chat and definition read as prose so they
+  // take the wider left column; related is a card list and the cloud wants
+  // area rather than width.
+  const leftW = Math.max(420, Math.min(totalW - 340,
+    Math.round(totalW * .52)));
+  const rightW = totalW - leftW;
+  const topH = Math.floor((totalH - GAP) / 2);
+  const botH = totalH - topH - GAP;
+  const rightX = G + leftW + GAP;
+  const botY = TOP + topH + GAP;
   const rects = {
-    find: {x: G, y: TOP, w: chatW, h: totalH},
-    "find-related": {x: G + chatW + GAP, y: TOP, w: sideW, h: sideH},
-    "find-cloud": {x: G + chatW + GAP, y: TOP + sideH + GAP,
-                   w: sideW, h: totalH - sideH - GAP},
+    find: {x: G, y: TOP, w: leftW, h: topH},
+    "find-related": {x: rightX, y: TOP, w: rightW, h: topH},
+    "find-define": {x: G, y: botY, w: leftW, h: botH},
+    "find-cloud": {x: rightX, y: botY, w: rightW, h: botH},
   };
   Object.entries(rects).forEach(([id, r]) => {
     if (!winState[id]) return;
@@ -2152,13 +2163,205 @@ function openFindCompanions() {
   if (!isDesktop) return;
   findChatReleaseCompanion("find-cloud");
   findChatReleaseCompanion("find-related");
+  findChatReleaseCompanion("find-define");
   openWindow("find-cloud");
   openWindow("find-related");
+  openWindow("find-define");
   findChatTileWorkspace();
   requestAnimationFrame(() => {
     renderFindClouds();
     renderFindRelated();
+    renderDefines();
   });
+}
+
+// ===================== DEFINITION =====================
+// Right-click a selected term anywhere in Vira and its card opens here. The
+// ladder that composes it lives in server/define.py; the only thing this
+// surface must get right is saying WHICH rung answered, because an atlas
+// entry and a model's best recollection look identical on the page and are
+// not equally trustworthy.
+
+const DEFINE_RUNGS = {
+  atlas: ["curated", "From the AI Terminology Atlas — hand-written, sourced."],
+  vault: ["your notes", "This term already had a page in your vault."],
+  model: ["unsourced", "Written from the model's own knowledge. No links: it "
+          + "cannot verify one here. Source it to add real citations."],
+  sourced: ["sourced", "Researched and cited by a session that read the "
+            + "sources."],
+};
+
+let defineCard = null;
+let definePending = "";
+
+// Mirrors define.clean_term on the server. Kept in step deliberately: the
+// menu must not offer to define something the route will refuse, and a
+// sentence-length selection is a question, not a term.
+const DEFINE_MAX_WORDS = 8;
+const DEFINE_MAX_CHARS = 120;
+
+function termFromSelection(sel) {
+  const t = (sel || "").replace(/\s+/g, " ").trim()
+    .replace(/^["'“”‘’.,;:!?()[\]{}]+|["'“”‘’.,;:!?()[\]{}]+$/g, "");
+  if (!t || t.length > DEFINE_MAX_CHARS) return "";
+  if (t.split(" ").length > DEFINE_MAX_WORDS) return "";
+  return t;
+}
+
+function defineRows(card) {
+  const wrap = el("div", "define-rows");
+  (card.rows || []).forEach((r) => {
+    const row = el("div", "define-row");
+    row.appendChild(el("div", "define-label", r.label || r.key));
+    row.appendChild(el("div", "define-value", r.value));
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
+
+function renderDefineInto(target) {
+  if (!target) return;
+  target.innerHTML = "";
+  if (definePending) {
+    target.appendChild(el("div", "spin", "Defining " + definePending + "…"));
+    return;
+  }
+  if (!defineCard) {
+    target.appendChild(el("div", "find-companion-empty",
+      "Right-click any selected word and choose Define."));
+    return;
+  }
+  const c = defineCard;
+  const head = el("div", "define-head");
+  const [badge, why] = DEFINE_RUNGS[c.rung] || DEFINE_RUNGS.model;
+  head.appendChild(el("div", "define-kicker",
+    [c.family, c.status].filter(Boolean).join(" · ") || "term"));
+  head.appendChild(el("h3", "define-term", c.term));
+  const tag = el("span", "define-rung r-" + c.rung, badge);
+  tag.title = why;
+  const meta = el("div", "define-meta");
+  meta.appendChild(tag);
+  if (typeof c.signal === "number")
+    meta.appendChild(el("span", "define-score",
+      "Signal " + c.signal + "/5 · Hype " + c.hype + "/10"));
+  head.appendChild(meta);
+  target.appendChild(head);
+  // The provenance line is not decoration: an unsourced card is the model's
+  // recollection, and the owner has to be able to tell that at a glance.
+  target.appendChild(el("div", "define-why", why));
+  target.appendChild(defineRows(c));
+
+  if ((c.related || []).length) {
+    const rel = el("div", "define-related");
+    rel.appendChild(el("div", "define-label", "Related"));
+    const chips = el("div", "define-chips");
+    c.related.forEach((r) => {
+      const b = el("button", "define-chip", r);
+      b.addEventListener("click", () => openDefine(r));
+      chips.appendChild(b);
+    });
+    rel.appendChild(chips);
+    target.appendChild(rel);
+  }
+
+  if ((c.links || []).length) {
+    const box = el("div", "define-links");
+    box.appendChild(el("div", "define-label", "Read further"));
+    c.links.forEach((l) => {
+      const a = el("a", "define-link", l.label || l.url);
+      a.href = l.url;
+      a.target = "_blank";
+      a.rel = "noopener";
+      box.appendChild(a);
+    });
+    target.appendChild(box);
+  }
+
+  const acts = el("div", "define-acts");
+  const ask = el("button", "btn primary", "Ask about this");
+  ask.addEventListener("click", () => defineFollowUp(c));
+  acts.appendChild(ask);
+  if (!c.sourced) {
+    const src = el("button", "btn", "Verify and source");
+    src.addEventListener("click", () => defineSource(c.term, src));
+    acts.appendChild(src);
+  }
+  if (c.note) {
+    const open = el("button", "btn", "Open note");
+    open.addEventListener("click", () => openNoteWindow(
+      c.note.split("/").slice(-2).join("/"), c.term));
+    acts.appendChild(open);
+  }
+  target.appendChild(acts);
+}
+
+function renderDefines() {
+  renderDefineInto($("#find-define-root"));
+  renderDefineInto($("#find-mobile-define-root"));
+  const rung = $("#define-rung");
+  if (rung) rung.textContent = defineCard
+    ? (DEFINE_RUNGS[defineCard.rung] || DEFINE_RUNGS.model)[0] : "";
+}
+
+async function openDefine(term) {
+  const t = (term || "").trim();
+  if (!t) return;
+  definePending = t;
+  defineCard = null;
+  if (isDesktop) {
+    findChatReleaseCompanion("find-define");
+    openWindow("find-define");
+    findChatTileWorkspace();
+  } else {
+    // No floating windows on a phone: the card is a tab of Find, exactly as
+    // Concepts and Related are.
+    openApp("find");
+    await showFindChat();
+    findChatShowMobileTab("define");
+  }
+  renderDefines();
+  try {
+    defineCard = await api("/api/define?term=" + encodeURIComponent(t));
+  } catch (e) {
+    definePending = "";
+    renderDefines();
+    const root = $("#find-define-root");
+    if (root) {
+      root.innerHTML = "";
+      root.appendChild(el("div", "empty left",
+        "Could not define that: " + e.message));
+    }
+    return;
+  }
+  definePending = "";
+  renderDefines();
+}
+
+// The follow-up is Find's own vault chat, seeded with the card. Building a
+// second chat here would be a second answer to "what do my notes say".
+function defineFollowUp(card) {
+  const plain = (card.rows || [])
+    .find((r) => r.key === "plain_definition");
+  const seed = "About the term \"" + card.term + "\""
+    + (plain ? " (" + plain.value + ")" : "")
+    + " — what do my notes say about it, and where have I run into it?";
+  if (isDesktop) { openWindow("find"); focusWin(winState.find?.el); }
+  else openApp("find");
+  showFindChat(seed);
+}
+
+async function defineSource(term, btn) {
+  btn.disabled = true;
+  btn.textContent = "Starting…";
+  try {
+    const d = await post("/api/define/source", { term });
+    toast("Sourcing " + term + " — session opened");
+    openSession(d.job_id);
+  } catch (e) {
+    btn.disabled = false;
+    btn.textContent = "Verify and source";
+    toast("Could not start sourcing: " + e.message);
+  }
 }
 
 async function loadFindChat(force = false) {
@@ -2281,7 +2484,8 @@ function openFindChatCompanion(id) {
 
 function initFindChatShell(root, searchPane, searchInput) {
   const mobileTabs = el("div", "find-chat-mobile-tabs");
-  [["chat", "Chat"], ["concepts", "Concepts"], ["related", "Related"]]
+  [["chat", "Chat"], ["define", "Definition"], ["concepts", "Concepts"],
+   ["related", "Related"]]
     .forEach(([id, label]) => {
       const b = el("button", "fchip sm" + (id === "chat" ? " on" : ""), label);
       b.dataset.tab = id;
@@ -2346,16 +2550,20 @@ function initFindChatShell(root, searchPane, searchInput) {
   const mobileRelated = el("div", "find-related find-chat-mobile-panel");
   mobileRelated.id = "find-mobile-related-root";
   mobileRelated.hidden = true;
+  const mobileDefine = el("div", "define-root find-chat-mobile-panel");
+  mobileDefine.id = "find-mobile-define-root";
+  mobileDefine.hidden = true;
 
   chatPane.appendChild(toolbar);
   chatPane.appendChild(chatBody);
   chatPane.appendChild(mobileCloud);
   chatPane.appendChild(mobileRelated);
+  chatPane.appendChild(mobileDefine);
   root.appendChild(mobileTabs);
   root.appendChild(chatPane);
   findChatRefs = {searchPane, searchInput, mobileTabs, chatPane, toolbar,
                   status, chatBody, log, empty, input, send,
-                  mobileCloud, mobileRelated};
+                  mobileCloud, mobileRelated, mobileDefine};
 }
 
 function renderFindChat() {
@@ -10695,14 +10903,19 @@ function mdToHtml(md) {
     .replace(/>/g, "&gt;");
   let text = md || "";
   let meta = "";
+  const wiki = (s) => s
+    .replace(/\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g, (m, ref, label) =>
+      `<span class="note-link" data-ref="${ref.trim()}">${label || ref}</span>`);
   const fm = text.match(/^---\n([\s\S]*?)\n---\n/);
   if (fm) {
-    meta = `<div class="note-meta">${esc(fm[1]).replace(/\n/g, "<br>")}</div>`;
+    // Frontmatter carries this vault's real graph edges — sources,
+    // building_blocks, feature, plan. Rendering it as inert text made a
+    // feature page a dead end: you could see the build-log it names and
+    // could not click through to it.
+    meta = `<div class="note-meta">${wiki(esc(fm[1])).replace(/\n/g, "<br>")}</div>`;
     text = text.slice(fm[0].length);
   }
-  const inline = (s) => s
-    .replace(/\[\[([^\]|]+?)(?:\|([^\]]+))?\]\]/g, (m, ref, label) =>
-      `<span class="note-link" data-ref="${ref.trim()}">${label || ref}</span>`)
+  const inline = (s) => wiki(s)
     .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener">$1</a>')
@@ -10767,6 +10980,7 @@ async function fillNote(host, path, spawn) {
     host.innerHTML = mdToHtml(n.text);
     host.querySelectorAll(".note-link").forEach((a) =>
       a.addEventListener("click", () => spawn(a.dataset.ref)));
+    markDeadLinks(host);
   } catch (e) {
     host.innerHTML = "";
     host.appendChild(el("div", "empty left", "Note unavailable: " + e.message));
@@ -10780,18 +10994,57 @@ async function fillNote(host, path, spawn) {
 // window spawned under that scrim is a window you cannot read. A plan panel
 // carries no notePath, so it closes without being promoted.
 async function spawnNoteRef(ref) {
+  let hit;
   try {
-    const { hits } = await api("/api/vault/search?q="
-      + encodeURIComponent(ref) + "&limit=1");
-    if (!hits.length) { toast("No note found for " + ref); return; }
+    // EXACT resolution, not ranked search. A wikilink is a filename, and
+    // taking search's top hit opened the wrong note for 27% of the links in
+    // this vault that point at notes which genuinely exist.
+    hit = await api("/api/vault/resolve?ref=" + encodeURIComponent(ref));
+  } catch (e) {
+    toast(e.status === 404 ? "No note named " + ref : "Note lookup failed");
+    return;
+  }
+  try {
     const panel = $("#note-panel");
     if (isDesktop && panel?.classList.contains("open")) {
       const from = panel.dataset.notePath;
       if (from) openNoteWindow(from, panel.dataset.noteTitle);
       closeNote();
     }
-    openNoteWindow(hits[0].path, hits[0].title);
+    openNoteWindow(hit.path, noteName(hit.path));
+    // An inexact hit is the search fallback, not the linked note. Say so
+    // rather than letting a near miss pass as the thing that was clicked.
+    if (!hit.exact) toast("No note named " + ref + " — opened the closest match");
   } catch { toast("Note lookup failed"); }
+}
+
+// Every note name in the vault, fetched once, so a rendered page can mark
+// its dead links without one request per link — index.md carries thousands.
+let vaultStems = null;
+let vaultStemsAt = 0;
+async function knownStems() {
+  if (vaultStems && Date.now() - vaultStemsAt < 300000) return vaultStems;
+  try {
+    const d = await api("/api/vault/stems");
+    vaultStems = new Set(d.stems || []);
+    vaultStemsAt = Date.now();
+  } catch { vaultStems = vaultStems || new Set(); }
+  return vaultStems;
+}
+
+// Mark links that point nowhere, the way Obsidian does. Purely additive: an
+// unknown stem set leaves every link alone rather than dimming all of them.
+async function markDeadLinks(host) {
+  const links = host.querySelectorAll(".note-link");
+  if (!links.length) return;
+  const stems = await knownStems();
+  if (!stems.size) return;
+  links.forEach((a) => {
+    const ref = (a.dataset.ref || "").split("|")[0].split("#")[0]
+      .split("^")[0].replace(/\.md$/i, "").trim();
+    if (ref && !stems.has(ref) && !stems.has(ref.toLowerCase()))
+      a.classList.add("dead");
+  });
 }
 
 const noteWindows = {};   // path -> { win }
@@ -10904,6 +11157,7 @@ async function openPlan(id) {
     body.appendChild(md);
     md.querySelectorAll(".note-link").forEach((a) =>
       a.addEventListener("click", () => spawnNoteRef(a.dataset.ref)));
+    markDeadLinks(md);
   } catch (e) {
     body.innerHTML = "";
     body.appendChild(el("div", "empty left", "Plan unavailable: " + e.message));
@@ -13189,6 +13443,9 @@ const WINDOWS = [
   { id: "find-related", title: "Related", w: 380, h: 560,
     companion: true,
     icon: "M5 5h14v4H5zM5 11h14v4H5zM5 17h14v2H5z" },
+  { id: "find-define", title: "Definition", w: 560, h: 420,
+    companion: true,
+    icon: "M6 4h9l3 3v13H6zM9 9h7M9 12.5h7M9 16h4" },
   { id: "evidence", title: "Evidence Ledger", w: 640,
     icon: "M12 3l7 3v6c0 5-3.5 8-7 9-3.5-1-7-4-7-9V6zM9 12l2 2 4-4" },
   // Plans folded into the Reader (2026-07-27). A saved plan is something to
@@ -13845,6 +14102,12 @@ document.addEventListener("contextmenu", (e) => {
     run: () => copyText(selText).then(
       () => toast("Copied"), () => alert("Copy failed")),
   });
+  // Defining a selected term leads the menu: it is the one action here that
+  // answers instantly instead of opening a composer or dispatching a job.
+  const term = termFromSelection(sel);
+  if (term) items.unshift(
+    { label: "Define “" + term + "”", run: () => openDefine(term) },
+    { sep: true });
   showContextMenu(e.clientX, e.clientY, items);
 });
 
@@ -14227,6 +14490,19 @@ function buildWindow(spec, st, ci) {
   return win;
 }
 
+// The Find cluster is one workspace, so while it is up the rest of the desk
+// steps back — a light gray-out, not focus mode: no blur, nothing made
+// inert, every other window still readable and clickable.
+const FIND_CLUSTER = ["find", "find-related", "find-cloud", "find-define"];
+
+function syncFindWorkspace() {
+  if (!isDesktop) return;
+  const lit = FIND_CLUSTER.some((id) => winState[id]?.open);
+  document.body.classList.toggle("find-workspace", lit);
+  FIND_CLUSTER.forEach((id) =>
+    winState[id]?.el.classList.toggle("find-member", lit));
+}
+
 function openWindow(id) {
   const st = winState[id];
   if (!st) return;
@@ -14236,6 +14512,7 @@ function openWindow(id) {
     st.el.style.display = "flex";
     requestAnimationFrame(() => st.el.classList.add("open"));
     saveWinState(id, { open: true });
+    syncFindWorkspace();
   }
   // In a stage layout, opening a module (dock, palette, deep link) means
   // "bring it to the stage": make sure it has a park to retreat to, then grow
@@ -14272,6 +14549,7 @@ function closeWindow(id) {
   if (layoutMode === "stage") { grown.delete(id); grownOrder = grownOrder.filter((x) => x !== id); }
   st.open = false;
   st.el.classList.remove("open");
+  setTimeout(syncFindWorkspace, 0);
   setTimeout(() => { if (!st.open) st.el.style.display = "none"; }, 220);
   saveWinState(id, { open: false });
   dockRefresh();
