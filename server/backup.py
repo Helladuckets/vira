@@ -36,7 +36,12 @@ FILES = ("ideas.json", "config.json", "subscriptions.json",
          # Lesson recurrence: rules/verdicts/evidence are regenerable from
          # the ledger + retros, but owner verdict overrides, dismissals and
          # aliases exist nowhere else.
-         "lesson-recurrence.json")
+         "lesson-recurrence.json",
+         # Glossary: the term NOTES live in the vault (backed up with it),
+         # but which terms have been looked up, by which rung, and how often
+         # exists only here — and losing it makes every banked term climb
+         # the ladder again.
+         "glossary.json")
 KEEP = 14
 
 

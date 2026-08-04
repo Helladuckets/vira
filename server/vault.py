@@ -19,6 +19,7 @@ seams exactly as they were:
 
 Everything else delegates to a lazily (re)built qocha.Vault.
 """
+import re
 import threading
 import time
 from datetime import date, datetime
@@ -241,6 +242,117 @@ def ask(question, k=10, hits=None):
 
 def note_text(path):
     return _vault().note_text(path)
+
+
+# ------------------------------------------------------- wikilink resolution
+# A `[[wikilink]]` is a FILENAME identifier, not a search query. Obsidian
+# resolves it by exact stem across the whole vault; resolving it through the
+# ranked hybrid search instead was measured wrong on 27% of the links in this
+# vault that point at notes which genuinely exist — `[[claude]]` opened
+# `types-of-claude-interfaces`, `[[supra]]` opened a consultation transcript.
+# A wrong note presented as the right one is worse than an honest miss, so
+# exact match answers first and search is only ever a labelled fallback.
+
+_stem_cache = {"key": None, "map": None}
+
+# Never resolvable, because Obsidian does not resolve them either: dotfolders
+# (.git, .obsidian, .smart-env, and any agent worktree checked out INSIDE the
+# vault), plus the soft-delete staging area, which the rest of the system
+# already treats as gone. Leaving these in is not merely untidy — `sorted()`
+# puts a dotfolder ahead of `wiki/`, so a stale worktree won every stem
+# collision and `[[supra]]` opened a months-old copy of the real note.
+SKIP_DIRS = ("pending-user-deletion",)
+# On a genuine tie, the curated layer wins. Anything unlisted sorts last.
+DIR_RANK = ("wiki", "", "Sessions", "Briefs", "retros", "brain-retros")
+
+
+def _visible_notes(root):
+    for p in root.rglob("*.md"):
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if any(part.startswith(".") for part in rel.parts):
+            continue
+        if rel.parts and rel.parts[0] in SKIP_DIRS:
+            continue
+        yield rel, p
+
+
+def _rank(rel):
+    top = rel.parts[0] if len(rel.parts) > 1 else ""
+    try:
+        return (DIR_RANK.index(top), len(rel.parts), rel.as_posix())
+    except ValueError:
+        return (len(DIR_RANK), len(rel.parts), rel.as_posix())
+
+
+def _stem_map():
+    root = Path(vault_root())
+    if not root.exists():
+        return {}
+    notes = sorted(_visible_notes(root), key=lambda t: _rank(t[0]))
+    key = (str(root), len(notes),
+           max((p.stat().st_mtime_ns for _, p in notes), default=0))
+    if _stem_cache["key"] == key:
+        return _stem_cache["map"]
+    m = {}
+    for _, p in notes:
+        # Best-ranked writer wins, so resolution is stable and a duplicate
+        # stem elsewhere can never silently re-point existing links.
+        m.setdefault(p.stem, p)
+        m.setdefault(p.stem.lower(), p)
+    _stem_cache["key"], _stem_cache["map"] = key, m
+    return m
+
+
+def _clean_ref(ref):
+    """Strip the parts of a wikilink that are not the note identity."""
+    r = (ref or "").strip()
+    r = r.split("|", 1)[0].strip()          # [[note|Label]]
+    r = re.split(r"[#^]", r, maxsplit=1)[0].strip()   # [[note#h]], [[note^b]]
+    if r.lower().endswith(".md"):
+        r = r[:-3]
+    return r.strip("/ ")
+
+
+def resolve_ref(ref):
+    """{path, exact} for a wikilink, or None.
+
+    `exact` False means this came from the search fallback and the caller
+    should say so rather than present it as the linked note.
+    """
+    r = _clean_ref(ref)
+    if not r:
+        return None
+    root = Path(vault_root())
+    m = _stem_map()
+    hit = m.get(r) or m.get(r.lower())
+    if hit is None and "/" in r:
+        cand = (root / r).with_suffix(".md")
+        if cand.exists():
+            hit = cand
+    if hit is not None:
+        try:
+            rel = hit.resolve().relative_to(root.resolve())
+        except ValueError:
+            return None                     # outside the vault: never serve
+        return {"path": rel.as_posix(), "exact": True}
+    found = search(r, limit=1) or []
+    if found:
+        return {"path": found[0]["path"], "exact": False}
+    return None
+
+
+def known_stems():
+    """Every note stem, so a client can dim unresolved links without a
+    round-trip per link — an index page carries thousands."""
+    root = Path(vault_root())
+    if not root.exists():
+        return []
+    # Same filter as `_stem_map`, or the client would dim links the server
+    # resolves fine, and light up links it will refuse.
+    return sorted({p.stem for _, p in _visible_notes(root)})
 
 
 def status():
