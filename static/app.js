@@ -4456,10 +4456,14 @@ function ideaRow(it) {
     const impl = el("button", "idea-run-btn implement", "Implement");
     impl.title = "Let Vira actually implement this in the target repo";
     impl.addEventListener("click", () => openIdeaRun(it, "implement"));
+    const forge = el("button", "idea-run-btn forge", "Build in Flows");
+    forge.title = "Load this idea into the Forge as its own editable workflow";
+    forge.addEventListener("click", () => ideaToFlow(it));
     const copy = el("button", "idea-run-btn copy", "Export prompt");
     copy.title = "Copy this idea as a prompt for another Claude Code session";
     copy.addEventListener("click", () => copyIdeaPrompt(it));
     run.appendChild(impl);
+    run.appendChild(forge);
     run.appendChild(copy);
     box.appendChild(run);
   }
@@ -5484,6 +5488,24 @@ function ideaExportPrompt(it, cwd, extra, fold) {
   ].join("\n");
 }
 
+// Row-level "Build in Flows" — the third answer to a queued idea, between
+// dispatching it blind and handing it to another session: mint a private
+// copy of a starter workflow, load it in the Forge with this idea as its
+// run input, and leave the owner in front of the graph. Editing, testing
+// and running are then the Forge's own actions, and the run still closes
+// the idea out because the link rides the run request.
+async function ideaToFlow(it) {
+  try {
+    const payload = await post(`/api/ideas/${it.id}/flow`, {});
+    openApp("work");
+    setWorkTab("dispatch");
+    if (window.Forge?.openIdea) await window.Forge.openIdea(payload);
+    else toast("Flow created — open Work > Flows to edit it");
+  } catch (e) {
+    toast("Could not build a Flow: " + e.message);
+  }
+}
+
 // Row-level "Export prompt" — hand the idea to a session Vira does not run.
 function copyIdeaPrompt(it) {
   const cwd = localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
@@ -5630,14 +5652,18 @@ $("#idea-run-go").addEventListener("click", async () => {
   const prompt = mode === "plan"
     ? ideaPlanPrompt(it, extra, cwd, fold)
     : ideaImplementPrompt(it, extra, cwd, perm, fold);
-  // Plan runs read-only (the session gate denies writes) and Vira publishes
-  // its markdown to the lab; Implement runs on the rung the owner picked.
+  // Plan asks for two separate things and now says both: publish_plan
+  // finalizes the output as a plan (vault note + HTML dossier), read_only
+  // denies writes. They were one flag until 2026-08-04, which is why a
+  // planning run could not search the web or spawn a subagent.
   const permission_mode = perm === "bypassPermissions" ? "bypassPermissions" : null;
   const publish_plan = mode === "plan";
+  const read_only = mode === "plan";
   const runMode = perm;
   ideaRunSheet.close();
   const jid = await launchJob(prompt, cwd,
-    { permission_mode, model, publish_plan, idea_id: it.id, mode: runMode });
+    { permission_mode, model, publish_plan, read_only, idea_id: it.id,
+      mode: runMode });
   // stamp the idea so the dispatch is visible next time it's opened
   const day = new Date().toISOString().slice(0, 10);
   const job = " (job " + String(jid || "?").slice(0, 8) + ")";
@@ -5682,6 +5708,7 @@ async function launchJob(promptText, cwd, opts = {}) {
     permission_mode: opts.permission_mode || null,
     model: opts.model || null,
     publish_plan: opts.publish_plan || false,
+    read_only: opts.read_only || false,
     idea_id: opts.idea_id || null,
     mode: opts.mode || null,
   });
@@ -6332,7 +6359,7 @@ const CC_MASCOT = `<svg class="cc-mascot" viewBox="0 0 48 44" aria-hidden="true"
 function renderCCBanner(host, j, defModel, inst) {
   const model = ccModelLabel(j.model_used || j.model) || defModel;
   const badge = providerBadge(j);
-  const mode = j.publish_plan ? "plan (read-only)"
+  const mode = j.publish_plan ? (j.read_only ? "plan (read-only)" : "plan")
     : badge.id === "openai" ? (j.mode || "run") + " (best-effort — sandboxed, no cards)"
     : normPermMode(j.mode) === "bypassPermissions"
         ? (j.worktree ? "bypassPermissions (branch-guarded)"
@@ -14195,6 +14222,8 @@ document.addEventListener("contextmenu", (e) => {
                    run: () => openIdeaRun(idea, "plan") });
       items.push({ label: "Implement with Vira",
                    run: () => openIdeaRun(idea, "implement") });
+      items.push({ label: "Build in Flows…",
+                   run: () => ideaToFlow(idea) });
       items.push({ label: "Mark done", run: async () => {
         try {
           Object.assign(idea, await put("/api/ideas/" + idea.id, { status: "done" }));

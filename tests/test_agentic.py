@@ -274,8 +274,11 @@ class CircuitTests(unittest.TestCase):
     def test_watch_build_template_shape_and_handoff(self):
         circ = circuits.get_circuit("watch-build")
         order = circuits.validate_stages(circ["stages"])
-        self.assertEqual(order, ["watch", "plan", "build", "judge"])
+        self.assertEqual(order, ["watch", "plan", "build", "dossier", "judge"])
         by_id = {st["id"]: st for st in circ["stages"]}
+        # The plan feeds the build AND lands as a dossier — a plan worth
+        # building from is worth keeping (2026-08-04).
+        self.assertEqual(by_id["dossier"]["output"]["destination"], "plan")
         # watch needs Bash for yt-dlp/ffmpeg, so it must run autopilot
         self.assertEqual(by_id["watch"]["mode"], "bypassPermissions")
         self.assertNotIn("read_only", by_id["watch"])

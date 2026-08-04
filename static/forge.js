@@ -163,6 +163,9 @@
     const flow = state.flows.find((item) => item.id === flowId);
     if (!flow) return;
     state.current = copy(flow);
+    // The Queue link is a fact about ONE Flow, so opening another drops it —
+    // otherwise a later run would close out an idea it has nothing to do with.
+    if (state.idea && state.idea.flow_id !== flow.id) state.idea = null;
     state.selectedNode = null;
     state.selectedEdge = null;
     state.zoom = 1;
@@ -933,12 +936,21 @@
     const wrap = make("div");
     const destination = make("select");
     [["record", "Flow record"], ["artifact", "Artifact"], ["decision_brief", "Decision brief"],
-      ["notification", "Notification"]].forEach(([value, label]) => {
+      ["notification", "Notification"], ["plan", "Plan dossier"]].forEach(([value, label]) => {
         const option = make("option", "", label); option.value = value; destination.appendChild(option);
       });
     destination.value = output.destination || "record";
-    destination.addEventListener("change", () => { output.destination = destination.value; setDirty(); });
+    const planNote = make("p", "hint",
+      "A plan dossier is saved to your vault as an editable note and rendered "
+      + "as an HTML page with diagrams. The step feeding this output is told "
+      + "the plan format; its permissions are whatever you set on that step.");
+    const paintNote = () => { planNote.style.display = destination.value === "plan" ? "" : "none"; };
+    destination.addEventListener("change", () => {
+      output.destination = destination.value; paintNote(); setDirty();
+    });
+    paintNote();
     wrap.append(field("Destination", destination));
+    wrap.append(planNote);
     wrap.append(field("Output instructions", textareaControl(output.instructions || "", (value) => {
       output.instructions = value; setDirty();
     }, 5)));
@@ -1730,8 +1742,11 @@
       context ? `\nAttached context: ${context.name}\n${context.note || context.ref || ""}` : ""]
       .filter(Boolean).join("\n");
     try {
+      const linked = state.idea && state.idea.flow_id === state.current.id
+        ? state.idea.idea_id : null;
       const result = await send(`/api/flows/${encodeURIComponent(state.current.id)}/run`, "POST", {
         input: composed, notify: false, output: q("#forge-run-output").value,
+        idea_id: linked,
       });
       const runId = result.id || result.run_id || result.job_id;
       toast(runId ? `Launched ${runId}` : "Flow launched");
@@ -2096,9 +2111,23 @@
     setView("board");
   }
 
+  /** Open a Flow the Queue just minted for an idea, with the idea as its
+   *  run input. The reload is forced because the Flow was created a moment
+   *  ago on the server and is not in the cached list yet. */
+  async function openIdea(payload) {
+    if (!payload || !payload.flow_id) return;
+    state.idea = { flow_id: payload.flow_id, idea_id: payload.idea_id };
+    setDirty(false);              // nothing to discard; skip the guard prompt
+    await loadForge({ force: true });
+    await selectFlow(payload.flow_id);
+    const box = q("#forge-run-input");
+    if (box) box.value = payload.input || "";
+    toast("Loaded into the Forge — edit the graph, test it, then run it.");
+  }
+
   window.loadForge = loadForge;
   window.loadForgeRuns = loadForgeRuns;
   window.initForge = () => { bind(); };
   window.Forge = { state, load: loadForge, selectFlow, render: renderAll,
-    setLibrary: switchLibrary, openLibrary };
+    setLibrary: switchLibrary, openLibrary, openIdea };
 })();
