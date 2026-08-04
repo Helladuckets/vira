@@ -5193,6 +5193,17 @@ function ideaFoldBlock(rows) {
     ""].join("\n");
 }
 
+// The task itself — identical in every prompt shape that carries an idea.
+function ideaTaskLines(it, extra, fold) {
+  return [
+    "This task comes from the owner's Vira idea backlog:",
+    "",
+    '"""', it.text, '"""',
+    ideaFoldBlock(fold),
+    ideaExtraBlock(extra),
+  ];
+}
+
 function ideaImplementPrompt(it, extra, cwd, perm, fold) {
   // What each rung stops for. The owner is reachable in ALL of them — the
   // session holds open at the end of its turn, so a closing question is
@@ -5219,11 +5230,7 @@ function ideaImplementPrompt(it, extra, cwd, perm, fold) {
     "need a decision, ASK and stop — do not guess, and do not sign off with a",
     "question you have already assumed the answer to.",
     "",
-    "This task comes from the owner's Vira idea backlog:",
-    "",
-    '"""', it.text, '"""',
-    ideaFoldBlock(fold),
-    ideaExtraBlock(extra),
+    ...ideaTaskLines(it, extra, fold),
     "Carry it out end to end:",
     "- First read the repo's agent contract (AGENTS.md, and CLAUDE.md where",
     "  present) and the relevant modules, so your changes fit the existing",
@@ -5252,11 +5259,7 @@ function ideaPlanPrompt(it, extra, cwd, fold) {
     "git repository at " + cwd + ". Research only — do NOT modify, create, or",
     "delete any file, and do not run any commands that change state.",
     "",
-    "This task comes from the owner's Vira idea backlog:",
-    "",
-    '"""', it.text, '"""',
-    ideaFoldBlock(fold),
-    ideaExtraBlock(extra),
+    ...ideaTaskLines(it, extra, fold),
     "Read the repo's agent contract (AGENTS.md, and CLAUDE.md where present)",
     "and the relevant modules, so the plan is",
     "grounded in the real code, then produce a thorough, well-structured",
@@ -5315,19 +5318,57 @@ function savedPermMode() {
     ? "bypassPermissions" : PERM_DEFAULT;
 }
 
-// Row-level "Copy" — hand the idea to another Claude Code session verbatim,
-// the same standard the journal lane's copy-as-prompt sets. Copies the
-// full implement prompt (the do-the-work variant) with a paste-safe cd
-// header, so it works dropped at a shell or into a running session.
+// What Vira DISPATCHES and what it EXPORTS are not the same prompt, and the
+// difference is not tone. Three things ideaImplementPrompt states are facts
+// about Vira's own runner and are FALSE the moment the text is pasted
+// somewhere else: the permission rung (the receiving harness owns
+// permissions, and Vira's gate is not in that loop), the enforced denial on
+// writes aimed at the live checkout, and the turn parking open for a reply.
+// The write denial is the dangerous one — an exported session is told a
+// guard will catch it, is pointed straight at the live checkout, and is
+// never told to place itself on a branch, which is the ONE instruction it
+// actually needs because nothing else will do it. The child-process warning
+// is wrong the same way: an exported session is not running inside the
+// server, so "restarting it kills you mid-task" is a reason that does not
+// apply to a caution that still does.
+//
+// So the export states only what holds wherever it lands, and points at the
+// repo's own contract for the rest.
+function ideaExportPrompt(it, cwd, extra, fold) {
+  return [
+    "Work on the owner's Vira repository at " + cwd
+      + " — cd there first if you are not already inside it.",
+    "",
+    ...ideaTaskLines(it, extra, fold),
+    "Carry it out end to end:",
+    "- Read the repo's agent contract first — AGENTS.md, plus CLAUDE.md if a",
+    "  copy is present — and follow it. It carries the branching rule, the",
+    "  test command, and the conventions this repo enforces.",
+    "- Branch first: the path above is the checkout the owner runs from, so do",
+    "  not build in it directly. If the repo ships scripts/branch.sh, run",
+    '  "scripts/branch.sh start <slug>" from it and work in the worktree that',
+    "  creates; otherwise work on your own branch. If you are already in a",
+    "  worktree of this repo, stay in it.",
+    "- Make the real code changes needed to accomplish the task, then verify",
+    "  by actually exercising them — the test suite, or the app on a test",
+    "  instance — and fix what you find.",
+    "- Do not merge and do not push. The owner decides that after reviewing.",
+    "- The owner's Vira server is running on this machine. Do not restart,",
+    "  stop, or kill it. If your change needs a restart to take effect, say so",
+    "  in your report and leave it to them.",
+    "- If you hit a decision this task does not settle, ask the owner and stop",
+    "  rather than guessing.",
+    "",
+    "End with a concise report: the files you changed and why, how you verified",
+    "it works, and anything unfinished or needing the owner's decision.",
+  ].join("\n");
+}
+
+// Row-level "Export prompt" — hand the idea to a session Vira does not run.
 function copyIdeaPrompt(it) {
   const cwd = localStorage.getItem("vira-idea-cwd") || "~/workspace/vira";
-  const prompt = ideaImplementPrompt(it, "", cwd, savedPermMode());
-  copyText(
-    "cd " + cwd + "\n\n" +
-    "(If this was pasted into an already-running session: cd to the path " +
-    "above and read its agent contract — AGENTS.md, and CLAUDE.md where " +
-    "present — before building.)\n\n" + prompt,
-  ).then(() => toast("Prompt copied — paste into a terminal or Claude Code session"))
+  copyText(ideaExportPrompt(it, cwd, "", null))
+    .then(() => toast("Prompt copied — paste it into a coding session"))
     .catch((e) => toast("Copy failed: " + e.message));
 }
 
