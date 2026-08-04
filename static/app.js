@@ -2077,10 +2077,19 @@ let findChatPending = false;
 let findChatRefs = null;
 let findChatMobileTab = "chat";
 let findChatWorkspacePlaced = false;
-// v3: the workspace became a four-quadrant rectangle when the Definition
-// window joined it. Bumping the key re-tiles once for anyone already on v2,
-// then goes back to being a one-time migration.
-const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v3";
+// v4: the owner arranged the four windows himself and that arrangement is
+// now the default (see findChatTileWorkspace). Bumping the key re-tiles once
+// for anyone already on v3, then goes back to being a one-time migration.
+const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v4";
+
+// The three session-linked companions, in ONE order every surface reads: the
+// desktop toggle row in Find's toolbar, Find's own mobile tabs, and the nav
+// drawer's sub-rows under Find. Three lists would be three chances to drift.
+const FIND_COMPANIONS = [
+  { id: "find-define", tab: "define", label: "Definition" },
+  { id: "find-cloud", tab: "concepts", label: "Concepts" },
+  { id: "find-related", tab: "related", label: "Related" },
+];
 
 function findChatSessionLabel() {
   const n = findChatSession?.turns?.length || 0;
@@ -2116,11 +2125,11 @@ function findChatReleaseCompanion(id) {
   winState[id]?.el.classList.remove("fwin-locked", "fwin-grown");
 }
 
-// The three Brain surfaces are one workspace, not three unrelated windows.
-// On the first open after this layout version ships, make one non-overlapping
-// desktop: chat full-height at left, Related above Concept Cloud at right.
-// The marker makes this a migration/default, not a magnet — once placed, all
-// three windows remain independently draggable and their geometry persists.
+// Find and its three companions are one workspace, not four unrelated windows.
+// On the first open after this layout version ships, lay them out in the
+// arrangement the owner asked for (see the grid below). The marker makes this
+// a migration/default, not a magnet — once placed, all four windows remain
+// independently draggable and their geometry persists.
 function findChatTileWorkspace() {
   if (!isDesktop || findChatWorkspacePlaced) return;
   // A stage template re-applies Find's parked/grown rect on every reload, so
@@ -2131,25 +2140,39 @@ function findChatTileWorkspace() {
     || !lsGet(FIND_CHAT_LAYOUT_KEY, false);
   if (!needsTile) { findChatWorkspacePlaced = true; return; }
   const G = 14, GAP = 12, TOP = 52, BOTTOM = 92;
-  const totalW = innerWidth - 2 * G - GAP;
+  const totalW = innerWidth - 2 * G;      // the whole workspace band
   const totalH = innerHeight - TOP - BOTTOM;
-  if (totalW < 760 || totalH < 400) return;
+  if (totalW < 772 || totalH < 400) return;
   findChatWorkspacePlaced = true;
-  // Four quadrants, one rectangle: chat and definition read as prose so they
-  // take the wider left column; related is a card list and the cloud wants
-  // area rather than width.
-  const leftW = Math.max(420, Math.min(totalW - 340,
-    Math.round(totalW * .52)));
-  const rightW = totalW - leftW;
-  const topH = Math.floor((totalH - GAP) / 2);
+  // The grid the owner arranged by hand (2026-08-04) and asked to be the
+  // default: chat as its own left column, Related (a card list, so narrow)
+  // and Definition (prose, so wide) across the top right, and Concept Cloud
+  // spanning the whole right side beneath them — the cloud wants area, not
+  // width, and it is the one surface that reads at a glance.
+  //
+  // The ratios are of the workspace rather than of his viewport, so the shape
+  // holds at any desk size. FIND_TILE_* are measured off that arrangement;
+  // the two narrow columns carry floors so they stay readable on a small
+  // desk, and Definition absorbs whatever they take. When even the floors do
+  // not fit, the plain proportions win — a squeezed grid beats a broken one.
+  const inner = totalW - 2 * GAP;
+  let findW = Math.max(340, Math.round(inner * .302));
+  let relW = Math.max(240, Math.round(inner * .192));
+  if (inner - findW - relW < 320) {
+    findW = Math.round(inner * .302);
+    relW = Math.round(inner * .192);
+  }
+  const defW = inner - findW - relW;
+  const topH = Math.round((totalH - GAP) * .523);
   const botH = totalH - topH - GAP;
-  const rightX = G + leftW + GAP;
+  const relX = G + findW + GAP;
+  const defX = relX + relW + GAP;
   const botY = TOP + topH + GAP;
   const rects = {
-    find: {x: G, y: TOP, w: leftW, h: topH},
-    "find-related": {x: rightX, y: TOP, w: rightW, h: topH},
-    "find-define": {x: G, y: botY, w: leftW, h: botH},
-    "find-cloud": {x: rightX, y: botY, w: rightW, h: botH},
+    find: {x: G, y: TOP, w: findW, h: Math.round(totalH * .806)},
+    "find-related": {x: relX, y: TOP, w: relW, h: topH},
+    "find-define": {x: defX, y: TOP, w: defW, h: topH},
+    "find-cloud": {x: relX, y: botY, w: relW + GAP + defW, h: botH},
   };
   Object.entries(rects).forEach(([id, r]) => {
     if (!winState[id]) return;
@@ -2161,17 +2184,57 @@ function findChatTileWorkspace() {
 
 function openFindCompanions() {
   if (!isDesktop) return;
-  findChatReleaseCompanion("find-cloud");
-  findChatReleaseCompanion("find-related");
-  findChatReleaseCompanion("find-define");
-  openWindow("find-cloud");
-  openWindow("find-related");
-  openWindow("find-define");
+  FIND_COMPANIONS.forEach((c) => {
+    findChatReleaseCompanion(c.id);
+    openWindow(c.id);
+  });
   findChatTileWorkspace();
-  requestAnimationFrame(() => {
-    renderFindClouds();
-    renderFindRelated();
-    renderDefines();
+  raiseFindCluster();
+  requestAnimationFrame(renderFindCompanions);
+}
+
+// The rest of the desk is dimmed and blurred while the cluster is up, so a
+// module sitting ON TOP of it reads as broken — it is the receded thing
+// covering the lit one. openWindow only raises a window it actually opened,
+// and Find itself is usually already open, so the cluster is lifted as a
+// unit here. A window the owner clicks AFTER this still comes forward, which
+// is correct: they asked for it.
+function raiseFindCluster() {
+  if (!isDesktop) return;
+  FIND_CLUSTER.forEach((id) => {
+    const st = winState[id];
+    if (st?.open) focusWin(st.el);
+  });
+}
+
+function renderFindCompanions() {
+  renderFindClouds();
+  renderFindRelated();
+  renderDefines();
+}
+
+// One companion, opened or closed from Find's own toolbar. Opening RELEASES
+// it from a stage layout first (the same step openFindCompanions takes), or a
+// saved layout would park it as a tile instead of floating it beside Find.
+function toggleFindCompanion(id) {
+  if (!isDesktop) { openFindChatCompanion(id); return; }
+  if (winState[id]?.open) { closeWindow(id); return; }
+  findChatReleaseCompanion(id);
+  openWindow(id);
+  raiseFindCluster();
+  requestAnimationFrame(renderFindCompanions);
+}
+
+// Driven by syncFindWorkspace, which openWindow and closeWindow both call —
+// so a companion closed by its own traffic light, the palette, or a layout
+// change unlights its toggle without anything else having to remember to.
+function syncFindCompanionToggles() {
+  const btns = findChatRefs?.compBtns;
+  if (!btns) return;
+  FIND_COMPANIONS.forEach((c) => {
+    const on = !!winState[c.id]?.open;
+    btns[c.id].classList.toggle("on", on);
+    btns[c.id].setAttribute("aria-pressed", on ? "true" : "false");
   });
 }
 
@@ -2478,14 +2541,15 @@ function hideFindChat() {
 function openFindChatCompanion(id) {
   openApp("find");
   showFindChat();
-  if (isDesktop) openWindow(id);
-  else findChatShowMobileTab(id === "find-cloud" ? "concepts" : "related");
+  if (isDesktop) { findChatReleaseCompanion(id); openWindow(id); return; }
+  // No floating windows on a phone: every companion is a tab of this pane.
+  const tab = FIND_COMPANIONS.find((c) => c.id === id)?.tab;
+  if (tab) findChatShowMobileTab(tab);
 }
 
 function initFindChatShell(root, searchPane, searchInput) {
   const mobileTabs = el("div", "find-chat-mobile-tabs");
-  [["chat", "Chat"], ["define", "Definition"], ["concepts", "Concepts"],
-   ["related", "Related"]]
+  [["chat", "Chat"], ...FIND_COMPANIONS.map((c) => [c.tab, c.label])]
     .forEach(([id, label]) => {
       const b = el("button", "fchip sm" + (id === "chat" ? " on" : ""), label);
       b.dataset.tab = id;
@@ -2504,7 +2568,24 @@ function initFindChatShell(root, searchPane, searchInput) {
   fresh.addEventListener("click", startNewFindChat);
   toolbar.appendChild(back);
   toolbar.appendChild(status);
+  // The companions are windows of their own, so the only way to get one back
+  // after closing it was the palette. These are that control, at the top of
+  // the window the companions belong to. Desktop only: on a phone the same
+  // three are tabs of this pane and rows in the nav drawer.
+  const compRow = el("div", "find-comp-toggles");
+  const compBtns = {};
+  FIND_COMPANIONS.forEach((c) => {
+    const b = el("button", "fchip sm", c.label);
+    b.title = "Show or hide " + c.label;
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => toggleFindCompanion(c.id));
+    compBtns[c.id] = b;
+    compRow.appendChild(b);
+  });
+  // fresh BEFORE the toggle row in the DOM: compRow claims a whole line, so
+  // appending New chat after it would strand that one button on a third.
   toolbar.appendChild(fresh);
+  toolbar.appendChild(compRow);
 
   const chatBody = el("div", "find-chat-body");
   const log = el("div", "brain-log find-chat-log");
@@ -2562,8 +2643,9 @@ function initFindChatShell(root, searchPane, searchInput) {
   root.appendChild(mobileTabs);
   root.appendChild(chatPane);
   findChatRefs = {searchPane, searchInput, mobileTabs, chatPane, toolbar,
-                  status, chatBody, log, empty, input, send,
+                  status, chatBody, log, empty, input, send, compBtns,
                   mobileCloud, mobileRelated, mobileDefine};
+  syncFindCompanionToggles();
 }
 
 function renderFindChat() {
@@ -10776,6 +10858,9 @@ function viewLoad(id) {
       else renderFindRelated();
     })).catch(() => {});
   }
+  // The definition card comes from the define ladder, not the chat session,
+  // so it only needs a repaint — opening the window must not blank it.
+  if (id === "find-define") requestAnimationFrame(renderDefines);
   if (id === "people") peopleTabLoad(peopleTab);
   if (id === "atlas") window.atlasLoad?.();
   if (id === "map") {
@@ -14538,7 +14623,13 @@ const FIND_CLUSTER = ["find", "find-related", "find-cloud", "find-define"];
 
 function syncFindWorkspace() {
   if (!isDesktop) return;
-  const lit = FIND_CLUSTER.some((id) => winState[id]?.open);
+  syncFindCompanionToggles();
+  // The treatment belongs to the CLUSTER, not to Find alone (owner, 2026-08-04
+  // — "I don't want them to become transparent just because I clicked away").
+  // Opening Find to run a search is an ordinary window open and must leave the
+  // desk alone; it is the companions coming up that means "this is a workspace
+  // now", and only then does everything else step back.
+  const lit = FIND_COMPANIONS.some((c) => winState[c.id]?.open);
   document.body.classList.toggle("find-workspace", lit);
   FIND_CLUSTER.forEach((id) =>
     winState[id]?.el.classList.toggle("find-member", lit));
@@ -14977,6 +15068,24 @@ function renderNavDrawer() {
       r.setAttribute("aria-current", "page");
     }
     r.addEventListener("click", () => openApp(id));
+    list.appendChild(r);
+    // Find's companions are windows at the desk and tabs on a phone, so they
+    // are not apps and never appear in appOrder. They still need to be
+    // reachable one at a time — that is what these indented rows are.
+    if (id === "find") FIND_COMPANIONS.forEach(subRow);
+  };
+  const subRow = (c) => {
+    const spec = appSpec(c.id);
+    const r = el("button", "nd-row nd-sub");
+    r.dataset.app = c.id;
+    const ic = el("span", "nd-ic");
+    if (spec) ic.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">`
+      + `<path d="${spec.icon}"/></svg>`;
+    r.appendChild(ic);
+    r.appendChild(el("span", "nd-label", c.label));
+    if (activeView === "view-find" && findChatMobileTab === c.tab)
+      r.classList.add("current");
+    r.addEventListener("click", () => openFindChatCompanion(c.id));
     list.appendChild(r);
   };
   // Waiting on you leads the drawer: a parked decision is a session that

@@ -2125,6 +2125,16 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 .nd-row.current .nd-ic svg { stroke: var(--accent-bright); }
 .nd-label { flex: 1; min-width: 0; }
+/* Find's companions, listed under it. The rail is what says "part of Find" —
+   an indent alone reads as a wrapped row on a narrow drawer. */
+.nd-row.nd-sub {
+  padding-left: 22px; font-size: 13.5px; color: var(--text-dim);
+  border-left: 1px solid var(--line); border-radius: 0 var(--radius) var(--radius) 0;
+  margin-left: 20px; width: calc(100% - 20px); gap: 10px;
+}
+.nd-row.nd-sub .nd-ic { width: 18px; height: 18px; }
+.nd-row.nd-sub .nd-ic svg { width: 16px; height: 16px; }
+.nd-row.nd-sub.current { color: var(--sel-text); }
 
 /* the gear sits in the lower left, under a hairline */
 .nd-foot {
@@ -2194,10 +2204,20 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 /* Find's second mode: one persistent vault conversation, with the exact
    Brain companions sharing its session state. The companion sections are
    windows on desktop and internal tabs on phone widths. */
+/* Wraps because Find is the NARROW column in the default workspace: back +
+   three toggles + New chat do not fit one line there, and a toolbar that
+   overflows its own window is worse than one that takes two rows. */
 .find-chat-toolbar {
-  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 8px; margin-bottom: 8px;
 }
 .find-chat-state { flex: 1; text-align: center; }
+/* Open/close the three companion windows without leaving Find. Its OWN row:
+   Find is the narrow column in the default workspace, so back + three
+   toggles + New chat never fit one line there — and left to wrap freely the
+   centred status ate the remainder of line one and pushed the toolbar to
+   three rows. Two, deterministically. */
+.find-comp-toggles { display: flex; gap: 6px; flex: 1 0 100%; }
 .find-chat-log { min-height: 260px; max-height: calc(100vh - 330px); }
 .find-chat-log .brain-msg.vira { white-space: normal; }
 .find-chat-log .ask-answer {
@@ -2354,6 +2374,8 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   .find-bar .search { flex-basis: 100%; }
   .find-chat-mobile-tabs:not([hidden]) { display: flex; }
   .find-chat-toolbar .find-chat-state { display: none; }
+  /* the same three are tabs of this pane here, and rows in the nav drawer */
+  .find-comp-toggles { display: none; }
   .find-chat-log { max-height: none; min-height: 45vh; }
   .find-chat-mobile-panel:not([hidden]) { display: flex; }
   .find-chat-mobile-panel.find-cloud { min-height: 62vh; }
@@ -2866,17 +2888,21 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   body.focus-mode .dock:hover { opacity: 1; }
 
   /* The Find cluster is one workspace, so while it is up the rest of the
-     desk steps back. Deliberately NOT focus mode: no blur, nothing made
-     inert, no scale. Every other window stays readable and clickable —
-     this is a depth cue, not a modal. Focus mode outranks it, or an open
-     profile would be dimmed by the workspace behind it. */
+     desk steps back — at the SAME brightness and blur an opened note or
+     profile uses (owner's call, 2026-08-04), so "something is lit in front
+     of the desk" looks like one thing in Vira rather than two.
+     Deliberately still NOT focus mode: nothing is made inert and nothing
+     scales, because the cluster is a workspace you keep working around, not
+     a modal — hover clears the treatment on whatever you reach for. Focus
+     mode outranks it, or an open profile would be dimmed by the workspace
+     behind it. */
   body.find-workspace:not(.focus-mode) .fwin:not(.find-member) {
-    opacity: .62; filter: saturate(.55);
-    transition: opacity .18s ease, filter .18s ease;
+    filter: blur(3px) brightness(.72) saturate(.85);
+    transition: filter .18s ease;
   }
   body.find-workspace:not(.focus-mode) .fwin:not(.find-member):hover,
   body.find-workspace:not(.focus-mode) .fwin:not(.find-member):focus-within {
-    opacity: 1; filter: none;
+    filter: none;
   }
 
   .p-cols {
