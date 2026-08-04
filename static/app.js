@@ -2077,10 +2077,11 @@ let findChatPending = false;
 let findChatRefs = null;
 let findChatMobileTab = "chat";
 let findChatWorkspacePlaced = false;
-// v4: the owner arranged the four windows himself and that arrangement is
-// now the default (see findChatTileWorkspace). Bumping the key re-tiles once
-// for anyone already on v3, then goes back to being a one-time migration.
-const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v4";
+// v5: the arrangement is sized RELATIVE to the window now, centred, with
+// Find full-height and Definition overlapping the cloud (see
+// findChatTileWorkspace). Bumping the key re-tiles once for anyone already
+// on v4, then goes back to being a one-time migration.
+const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v5";
 
 // The three session-linked companions, in ONE order every surface reads: the
 // desktop toggle row in Find's toolbar, Find's own mobile tabs, and the nav
@@ -2140,38 +2141,49 @@ function findChatTileWorkspace() {
     || !lsGet(FIND_CHAT_LAYOUT_KEY, false);
   if (!needsTile) { findChatWorkspacePlaced = true; return; }
   const G = 14, GAP = 12, TOP = 52, BOTTOM = 92;
-  const totalW = innerWidth - 2 * G;      // the whole workspace band
-  const totalH = innerHeight - TOP - BOTTOM;
-  if (totalW < 772 || totalH < 400) return;
+  const availW = innerWidth - 2 * G;      // the whole workspace band
+  const availH = innerHeight - TOP - BOTTOM;
+  if (availW < 772 || availH < 400) return;
   findChatWorkspacePlaced = true;
-  // The grid the owner arranged by hand (2026-08-04) and asked to be the
-  // default: chat as its own left column, Related (a card list, so narrow)
-  // and Definition (prose, so wide) across the top right, and Concept Cloud
-  // spanning the whole right side beneath them — the cloud wants area, not
-  // width, and it is the one surface that reads at a glance.
+  // The grid the owner arranged by hand and asked to be the default
+  // (screenshots 2026-08-04): chat as its own full-height left column,
+  // Related (a card list, so narrow) and Definition (prose, so wide) across
+  // the top right, and Concept Cloud spanning the whole right side beneath
+  // them — the cloud wants area, not width, and it reads at a glance.
   //
-  // The ratios are of the workspace rather than of his viewport, so the shape
-  // holds at any desk size. FIND_TILE_* are measured off that arrangement;
-  // the two narrow columns carry floors so they stay readable on a small
-  // desk, and Definition absorbs whatever they take. When even the floors do
-  // not fit, the plain proportions win — a squeezed grid beats a broken one.
-  const inner = totalW - 2 * GAP;
-  let findW = Math.max(340, Math.round(inner * .302));
-  let relW = Math.max(240, Math.round(inner * .192));
-  if (inner - findW - relW < 320) {
-    findW = Math.round(inner * .302);
-    relW = Math.round(inner * .192);
+  // THE CLUSTER IS A SIZE RELATIVE TO THE WINDOW, not the whole desk. His
+  // monitor is very large, and measured off his own screenshot the cluster
+  // takes about two thirds of the width and four fifths of the height,
+  // CENTRED — so the desk stays visible around it instead of the four
+  // windows stretching to the far corners of a 34-inch display. Every ratio
+  // below is his arrangement measured and normalized; a small desk falls
+  // back to the floors and simply fills more of the screen.
+  const MIN_W = 340 + 240 + 320 + 2 * GAP;      // find + related + definition
+  const boxW = Math.min(availW, Math.max(Math.round(availW * .675), MIN_W));
+  const boxH = Math.min(availH, Math.max(Math.round(availH * .79), 420));
+  const x0 = G + Math.round((availW - boxW) / 2);
+  const y0 = TOP + Math.round((availH - boxH) / 2);
+
+  const inner = boxW - 2 * GAP;
+  let findW = Math.max(340, Math.round(inner * .310));
+  let relW = Math.max(240, Math.round(inner * .186));
+  if (inner - findW - relW < 320) {             // floors do not fit: ratios win
+    findW = Math.round(inner * .310);
+    relW = Math.round(inner * .186);
   }
   const defW = inner - findW - relW;
-  const topH = Math.round((totalH - GAP) * .523);
-  const botH = totalH - topH - GAP;
-  const relX = G + findW + GAP;
+  const topH = Math.round((boxH - GAP) * .52);
+  const botH = boxH - topH - GAP;
+  const relX = x0 + findW + GAP;
   const defX = relX + relW + GAP;
-  const botY = TOP + topH + GAP;
+  const botY = y0 + topH + GAP;
   const rects = {
-    find: {x: G, y: TOP, w: findW, h: Math.round(totalH * .806)},
-    "find-related": {x: relX, y: TOP, w: relW, h: topH},
-    "find-define": {x: defX, y: TOP, w: defW, h: topH},
+    find: {x: x0, y: y0, w: findW, h: boxH},
+    "find-related": {x: relX, y: y0, w: relW, h: topH},
+    // Definition runs DEEPER than the top row and overlaps Concept Cloud —
+    // deliberate (owner: "that's intentional, I think it's cool"). It sits
+    // above the cloud because raiseFindCluster lifts find-define last.
+    "find-define": {x: defX, y: y0, w: defW, h: Math.round(boxH * .773)},
     "find-cloud": {x: relX, y: botY, w: relW + GAP + defW, h: botH},
   };
   Object.entries(rects).forEach(([id, r]) => {
@@ -2376,6 +2388,11 @@ async function openDefine(term) {
     findChatReleaseCompanion("find-define");
     openWindow("find-define");
     findChatTileWorkspace();
+    // Raise it explicitly: a define can be asked for while a document or a
+    // profile is lit, and openWindow does nothing for a window that was
+    // already open — so without this a second lookup would land behind
+    // whatever the owner has raised since the first.
+    focusWin(winState["find-define"].el);
   } else {
     // No floating windows on a phone: the card is a tab of Find, exactly as
     // Concepts and Related are.

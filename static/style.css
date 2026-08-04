@@ -2887,6 +2887,25 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   body.focus-mode .dock { opacity: .55; }
   body.focus-mode .dock:hover { opacity: 1; }
 
+  /* DEFINITION IS THE ONE WINDOW FOCUS MODE DOES NOT RECEDE (owner,
+     2026-08-04). Define is reachable from a right-click ANYWHERE in Vira,
+     including while a document is lit — and there the window opened behind
+     the scrim: blurred, dimmed and pointer-inert, so asking Vira to define
+     a word produced a definition you could not see. It sits above the lit
+     surface (z 800) rather than beside it, because it is an annotation ON
+     what you are reading. Still an ordinary window otherwise — drag it,
+     resize it, close it. */
+  /* No `.open` in the selector: that class is added inside a
+     requestAnimationFrame, so a window opened while the tab is not painting
+     carries the state without the class — and this rule must never depend on
+     a frame having run. A closed window is display:none regardless. */
+  body.focus-mode #win-find-define {
+    filter: none;
+    transform: none;
+    pointer-events: auto;
+    z-index: 850 !important;
+  }
+
   /* The Find cluster is one workspace, so while it is up the rest of the
      desk steps back — at the SAME brightness and blur an opened note or
      profile uses (owner's call, 2026-08-04), so "something is lit in front
