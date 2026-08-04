@@ -2899,12 +2899,20 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
      requestAnimationFrame, so a window opened while the tab is not painting
      carries the state without the class — and this rule must never depend on
      a frame having run. A closed window is display:none regardless. */
-  body.focus-mode #win-find-define {
+  body.focus-mode #win-find-define,
+  body.focus-mode .fwin.win-clear {
     filter: none;
     transform: none;
     pointer-events: auto;
     z-index: 850 !important;
   }
+
+  /* `.win-clear` is the INHERITED half of that exemption: a window spawned
+     BY an exempt surface — "Open note" on the definition card, a sourcing
+     session's terminal — arrived behind the very scrim the definition sits
+     in front of, so the thing just asked for was the one thing unreadable.
+     app.js grants the class at spawn time and drops it once every treatment
+     ends, so it never turns a background window permanently bright. */
 
   /* The Find cluster is one workspace, so while it is up the rest of the
      desk steps back — at the SAME brightness and blur an opened note or
@@ -2915,7 +2923,7 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
      a modal — hover clears the treatment on whatever you reach for. Focus
      mode outranks it, or an open profile would be dimmed by the workspace
      behind it. */
-  body.find-workspace:not(.focus-mode) .fwin:not(.find-member) {
+  body.find-workspace:not(.focus-mode) .fwin:not(.find-member):not(.win-clear) {
     filter: blur(3px) brightness(.72) saturate(.85);
     transition: filter .18s ease;
   }
