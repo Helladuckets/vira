@@ -77,12 +77,51 @@ def norm_stage_mode(m, default="manual"):
 EXTRA_CAP = 4_000        # per-stage owner instructions (tray) length cap
 MAX_RETRIES = 5          # ceiling a tray-set grade gate may ask for
 
+# What an Output part can be. "plan" is the odd one and deliberately so: the
+# other four only SHAPE the text a stage already produced, while a plan is
+# also a thing Vira makes — a vault note plus the rendered HTML dossier. It
+# lives here rather than as a permission mode because a plan is a shape, not
+# a rung: see plans.SHAPE and _launch_stage below.
+OUTPUT_DESTINATIONS = ("record", "decision_brief", "artifact", "notification",
+                       "plan")
+OUTPUT_LABELS = {
+    "record": "a durable Vira record",
+    "decision_brief": ("a decision brief with the answer first, evidence, "
+                       "tradeoffs, and recommendation"),
+    "artifact": "a finished artifact ready to use",
+    "notification": ("a concise notification with the decision or action up "
+                     "front"),
+    "plan": "a plan",
+}
+
 _dlock = threading.Lock()
 _rlock = threading.Lock()
 
 # ---------- builtin templates ----------
 
 TEMPLATES = [
+    {
+        "id": "plan",
+        "name": "Plan it",
+        "description": "One agent studies the ask and writes the plan; Vira "
+                       "saves it to your vault as an editable note and "
+                       "renders the HTML dossier with diagrams. Nothing is "
+                       "built — the plan is the deliverable.",
+        "builtin": True,
+        "stages": [
+            {"id": "plan", "name": "Plan", "model": "", "mode": "manual",
+             "read_only": True, "needs": [],
+             "prompt": "Write the plan for the following. Study the working "
+                       "directory and anything else you need first, so the "
+                       "plan is grounded in what is actually there rather "
+                       "than in assumptions.\n\n{{input}}\n\nName exact "
+                       "files, the change in each, the order of work, how to "
+                       "verify it, and what NOT to touch. Say what you are "
+                       "unsure of rather than papering over it."},
+            {"id": "dossier", "name": "Plan dossier", "mode": "output",
+             "needs": ["plan"], "output": {"destination": "plan"}},
+        ],
+    },
     {
         "id": "plan-build-judge",
         "name": "Plan, build, judge",
@@ -111,6 +150,8 @@ TEMPLATES = [
                        "THE PLAN:\n{{stage.plan.output}}\n\nFinish with a "
                        "clear report of what you changed and how you "
                        "verified it."},
+            {"id": "dossier", "name": "Plan dossier", "mode": "output",
+             "needs": ["plan"], "output": {"destination": "plan"}},
             {"id": "judge", "name": "Judge (fresh eyes)", "model": "",
              "mode": "judge", "needs": ["build"],
              "judge": {"of": ["build"], "retry_stage": "build",
@@ -197,6 +238,8 @@ TEMPLATES = [
                        "THE PLAN:\n{{stage.plan.output}}\n\nFinish with "
                        "a clear report of what you changed and how you "
                        "verified it."},
+            {"id": "dossier", "name": "Plan dossier", "mode": "output",
+             "needs": ["plan"], "output": {"destination": "plan"}},
             {"id": "judge", "name": "Judge (fresh eyes)", "model": "",
              "mode": "judge", "needs": ["build"],
              "judge": {"of": ["build"], "retry_stage": "build",
@@ -291,9 +334,39 @@ def _load_defs():
         if t["id"] not in have:
             s["circuits"].append(json.loads(json.dumps(t)))
             changed = True
+    changed = _seed_plan_outputs(s) or changed
     if changed:
         _save_defs(s)
     return s
+
+
+def _seed_plan_outputs(s):
+    """ONE-TIME: give the shipped planning starters their Plan-dossier
+    output part.
+
+    Seeding is by id, so a starter already on disk never picks up a stage
+    added to its template later — which would have left every existing
+    install with planning workflows that could not produce the dossier
+    the feature exists for. This reconciles them once and records that it
+    ran, so a part the owner then DELETES stays deleted: an additive
+    migration that re-ran on every load would be a stage he cannot get
+    rid of.
+    """
+    if s.get("plan_outputs_seeded"):
+        return False
+    s["plan_outputs_seeded"] = True
+    by_id = {c["id"]: c for c in s["circuits"]}
+    for t in TEMPLATES:
+        extra = [st for st in t.get("stages") or []
+                 if st.get("id") == "dossier"]
+        rec = by_id.get(t["id"])
+        if not extra or not rec or not rec.get("builtin"):
+            continue
+        ids = {st.get("id") for st in rec.get("stages") or []}
+        if "dossier" in ids or not {"plan"} <= ids:
+            continue
+        rec["stages"].append(json.loads(json.dumps(extra[0])))
+    return True
 
 
 def _save_defs(s):
@@ -512,7 +585,7 @@ def start_run(cid, input_text, cwd=None, notify=False, source="manual",
     flow_options = dict(flow_options or {})
     destination = str(flow_options.get("output") or "").strip()
     if destination:
-        if destination not in {"record", "decision_brief", "artifact", "notification"}:
+        if destination not in OUTPUT_DESTINATIONS:
             raise ValueError("unknown Flow output destination")
         for stage in stages:
             if norm_stage_mode(stage.get("mode")) == "output":
@@ -631,6 +704,74 @@ def _stage_output(run, sid):
     return out[:OUTPUT_INJECT_CAP]
 
 
+def _destination(item, run=None):
+    """The destination an attached Output part resolves to for this run — the
+    launchbar's choice overrides what the part was saved with."""
+    selected = ((run or {}).get("launch_options") or {}).get("output")
+    return str(selected or item.get("destination") or "record")
+
+
+def attached_outputs(st_def, run=None):
+    """Every Output part this stage feeds.
+
+    Two shapes reach here and both are real: the Forge COMPILES a graph's
+    downstream output nodes onto the stage as `forge.outputs`, while a
+    builtin starter is a plain stage list where the output part is just
+    another stage that `needs` this one. Reading only the first would make
+    the starters unable to end in anything.
+    """
+    items = list((st_def.get("forge") or {}).get("outputs") or [])
+    seen = {(_destination(i, run), str(i.get("instructions") or ""))
+            for i in items}
+    sid = st_def.get("id")
+    stages = (run or {}).get("stages_def") or []
+    has_output_part = False
+    feeds_this = False
+    terminal = bool(sid)
+    for other in stages:
+        other_mode = norm_stage_mode(other.get("mode"))
+        if other_mode == "output":
+            has_output_part = True
+        if sid and sid in (other.get("needs") or []):
+            terminal = False
+            if other_mode == "output":
+                feeds_this = True
+                cfg = dict(other.get("output") or {})
+                key = (_destination(cfg, run),
+                       str(cfg.get("instructions") or ""))
+                if key not in seen:
+                    seen.add(key)
+                    items.append({"name": other.get("name") or "Output",
+                                  **cfg})
+    if items or feeds_this:
+        return items
+    # The launchbar's own Output choice, on a Flow that carries no Output
+    # part. Without this, picking "Plan dossier" there would light up a
+    # control that does nothing — the dead-affordance failure — because
+    # the destination only ever reached stages an Output part fed. It
+    # applies to the Flow's LAST stages only, and never to a judge: a
+    # verdict is not a plan.
+    if (_destination({}, run) == "plan" and not has_output_part and terminal
+            and norm_stage_mode(st_def.get("mode")) not in LOCAL_MODES + ("judge",)):
+        return [{"name": "Plan dossier", "destination": "plan"}]
+    return items
+
+
+def writes_a_plan(st_def, run=None):
+    """True when this stage's output lands as a plan: an Output part set to
+    the plan destination, or the legacy per-stage publish_plan flag.
+
+    This is the whole of what "plan" means to a Flow now. It says nothing
+    about how the stage is gated — a planning stage that may read the web,
+    spawn a subagent, or even write a scratch file still produces the same
+    dossier, because the dossier comes from the SHAPE of what it wrote.
+    """
+    if st_def.get("publish_plan"):
+        return True
+    return any(_destination(item, run) == "plan"
+               for item in attached_outputs(st_def, run))
+
+
 def _forge_brief(stage, run=None):
     """Render graph attachments once, at the stage boundary they feed."""
     forge = stage.get("forge") or {}
@@ -660,21 +801,23 @@ def _forge_brief(stage, run=None):
                   if str(value).strip()]
     if wire_notes:
         blocks.append("CONNECTION INSTRUCTIONS\n- " + "\n- ".join(wire_notes))
-    outputs = forge.get("outputs") or []
+    outputs = attached_outputs(stage, run)
     if outputs:
-        selected = ((run or {}).get("launch_options") or {}).get("output")
-        labels = {
-            "record": "a durable Vira record",
-            "decision_brief": "a decision brief with the answer first, evidence, tradeoffs, and recommendation",
-            "artifact": "a finished artifact ready to use",
-            "notification": "a concise notification with the decision or action up front",
-        }
         lines = ["OUTPUT CONTRACT"]
+        plan = False
         for item in outputs:
-            destination = selected or item.get("destination") or "record"
-            lines.append(f"- Shape your final response as {labels.get(destination, destination)}.")
+            destination = _destination(item, run)
+            plan = plan or destination == "plan"
+            lines.append("- Shape your final response as "
+                         f"{OUTPUT_LABELS.get(destination, destination)}.")
             if item.get("instructions"):
                 lines.append(f"  {item['instructions']}")
+        if plan:
+            # The plan destination is the only one that has to be exact: a
+            # renderer reads this structure. plans.SHAPE is that contract.
+            from . import plans
+            lines.append("")
+            lines.append(plans.SHAPE)
         blocks.append("\n".join(lines))
     if not blocks:
         return ""
@@ -885,7 +1028,7 @@ class Driver(threading.Thread):
         return session.sessions.launch(
             prompt, cwd=st_def.get("cwd") or run.get("cwd"),
             model=model or None, mode=mode, read_only=read_only,
-            publish_plan=bool(st_def.get("publish_plan")),
+            publish_plan=writes_a_plan(st_def, run),
             meta={"circuit_run": run["id"], "stage": sid,
                   "circuit": run["circuit_id"]})
 

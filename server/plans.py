@@ -37,6 +37,42 @@ DEFAULT_VAULT = Path.home() / ".vira" / "vault"
 
 _lock = threading.Lock()
 
+# ---------- what a plan IS ----------
+#
+# The one description of the plan format, because a plan is a SHAPE, not a
+# permission mode. Three readers depend on this exact structure and none of
+# them cares how the session that wrote it was gated:
+#
+#   * _extract_title below, and plans.save_plan's vault filename, read the
+#     `# ` title on line 1;
+#   * the in-app viewer renders the markdown;
+#   * the private ~/.claude/scripts/plan-html-deploy.py renderer builds the
+#     hosted dossier FROM this structure — the `# ` title becomes the hero
+#     headline, `## Executive Summary` becomes the dek and the verdict
+#     callout, every other `##` becomes a numbered section, ```mermaid
+#     fences become dark-theme diagrams, and stated figures become the
+#     count-up KPI band. Prose with no headings renders as a wall.
+#
+# So the instruction is what earns the dossier. It is stated once here and
+# every surface that asks for a plan appends it: the Forge's Plan-dossier
+# output (server/circuits.py _forge_brief) and the Queue's Plan button
+# (ideaPlanPrompt in static/app.js — a JS copy, held to this text by
+# tests/test_plan_shape.py, since a prompt must not depend on a round trip).
+SHAPE = "\n".join([
+    "Output ONLY the plan as markdown — no preamble, no closing remarks, no",
+    "code fence around the whole thing. Vira saves it to the vault as an",
+    "editable note and renders it as a hosted dossier. Follow this plan",
+    "format exactly:",
+    '- First line: "# Title" (a short noun phrase, max ~8 words).',
+    '- Then "## Executive Summary" (2-3 sentences: what is built, the',
+    "  approach, the key tradeoff or risk).",
+    "- Then the full plan as markdown sections: context, architecture,",
+    "  step-by-step changes, files touched, risks, open questions.",
+    "- Use Mermaid code fences for any diagrams. No emojis.",
+    "- Only state figures the work actually supports — the renderer counts",
+    "  them up on the page, so an invented number becomes a headline.",
+])
+
 
 def _extract_title(md):
     """The plan's title: the first `# ` heading (the plan format mandates one

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import actions, circuits, flows, routines
+from server import actions, circuits, flows, ideas, routines
 
 
 class FlowTests(unittest.TestCase):
@@ -215,6 +215,75 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(loaded["files"], ["SKILL.md"])
         with self.assertRaises(ValueError):
             flows.kit_source(Path(self.tmp.name).parent / "outside.md")
+
+
+class IdeaToFlowTests(unittest.TestCase):
+    """"Build in Flows" — the third answer to a queued idea, between
+    dispatching it blind and handing it to another session."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        for patch in [mock.patch.object(circuits, "DEFS",
+                                        root / "circuits.json"),
+                      mock.patch.object(ideas, "STORE", root / "ideas.json")]:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.idea = ideas.add("Rebuild the renewal radar", source="test")
+
+    def test_it_copies_the_starter_into_a_flow_named_for_the_idea(self):
+        out = flows.flow_for_idea(self.idea["id"])
+        circ = circuits.get_circuit(out["flow_id"])
+        starter = circuits.get_circuit("plan-build-judge")
+        self.assertEqual(circ["name"], "Rebuild the renewal radar")
+        self.assertEqual([s["id"] for s in circ["stages"]],
+                         [s["id"] for s in starter["stages"]])
+        # A copy, not the starter itself — editing it must not rewrite the
+        # workflow every other idea starts from.
+        self.assertNotEqual(out["flow_id"], "plan-build-judge")
+        self.assertFalse(circ["builtin"])
+
+    def test_the_idea_is_the_run_input_not_baked_into_the_graph(self):
+        out = flows.flow_for_idea(self.idea["id"])
+        self.assertEqual(out["input"], "Rebuild the renewal radar")
+        prompts = " ".join(s.get("prompt") or ""
+                           for s in circuits.get_circuit(out["flow_id"])["stages"])
+        self.assertNotIn("renewal radar", prompts)
+        self.assertIn("{{input}}", prompts)
+
+    def test_a_second_click_makes_a_second_copy(self):
+        """Two attempts at one idea are two experiments; reusing the first
+        would silently discard whatever the owner had changed."""
+        first = flows.flow_for_idea(self.idea["id"])
+        second = flows.flow_for_idea(self.idea["id"])
+        self.assertNotEqual(first["flow_id"], second["flow_id"])
+
+    def test_a_long_idea_is_truncated_into_a_readable_name(self):
+        long_idea = ideas.add("x" * 200, source="test")
+        out = flows.flow_for_idea(long_idea["id"])
+        self.assertEqual(len(out["name"]), 61)
+        self.assertTrue(out["name"].endswith("…"))
+
+    def test_unknown_idea_and_unknown_starter_are_named_refusals(self):
+        with self.assertRaises(KeyError):
+            flows.flow_for_idea("idea_nope")
+        with self.assertRaises(ValueError):
+            flows.flow_for_idea(self.idea["id"], template="no-such-starter")
+
+    def test_the_run_carries_the_idea_so_it_closes_out(self):
+        out = flows.flow_for_idea(self.idea["id"])
+        seen = {}
+
+        def fake_start(cid, text, **kw):
+            seen.update(cid=cid, text=text, **kw)
+            return {"id": "run_1"}
+
+        with mock.patch.object(circuits, "start_run", fake_start):
+            flows.run_flow(out["flow_id"], out["input"],
+                           idea_id=self.idea["id"])
+        self.assertEqual(seen["idea_id"], self.idea["id"])
+        self.assertEqual(seen["source"], "forge")
 
 
 if __name__ == "__main__":

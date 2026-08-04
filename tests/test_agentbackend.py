@@ -65,8 +65,14 @@ class SandboxTest(unittest.TestCase):
     def test_ladder_maps_onto_codex_sandboxes(self):
         self.assertEqual(agentbackend.sandbox_for(
             {"read_only": True, "mode": "interactive"}), "read-only")
+        # publish_plan is an OUTPUT shape, not a rung (2026-08-04): a plan
+        # session gets whatever sandbox its own mode asks for.
         self.assertEqual(agentbackend.sandbox_for(
-            {"publish_plan": True, "mode": "autopilot"}), "read-only")
+            {"publish_plan": True, "read_only": True,
+             "mode": "autopilot"}), "read-only")
+        self.assertEqual(agentbackend.sandbox_for(
+            {"publish_plan": True, "mode": "autopilot"}),
+            "danger-full-access")
         self.assertEqual(agentbackend.sandbox_for(
             {"mode": "autopilot"}), "danger-full-access")
         self.assertEqual(agentbackend.sandbox_for(

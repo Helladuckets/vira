@@ -94,7 +94,7 @@ class Runner:
         is a linked git worktree, placement happened, so live_root must be
         here too.
         """
-        if self.spec.get("read_only") or self.spec.get("publish_plan"):
+        if self.spec.get("read_only"):
             return ""                       # read-only denial covers these
         cwd = self.spec.get("cwd") or ""
         if not cwd or not worktree.is_worktree(cwd):
@@ -495,18 +495,22 @@ class Runner:
     # ----- the permission gate -----
 
     async def gate(self, tool_name, tool_input, context):  # noqa: ARG002
-        if self.spec.get("publish_plan") or self.spec.get("read_only"):
+        if self.spec.get("read_only"):
             # Read-only policy FIRST (audit P1-4): the denial outranks every
             # allow list — session grants never apply, and READ_ONLY_EXCLUDE
             # strips Task/WebSearch/the one native write from the read set.
+            #
+            # Keyed on read_only ALONE since 2026-08-04. publish_plan used to
+            # imply it, which made "produce a plan" and "touch nothing" the
+            # same switch — so a planning stage could not search the web or
+            # spawn a subagent (READ_ONLY_EXCLUDE strips both) purely because
+            # of what it was going to do with its output. A plan is a shape,
+            # not a rung: a stage that wants both still sets read_only.
             if (tool_name in self.auto_allow
                     and tool_name not in READ_ONLY_EXCLUDE):
                 return PermissionResultAllow()
             summary = _tool_summary({"name": tool_name, "input": tool_input})
-            kind = ("plan" if self.spec.get("publish_plan")
-                    else "read-only")
-            self.append(f"[vira] denied ({kind} sessions are read-only) — "
-                        f"{summary}\n")
+            self.append(f"[vira] denied (read-only session) — {summary}\n")
             return PermissionResultDeny(
                 message="This session is read-only. Do not modify anything "
                         "or retry this call — work from what the "
@@ -693,14 +697,13 @@ class Runner:
                 # fallback for a turn that calls no tools at all.
                 hooks={"PostToolUse": [HookMatcher(matcher=None,
                                                    hooks=[self.steer_hook])]},
-                # Plan and read-only sessions: write tools — and the
-                # excluded non-reads (Task subagents, WebSearch egress) —
-                # leave the model's context entirely; anything else risky
-                # is denied by the gate.
+                # Read-only sessions: write tools — and the excluded
+                # non-reads (Task subagents, WebSearch egress) — leave the
+                # model's context entirely; anything else risky is denied
+                # by the gate.
                 disallowed_tools=(["Write", "Edit", "NotebookEdit",
                                    "Task", "WebSearch"]
-                                  if spec.get("publish_plan")
-                                  or spec.get("read_only") else []),
+                                  if spec.get("read_only") else []),
             )
             async with ClaudeSDKClient(options) as client:
                 self.client = client

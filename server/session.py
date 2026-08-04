@@ -549,13 +549,16 @@ class Sessions:
         live = SDK_AVAILABLE or agentbackend.uses_cli_exec({"provider": prov})
         # Branch-first placement, decided HERE rather than asked of the model.
         # A session that can write lands in its own worktree; the gate then
-        # refuses any write aimed back at the live checkout. Read-only and
-        # plan sessions are skipped — they cannot damage anything, and a
-        # worktree per plan run would litter the repo with empty branches.
+        # refuses any write aimed back at the live checkout. Read-only
+        # sessions are skipped — they cannot damage anything, and a worktree
+        # per read-only run would litter the repo with empty branches.
+        # Placement keys on read_only ALONE since 2026-08-04: producing a
+        # plan no longer implies touching nothing, so a plan session that
+        # CAN write needs the same placement and the same guard as any
+        # other writing session.
         branch_slug = wt_path = live_root = None
         branch_note = ""
-        if (cwd and not read_only and not publish_plan
-                and bool(_scfg("session_branch_first"))):
+        if cwd and not read_only and bool(_scfg("session_branch_first")):
             root = worktree.repo_root(cwd)
             if root and worktree.is_branch_first(root) and worktree.is_worktree(root):
                 # RE-ENTRY: cwd is already a linked worktree (the orphan-work

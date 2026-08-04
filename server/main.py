@@ -2182,7 +2182,14 @@ class RunReq(BaseModel):
     cwd: str | None = None
     permission_mode: str | None = None
     model: str | None = None
+    # Finalize this run's output as a plan: save the markdown to the vault
+    # and render the HTML dossier. It says nothing about permissions — see
+    # plans.SHAPE and read_only below.
     publish_plan: bool = False
+    # Deny every write. Independent of publish_plan since 2026-08-04: the
+    # Queue's Plan button asks for BOTH and says so here, rather than
+    # inheriting a permission rung from what it does with the output.
+    read_only: bool = False
     idea_id: str | None = None
     # The permission ladder, safest first (session.MODES), named to match
     # Claude Code's own --permission-mode values: "manual" (every risky call
@@ -2204,7 +2211,7 @@ def api_run(req: RunReq):
     try:
         jid = jobs.launch(req.prompt, req.cwd, req.permission_mode, req.model,
                           req.publish_plan, req.idea_id, req.mode,
-                          provider=req.provider)
+                          read_only=req.read_only, provider=req.provider)
     except ValueError as e:
         raise HTTPException(429, str(e))
     return {"job_id": jid}
@@ -2482,15 +2489,34 @@ class FlowRunReq(BaseModel):
     cwd: str | None = None
     notify: bool = False
     output: str | None = ""
+    # Set when the Flow was loaded from a Queue idea, so the run closes that
+    # idea out the way a Plan/Implement dispatch does.
+    idea_id: str | None = None
 
 
 @app.post("/api/flows/{flow_id}/run")
 def api_flow_run(flow_id: str, req: FlowRunReq):
     try:
         return flows.run_flow(flow_id, req.input, cwd=req.cwd,
-                              notify=req.notify, output=req.output or "")
+                              notify=req.notify, output=req.output or "",
+                              idea_id=req.idea_id)
     except KeyError:
         raise HTTPException(404, "unknown flow")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class IdeaFlowReq(BaseModel):
+    template: str = flows.DEFAULT_IDEA_TEMPLATE
+
+
+@app.post("/api/ideas/{idea_id}/flow")
+def api_idea_flow(idea_id: str, req: IdeaFlowReq):
+    """Load a Queue idea into the Forge as its own editable Flow."""
+    try:
+        return flows.flow_for_idea(idea_id, req.template)
+    except KeyError:
+        raise HTTPException(404, "unknown idea")
     except ValueError as e:
         raise HTTPException(400, str(e))
 

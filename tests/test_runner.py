@@ -141,16 +141,25 @@ class GateTests(RunnerCase):
         self.assertIsNone(r.state["awaiting"])
         self.assertIn("timed out", self.output(r))
 
-    def test_plan_session_denies_writes_without_a_card(self):
-        r = self.make_runner(publish_plan=True)
+    def test_a_read_only_plan_session_denies_writes_without_a_card(self):
+        r = self.make_runner(publish_plan=True, read_only=True)
         res = self.run_gate(r, "Bash", {"command": "touch x"})
         self.assertEqual(res.behavior, "deny")
         self.assertIn("read-only", res.message)
         self.assertEqual(r.state["pending"], [])   # denied outright, no wait
 
-    def test_plan_session_still_auto_allows_read_only(self):
-        r = self.make_runner(publish_plan=True)
+    def test_a_read_only_plan_session_still_auto_allows_reads(self):
+        r = self.make_runner(publish_plan=True, read_only=True)
         res = self.run_gate(r, "Grep", {"pattern": "foo"})
+        self.assertEqual(res.behavior, "allow")
+
+    def test_publishing_a_plan_does_not_by_itself_deny_writes(self):
+        # 2026-08-04: publish_plan says what happens to the OUTPUT — the
+        # markdown is saved and rendered as a dossier. Whether the session
+        # may write is read_only's business, and a Forge plan step that
+        # needs to explore, search the web or spawn a subagent gets to.
+        r = self.make_runner(publish_plan=True, mode="bypassPermissions")
+        res = self.run_gate(r, "Bash", {"command": "touch x"})
         self.assertEqual(res.behavior, "allow")
 
     def test_read_only_strips_non_reads_from_auto_allow(self):
@@ -295,9 +304,9 @@ class AcceptEditsTests(RunnerCase):
         self.assertEqual(res.behavior, "deny")
 
     def test_read_only_outranks_the_rung(self):
-        """Read-only denial outranks every allow (audit P1-4) — a plan
-        session set to acceptedits must still refuse to write."""
-        r = self.make_runner(mode="acceptedits", publish_plan=True)
+        """Read-only denial outranks every allow (audit P1-4) — a session
+        set to acceptedits must still refuse to write."""
+        r = self.make_runner(mode="acceptedits", read_only=True)
         res = self.run_gate(r, "Write", {"file_path": "/tmp/x"})
         self.assertEqual(res.behavior, "deny")
 
@@ -483,9 +492,9 @@ class BranchGuardTests(RunnerCase):
         self.assertEqual(res.behavior, "allow")
 
     def test_read_only_denial_still_wins_over_the_branch_message(self):
-        """Ordering check: a plan session denies everything for its own
+        """Ordering check: a read-only session denies everything for its own
         reason, and that reason is the one the agent should see."""
-        r = self.make_runner(**self.spec_with_guard(publish_plan=True))
+        r = self.make_runner(**self.spec_with_guard(read_only=True))
         res = self.run_gate(r, "Edit", {"file_path": "/tmp/repo/x.py"})
         self.assertEqual(res.behavior, "deny")
         self.assertIn("read-only", res.message.lower())

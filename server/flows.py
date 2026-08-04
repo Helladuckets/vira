@@ -608,14 +608,50 @@ def save_flow(payload, save_as=False):
     return get_flow(rec["id"])
 
 
-def run_flow(flow_id, input_text, cwd=None, notify=False, output=""):
+def run_flow(flow_id, input_text, cwd=None, notify=False, output="",
+             idea_id=None):
     if flow_id.startswith("routine:"):
         row = routines.get_routine(flow_id.split(":", 1)[1])
         if not row:
             raise KeyError(flow_id)
         return routines.dispatch(row)
     return circuits.start_run(flow_id, input_text, cwd=cwd, notify=notify,
-                              source="forge", flow_options={"output": output})
+                              source="forge", idea_id=idea_id,
+                              flow_options={"output": output})
+
+
+DEFAULT_IDEA_TEMPLATE = "plan-build-judge"
+
+
+def flow_for_idea(idea_id, template=DEFAULT_IDEA_TEMPLATE):
+    """Copy a starter into a Flow of this idea's own, ready to be edited.
+
+    The idea is NOT baked into the graph — it is the run input. What the
+    owner gets is a private copy of the workflow, named after the idea, so
+    editing the graph, testing it, and re-running it are all ordinary Forge
+    actions rather than a one-shot dispatch he cannot open. A second click
+    on the same idea makes a second copy, deliberately: two attempts at one
+    idea are two experiments, and silently reusing the first would discard
+    whatever he had changed.
+    """
+    from . import ideas
+    idea = next((i for i in ideas.list_items() if i["id"] == idea_id), None)
+    if not idea:
+        raise KeyError(idea_id)
+    starter = circuits.get_circuit(template)
+    if not starter:
+        raise ValueError(f"unknown starter {template!r}")
+    text = str(idea.get("text") or "").strip()
+    name = (text[:60] + ("…" if len(text) > 60 else "")) or "Idea"
+    rec = circuits.save_circuit({
+        "id": None,
+        "name": name,
+        "description": (f"From the Queue — {template}. "
+                        f"{starter.get('description') or ''}").strip()[:2000],
+        "stages": json.loads(json.dumps(starter.get("stages") or [])),
+    })
+    return {"flow_id": rec["id"], "name": rec["name"], "input": text,
+            "idea_id": idea_id, "template": template}
 
 
 def kit_source(ref):
