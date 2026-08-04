@@ -2128,7 +2128,15 @@ function findChatShowMobileTab(tab) {
   if (tab === "define") renderDefines();
 }
 
+// Drop a companion out of whatever the stage engine is holding for it, so a
+// chat-driven open places it freely. A SESSION OVERLAY has no business in a
+// layout, so releasing it is always right — but Definition can be a real
+// member now, and its park is the thing the owner just saved. Releasing it
+// on every lookup would delete that park and quietly demote the module back
+// to a visitor, which is the same "added it and it did not stick" failure
+// this branch exists to fix.
 function findChatReleaseCompanion(id) {
+  if (!isSessionOverlay(id) && slotRects[id]) return;
   grown.delete(id);
   grownOrder = grownOrder.filter((wid) => wid !== id);
   [slotRects, growRects, slotZoom, growZoom, slotScroll, growScroll]
@@ -13626,8 +13634,23 @@ const WINDOWS = [
   { id: "reader", title: "Reader", w: 780,
     icon: "M12 6C10.5 4.7 8.5 4 6 4H4v14h2c2.5 0 4.5.7 6 2 1.5-1.3 3.5-2 6-2h2V4h-2c-2.5 0-4.5.7-6 2zM12 6v14" },
 ];
-const isCompanionWindow = (id) =>
-  WINDOWS.some((spec) => spec.id === id && spec.companion === true);
+// The LAYOUT engine's exclusion, and it is narrower than "companion".
+//
+// A SESSION OVERLAY is a companion that REPORTS ON Find's chat — Concepts and
+// Related. Parking one in a saved arrangement would persist a card that is
+// empty whenever no chat is running, and they used to re-cascade and re-lock
+// themselves on every reload, which is why every layout function skips them.
+//
+// Definition is `standalone` and therefore NOT an overlay: it answers a
+// right-click from anywhere in Vira, outlives Find's close, and banks itself
+// in the vault — a module the owner can park in a stage layout like any
+// other. Until 2026-08-04 the test here was the bare `companion` flag, so
+// "Add to this layout" on Definition parked a tile, toasted success, and
+// persisted NOTHING: captureLayout dropped the entry on the way to the store
+// and the next reload had never heard of it.
+const isSessionOverlay = (id) =>
+  WINDOWS.some((spec) => spec.id === id && spec.companion === true)
+  && !findCompanion(id)?.standalone;
 let zTop = 10;
 const winState = {}; // id -> { el, open }
 
@@ -14753,7 +14776,7 @@ function openWindow(id) {
   // really closes it (see closeWindow). It used to inherit its stale freeform
   // rect, which is why left-out modules appeared at a random spot off to the
   // side and then refused to go away.
-  if (layoutMode === "stage" && !isCompanionWindow(id)) {
+  if (layoutMode === "stage" && !isSessionOverlay(id)) {
     if (stageComputed) applyStage(true, true);
     growTile(id);
     dockRefresh();
@@ -17533,7 +17556,7 @@ function persistGeom(id, patch) {
   // Find's companions float above a stage layout instead of becoming parked
   // members of it. Their title bars therefore stay live, and a drag still
   // belongs to ordinary desktop geometry while the stage is active.
-  if (isCompanionWindow(id)) { saveWinState(id, patch); return; }
+  if (isSessionOverlay(id)) { saveWinState(id, patch); return; }
   if (editing || layoutMode !== "freeform") return;
   saveWinState(id, patch);
   if (activeLayout.startsWith("saved:")) {
@@ -17548,7 +17571,7 @@ function persistGeom(id, patch) {
 // arranging. Anything else stays in the layout (or the edit draft) and is
 // persisted by Save, never behind the owner's back.
 function persistZoom(id, z) {
-  if (isCompanionWindow(id)) { saveWinState(id, { z }); return; }
+  if (isSessionOverlay(id)) { saveWinState(id, { z }); return; }
   if (editing) {
     if (editPass === "grow" && editTarget === id) editGrowZoom[id] = z;
     else editParkZoom[id] = z;
@@ -17664,7 +17687,7 @@ function captureLayout(grows, parks, zooms, scrolls) {
   const pz = (zooms && zooms.park) || {}, gz = (zooms && zooms.grow) || {};
   const ps = (scrolls && scrolls.park) || {}, gs = (scrolls && scrolls.grow) || {};
   Object.keys(winState).forEach((id) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     const w = winState[id];
     if (w.open) {
       wins[id] = { ...roundRect((parks && parks[id]) || winRect(w.el)), open: true };
@@ -17688,7 +17711,7 @@ function captureLayout(grows, parks, zooms, scrolls) {
 function layoutGrows(l) {
   const out = {};
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
-    if (!isCompanionWindow(id) && w.grow) out[id] = w.grow;
+    if (!isSessionOverlay(id) && w.grow) out[id] = w.grow;
   });
   return out;
 }
@@ -17698,7 +17721,7 @@ function layoutGrows(l) {
 function layoutZooms(l) {
   const park = {}, grow = {};
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     if (w.z) park[id] = w.z;
     if (w.grow?.z) grow[id] = w.grow.z;
   });
@@ -17708,7 +17731,7 @@ function layoutZooms(l) {
 function layoutScrolls(l) {
   const park = {}, grow = {};
   Object.entries(l?.wins || {}).forEach(([id, w]) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     if (w.s) park[id] = w.s;
     if (w.grow?.s) grow[id] = w.grow.s;
   });
@@ -17755,7 +17778,7 @@ function scaleZoom(z, s) {
 function layoutScale(l) {
   let refW = (l && l.vw) || 0, refH = (l && l.vh) || 0;
   Object.entries((l && l.wins) || {}).forEach(([id, s]) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     if (!s.open) return;
     refW = Math.max(refW, (s.x || 0) + (s.w || 0));
     refH = Math.max(refH, (s.y || 0) + (s.h || 0));
@@ -17780,7 +17803,7 @@ function layoutRects(l) {
   const zooms = { park: {}, grow: {} };
   const scrolls = { park: {}, grow: {} };
   Object.entries(l.wins || {}).forEach(([id, snap]) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     if (snap.open) parks[id] = scaleRect(roundRect(snap), s);
     if (snap.grow) grows[id] = scaleRect(roundRect(snap.grow), s);
     // Every OPEN tile gets a scaled zoom, authored or not: a window the owner
@@ -17815,7 +17838,7 @@ function currentArrangement() {
     const pScroll = { ...editParkScroll };
     if (editPass === "park") {
       Object.keys(winState).forEach((id) => {
-        if (isCompanionWindow(id)) return;
+        if (isSessionOverlay(id)) return;
         if (winState[id].open) pScroll[id] = readWinScroll(id);
       });
     }
@@ -17900,7 +17923,7 @@ function applySavedLayout(id, animate) {
   const stage = layoutIsStage(it);
   const { parks, grows, zooms, scrolls } = layoutRects(it);  // scaled to this viewport
   Object.keys(winState).forEach((wid) => {
-    if (isCompanionWindow(wid)) return;
+    if (isSessionOverlay(wid)) return;
     const w = winState[wid];
     const snap = it.wins[wid];
     if (!snap) return;
@@ -17930,7 +17953,7 @@ function applySavedLayout(id, animate) {
 function placeArrangement(wins, animate) {
   if (!wins) return;
   Object.keys(winState).forEach((id) => {
-    if (isCompanionWindow(id)) return;
+    if (isSessionOverlay(id)) return;
     const st = winState[id];
     const snap = wins[id];
     if (!snap) return;
@@ -18025,7 +18048,7 @@ function setEditPass(pass) {
   if (pass === "grow") {
     editParks = {};                       // hold the arrangement being edited
     Object.keys(winState).forEach((id) => {
-      if (isCompanionWindow(id)) return;
+      if (isSessionOverlay(id)) return;
       if (!winState[id].open) return;
       editParks[id] = roundRect(winRect(winState[id].el));
       const z = winState[id].el._zoom?.get();     // and its PARKED zoom
@@ -18043,7 +18066,7 @@ function setEditPass(pass) {
     document.body.classList.remove("layout-edit-grow");
     Object.keys(winState).forEach((id) => {
       const node = winState[id].el;
-      if (isCompanionWindow(id)) {
+      if (isSessionOverlay(id)) {
         node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
         return;
       }
@@ -18064,7 +18087,7 @@ function lockEditParks(animate) {
     const w = winState[id];
     if (!w.open) return;
     const node = w.el;
-    if (isCompanionWindow(id)) {
+    if (isSessionOverlay(id)) {
       node.classList.remove("fwin-locked", "fwin-grown", "fwin-tuning");
       return;
     }
@@ -18875,7 +18898,7 @@ function initLayout() {
     // Companions used to be persisted as grown stage cards, which re-cascaded
     // and could re-lock them on every reload. They are session overlays now.
     grownOrder = (ls.grown || []).filter((id) =>
-      winState[id]?.open && !isCompanionWindow(id));
+      winState[id]?.open && !isSessionOverlay(id));
     grownOrder.forEach((id) => grown.add(id));
     const saved = activeLayout.startsWith("saved:")
       ? savedLayouts().find((l) => l.id === activeLayout.slice(6)) : null;
