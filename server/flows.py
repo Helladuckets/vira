@@ -121,6 +121,8 @@ def _node(stage, placed):
         "forge": dict(stage.get("forge") or {}),
         "source": "circuit-stage",
     }
+    if placed.get("spatial_layer") in {0, 1, 2, 3}:
+        data["spatial_layer"] = int(placed["spatial_layer"])
     return data
 
 
@@ -535,6 +537,8 @@ def save_flow(payload, save_as=False):
             "height": max(90, min(int(node.get("height") or 148), 1000)),
             "expanded": bool(node.get("expanded")),
         }
+        if node.get("spatial_layer") in {0, 1, 2, 3}:
+            clean["spatial_layer"] = int(node["spatial_layer"])
         if node.get("type") not in AGENT_NODE_TYPES:
             clean.update({
                 "name": str(node.get("name") or node.get("type") or "Part")[:200],

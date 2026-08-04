@@ -82,6 +82,18 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(second["revision"], 2)
         self.assertEqual(second["nodes"][0]["x"], 777)
 
+    def test_spatial_layer_round_trips_without_changing_execution_type(self):
+        payload = {"name": "Layered", "nodes": [
+            {"id": "a", "type": "agent", "name": "A", "x": 410, "y": 230,
+             "spatial_layer": 0, "model": "opus", "mode": "manual",
+             "prompt": "Do {{input}}"}], "edges": [], "contexts": []}
+        saved = flows.save_flow(payload, save_as=True)
+        node = saved["nodes"][0]
+        self.assertEqual(node["type"], "agent")
+        self.assertEqual(node["spatial_layer"], 0)
+        self.assertEqual(circuits.get_circuit(saved["id"])["stages"][0]["mode"],
+                         "manual")
+
     def test_connector_bus_routes_tools_into_downstream_agent(self):
         payload = {"name": "Connector bus", "nodes": [
             {"id": "research", "type": "tool", "name": "Research",

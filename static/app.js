@@ -10434,6 +10434,7 @@ function peopleTabLoad(tab) {
 }
 
 function setWorkTab(tab, opts = {}) {
+  const previous = workTab;
   workTab = tab;
   $("#work-tabs")?.querySelectorAll(".seg-btn")
     .forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
@@ -10447,31 +10448,26 @@ function setWorkTab(tab, opts = {}) {
   // body becomes a height-constrained flex stack so resizing the window grows
   // the board itself instead of revealing blank scroll area below a 67vh cap.
   $("#win-work")?.classList.toggle("forge-active", tab === "dispatch");
+  // Flows needs the desk; the list and record views do not. The fitted state
+  // remains reversible and never touches saved geometry. A title-bar
+  // double-click is still an override: manual fits are deliberately not
+  // auto-restored, and a manually restored Flow stays restored.
+  if (previous !== tab) requestAnimationFrame(() => {
+    if (workTab === tab) syncForgeWindowFit(tab, previous);
+  });
   if (!opts.defer) workTabLoad(tab);
 }
 
-// Forge keeps the long-lived `work` window id so every dock slot, saved link,
-// and folded module alias survives the rename. That also means an existing
-// install can inherit a narrow Work-era freeform rectangle that is sensible
-// for a list but unusable for a node canvas. Upgrade that rectangle once. A
-// staged layout is the owner's composition and is never rewritten here; after
-// this one migration, ordinary resizing remains entirely in the owner's hands.
-function fitForgeWindowOnce() {
-  if (!isDesktop || layoutMode !== "freeform"
-      || lsGet("vira-forge-window-v1", false)) return;
-  const st = winState.work;
-  if (!st?.el) return;
-  const r = st.el.getBoundingClientRect();
-  if (r.width < 900) {
-    const w = Math.min(1180, innerWidth - 24);
-    const h = Math.max(r.height, Math.min(760, innerHeight - 88));
-    const x = Math.max(12, Math.min(r.left, innerWidth - w - 12));
-    const y = Math.max(44, Math.min(r.top, innerHeight - h - 12));
-    setWinRect(st.el, { x, y, w, h }, true);
-    saveWinState("work", { x: Math.round(x), y: Math.round(y),
-                            w: Math.round(w), h: Math.round(h) });
+function syncForgeWindowFit(tab, previous) {
+  if (!isDesktop || editing) return;
+  const win = $("#win-work");
+  if (!win) return;
+  if (tab === "dispatch") {
+    if (!win.classList.contains("fwin-fit")) fitForgeWindow(win, true, true);
+    return;
   }
-  lsSet("vira-forge-window-v1", true);
+  if (previous === "dispatch" && win._forgeAutoFit
+      && win.classList.contains("fwin-fit")) restoreForgeWindowFit(win);
 }
 
 function setWorkSub(sub, opts = {}) {
@@ -10498,7 +10494,6 @@ function workTabLoad(tab) {
     loadQueueLane().catch(() => {});
   }
   if (tab === "dispatch") {
-    requestAnimationFrame(fitForgeWindowOnce);
     window.loadForge?.().catch(() => {});
   }
   if (tab === "live") {
@@ -13600,6 +13595,22 @@ function ctxAskVira(x, y, ctx) {
   });
 }
 
+function isDesktopOpenSpace(target) {
+  return isDesktop && target instanceof Element
+    && !target.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad");
+}
+
+// The empty desktop has one direct gesture: a primary-button double-click
+// clears the desk through the same path as Close all modules in its context
+// menu. Window title bars keep their own double-click behavior.
+document.addEventListener("dblclick", (e) => {
+  if (e.defaultPrevented || e.button !== 0 || editing
+      || !isDesktopOpenSpace(e.target)) return;
+  e.preventDefault();
+  closeCtxPops();
+  closeAllModules();
+});
+
 document.addEventListener("contextmenu", (e) => {
   if (e.defaultPrevented) return;   // a component menu (media tiles) handled it
   if (e.shiftKey) return;           // escape hatch: the browser menu
@@ -13618,7 +13629,7 @@ document.addEventListener("contextmenu", (e) => {
 
   // The DESKTOP itself (right-click on empty space): layout switching and
   // clearing the desk, without going up to the topbar.
-  if (isDesktop && !t.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad")) {
+  if (isDesktopOpenSpace(t)) {
     if (editing) { showContextMenu(e.clientX, e.clientY, editMenuItems()); return; }
     items.push({ label: layoutMode === "stage"
                    ? "Close all modules  ·  send them home"
@@ -14092,6 +14103,7 @@ function restoreForgeWindowFit(win, animate = true) {
   if (!saved) return;
   win.classList.remove("fwin-fit");
   win._forgeRestore = null;
+  win._forgeAutoFit = false;
   const w = Math.min(saved.w, Math.max(340, innerWidth - 40));
   const h = Math.min(saved.h, Math.max(240, innerHeight - 40));
   setWinRect(win, {
@@ -14101,6 +14113,16 @@ function restoreForgeWindowFit(win, animate = true) {
   }, animate);
 }
 
+function fitForgeWindow(win, animate = true, automatic = false) {
+  if (editing || win.classList.contains("fwin-fit")) return;
+  const r = win.getBoundingClientRect();
+  win._forgeRestore = { x: r.left, y: r.top, w: r.width, h: r.height };
+  win._forgeAutoFit = automatic;
+  win.classList.add("fwin-fit");
+  setWinRect(win, forgeDesktopRect(), animate);
+  focusWin(win);
+}
+
 function toggleForgeWindowFit(win) {
   if (editing) return;
   if (win.classList.contains("fwin-fit")) {
@@ -14108,11 +14130,7 @@ function toggleForgeWindowFit(win) {
     focusWin(win);
     return;
   }
-  const r = win.getBoundingClientRect();
-  win._forgeRestore = { x: r.left, y: r.top, w: r.width, h: r.height };
-  win.classList.add("fwin-fit");
-  setWinRect(win, forgeDesktopRect(), true);
-  focusWin(win);
+  fitForgeWindow(win);
 }
 
 window.addEventListener("resize", () => {

@@ -236,6 +236,7 @@
           <div class="forge-boardbar">
             <div class="seg mini" id="forge-view-toggle">
               <button class="seg-btn on" data-forge-view="board">Breadboard</button>
+              <button class="seg-btn" data-forge-view="spatial">3D Board</button>
               <button class="seg-btn" data-forge-view="outline">Outline</button>
             </div>
             <span class="forge-status" id="forge-status">Live definitions</span>
@@ -255,6 +256,19 @@
               <strong>Select a Flow or start with a blank board.</strong>
               <span>Every agent, prompt, model, permission, tool, trigger, and output remains inspectable.</span>
             </div>
+          </div>
+          <div class="forge-spatial" id="forge-spatial" hidden>
+            <canvas id="forge-spatial-canvas" aria-label="Interactive three-dimensional view of the current Flow"></canvas>
+            <div class="forge-spatial-tools" aria-label="3D camera controls">
+              <button type="button" class="is-active" id="forge-spatial-orbit">Orbit</button>
+              <button type="button" id="forge-spatial-pan">Pan</button>
+              <button type="button" class="is-active" id="forge-spatial-natural" aria-pressed="true"
+                      title="Reverse drag-pan and scroll-zoom direction">Natural motion</button>
+              <button type="button" id="forge-spatial-reset">Reset view</button>
+            </div>
+            <div class="forge-spatial-layers" id="forge-spatial-layers" aria-label="Flow layers"></div>
+            <div class="forge-spatial-telemetry" id="forge-spatial-telemetry" aria-live="polite"></div>
+            <p class="forge-spatial-help">Drag empty space to orbit or pan. Drag a component across plates to change its level. Double-click a plate for its 2D context.</p>
           </div>
           <div class="forge-outline" id="forge-outline" hidden></div>
         </main>
@@ -812,6 +826,7 @@
   </div>
 </div>
 
+<script src="/forge-spatial.js"></script>
 <script src="/forge.js"></script>
 <script src="/app.js"></script>
 <script src="/atlas.js"></script>

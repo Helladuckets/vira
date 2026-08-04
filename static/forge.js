@@ -76,6 +76,7 @@
     query: "",
     filter: "all",
     view: "board",
+    outlineOpen: false,
     zoom: 1,
     panX: 25,
     panY: 55,
@@ -86,7 +87,10 @@
     libraryDrag: null,
     libraryHome: null,
     libraryFloatRect: null,
+    runs: [],
+    boardLayerFocus: null,
   };
+  let spatial = null;
 
   function flowPayload(flow = state.current) {
     return {
@@ -230,8 +234,19 @@
     renderIdentity();
     renderLibrary();
     renderBoard();
+    renderSpatial();
     renderOutline();
     renderRunContext();
+  }
+
+  function currentRun() {
+    if (!state.current) return null;
+    return state.runs.find((run) => run.circuit_id === state.current.id) || null;
+  }
+
+  function renderSpatial() {
+    spatial?.render(state.current, state.selectedNode, currentRun());
+    if (state.view === "spatial" && spatial) q("#forge-zoom-value").textContent = `${Math.round(spatial.zoomValue * 100)}%`;
   }
 
   function renderIdentity() {
@@ -523,7 +538,7 @@
     const empty = q("#forge-empty");
     if (!world || !nodeHost) return;
     world.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
-    q("#forge-zoom-value").textContent = `${Math.round(state.zoom * 100)}%`;
+    if (state.view === "board") q("#forge-zoom-value").textContent = `${Math.round(state.zoom * 100)}%`;
     nodeHost.replaceChildren();
     const nodes = state.current?.nodes || [];
     empty.style.display = nodes.length ? "none" : "grid";
@@ -544,6 +559,9 @@
     card.style.width = `${node.expanded ? Math.max(node.width || 390, 390) : node.width || compactWidth}px`;
     card.style.zIndex = node.z || 1;
     if (node.id === state.selectedNode) card.classList.add("is-selected");
+    if (state.boardLayerFocus) {
+      card.classList.add(state.boardLayerFocus.has(node.id) ? "is-layer-focus" : "is-layer-muted");
+    }
     if (node.expanded) card.classList.add("is-expanded");
 
     const head = make("header", "forge-node-head");
@@ -593,7 +611,7 @@
     return card;
   }
 
-  function nodeEditor(node) {
+  function nodeEditor(node, options = {}) {
     const detail = make("div", "forge-node-detail");
     detail.appendChild(componentMap(node));
     const typeLine = make("div", "forge-node-detail-row");
@@ -640,7 +658,7 @@
     const actions = make("div", "forge-node-detail-actions");
     const close = make("button", "fchip sm", "Done");
     close.type = "button";
-    close.addEventListener("click", () => toggleNode(node.id, false));
+    close.addEventListener("click", () => options.inspector ? closeInspector() : toggleNode(node.id, false));
     actions.appendChild(close);
     detail.appendChild(actions);
     return detail;
@@ -1020,7 +1038,27 @@
     renderOutline();
   }
 
+  function openNodeInspector(nodeId) {
+    if (!nodeId) {
+      closeInspector();
+      return;
+    }
+    const node = state.current?.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    state.selectedNode = node.id;
+    state.selectedEdge = null;
+    renderBoard();
+    renderSpatial();
+    const pane = q("#forge-inspector");
+    q("#forge-inspector-title").textContent = node.name || TYPE[node.type]?.name || "Component";
+    const body = q("#forge-inspector-body");
+    body.replaceChildren(nodeEditor(node, { inspector: true }));
+    pane.classList.add("is-open");
+  }
+
   function bringNodeFront(node, card) {
+    state.boardLayerFocus = null;
+    qa(".forge-node", q("#forge-nodes")).forEach((item) => item.classList.remove("is-layer-focus", "is-layer-muted"));
     node.z = ++state.z;
     card.style.zIndex = node.z;
     state.selectedNode = node.id;
@@ -1373,7 +1411,9 @@
       hit.addEventListener("dblclick", (event) => { event.stopPropagation(); openEdgeInspector(edge); });
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", shape.path);
-      path.setAttribute("class", `forge-wire${edge.id === state.selectedEdge ? " is-selected" : ""}${edge.direction === "both" ? " is-both" : ""}`);
+      const layerMuted = state.boardLayerFocus
+        && (!state.boardLayerFocus.has(edge.from) || !state.boardLayerFocus.has(edge.to));
+      path.setAttribute("class", `forge-wire${edge.id === state.selectedEdge ? " is-selected" : ""}${edge.direction === "both" ? " is-both" : ""}${layerMuted ? " is-layer-muted" : ""}`);
       path.addEventListener("click", (event) => { event.stopPropagation(); openEdgeInspector(edge); });
       path.addEventListener("dblclick", (event) => { event.stopPropagation(); openEdgeInspector(edge); });
       svg.append(hit, path);
@@ -1444,7 +1484,9 @@
   function closeInspector() {
     q("#forge-inspector")?.classList.remove("is-open");
     state.selectedEdge = null;
+    if (state.view === "spatial") state.selectedNode = null;
     renderWires();
+    renderSpatial();
   }
 
   function removeNode(nodeId) {
@@ -1491,6 +1533,14 @@
     host.replaceChildren();
     const flow = state.current;
     if (!flow) return;
+    const head = make("header", "forge-outline-head");
+    const identityTitle = make("div");
+    identityTitle.append(make("span", "forge-kicker", "Reference"), make("strong", "", "Flow outline"));
+    const close = make("button", "fchip sm", "Close");
+    close.type = "button";
+    close.addEventListener("click", () => toggleOutline(false));
+    head.append(identityTitle, close);
+    host.appendChild(head);
     const identity = make("section", "forge-outline-section");
     identity.appendChild(make("h3", "", "Flow definition"));
     identity.appendChild(outlineDetails("Identity", {
@@ -1536,11 +1586,67 @@
   }
 
   function setView(view) {
+    if (view === "outline") return toggleOutline();
     state.view = view;
-    qa("#forge-view-toggle .seg-btn").forEach((button) => button.classList.toggle("on", button.dataset.forgeView === view));
+    qa("#forge-view-toggle .seg-btn").forEach((button) => {
+      button.classList.toggle("on", button.dataset.forgeView === "outline" ? state.outlineOpen : button.dataset.forgeView === view);
+    });
     q("#forge-viewport").hidden = view !== "board";
-    q("#forge-outline").hidden = view !== "outline";
-    if (view === "outline") renderOutline();
+    q("#forge-spatial").hidden = view !== "spatial";
+    spatial?.setVisible(view === "spatial");
+    if (view === "spatial") {
+      renderSpatial();
+      if (state.ready) loadForgeRuns();
+    } else if (view === "board") {
+      q("#forge-zoom-value").textContent = `${Math.round(state.zoom * 100)}%`;
+    }
+  }
+
+  function toggleOutline(force) {
+    state.outlineOpen = force == null ? !state.outlineOpen : Boolean(force);
+    const pane = q("#forge-outline");
+    pane.hidden = !state.outlineOpen;
+    q('[data-forge-view="outline"]')?.classList.toggle("on", state.outlineOpen);
+    if (state.outlineOpen) renderOutline();
+  }
+
+  function openSpatialLayer(layerId, layerName, nodeIds) {
+    const ids = new Set((nodeIds || []).filter((nodeId) => state.current?.nodes.some((node) => node.id === nodeId)));
+    if (!ids.size) return toast(`${layerName} has no components in this Flow.`);
+    state.boardLayerFocus = ids;
+    state.selectedNode = null;
+    state.selectedEdge = null;
+    closeInspector();
+    setView("board");
+    const nodes = state.current.nodes.filter((node) => ids.has(node.id));
+    const boxes = nodes.map(nodeBox);
+    const minX = Math.min(...boxes.map((box) => box.x));
+    const minY = Math.min(...boxes.map((box) => box.y));
+    const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+    const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+    const viewport = q("#forge-viewport");
+    const rect = viewport.getBoundingClientRect();
+    const width = Math.max(220, maxX - minX);
+    const height = Math.max(160, maxY - minY);
+    state.zoom = clamp(Math.min((rect.width - 120) / width, (rect.height - 120) / height), .45, 1.65);
+    state.panX = rect.width / 2 - ((minX + maxX) / 2) * state.zoom;
+    state.panY = rect.height / 2 - ((minY + maxY) / 2) * state.zoom;
+    renderBoard();
+    toast(`${layerName} · ${ids.size} component${ids.size === 1 ? "" : "s"} on the Breadboard`);
+  }
+
+  function moveSpatialNode(nodeId, change) {
+    const node = state.current?.nodes.find((item) => item.id === nodeId);
+    if (!node) return;
+    node.spatial_layer = clamp(Number(change.spatial_layer), 0, 3);
+    node.x = clamp(Number(change.x) || node.x || 0, 0, 4000);
+    node.y = clamp(Number(change.y) || node.y || 0, 0, 2600);
+    state.selectedNode = node.id;
+    setDirty();
+    renderBoard();
+    renderOutline();
+    renderSpatial();
+    toast(`${node.name} moved to ${["Inputs + substrate", "Execution", "Decision + verification", "Outputs + interface"][node.spatial_layer]}`);
   }
 
   function renderRunContext() {
@@ -1646,6 +1752,8 @@
       const data = await request("/api/circuits/runs?limit=24");
       host.replaceChildren();
       const runs = data.runs || [];
+      state.runs = runs;
+      renderSpatial();
       if (!runs.length) {
         host.appendChild(make("p", "hint", "No Flow runs yet. Launch one from Flows."));
         return;
@@ -1708,7 +1816,7 @@
         if (run.error) card.appendChild(make("p", "forge-run-error", run.error));
         host.appendChild(card);
       });
-      if (active && q("#work-live-pane")?.offsetParent) {
+      if (active && (q("#work-live-pane")?.offsetParent || (state.view === "spatial" && q("#forge-spatial")?.offsetParent))) {
         runsTimer = setTimeout(loadForgeRuns, 3000);
       }
     } catch (error) {
@@ -1736,6 +1844,9 @@
     let pan = null;
     viewport.addEventListener("pointerdown", (event) => {
       if (event.button !== 0 || event.target.closest(".forge-node,.forge-wire-hit,.forge-port")) return;
+      state.boardLayerFocus = null;
+      qa(".forge-node", q("#forge-nodes")).forEach((item) => item.classList.remove("is-layer-focus", "is-layer-muted"));
+      renderWires();
       pan = { id: event.pointerId, x: event.clientX, y: event.clientY, px: state.panX, py: state.panY };
       viewport.setPointerCapture(event.pointerId);
       viewport.classList.add("is-panning");
@@ -1949,6 +2060,14 @@
   function bind() {
     if (!q("#forge-shell") || state.bound) return;
     state.bound = true;
+    spatial = window.ForgeSpatial?.create({
+      onSelectNode: openNodeInspector,
+      onOpenLayer: openSpatialLayer,
+      onMoveNode: moveSpatialNode,
+      onZoom: (value) => {
+        if (state.view === "spatial") q("#forge-zoom-value").textContent = `${Math.round(value * 100)}%`;
+      },
+    }) || null;
     qa("#forge-library-tabs .seg-btn").forEach((button) => button.addEventListener("click", () => switchLibrary(button.dataset.forgeLibrary)));
     qa("#forge-view-toggle .seg-btn").forEach((button) => button.addEventListener("click", () => setView(button.dataset.forgeView)));
     q("#forge-library-search").addEventListener("input", (event) => {
@@ -1967,8 +2086,8 @@
     q("#forge-test").addEventListener("click", () => runFlow(true));
     q("#forge-run").addEventListener("click", () => runFlow(false));
     q("#forge-arrange").addEventListener("click", arrange);
-    q("#forge-zoom-in").addEventListener("click", () => zoomAt(state.zoom * 1.12));
-    q("#forge-zoom-out").addEventListener("click", () => zoomAt(state.zoom * .88));
+    q("#forge-zoom-in").addEventListener("click", () => state.view === "spatial" ? spatial?.zoom(1.12) : zoomAt(state.zoom * 1.12));
+    q("#forge-zoom-out").addEventListener("click", () => state.view === "spatial" ? spatial?.zoom(.88) : zoomAt(state.zoom * .88));
     q("#forge-run-input").addEventListener("keydown", (event) => { if (event.key === "Enter") runFlow(false); });
     q("#forge-runs-refresh")?.addEventListener("click", loadForgeRuns);
     bindViewport();
