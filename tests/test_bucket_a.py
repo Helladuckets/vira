@@ -100,6 +100,84 @@ class ProfileFailClosedTests(CrmBase):
         self.assertEqual(prof["relationship_class"], "friend")  # preserved
 
 
+class ProfileBackupTests(CrmBase):
+    """Profile writes snapshot first (2026-08-04). Until then loops, facts
+    and hooks were rewritten in place with nothing to revert to, while
+    people.json beside them was backed up on every touch — the asymmetry
+    that made auto-dispatching a CRM-shaped journal instruction the riskier
+    half of the feature."""
+
+    def backups(self, pid="p_test00000001"):
+        return sorted((self.root / "backups" / "profiles").glob(f"{pid}-*.json"))
+
+    def test_write_snapshots_the_bytes_it_is_about_to_replace(self):
+        path = self.root / "profiles" / "p_test00000001.json"
+        before = path.read_text(encoding="utf-8")
+        crm.save_profile_field("p_test00000001", "hooks", [{"topic": "rowing"}])
+        b = self.backups()
+        self.assertEqual(len(b), 1)
+        # the snapshot is the PRE-write content, not the result
+        self.assertEqual(b[0].read_text(encoding="utf-8"), before)
+        self.assertNotEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_every_profile_write_path_is_covered(self):
+        # one implementation (_load_profile_for_write), so add_loop/add_fact/
+        # update_loop/save_profile_refresh all inherit it — and each write
+        # leaves exactly ONE snapshot despite reading the file twice
+        crm.add_loop("p_test00000001", "a new loop")
+        crm.add_fact("p_test00000001", "a durable fact")
+        crm.update_loop("p_test00000001", "Return the borrowed ladder", "close")
+        crm.save_profile_refresh("p_test00000001", "a refreshed summary")
+        self.assertEqual(len(self.backups()), 4)
+
+    def test_no_two_snapshots_hold_identical_bytes(self):
+        # the double-read guard: add_loop reads the profile and then
+        # _save_field_locked reads it again inside the same lock, so a naive
+        # snapshot would store one state twice and halve the window's reach
+        for i in range(4):
+            crm.add_loop("p_test00000001", f"loop {i}")
+        b = [p.read_bytes() for p in self.backups()]
+        self.assertEqual(len(b), 4)
+        self.assertEqual(len(b), len(set(b)))
+
+    def test_first_touch_of_an_absent_profile_snapshots_nothing(self):
+        crm.save_profile_field("p_test00000002", "hooks", [{"topic": "chess"}])
+        self.assertEqual(self.backups("p_test00000002"), [])
+
+    def test_a_corrupt_profile_is_quarantined_not_snapshotted(self):
+        self.corrupt()
+        with self.assertRaises(crm.ProfileCorruptError):
+            crm.save_profile_field("p_test00000001", "hooks", [])
+        self.assertEqual(self.backups(), [])  # fail-closed writes nothing
+
+    def test_names_sort_chronologically_within_one_second(self):
+        # the routinesrc lesson: a bare collision suffix sorts '-1' BEFORE
+        # '.', so lexical and chronological order would disagree
+        with mock.patch("server.data.time.strftime", return_value="20260804-120000"):
+            for i in range(3):
+                crm.save_profile_field("p_test00000001", "hooks",
+                                       [{"topic": f"h{i}"}])
+        b = self.backups()
+        self.assertEqual(len(b), 3)
+        self.assertEqual([p.name for p in b], sorted(p.name for p in b))
+        # oldest first: the original, then each write's input in order
+        topics = [json.loads(p.read_text(encoding="utf-8"))["hooks"][0]["topic"]
+                  for p in b]
+        self.assertEqual(topics, ["sailing", "h0", "h1"])
+
+    def test_retention_keeps_the_newest_and_never_fails_the_write(self):
+        keep = crm.PROFILE_BACKUPS_KEEP
+        for i in range(keep + 5):
+            crm.save_profile_field("p_test00000001", "hooks",
+                                   [{"topic": f"h{i}"}])
+        self.assertEqual(len(self.backups()), keep)
+        # an unwritable backup dir must never take the write down with it
+        with mock.patch("server.data.shutil.copy2", side_effect=OSError("nope")):
+            prof = crm.save_profile_field("p_test00000001", "hooks",
+                                          [{"topic": "survives"}])
+        self.assertEqual(prof["hooks"], [{"topic": "survives"}])
+
+
 class BackupCoverageTests(unittest.TestCase):
     def test_canonical_stores_all_covered(self):
         for name in ("ideas.json", "config.json", "subscriptions.json",
