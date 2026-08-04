@@ -96,16 +96,27 @@ def _backend_config():
             c.get("api_key_env") or "VIRA_ANTHROPIC_KEY")
 
 
+def _provider_id():
+    """The configured go-to provider, clamped to the registry."""
+    from . import models as provider
+    pid = str(_raw_cfg().get("ai_provider") or "anthropic")
+    return pid if pid in provider.PROVIDERS else "anthropic"
+
+
 def _api_key():
     """Env var first (existing installs), then the Keychain (a key pasted
     into Setup). models.api_key holds both halves of that lookup."""
     from . import models as provider
-    pid = str(_raw_cfg().get("ai_provider") or "anthropic")
-    if pid in provider.PROVIDERS:
-        key = provider.api_key(pid)
-        if key:
-            return key
-    return os.environ.get(_backend_config()[1], "")
+    pid = _provider_id()
+    key = provider.api_key(pid)
+    if key:
+        return key
+    # The legacy api_key_env fallback is the documented VIRA_ANTHROPIC_KEY
+    # path — an Anthropic credential. Handing it to any other go-to would
+    # probe (and draft with) the wrong provider's key, so it stays scoped.
+    if pid == "anthropic":
+        return os.environ.get(_backend_config()[1], "")
+    return ""
 
 
 def _strip_env():
@@ -157,9 +168,7 @@ def _probe_cli():
     codex binary inside ChatGPT.app. The signature stays fixed: this is the
     seam the health tests stub."""
     from . import models as provider
-    pid = str(_raw_cfg().get("ai_provider") or "anthropic")
-    if pid not in provider.PROVIDERS:
-        pid = "anthropic"
+    pid = _provider_id()
     try:
         rec = provider.probe(pid)
     except Exception as e:  # noqa: BLE001 — a probe must never crash the caller
@@ -176,21 +185,36 @@ def _probe_cli():
     return "red", rec["detail"] or "not signed in", extra
 
 
-def _probe_api(key):
-    """Validate an API key WITHOUT spending tokens: GET /v1/models is free and
-    returns 200 for a valid key, 401 for a bad one."""
-    req = urllib.request.Request(
-        "https://api.anthropic.com/v1/models",
-        headers={"x-api-key": key, "anthropic-version": "2023-06-01"})
+def _probe_api(key, pid="anthropic"):
+    """Validate an API key WITHOUT spending tokens: the provider's own
+    models-list endpoint is free and returns 200 for a valid key.
+
+    The endpoint must be the CONFIGURED provider's — until 2026-07-31 this
+    was hardcoded to api.anthropic.com, so an API-only go-to (Grok, Gemini)
+    had its VALID key probed against Anthropic, which correctly answered
+    401, and the banner reported a rejected key the real provider had been
+    accepting all along."""
+    from . import models as provider
+    spec = provider.PROVIDERS.get(pid)
+    if spec is None:
+        pid, spec = "anthropic", provider.PROVIDERS["anthropic"]
+    url = spec.get("models_url")
+    if not url:
+        return "unknown", f"no models endpoint for {spec['label']}", {}
+    req = urllib.request.Request(url,
+                                 headers=provider.auth_headers(pid, key))
     try:
         with urllib.request.urlopen(req, timeout=15) as r:
             code = getattr(r, "status", 200)
-        return ("green", "api key valid (/v1/models 200)", {}) if code == 200 \
-            else ("unknown", f"/v1/models status {code}", {})
+        return ("green", f"api key valid ({spec['label']} models 200)", {}) \
+            if code == 200 else ("unknown", f"models status {code}", {})
     except urllib.error.HTTPError as e:
-        if e.code == 401:
-            return "red", "api key rejected (401)", {}
-        return "unknown", f"/v1/models HTTP {e.code}", {}
+        # 401/403 = bad or revoked key everywhere; Gemini answers a bad
+        # key with 400 API_KEY_INVALID (the request itself is fixed and
+        # known-good, so a 400 there can only be the key).
+        if e.code in (401, 403) or (pid == "google" and e.code == 400):
+            return "red", f"api key rejected by {spec['label']} ({e.code})", {}
+        return "unknown", f"models HTTP {e.code}", {}
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         return "unknown", f"api unreachable: {str(e)[:120]}", {}
 
@@ -202,9 +226,7 @@ def _action_for(state, backend, fallback):
         return "AI status unknown — could not reach the backend to check."
     if backend == "cli":
         from . import models as provider
-        pid = str(_raw_cfg().get("ai_provider") or "anthropic")
-        if pid not in provider.PROVIDERS:
-            pid = "anthropic"
+        pid = _provider_id()
         spec = provider.PROVIDERS[pid]
         login = provider.login_command(pid) or f"{spec['bin']} {' '.join(spec['login_args'])}"
         base = (f"AI is paused — the {spec['sub_name']} login is not active. "
@@ -212,7 +234,10 @@ def _action_for(state, backend, fallback):
         if fallback:
             base += " Reply drafting is falling back to the API key meanwhile."
         return base
-    return "AI is paused — the API key was rejected. Check it in Setup > Connect your AI."
+    from . import models as provider
+    label = provider.PROVIDERS[_provider_id()]["label"]
+    return (f"AI is paused — the {label} API key was rejected. "
+            "Check it in Setup > Connect your AI.")
 
 
 def _never_configured():
@@ -249,7 +274,9 @@ def probe(write=True):
     backend, _ = _backend_config()
     key = _api_key()
     if backend == "api" and key:
-        state, detail, extra = _probe_api(key)
+        state, detail, extra = _probe_api(key, _provider_id())
+        extra.setdefault("provider", _provider_id())
+        extra.setdefault("authMethod", "key")
         checked = "api"
     else:
         state, detail, extra = _probe_cli()

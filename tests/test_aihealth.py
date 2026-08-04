@@ -251,3 +251,132 @@ class FreshInstallIsNotRed(unittest.TestCase):
         from server import models
         with mock.patch.object(models, "connected", return_value=[]):
             self.assertTrue(aihealth._never_configured())
+
+
+class ApiProbeTests(Base):
+    """The api-backend probe must speak to the CONFIGURED provider.
+
+    The 2026-07-31 incident: Grok was the go-to (backend "api", a valid
+    xAI key in the Keychain), and _probe_api was hardcoded to
+    api.anthropic.com — so the valid key read as rejected (401) and the
+    banner told the owner to replace a key x.ai was accepting. Every case
+    here pins the endpoint/key pairing; urlopen is stubbed, so none of it
+    touches the network or this machine's stored keys.
+    """
+
+    class _Resp:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def setUp(self):
+        super().setUp()
+        self._conf = mock.patch.object(aihealth, "_never_configured",
+                                       return_value=False)
+        self._conf.start()
+
+    def tearDown(self):
+        self._conf.stop()
+        super().tearDown()
+
+    def _capture_urlopen(self):
+        seen = {}
+
+        def fake(req, timeout=0):
+            seen["url"] = req.full_url
+            seen["headers"] = {k.lower(): v for k, v in req.header_items()}
+            return self._Resp()
+        return seen, fake
+
+    def test_probe_api_hits_the_configured_providers_endpoint(self):
+        from server import models
+        self._cfg(ai_provider="xai", ai_backend="api")
+        seen, fake = self._capture_urlopen()
+        with mock.patch.object(models, "api_key", return_value="xk-test"), \
+             mock.patch("urllib.request.urlopen", side_effect=fake):
+            r = aihealth.probe(write=False)
+        self.assertIn("api.x.ai", seen["url"])
+        self.assertEqual(seen["headers"].get("authorization"),
+                         "Bearer xk-test")
+        self.assertEqual(r["state"], "green")
+        self.assertEqual(r["backend"], "api")
+        self.assertEqual(r["provider"], "xai")
+        self.assertEqual(r["authMethod"], "key")
+        self.assertEqual(r["action"], "")
+
+    def test_anthropic_still_probes_anthropic(self):
+        self._cfg(ai_provider="anthropic", ai_backend="api")
+        seen, fake = self._capture_urlopen()
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            state, detail, _ = aihealth._probe_api("sk-test", "anthropic")
+        self.assertEqual(state, "green")
+        self.assertIn("api.anthropic.com", seen["url"])
+        self.assertEqual(seen["headers"].get("x-api-key"), "sk-test")
+
+    def test_unknown_provider_falls_back_to_anthropic(self):
+        seen, fake = self._capture_urlopen()
+        with mock.patch("urllib.request.urlopen", side_effect=fake):
+            state, _, _ = aihealth._probe_api("sk-test", "nope")
+        self.assertEqual(state, "green")
+        self.assertIn("api.anthropic.com", seen["url"])
+
+    def _http_error(self, code):
+        import urllib.error
+        return urllib.error.HTTPError("u", code, "err", None, None)
+
+    def test_rejected_key_names_the_provider_and_reads_red(self):
+        from server import models
+        self._cfg(ai_provider="xai", ai_backend="api")
+        with mock.patch.object(models, "api_key", return_value="xk-bad"), \
+             mock.patch("urllib.request.urlopen",
+                        side_effect=self._http_error(401)):
+            r = aihealth.probe(write=False)
+        self.assertEqual(r["state"], "red")
+        self.assertIn("xAI", r["detail"])
+        self.assertIn("xAI", r["action"])
+
+    def test_google_bad_key_400_reads_red(self):
+        # Gemini answers a bad key with 400 API_KEY_INVALID, not 401. The
+        # probe request itself is fixed and known-good, so a 400 there can
+        # only be the key.
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=self._http_error(400)):
+            state, detail, _ = aihealth._probe_api("gk-bad", "google")
+        self.assertEqual(state, "red")
+        self.assertIn("Google", detail)
+
+    def test_other_http_errors_stay_unknown(self):
+        with mock.patch("urllib.request.urlopen",
+                        side_effect=self._http_error(500)):
+            state, _, _ = aihealth._probe_api("xk", "xai")
+        self.assertEqual(state, "unknown")
+
+    def test_legacy_env_key_never_serves_a_non_anthropic_go_to(self):
+        # VIRA_ANTHROPIC_KEY is an Anthropic credential; handing it to a
+        # Grok go-to would probe the wrong provider's key.
+        import os
+        from server import models
+        self._cfg(ai_provider="xai", ai_backend="api",
+                  api_key_env="AH_TEST_LEGACY")
+        os.environ["AH_TEST_LEGACY"] = "sk-anthropic"
+        try:
+            with mock.patch.object(models, "api_key", return_value=""):
+                self.assertEqual(aihealth._api_key(), "")
+        finally:
+            del os.environ["AH_TEST_LEGACY"]
+
+    def test_anthropic_go_to_keeps_the_legacy_env_fallback(self):
+        import os
+        from server import models
+        self._cfg(ai_provider="anthropic", ai_backend="api",
+                  api_key_env="AH_TEST_LEGACY")
+        os.environ["AH_TEST_LEGACY"] = "sk-anthropic"
+        try:
+            with mock.patch.object(models, "api_key", return_value=""):
+                self.assertEqual(aihealth._api_key(), "sk-anthropic")
+        finally:
+            del os.environ["AH_TEST_LEGACY"]
