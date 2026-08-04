@@ -1,7 +1,10 @@
 """Tailnet reachability and handoff URLs for passive branch instances."""
 import os
+import plistlib
+import signal
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -25,9 +28,9 @@ class TailnetBranchInstanceTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        bindir = Path(self.tmp.name)
-        self.calls = bindir / "tailscale-calls"
-        tailscale = bindir / "tailscale"
+        self.bindir = Path(self.tmp.name)
+        self.calls = self.bindir / "tailscale-calls"
+        tailscale = self.bindir / "tailscale"
         tailscale.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = status ]; then\n"
@@ -40,8 +43,15 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         )
         tailscale.chmod(0o755)
         self.env = dict(os.environ)
-        self.env["PATH"] = str(bindir) + os.pathsep + self.env.get("PATH", "")
+        self.env["PATH"] = (
+            str(self.bindir) + os.pathsep + self.env.get("PATH", ""))
         self.env["TAILSCALE_CALLS"] = str(self.calls)
+
+    def write_executable(self, name, body):
+        path = self.bindir / name
+        path.write_text(body, encoding="utf-8")
+        path.chmod(0o755)
+        return path
 
     def test_fixture_snapshot_contains_only_neutral_test_notes(self):
         root = Path(self.tmp.name) / "preview"
@@ -88,14 +98,109 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         self.assertIn('--host 127.0.0.1 --port "$port"', source)
         self.assertNotIn("--host 0.0.0.0 --port", source)
 
-    def test_macos_preview_is_launchd_keepalive(self):
-        source = BRANCH_SH.read_text(encoding="utf-8")
-        self.assertIn('"KeepAlive": True', source)
-        self.assertIn('$HOME/Library/LaunchAgents/$label.plist', source)
-        self.assertIn('"/usr/bin/caffeinate", "-i", "-s", "-t", "43200"',
-                      source)
-        self.assertIn('launchctl bootstrap "gui/$(id -u)" "$plist"', source)
-        self.assertIn('launchctl bootout "gui/$(id -u)/$label"', source)
+    def test_macos_preview_keep_awake_window_is_bounded(self):
+        self.write_executable(
+            "uname", "#!/bin/sh\nprintf '%s\\n' Darwin\n")
+        self.write_executable(
+            "launchctl",
+            "#!/bin/sh\n"
+            "if [ \"$1\" = print ]; then\n"
+            "  printf '\\tpid = 4242\\n'\n"
+            "fi\n",
+        )
+        home = self.bindir / "home"
+        preview = self.bindir / "preview"
+        preview.mkdir()
+        fake_live = self.bindir / "live"
+        python = fake_live / ".venv" / "bin" / "python"
+        python.parent.mkdir(parents=True)
+        python.write_text("unused by the launchctl stub\n", encoding="utf-8")
+
+        env = dict(self.env)
+        env["HOME"] = str(home)
+        result = run_shell(
+            f'LIVE="{fake_live}"\n'
+            f'start_test_process bounded "{preview}" 8381',
+            env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        plist = home / "Library" / "LaunchAgents" / (
+            "nyc.durham.vira.test.bounded.plist")
+        with plist.open("rb") as handle:
+            payload = plistlib.load(handle)
+        self.assertTrue(payload["KeepAlive"])
+        self.assertFalse(payload["AbandonProcessGroup"])
+
+        assertion_args = self.bindir / "caffeinate-args"
+        assertion_pid = self.bindir / "caffeinate-pid"
+        server_pid = self.bindir / "server-pid"
+        # Model caffeinate's key lifecycle rule in milliseconds: a bare
+        # assertion expires, but supplying a utility makes it live with that
+        # utility instead. The old plist therefore leaves this process alive.
+        fake_caffeinate = self.write_executable(
+            "caffeinate",
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$@\" > \"$CAFFEINATE_ARGS\"\n"
+            "printf '%s\\n' \"$$\" > \"$CAFFEINATE_PID\"\n"
+            "if [ \"$#\" -gt 4 ]; then\n"
+            "  shift 4\n"
+            "  exec \"$@\"\n"
+            "fi\n"
+            "sleep 0.1\n",
+        )
+        fake_python = self.write_executable(
+            "python",
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$$\" > \"$SERVER_PID\"\n"
+            "while :; do sleep 1; done\n",
+        )
+        arguments = list(payload["ProgramArguments"])
+        arguments[arguments.index("/usr/bin/caffeinate")] = str(
+            fake_caffeinate)
+        arguments[arguments.index(str(python))] = str(fake_python)
+        process_env = dict(env)
+        process_env.update({
+            "CAFFEINATE_ARGS": str(assertion_args),
+            "CAFFEINATE_PID": str(assertion_pid),
+            "SERVER_PID": str(server_pid),
+        })
+        process = subprocess.Popen(
+            arguments, cwd=preview, env=process_env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 2
+            while (not assertion_pid.exists() or not server_pid.exists()) \
+                    and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(assertion_pid.exists())
+            self.assertTrue(server_pid.exists())
+            self.assertEqual(
+                assertion_args.read_text(encoding="utf-8").splitlines(),
+                ["-i", "-s", "-t", "43200"],
+            )
+
+            caffeinate_pid = int(assertion_pid.read_text(encoding="utf-8"))
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(caffeinate_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("bounded caffeinate outlived its timeout")
+            self.assertIsNone(
+                process.poll(), "preview stopped when caffeinate expired")
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if process.poll() is None:
+                process.wait(timeout=2)
 
 
 if __name__ == "__main__":
