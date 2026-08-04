@@ -2190,6 +2190,7 @@ function openFindCompanions() {
   });
   findChatTileWorkspace();
   raiseFindCluster();
+  setFindWorkspaceLit(true);      // entering vault chat IS entering the cluster
   requestAnimationFrame(renderFindCompanions);
 }
 
@@ -14621,19 +14622,47 @@ function buildWindow(spec, st, ci) {
 // inert, every other window still readable and clickable.
 const FIND_CLUSTER = ["find", "find-related", "find-cloud", "find-define"];
 
+// Whether the desk is currently stepped back for the cluster. It is a state
+// you are IN, not a fact about which windows happen to be open — that was the
+// bug (owner, 2026-08-04): the companions stay open, so the whole desk stayed
+// blurred forever, and a window he clicked rose ABOVE the cluster and then
+// went blurry again the moment the pointer left it, covering the lit Find with
+// a receded window. Clicking anything outside the cluster now leaves the
+// treatment entirely; clicking back into the cluster re-enters it.
+let findWorkspaceLit = false;
+
+function setFindWorkspaceLit(on) {
+  if (findWorkspaceLit === on) return;
+  findWorkspaceLit = on;
+  // Re-entering has to bring the cluster forward, or a window raised while we
+  // were away stays on top and simply goes blurry — the receded thing sitting
+  // over the lit one, which is the bug this whole state machine exists to fix.
+  if (on) raiseFindCluster();
+  syncFindWorkspace();
+}
+
 function syncFindWorkspace() {
   if (!isDesktop) return;
   syncFindCompanionToggles();
-  // The treatment belongs to the CLUSTER, not to Find alone (owner, 2026-08-04
-  // — "I don't want them to become transparent just because I clicked away").
   // Opening Find to run a search is an ordinary window open and must leave the
   // desk alone; it is the companions coming up that means "this is a workspace
-  // now", and only then does everything else step back.
-  const lit = FIND_COMPANIONS.some((c) => winState[c.id]?.open);
+  // now" — and only while the owner is actually working in it.
+  const lit = findWorkspaceLit
+    && FIND_COMPANIONS.some((c) => winState[c.id]?.open);
   document.body.classList.toggle("find-workspace", lit);
   FIND_CLUSTER.forEach((id) =>
     winState[id]?.el.classList.toggle("find-member", lit));
 }
+
+// One listener decides both directions, in the CAPTURE phase so a handler
+// inside a window cannot swallow it. A press on the dock, the topbar or the
+// bare desk counts as leaving too: anything that is not the cluster is
+// somewhere else.
+document.addEventListener("pointerdown", (e) => {
+  if (!isDesktop) return;
+  const win = e.target.closest?.(".fwin");
+  setFindWorkspaceLit(!!win && FIND_CLUSTER.includes(win.id.replace(/^win-/, "")));
+}, true);
 
 function openWindow(id) {
   const st = winState[id];
@@ -14671,6 +14700,12 @@ function openWindow(id) {
 function closeWindow(id) {
   const st = winState[id];
   if (!st || !st.open) return;
+  // The companions are windows ONTO Find's session, so closing Find closes
+  // them (owner, 2026-08-04) — left behind they are three panels reporting on
+  // a conversation that is no longer on screen, and they were what held the
+  // workspace treatment open forever. Reachable on their own from the
+  // Launchpad; that path does not reopen Find.
+  if (id === "find") FIND_COMPANIONS.forEach((c) => closeWindow(c.id));
   // In a stage layout the red button on a grown card retreats it to its park
   // rather than hiding the module — closing a stage card sends it home. A
   // visitor (not part of this layout) has no park, so it just closes.
@@ -14912,8 +14947,40 @@ function renderLaunchpad() {
     body.innerHTML = "";
     body.appendChild(lpSection("on", isDesktop ? "On the dock" : "In the bar", on));
     body.appendChild(lpSection("rest", isDesktop ? "Launchpad only" : "All apps", rest));
+    if (isDesktop) body.appendChild(lpCompanionSection());
   });
   mdockRefresh();
+}
+
+// Find's companions, openable on their own (owner, 2026-08-04). Deliberately
+// NOT part of appOrder: they are not apps — they carry no dock icon, hold no
+// slot on the phone's access bar, and on a phone they are tabs of Find that
+// the nav drawer already lists under it. Opening one from here does NOT bring
+// up Find or its workspace treatment; the tiles carry no data-app, which is
+// what keeps reorganize mode's drag from ever picking one up.
+function lpCompanionSection() {
+  const sec = el("div", "lp-sec lp-sec-comp");
+  sec.appendChild(el("div", "lp-sec-head", "Find companions"));
+  const grid = el("div", "lp-grid");
+  FIND_COMPANIONS.forEach((c) => {
+    const spec = appSpec(c.id);
+    const cell = el("button", "lp-tile");
+    cell.dataset.comp = c.id;
+    const jig = el("span", "lp-jig");
+    const ic = el("span", "lp-ic");
+    if (spec) ic.innerHTML = `<svg viewBox="0 0 24 24"><path d="${spec.icon}"/></svg>`;
+    jig.appendChild(ic);
+    jig.appendChild(el("span", "lp-label", c.label));
+    cell.appendChild(jig);
+    cell.addEventListener("click", () => {
+      findChatReleaseCompanion(c.id);
+      openWindow(c.id);
+      requestAnimationFrame(renderFindCompanions);
+    });
+    grid.appendChild(cell);
+  });
+  sec.appendChild(grid);
+  return sec;
 }
 
 function lpSection(kind, head, ids) {
