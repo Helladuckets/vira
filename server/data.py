@@ -215,17 +215,70 @@ def _profile_path(pid):
     return _crm() / "profiles" / f"{pid}.json"
 
 
+def _backups():
+    return _crm() / "backups" / "profiles"
+
+
+PROFILE_BACKUPS_KEEP = 20
+
+
+def _backup_profile(path, pid):
+    """Snapshot a profile before it is rewritten. Every profile write path
+    goes through _load_profile_for_write, so this is the ONE implementation —
+    the same guarantee triage._read_people_backed_up gives people.json, and a
+    guarantee with more than one implementation is not one.
+
+    Until 2026-08-04 profile writes had no snapshot at all: loops, facts and
+    hooks were rewritten in place by the journal's own integration pass with
+    nothing to revert to, while the registry beside them was backed up on
+    every touch. That asymmetry is what made auto-dispatching a CRM-shaped
+    instruction the riskier half of the journal (see server/journal.py).
+
+    Names carry a zero-padded sequence for the same reason routinesrc's do:
+    a bare collision suffix sorts '-1' BEFORE '.', so lexical and
+    chronological order would disagree the moment two writes share a second.
+    Never let a failed backup fail the write — the snapshot is insurance,
+    not the transaction."""
+    try:
+        d = _backups()
+        d.mkdir(parents=True, exist_ok=True)
+        old = sorted(d.glob(f"{pid}-*.json"))
+        # An unchanged file is not a new version. add_loop/add_fact/
+        # update_loop each read the profile and then call _save_field_locked,
+        # which reads it AGAIN inside the same lock — so a naive snapshot
+        # stores identical bytes twice and halves how far back the retention
+        # window actually reaches.
+        cur = path.read_bytes()
+        if old and old[-1].read_bytes() == cur:
+            return
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        for n in range(100):
+            dest = d / f"{pid}-{stamp}-{n:02d}.json"
+            if not dest.exists():
+                shutil.copy2(path, dest)
+                break
+        for stale in sorted(d.glob(f"{pid}-*.json"))[:-PROFILE_BACKUPS_KEEP]:
+            stale.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _load_profile_for_write(pid, p):
     """Read a profile at the top of a read-modify-write. A MISSING file
     yields a minimal profile (first Vira touch of a person with no synthesis
     yet). A PRESENT-but-unreadable file fails CLOSED: the original bytes are
     copied to a .corrupt-<ts> sibling and the write is refused, so one bad
-    read can never replace a real profile with a near-empty one."""
+    read can never replace a real profile with a near-empty one.
+
+    A readable one is SNAPSHOT first (_backup_profile) — the caller is about
+    to rewrite it."""
     path = _profile_path(pid)
     if not path.exists():
         return {"name": p["name"]}
     try:
-        return json.loads(path.read_text())
+        prof = json.loads(path.read_text())
+        _backup_profile(path, pid)
+        return prof
     except (OSError, json.JSONDecodeError) as e:
         q = path.with_name(path.name + ".corrupt-"
                            + time.strftime("%Y%m%d-%H%M%S"))

@@ -26,6 +26,7 @@ thread so the POST returns instantly.
 """
 import datetime as dt
 import json
+import os
 import re
 import threading
 import uuid
@@ -198,6 +199,7 @@ def _integrate(eid):
         plan = _plan(entry)
         actions = _apply(plan, entry)
         unapplied = _clean_unapplied(plan, entry)
+        _stage_unapplied(entry, unapplied)
         _update_entry(eid,
                       status="integrated" if actions else "noted",
                       result={"summary": plan.get("summary") or
@@ -572,23 +574,187 @@ def _clean_unapplied(plan, entry=None):
     return out[:10]
 
 
+# ---------- staging: an instruction becomes queued work ----------
+# Until 2026-08-04 an unapplied instruction's ONLY exit was the clipboard:
+# the owner copied a prompt and pasted it into a session he opened himself.
+# That shape was his own 2026-07-16 spec ("encoded as a prompt that I can
+# copy as an export feature, similar to my annotate"), written when a
+# dispatched session was not yet trusted to finish. It has since been, and
+# the asymmetry it left behind was arbitrary: the integration pass's other
+# three channels — close a loop, edit a loop, write a fact — ALREADY write
+# the CRM with no gate at all, so the channel that could not be expressed
+# as a loop or a fact was the one carrying the HARDER gate.
+#
+# So an instruction is queued work now. It is staged as an idea, which is
+# where every other piece of work in this app already lives — inheriting
+# the Queue's approval bar, its tags, its similarity and its dispatch
+# machinery rather than growing a second, weaker copy of all four.
+#
+# THE SPLIT IS BLAST RADIUS, NOT "deterministic vs needs code". The Vira
+# repo is the better-protected target: branch-first placement, a worktree,
+# a diff, a revert, the write guard, a test suite. The CRM has no git at
+# all — its protection is people.json's backup and (since the same day, in
+# data._backup_profile) the profile snapshot that made this list safe to
+# widen. Areas outside both — a calendar judgment, an "other" — still want
+# the owner's eye, so they stage as `proposed` and wait behind the
+# approval bar instead of dispatching.
+AUTO_AREAS = {"app", "config", "contacts", "data"}
+
+# The cwd is ALWAYS the Vira checkout, for every area. It is the only tree
+# with a safety net, it ships scripts/branch.sh (so worktree.ensure places
+# the session on its own branch), it carries the agent contract, and the
+# CRM is reachable from it by path. Running with cwd=the CRM would get the
+# session neither placement nor a contract.
+REPO = Path(__file__).resolve().parent.parent
+
+
+def _task_rules(cwd):
+    """The rules every hand-off carries, dispatched or exported. ONE
+    composer, so the two can never drift on what a session is told."""
+    return [
+        f"Work in the owner's Vira repository at {cwd} — cd there first if "
+        "you are not already inside it. The CRM stores this instruction may "
+        "concern are reachable from there by path; read the repo's agent "
+        "contract (AGENTS.md, and CLAUDE.md where present) and follow it.",
+        # true whether REPO is the live checkout or (on a branch instance)
+        # the worktree this Vira serves from — never call it "the checkout
+        # the owner runs from", which is false in the second case
+        "Branch first: the tree named above is the one this Vira is serving "
+        'from, so do not build in it directly. Run "scripts/branch.sh start '
+        '<slug>" and work in the worktree it creates. If you are already in '
+        "a worktree of this repo, stay in it.",
+        "Before writing anything into the CRM, verify it against the stores "
+        "rather than trusting the instruction's wording — it was written by "
+        "a model reading the owner's note, and the note below is the ground "
+        "truth. Contact-registry and profile writes are backed up "
+        "automatically; do not add a second backup step.",
+        "Do not merge and do not push. The owner decides that after "
+        "reviewing.",
+        "The owner's Vira server is running on this machine. Do not "
+        "restart, stop, or kill it. If your change needs a restart to take "
+        "effect, say so in your report and leave it to them.",
+        "If you hit a decision this instruction does not settle, ask the "
+        "owner and stop rather than guessing.",
+    ]
+
+
+def _note_block(entry, u):
+    """The instruction with the note it came from. The NOTE is what the
+    owner actually said; the instruction is one model's reading of it, so a
+    session gets both and is told which is which."""
+    lines = [f'The owner told Vira, on {entry.get("created", "")[:10]}:',
+             f'"""{entry.get("text", "")}"""']
+    if entry.get("person_name"):
+        lines.append(f'(the note is about {entry["person_name"]})')
+    if entry.get("context"):
+        lines.append(f'(written from: {entry["context"]})')
+    lines.append("")
+    lines.append(f'Vira could not apply this part of it automatically '
+                 f'(area: {u.get("area") or "other"}):')
+    lines.append(f'  {_verified_instruction(entry, u)}')
+    return "\n".join(lines)
+
+
+def _verified_instruction(entry, u):
+    """The instruction text, pid-verified. Entries stored before
+    _pid_checker existed carry no `pid_check`, so they are re-checked on
+    the way out rather than trusted."""
+    instr = u.get("instruction", "")
+    if "pid_check" not in u:
+        instr, _ = _check_instruction(instr, _pid_checker(entry))
+    return instr
+
+
+def instruction_prompt(entry, u, cwd=None):
+    """The self-contained prompt for ONE instruction — what a dispatched
+    session runs, and what "copy as prompt" hands to a session elsewhere."""
+    cwd = cwd or REPO
+    parts = [_note_block(entry, u), "", "Carry it out end to end:"]
+    parts += [f"- {r}" for r in _task_rules(cwd)]
+    parts += ["",
+              "End with a concise report: what you changed and why, how you "
+              "verified it, and anything you deliberately did not do."]
+    return "\n".join(parts)
+
+
+def _stage_one(entry, u):
+    """Stage one instruction as a Queue idea, dispatching it when its area
+    is inside the blast radius Vira is willing to act in unattended.
+
+    Never raises: an instruction that cannot be staged or dispatched stays
+    exactly where it was, unstamped, and the Queue lane still carries it.
+    Losing the owner's request to an ideas-store hiccup would be strictly
+    worse than the clipboard this replaces."""
+    from . import ideas
+    text = _verified_instruction(entry, u)
+    if not text:
+        return
+    live = {"proposed", "open", "on-hold", "deferred"}
+    for it in ideas.list_items():
+        if it["status"] in live and it["text"].strip().lower() == text.lower():
+            u["idea_id"] = it["id"]
+            u["staged"] = _now()
+            return
+    auto = (u.get("area") or "other") in AUTO_AREAS and not _passive()
+    note = f'from a journal note ({entry.get("created", "")[:10]})'
+    item = ideas.add(text, status="open" if auto else "proposed",
+                     source="journal", note=note, project="Vira")
+    u["idea_id"] = item["id"]
+    u["staged"] = _now()
+    if not auto:
+        return
+    try:
+        from . import session
+        jid = session.sessions.launch(
+            instruction_prompt(entry, u), cwd=str(REPO),
+            idea_id=item["id"],
+            meta={"journal_note": entry.get("id"), "kind": "journal"})
+        u["job_id"] = jid
+        ideas.stamp_note(item["id"], f"{note} — dispatched (job {jid[:8]})")
+    except Exception as e:  # noqa: BLE001 — the idea is already on the Queue
+        ideas.stamp_note(item["id"],
+                         f"{note} — dispatch failed ({str(e)[:120]}); "
+                         "run it from the Queue")
+
+
+def _stage_unapplied(entry, unapplied):
+    for u in unapplied:
+        try:
+            _stage_one(entry, u)
+        except Exception:  # noqa: BLE001 — one bad instruction never stops the rest
+            pass
+
+
+def _passive():
+    """A test clone stages (its ideas store is cloned and disposable) but
+    never dispatches: it has no supervisor, so a launch there mints a job
+    that can never run — the documented passive seam."""
+    return bool(os.environ.get("VIRA_PASSIVE"))
+
+
 # ---------- export: un-integrable knowledge as a copyable prompt ----------
+# Kept for the instruction that did NOT auto-dispatch and for a session the
+# owner would rather run elsewhere. It is composed from the same
+# _task_rules/_note_block as the dispatch, so the exported text can no
+# longer promise something the dispatched one does not (it used to name the
+# repo and the CRM and then omit the branching rule entirely, pointing a
+# session straight at the live checkout).
 
 EXPORT_HEAD = """\
-You are working for {owner}. Vira (his personal-assistant app, repo
-~/workspace/vira, CRM data in ~/workspace/crm/data) collected the notes
-below from {owner}'s own head. Each carries an instruction Vira could not
-apply automatically — they need a session with real access (CRM stores,
-calendar, config, code). Work through every instruction. Verify against
-the stores before writing; back up people.json before any contact
-mutation; report what you did per item.
+You are working for {owner}. Vira — his personal-assistant app — collected
+the notes below from {owner}'s own head. Each carries an instruction Vira
+could not apply automatically. Work through every one of them.
+
+{rules}
+
+Report what you did per item.
 """
 
 
 def export_prompt():
     """One self-contained prompt covering every journal note whose
-    integration left unapplied instructions, newest first — the copy-paste
-    handoff into a full-access Claude session."""
+    integration left an unapplied instruction that is still outstanding,
+    newest first."""
     from . import settings
     items = []
     for e in reversed(_load()["entries"]):
@@ -598,16 +764,15 @@ def export_prompt():
             items.append((e, u))
     if not items:
         return {"prompt": "", "count": 0}
-    lines = [EXPORT_HEAD.format(owner=settings.get("owner_name") or "the owner")]
+    rules = "\n".join(f"- {r}" for r in _task_rules(REPO))
+    lines = [EXPORT_HEAD.format(
+        owner=settings.get("owner_name") or "the owner", rules=rules)]
     for i, (e, u) in enumerate(items, 1):
         about = f' (about {e["person_name"]})' if e.get("person_name") else ""
         where = f' [written from: {e["context"]}]' if e.get("context") else ""
-        instr = u["instruction"]
-        if "pid_check" not in u:  # stored before pid verification existed
-            instr, _ = _check_instruction(instr, _pid_checker(e))
         lines.append(f'{i}. [{e["created"][:10]}]{about} the owner said: '
-                     f'"{e["text"]}"{where}\n   -> {instr} '
-                     f'(area: {u["area"]})')
+                     f'"{e["text"]}"{where}\n   -> '
+                     f'{_verified_instruction(e, u)} (area: {u["area"]})')
     return {"prompt": "\n".join(lines), "count": len(items)}
 
 

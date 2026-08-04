@@ -3062,15 +3062,23 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 .jn-text { font-size: 12.5px; color: var(--text-dim); margin-top: 1px; }
 .jn-sum { font-size: 12px; color: var(--text); margin-top: 3px; }
 .jn-act { font-size: 11.5px; color: var(--green); margin-top: 2px; }
-/* instructions the integration pass could NOT apply — exported as a prompt */
+/* instructions the integration pass could NOT apply as a loop or a fact —
+   staged as Queue ideas, and dispatched where the blast radius allows */
 .jn-unap { font-size: 11.5px; color: var(--oxidized); margin-top: 2px; }
 .jn-unap-area {
   margin-left: 6px; padding: 0 5px; border-radius: 7px;
   font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em;
   color: var(--text-dim); background: var(--accent-soft);
 }
-/* Refresh keeps its right-alignment while the export button is hidden */
-#journal-export[hidden] + #journal-refresh { margin-left: auto; }
+/* the link through to the staged idea — a button that reads as text, so it
+   sits inside the instruction line rather than pushing it around */
+.jn-unap .linkish {
+  margin-left: 8px; padding: 0; border: 0; background: none;
+  font: inherit; color: var(--accent); cursor: pointer;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.jn-unap .linkish:hover { color: var(--accent-bright); }
+.jn-unap.resolved .linkish { display: none; }
 .jn-more { font-size: 11px; color: var(--text-faint); margin: 8px 0 0 14px; }
 .tv-personal { align-items: center; }
 .tv-mini { margin-right: auto; font-size: 11.5px; color: var(--text-dim); }

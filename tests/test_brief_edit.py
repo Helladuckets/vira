@@ -12,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import brief, briefstate, data as crm, journal
+from server import brief, briefstate, data as crm, ideas, journal
 
 
 def _seed_crm(root):
@@ -162,14 +162,42 @@ class TestBriefState(unittest.TestCase):
 
 
 class JournalBase(BriefEditBase):
+    """Isolates every store the journal WRITES — which since 2026-08-04 is
+    three, not one. `_integrate` stages each unapplied instruction as an
+    idea and dispatches the ones inside the auto-dispatch blast radius, so
+    a case that patches only `journal.STORE` writes real ideas and SPAWNS
+    REAL RUNNER PROCESSES. That happened once, on the first run of this
+    feature's own tests: two detached sessions started against the
+    worktree. A test has to isolate the side effects of the function it
+    calls, not the ones it remembers."""
+
     def setUp(self):
         super().setUp()
         self.jtmp = tempfile.TemporaryDirectory()
         self.jpatch = mock.patch.object(
             journal, "STORE", Path(self.jtmp.name) / "brief-journal.json")
         self.jpatch.start()
+        self.ipatch = mock.patch.object(
+            ideas, "STORE", Path(self.jtmp.name) / "ideas.json")
+        self.ipatch.start()
+        self.launched = []
+
+        def fake_launch(prompt, **kw):
+            self.launched.append((prompt, kw))
+            return "job" + str(len(self.launched)).rjust(9, "0")
+
+        self.spatch = mock.patch("server.session.sessions.launch",
+                                 side_effect=fake_launch)
+        self.spatch.start()
+        # dispatch is decided by journal._passive, which reads the env; pin
+        # it so a case means the same thing under `branch.sh serve`
+        self.ppatch = mock.patch.object(journal, "_passive", return_value=False)
+        self.ppatch.start()
 
     def tearDown(self):
+        self.ppatch.stop()
+        self.spatch.stop()
+        self.ipatch.stop()
         self.jpatch.stop()
         self.jtmp.cleanup()
         super().tearDown()
@@ -336,6 +364,127 @@ class TestJournal(JournalBase):
         self.assertEqual(journal.resolve_all_unapplied(), 3)
         self.assertEqual(journal.export_prompt()["count"], 0)
         self.assertEqual(journal.resolve_all_unapplied(), 0)  # nothing left to do
+
+
+class TestJournalStaging(JournalBase):
+    """An unapplied instruction is queued work, not a clipboard payload
+    (2026-08-04). It is staged as an idea, and dispatched outright when its
+    area sits inside the blast radius Vira is willing to act in unattended.
+    The split is BLAST RADIUS: the Vira repo has branch placement, a diff
+    and a revert; the CRM has its backups; a calendar judgment has neither
+    and waits behind the approval bar."""
+
+    def stage(self, instruction, area):
+        entry = journal.add("the owner's own words about it", integrate=False)
+        u = {"instruction": instruction, "area": area, "pid_check": {}}
+        journal._stage_unapplied(entry, [u])
+        return entry, u
+
+    def test_the_fixture_isolates_every_store_integrate_writes(self):
+        """The guard for the trap this feature created: a journal test that
+        reaches the real ideas store spawns real sessions. If a patch is
+        dropped from JournalBase this fails rather than starting processes."""
+        self.assertTrue(str(ideas.STORE).startswith(self.jtmp.name))
+        self.assertTrue(str(journal.STORE).startswith(self.jtmp.name))
+        from server import session
+        self.assertTrue(hasattr(session.sessions.launch, "side_effect"))
+
+    def test_an_app_instruction_stages_open_and_dispatches(self):
+        _, u = self.stage("Rename the Queue tab to The Forge", "app")
+        self.assertTrue(u["staged"])
+        self.assertTrue(u["job_id"])
+        it = [i for i in ideas.list_items() if i["id"] == u["idea_id"]][0]
+        self.assertEqual(it["status"], "open")
+        self.assertEqual(it["source"], "journal")
+        self.assertEqual(it["project"], "Vira")
+        self.assertEqual(len(self.launched), 1)
+        _, kw = self.launched[0]
+        self.assertEqual(kw["cwd"], str(journal.REPO))
+        self.assertEqual(kw["idea_id"], u["idea_id"])
+
+    def test_a_crm_instruction_dispatches_too(self):
+        # widened the day profile writes gained their own backup — before
+        # that the CRM lane had nothing to revert to
+        _, u = self.stage("Merge the placeholder into Casey Example",
+                          "contacts")
+        self.assertTrue(u["job_id"])
+
+    def test_an_out_of_radius_instruction_waits_for_approval(self):
+        _, u = self.stage("Stop flagging the 5pm event as an overlap",
+                          "calendar")
+        self.assertTrue(u["staged"])
+        self.assertNotIn("job_id", u)
+        it = [i for i in ideas.list_items() if i["id"] == u["idea_id"]][0]
+        self.assertEqual(it["status"], "proposed")
+        self.assertEqual(self.launched, [])
+
+    def test_a_passive_instance_stages_but_never_dispatches(self):
+        # a test clone has no supervisor, so a launch there mints a job that
+        # can never run
+        with mock.patch.object(journal, "_passive", return_value=True):
+            _, u = self.stage("Rename something", "app")
+        self.assertTrue(u["idea_id"])
+        self.assertNotIn("job_id", u)
+        self.assertEqual(self.launched, [])
+
+    def test_a_failed_dispatch_keeps_the_work_on_the_queue(self):
+        with mock.patch("server.session.sessions.launch",
+                        side_effect=RuntimeError("cap full")):
+            _, u = self.stage("Rename something else", "app")
+        self.assertTrue(u["idea_id"])          # the idea is still there
+        self.assertNotIn("job_id", u)
+        it = [i for i in ideas.list_items() if i["id"] == u["idea_id"]][0]
+        self.assertIn("dispatch failed", it["note"])
+
+    def test_a_staging_failure_never_loses_the_instruction(self):
+        entry = journal.add("note", integrate=False)
+        u = {"instruction": "do the thing", "area": "app", "pid_check": {}}
+        with mock.patch.object(ideas, "add", side_effect=RuntimeError("boom")):
+            journal._stage_unapplied(entry, [u])
+        self.assertNotIn("staged", u)          # unstamped, so the lane keeps it
+        self.assertEqual(u["instruction"], "do the thing")
+
+    def test_an_identical_instruction_reuses_its_idea(self):
+        _, u1 = self.stage("Rename the Queue tab", "app")
+        _, u2 = self.stage("rename the queue tab", "app")   # case-folded
+        self.assertEqual(u1["idea_id"], u2["idea_id"])
+        self.assertEqual(len(self.launched), 1)             # dispatched once
+        self.assertEqual(
+            len([i for i in ideas.list_items() if i["source"] == "journal"]), 1)
+
+    def test_the_dispatch_prompt_carries_the_note_and_the_branch_rule(self):
+        entry, u = self.stage("Rename the Queue tab", "app")
+        prompt = self.launched[0][0]
+        self.assertIn("the owner's own words about it", prompt)  # ground truth
+        self.assertIn("Rename the Queue tab", prompt)
+        self.assertIn("scripts/branch.sh start", prompt)
+        self.assertIn(str(journal.REPO), prompt)
+        self.assertIn("Do not merge and do not push", prompt)
+
+    def test_the_export_carries_the_same_rules_as_the_dispatch(self):
+        # the two prompts are composed from one _task_rules, so the exported
+        # text can no longer omit the branching rule and point a session at
+        # the live checkout — the defect this replaced
+        entry = journal.add("owner note", integrate=False)
+        journal._update_entry(entry["id"], status="noted", result={
+            "summary": "s", "actions": [],
+            "unapplied": [{"instruction": "fix the thing", "area": "other"}]})
+        ex = journal.export_prompt()["prompt"]
+        for rule in journal._task_rules(journal.REPO):
+            self.assertIn(rule, ex)
+
+    def test_staged_instructions_stay_on_the_entry_as_the_record(self):
+        entry = journal.add("merge that contact", integrate=False)
+        plan = {"loop_actions": [], "new_loops": [], "facts": [],
+                "unapplied": [{"instruction": "Merge p_x into p_test00000001",
+                               "area": "contacts"}],
+                "summary": "needs a session"}
+        with mock.patch("server.suggest.complete",
+                        return_value=json.dumps(plan)):
+            journal._integrate(entry["id"])
+        u = journal.recent()[0]["result"]["unapplied"][0]
+        self.assertTrue(u["idea_id"])
+        self.assertTrue(u["job_id"])
 
 
 class TestJournalPidVerification(JournalBase):

@@ -5182,12 +5182,19 @@ async function loadQueueLane() {
 // stamp on both date axes (it has no separate updated stamp) and by its
 // instruction text in A–Z — the row shows the instruction as its main
 // text for the same reason: what you read is what it sorted on.
+//
+// A STAGED instruction is skipped: since 2026-08-04 the integration pass
+// stages each one as a Queue idea (server/journal.py `_stage_unapplied`),
+// so its idea row IS its queue row and rendering the note beside it would
+// show one piece of work twice. What still comes through here is an
+// instruction staging could not place — plus every entry written before
+// staging existed, which is why this path stays rather than being deleted.
 function queueNotes() {
   if (ideaProject && ideaProject !== "Vira") return [];
   const out = [];
   (journalLaneCache || []).forEach((e) =>
     (e.result?.unapplied || []).forEach((u) => {
-      if (!u.resolved) out.push({ kind: "note", e, u,
+      if (!u.resolved && !u.staged) out.push({ kind: "note", e, u,
         text: u.instruction || "", created: e.created, updated: e.created });
     }));
   return out;
@@ -5211,11 +5218,6 @@ function renderQueueLane() {
   clr.title = "Mark every journal instruction done and remove it from the queue";
   clr.addEventListener("click", () => clearAllQueueNotes(rows.length));
   head.appendChild(clr);
-  const ex = el("button", "fchip sm", "Export all as prompt");
-  ex.title = "Copy every instruction Vira couldn't apply as one prompt "
-    + "for a full-access session";
-  ex.addEventListener("click", exportJournalPrompt);
-  head.appendChild(ex);
   lane.appendChild(head);
 }
 
@@ -8055,15 +8057,35 @@ function journalNode(e) {
   if (res.summary && e.status !== "pending" && e.status !== "noted")
     d.appendChild(el("div", "jn-sum", res.summary));
   (res.actions || []).forEach((a) => d.appendChild(el("div", "jn-act", a)));
-  // what Vira could NOT apply — encoded as instructions the journal's
-  // "Export as prompt" hands to a full-access session. Once the owner marks
-  // one done in the Queue it stays here, struck through, as the completed
-  // record.
+  // what Vira could NOT apply as a loop or a fact. Each is staged as a
+  // Queue idea and, inside the auto-dispatch blast radius, run immediately
+  // — so the Journal CHRONICLES it and names where it went rather than
+  // being the place it waits. A resolved one stays here struck through.
   (res.unapplied || []).forEach((u) => {
     const done = !!u.resolved;
+    const lead = done ? "done — "
+      : u.job_id ? "dispatched — " : u.staged ? "queued — "
+      : "needs a session — ";
     const line = el("div", "jn-unap" + (done ? " resolved" : ""),
-      (done ? "done — " : "needs a session — ") + u.instruction);
+      lead + u.instruction);
     if (u.area) line.appendChild(el("span", "jn-unap-area", u.area));
+    // The idea is the live record now, so the note links to it. A staged
+    // instruction whose idea was since deleted just renders no link —
+    // revealIdea is the one place that resolves an id to a row.
+    //
+    // It has to OPEN Work first: every other caller of revealIdea already
+    // lives inside that window, so it only scrolls and flashes. From the
+    // Journal — a different window, possibly behind a lit surface — that
+    // would flash a row nobody can see.
+    if (u.idea_id && !done) {
+      const go = el("button", "linkish", "open in the Queue");
+      go.addEventListener("click", () => {
+        openApp("work");
+        setWorkTab("queue");
+        revealIdea(u.idea_id);
+      });
+      line.appendChild(go);
+    }
     d.appendChild(line);
   });
   return d;
@@ -8072,14 +8094,6 @@ function journalNode(e) {
 function renderJournalList(entries) {
   const jlist = $("#journal-list");
   if (!jlist) return;
-  const exBtn = $("#journal-export");
-  if (exBtn) {
-    const n = (entries || []).reduce(
-      (s, e) => s + (e.result?.unapplied || [])
-        .filter((u) => !u.resolved).length, 0);
-    exBtn.hidden = !n;
-    exBtn.textContent = "Export " + n + " as prompt";
-  }
   jlist.innerHTML = "";
   if (!(entries || []).length) {
     jlist.appendChild(el("div", "brief-empty",
@@ -8355,19 +8369,14 @@ async function loadBrief() {
 $("#brief-refresh")?.addEventListener("click", () => loadBrief());
 $("#journal-refresh")?.addEventListener("click", () => loadJournal().catch(() => {}));
 
-// everything Vira couldn't apply, as one copy-paste prompt for a
-// full-access Claude session (the annotate-style export) — shared by the
-// Journal header button and the Work Queue's journal lane
-async function exportJournalPrompt() {
-  try {
-    const ex = await api("/api/brief/journal/export");
-    if (!ex.count) { toast("Nothing pending to export"); return; }
-    await navigator.clipboard.writeText(ex.prompt);
-    toast("Copied " + ex.count + " instruction"
-          + (ex.count === 1 ? "" : "s") + " as a prompt");
-  } catch (e) { alert("Export failed: " + e.message); }
-}
-$("#journal-export")?.addEventListener("click", exportJournalPrompt);
+// The bulk "Export N as prompt" button is GONE from both the Journal
+// header and the Queue lane (2026-08-04). An instruction is dispatched or
+// staged now, so the copy-out step it existed for is no longer the exit —
+// and a second prompt maintained beside the dispatched one is what let the
+// exported text drift into pointing a session at the live checkout with no
+// branching rule. GET /api/brief/journal/export still serves the composed
+// prompt (same _task_rules as the dispatch), and the per-row "copy as
+// prompt" still hands ONE instruction to a session run elsewhere.
 // ---------- phone link (Android companion pairing + ingest status) ----------
 let companionPollT = null;
 
