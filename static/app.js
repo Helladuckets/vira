@@ -17089,8 +17089,13 @@ let readerDefsOpen = false;
 
 const READER_KIND = {
   dossier: "dossier", plan: "plan", retro: "retro",
-  brief: "brief", room: "reading room",
+  brief: "brief", room: "reading room", walkthrough: "walkthrough",
 };
+
+// The read tail, kept so the tag picker can count across the whole library
+// rather than only what is unread — 425 of 519 documents here are filed read,
+// and a facet count that ignored them would be wrong about almost everything.
+let readerDone = [];
 
 async function fetchReaderPages() {
   if (readerPages) return readerPages;
@@ -17193,34 +17198,452 @@ async function toggleReaderSections(it, row, btn) {
   });
 }
 
-function readerRow(it) {
-  const row = el("div", "reader-item" + (it.missing ? " missing" : ""));
-  const top = el("div", "reader-item-top");
-  const name = el("button", "reader-item-name", it.title);
-  name.title = "Open";
-  name.addEventListener("click", () => openReaderItem(it));
-  top.appendChild(name);
+// ==================== The documents list — grouped by feature ==============
+//
+// A library ordered by date is a pile. The plan that proposed the Reader, the
+// film of the session that built it and the retro of the night it shipped sit
+// weeks apart with nothing saying they are one story — so the list groups on
+// the SAME tag axes the ideas backlog already uses (module by default: "the
+// part of the product this touches"). Nothing new is invented here; doctags
+// reads ideatags' vocabulary, so a document and the idea it came from land
+// under one word.
+//
+// Shape is Finder's list view: a column header, disclosure rows, one line per
+// document. Not a grid of cards — a grid shows a dozen things per screen and
+// this corpus is five hundred.
 
-  const acts = el("div", "reader-acts");
+const RDOC_AXES = [
+  { id: "module", label: "Feature" },
+  { id: "subproject", label: "Sub-project" },
+  { id: "theme", label: "Theme" },
+  { id: "concept", label: "Concept" },
+  { id: "kind", label: "Kind" },
+  { id: "", label: "Nothing (flat, newest first)" },
+];
+// Untagged work sorts last and is never hidden — the Queue's rule. A document
+// the tagger has not reached yet must still be findable.
+const RDOC_UNTAGGED = " untagged";
+
+let rdocGroup = lsGet("vira-rdoc-group", "module");
+let rdocQ = lsGet("vira-rdoc-q", "");
+let rdocTags = new Set(lsGet("vira-rdoc-tags", []));
+let rdocKinds = new Set(lsGet("vira-rdoc-kinds", []));
+let rdocOpen = {};
+let rdocVocab = {};
+let rdocTagStatus = {};
+
+function rdocOpenSet() {
+  const key = "vira-rdoc-open-" + (rdocGroup || "flat");
+  if (!rdocOpen[key]) rdocOpen[key] = new Set(lsGet(key, []));
+  return rdocOpen[key];
+}
+
+function rdocSaveOpen() {
+  const key = "vira-rdoc-open-" + (rdocGroup || "flat");
+  lsSet(key, [...rdocOpenSet()]);
+}
+
+// Fold both sides the same way so punctuation stops mattering — the searchFold
+// lesson from the Queue: "Visual Network." found nothing while "Visual Network"
+// matched, because the period was matched literally.
+function rdocFold(s) {
+  return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function rdocTagsOf(it, axis) {
+  return ((it.tags || {})[axis] || []);
+}
+
+// Which bucket a document files under. FIRST tag on the axis, so every
+// document appears exactly once and the groups stay countable; to see every
+// document carrying a tag regardless of position, use the tag filter — that
+// one is not first-tag-only.
+function rdocBucket(it) {
+  if (!rdocGroup) return "";
+  if (rdocGroup === "kind") return it.kind || RDOC_UNTAGGED;
+  const t = rdocTagsOf(it, rdocGroup);
+  return t.length ? t[0] : RDOC_UNTAGGED;
+}
+
+function rdocMatches(it) {
+  if (rdocKinds.size && !rdocKinds.has(it.kind)) return false;
+  if (rdocTags.size) {
+    const all = new Set();
+    Object.values(it.tags || {}).forEach((v) => (v || []).forEach((t) => all.add(t)));
+    for (const t of rdocTags) if (!all.has(t)) return false;
+  }
+  if (!rdocQ.trim()) return true;
+  const hay = rdocFold([it.title, it.kind, (it.film || {}).subject,
+    (it.film || {}).description,
+    Object.values(it.tags || {}).flat().join(" ")].join(" "));
+  // Terms AND, a "quoted phrase" is one term.
+  const terms = (rdocQ.match(/"[^"]+"|\S+/g) || [])
+    .map((t) => rdocFold(t.replace(/"/g, ""))).filter(Boolean);
+  return terms.every((t) => hay.includes(t));
+}
+
+function rdocKindGlyph(kind) {
+  return ({ walkthrough: "film", plan: "plan", retro: "retro",
+    dossier: "dossier", brief: "brief" })[kind] || "doc";
+}
+
+// A walkthrough's tile plays its own motion loop on hover — the lab site's
+// animation, in a list. Muted+playsinline or iOS refuses to autoplay; the
+// video is only ATTACHED on hover so thirty of them never load at once.
+function rdocThumb(it) {
+  const film = it.film || {};
+  const box = el("div", "rdoc-thumb " + (film.thumb ? "has-img" : "glyph"));
+  if (film.thumb) {
+    const img = el("img");
+    img.src = film.thumb;
+    img.loading = "lazy";
+    img.alt = "";
+    box.appendChild(img);
+    if (film.motion) {
+      box.classList.add("has-motion");
+      let vid = null;
+      box.addEventListener("pointerenter", () => {
+        if (vid || !it.locator) return;
+        vid = el("video", "rdoc-motion");
+        vid.src = it.locator + "motion.mp4";
+        vid.muted = true; vid.loop = true; vid.playsInline = true;
+        vid.play().catch(() => {});
+        box.appendChild(vid);
+      });
+      box.addEventListener("pointerleave", () => {
+        if (vid) { vid.remove(); vid = null; }
+      });
+    }
+  } else {
+    box.appendChild(el("span", "rdoc-glyph", rdocKindGlyph(it.kind)));
+  }
+  return box;
+}
+
+function rdocRow(it) {
+  const row = el("div", "rdoc-row" + (it.missing ? " missing" : "")
+    + (it.kind === "walkthrough" ? " film" : ""));
+  row.appendChild(rdocThumb(it));
+
+  const main = el("div", "rdoc-main");
+  main.appendChild(el("div", "rdoc-name", it.title));
+  const sub = (it.film || {}).description || "";
+  if (sub) main.appendChild(el("div", "rdoc-sub", sub));
+  row.appendChild(main);
+
+  // Tag chips: every axis, so a row says what it is about beyond its group.
+  const tags = el("div", "rdoc-tags");
+  ["module", "subproject", "theme"].forEach((ax) => {
+    rdocTagsOf(it, ax).slice(0, ax === "module" ? 2 : 1).forEach((t) => {
+      const chip = el("button", "rdoc-chip " + ax, t);
+      chip.title = "Filter to " + t;
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (rdocTags.has(t)) rdocTags.delete(t); else rdocTags.add(t);
+        lsSet("vira-rdoc-tags", [...rdocTags]);
+        renderReaderDocs();
+      });
+      tags.appendChild(chip);
+    });
+  });
+  row.appendChild(tags);
+
+  row.appendChild(el("div", "rdoc-kind", READER_KIND[it.kind] || it.kind));
+  row.appendChild(el("div", "rdoc-date",
+    it.created ? fmtTime(it.created) : (it.missing ? "missing" : "")));
+
+  const acts = el("div", "rdoc-acts");
   const p = it.progress || {};
   if (p.total > 1) {
     const secBtn = el("button", "reader-mini", p.done + " of " + p.total);
     secBtn.title = "Sections";
-    secBtn.addEventListener("click", () => toggleReaderSections(it, row, secBtn));
+    secBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleReaderSections(it, row, secBtn);
+    });
     acts.appendChild(secBtn);
   }
   const doneBtn = el("button", "reader-done", "Read");
   doneBtn.title = "Mark read — it drops off the list and stays where it is saved";
-  doneBtn.addEventListener("click", () => completeReaderItem(it));
+  doneBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    completeReaderItem(it);
+  });
   acts.appendChild(doneBtn);
-  top.appendChild(acts);
-  row.appendChild(top);
+  row.appendChild(acts);
 
-  const bits = [READER_KIND[it.kind] || it.kind,
-    it.created ? fmtTime(it.created) : "",
-    it.missing ? "source missing" : ""].filter(Boolean);
-  row.appendChild(el("div", "reader-item-meta", bits.join(" · ")));
+  // Whole-card activation, the Vira-wide rule (cardAction skips buttons,
+  // links and form controls, and leaves right-click alone).
+  cardAction(row, () => openReaderItem(it));
   return row;
+}
+
+// Kept as the single-row renderer other callers may still want.
+function readerRow(it) { return rdocRow(it); }
+
+function rdocBar() {
+  const bar = $("#reader-bar");
+  if (!bar) return;
+  bar.innerHTML = "";
+
+  const grp = el("select", "rdoc-sel");
+  RDOC_AXES.forEach((a) => {
+    const o = el("option", "", a.label);
+    o.value = a.id;
+    if (a.id === rdocGroup) o.selected = true;
+    grp.appendChild(o);
+  });
+  grp.title = "Group the library by";
+  grp.addEventListener("change", () => {
+    rdocGroup = grp.value;
+    lsSet("vira-rdoc-group", rdocGroup);
+    renderReaderDocs();
+  });
+  const grpPair = el("label", "rdoc-pair");
+  grpPair.appendChild(el("span", "rdoc-lab", "Group by"));
+  grpPair.appendChild(grp);
+  bar.appendChild(grpPair);
+
+  // Tag filter: a dropdown, never a chip block. A converged vocabulary is a
+  // whole band of vertical space above the list, worst on a phone.
+  const tagBtn = el("button", "rdoc-tagbtn"
+    + (rdocTags.size ? " on" : ""),
+    rdocTags.size === 0 ? "All tags"
+      : rdocTags.size === 1 ? [...rdocTags][0] : rdocTags.size + " tags");
+  tagBtn.addEventListener("click", (e) => rdocTagPicker(e.currentTarget));
+  bar.appendChild(tagBtn);
+
+  const kinds = ["walkthrough", "plan", "dossier", "retro", "brief"];
+  const kindWrap = el("div", "rdoc-kinds");
+  kinds.forEach((k) => {
+    const b = el("button", "rdoc-kchip" + (rdocKinds.has(k) ? " on" : ""),
+      READER_KIND[k] || k);
+    b.addEventListener("click", () => {
+      if (rdocKinds.has(k)) rdocKinds.delete(k); else rdocKinds.add(k);
+      lsSet("vira-rdoc-kinds", [...rdocKinds]);
+      renderReaderDocs();
+    });
+    kindWrap.appendChild(b);
+  });
+  bar.appendChild(kindWrap);
+
+  const q = el("input", "rdoc-q");
+  q.type = "search";
+  q.placeholder = "Search the library";
+  q.value = rdocQ;
+  q.addEventListener("input", () => {
+    rdocQ = q.value;
+    lsSet("vira-rdoc-q", rdocQ);
+    renderReaderDocs({ keepFocus: true });
+  });
+  bar.appendChild(q);
+
+  const fold = el("div", "rdoc-fold");
+  const exp = el("button", "rdoc-mini", "Expand all");
+  exp.addEventListener("click", () => {
+    rdocExpandAll(true);
+  });
+  const col = el("button", "rdoc-mini", "Collapse all");
+  col.addEventListener("click", () => rdocExpandAll(false));
+  if (rdocGroup) { fold.appendChild(exp); fold.appendChild(col); }
+  bar.appendChild(fold);
+
+  const st = rdocTagStatus || {};
+  if (st.pending) {
+    const note = el("span", "rdoc-note",
+      st.pending + " still being tagged");
+    note.title = "Vira tags documents in the background, a batch at a time";
+    bar.appendChild(note);
+  }
+}
+
+function rdocExpandAll(open) {
+  const s = rdocOpenSet();
+  s.clear();
+  if (open) rdocLastGroups.forEach((g) => s.add(g.key));
+  rdocSaveOpen();
+  renderReaderDocs();
+}
+
+let rdocLastGroups = [];
+
+function rdocTagPicker(anchor) {
+  const rows = [];
+  const counts = {};
+  (readerQueue || []).concat(readerDone || []).forEach((it) => {
+    if (!rdocMatchesExceptTags(it)) return;
+    Object.values(it.tags || {}).forEach((v) => (v || []).forEach((t) => {
+      counts[t] = (counts[t] || 0) + 1;
+    }));
+  });
+  // An active tag is always listed even at zero, or unticking it is impossible.
+  rdocTags.forEach((t) => { if (!(t in counts)) counts[t] = 0; });
+  Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .forEach(([t, n]) => rows.push({ tag: t, n }));
+
+  const pop = el("div", "ctx-pop rdoc-pop");
+  const filter = el("input", "rdoc-popq");
+  filter.type = "search";
+  filter.placeholder = "Filter tags";
+  pop.appendChild(filter);
+  const body = el("div", "rdoc-poplist");
+  pop.appendChild(body);
+
+  function paint() {
+    body.innerHTML = "";
+    const needle = rdocFold(filter.value);
+    rows.filter((r) => !needle || rdocFold(r.tag).includes(needle))
+      .forEach((r) => {
+        const line = el("button",
+          "rdoc-popitem" + (rdocTags.has(r.tag) ? " on" : ""));
+        line.appendChild(el("span", "rdoc-poptag", r.tag));
+        line.appendChild(el("span", "rdoc-popn", String(r.n)));
+        line.addEventListener("click", () => {
+          if (rdocTags.has(r.tag)) rdocTags.delete(r.tag);
+          else rdocTags.add(r.tag);
+          lsSet("vira-rdoc-tags", [...rdocTags]);
+          paint();
+          renderReaderDocs();
+        });
+        body.appendChild(line);
+      });
+    if (!body.children.length) {
+      body.appendChild(el("div", "empty left", "No tag matches that."));
+    }
+  }
+  filter.addEventListener("input", paint);
+  paint();
+
+  if (rdocTags.size) {
+    const clear = el("button", "rdoc-mini", "Clear tag filter");
+    clear.addEventListener("click", () => {
+      rdocTags.clear();
+      lsSet("vira-rdoc-tags", []);
+      paint();
+      renderReaderDocs();
+    });
+    pop.appendChild(clear);
+  }
+  placeCtxPop(pop, anchor);
+  filter.focus();
+}
+
+function rdocMatchesExceptTags(it) {
+  const saved = rdocTags;
+  rdocTags = new Set();
+  const ok = rdocMatches(it);
+  rdocTags = saved;
+  return ok;
+}
+
+function rdocGroupLabel(key) {
+  if (key === RDOC_UNTAGGED) return "Not yet tagged";
+  if (rdocGroup === "kind") return READER_KIND[key] || key;
+  return key;
+}
+
+function renderReaderDocs(opts = {}) {
+  const list = $("#reader-list");
+  if (!list) return;
+  const focus = opts.keepFocus ? document.activeElement : null;
+  const selStart = focus && focus.selectionStart;
+  rdocBar();
+
+  const all = readerQueue || [];
+  const rows = all.filter(rdocMatches);
+  list.innerHTML = "";
+
+  if (!all.length) {
+    list.appendChild(el("div", "empty left",
+      "Nothing queued. Dossiers, plans, retros, walkthroughs and briefs land "
+      + "here as they are made — and drop off once you mark them read."));
+    rdocLastGroups = [];
+    return;
+  }
+
+  const count = el("div", "rdoc-count",
+    rows.length === all.length
+      ? all.length + " documents"
+      : rows.length + " of " + all.length + " documents");
+  list.appendChild(count);
+
+  // The column header — Finder's, and the thing that makes a list read as a
+  // list rather than a stack of rows.
+  const head = el("div", "rdoc-head");
+  ["", "Name", "Tags", "Kind", "Added", ""].forEach((h, i) => {
+    head.appendChild(el("div", "rdoc-h h" + i, h));
+  });
+  list.appendChild(head);
+
+  if (!rows.length) {
+    list.appendChild(el("div", "empty left", "Nothing matches. Loosen a filter."));
+    rdocLastGroups = [];
+    return;
+  }
+
+  if (!rdocGroup) {
+    const flat = rows.slice().sort((a, b) =>
+      String(b.created || "").localeCompare(String(a.created || "")));
+    flat.forEach((it) => list.appendChild(rdocRow(it)));
+    rdocLastGroups = [];
+    return;
+  }
+
+  const byKey = new Map();
+  rows.forEach((it) => {
+    const k = rdocBucket(it);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(it);
+  });
+  const groups = [...byKey.entries()].map(([key, items]) => ({ key, items }));
+  groups.sort((a, b) => {
+    if (a.key === RDOC_UNTAGGED) return 1;
+    if (b.key === RDOC_UNTAGGED) return -1;
+    return b.items.length - a.items.length || a.key.localeCompare(b.key);
+  });
+  rdocLastGroups = groups;
+
+  const open = rdocOpenSet();
+  // A live search opens every group holding a match, or the grouping would
+  // hide what the search just found.
+  const searching = !!rdocQ.trim() || rdocTags.size > 0;
+
+  groups.forEach((g) => {
+    const isOpen = searching || open.has(g.key);
+    const wrap = el("div", "rdoc-group" + (isOpen ? " open" : ""));
+    const head = el("button", "rdoc-ghead");
+    head.appendChild(el("span", "rdoc-caret", "›"));
+    head.appendChild(el("span", "rdoc-gname", rdocGroupLabel(g.key)));
+    head.appendChild(el("span", "rdoc-gn", String(g.items.length)));
+    const kinds = [...new Set(g.items.map((i) => i.kind))];
+    if (kinds.includes("walkthrough")) {
+      head.appendChild(el("span", "rdoc-gfilm", "film"));
+    }
+    head.addEventListener("click", () => {
+      if (open.has(g.key)) open.delete(g.key); else open.add(g.key);
+      rdocSaveOpen();
+      renderReaderDocs();
+    });
+    wrap.appendChild(head);
+
+    const body = el("div", "rdoc-gbody");
+    if (isOpen) {
+      // Newest first inside a group, and a walkthrough leads its own date —
+      // the film is the thing you actually want to look at.
+      g.items.slice().sort((a, b) => {
+        const d = String(b.created || "").localeCompare(String(a.created || ""));
+        if (d) return d;
+        return (a.kind === "walkthrough" ? -1 : 0) - (b.kind === "walkthrough" ? -1 : 0);
+      }).forEach((it) => body.appendChild(rdocRow(it)));
+    }
+    wrap.appendChild(body);
+    list.appendChild(wrap);
+  });
+
+  if (focus && focus.id !== undefined && document.body.contains(focus) === false) {
+    const q = $(".rdoc-q");
+    if (q) { q.focus(); if (selStart != null) q.setSelectionRange(selStart, selStart); }
+  }
 }
 
 // Update = dispatch a session that re-researches the subject and rebuilds
@@ -18033,18 +18456,13 @@ async function loadReader(opts = {}) {
   try { data = await api("/api/reading/list"); }
   catch { data = { queue: [], completed: [], counts: {} }; }
   readerQueue = data.queue || [];
+  readerDone = data.completed || [];
   readerCounts = data.counts || {};
+  rdocVocab = data.vocab || {};
+  rdocTagStatus = data.tagging || {};
 
-  const list = $("#reader-list");
-  if (list) {
-    list.innerHTML = "";
-    if (!readerQueue.length) {
-      list.appendChild(el("div", "empty left",
-        "Nothing queued. Dossiers, plans, retros and briefs land here as they "
-        + "are made — and drop off once you mark them read."));
-    } else readerQueue.forEach((it) => list.appendChild(readerRow(it)));
-  }
-  renderReaderDone(data.completed || [], (data.counts || {}).completed || 0);
+  renderReaderDocs();
+  renderReaderDone(readerDone, (data.counts || {}).completed || 0);
 
   // Resolve the selection: the saved one if it still exists, else the
   // first room, else the queue. selectReader renders header + body.

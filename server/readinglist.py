@@ -45,6 +45,11 @@ STORE = ROOT / "data" / "reading-list.json"
 # somewhere else. See _sources().
 EXPLAINER_DIR = ROOT / "static" / "explainer"
 DOCS_DIR = ROOT / "static" / "docs"
+# The session walkthroughs, served in place off lab_root (see walkthroughs.py).
+# None means "ask walkthroughs.root()", which reads settings; a test roots it at
+# its fixture like every other source here. Declared in THIS module for exactly
+# the reason the docstring on _sources() gives.
+WALKTHROUGH_DIR = None
 
 # What a locator means, and therefore who resolves it.
 #   url   -> a path this server already serves (the dossiers under static/)
@@ -58,7 +63,7 @@ LOCATOR_KINDS = ("url", "vault", "plan")
 # card beside My Documents, not a row inside it. Rows already registered with
 # the kind stay valid (register() must not start refusing an old store), but
 # the queue views exclude them and the backfill no longer sweeps them in.
-KINDS = ("dossier", "plan", "retro", "brief", "room")
+KINDS = ("dossier", "plan", "retro", "brief", "room", "walkthrough")
 
 MAX_ITEMS = 2000
 MAX_TEXT = 300
@@ -302,14 +307,61 @@ def _decorate(it, *, with_progress=True):
     return out
 
 
+def _dedupe(items):
+    """Collapse entries that are the same document reached two ways.
+
+    A plan is registered TWICE: once by `plans.save_plan` as `plan:pl_...`, and
+    again by the sitedocs sweep as `url:/docs/plans/....html`, because
+    register() is idempotent per (locator_kind, locator) and those are two
+    different keys. Measured here: 11 of 551. It went unnoticed while the list
+    was a flat date-ordered column and became obvious the moment documents were
+    grouped by feature — one build reading as two.
+
+    The key is the SLUG, and that is not a heuristic: `slug` is what
+    reading.py stores section marks under, so two entries sharing one already
+    share their read state — they are one document by the store's own
+    reckoning. The `plan` locator wins because plans.py resolves it (it serves
+    the markdown and knows whether the file is still there); a `url` row for a
+    deleted plan would render as present."""
+    rank = {"plan": 0, "vault": 1, "url": 2}
+    best = {}
+    for it in items:
+        key = it.get("slug") or it.get("id")
+        cur = best.get(key)
+        if cur is None or rank.get(it.get("locator_kind"), 9) < \
+                rank.get(cur.get("locator_kind"), 9):
+            best[key] = it
+    return _keep(items, best)
+
+
+def _read_slugs():
+    """Slugs of every document with a completed stamp.
+
+    Needed because de-duplicating queue() and completed() SEPARATELY leaves a
+    twin pair split across the two lists — mark one copy read and the other is
+    still queued, which is the same document asking to be read again. Measured:
+    2 survived the per-list pass. Reading one copy is reading the document."""
+    return {it.get("slug") for it in _load()["items"]
+            if it.get("completed") and it.get("slug")}
+
+
+def _keep(items, best):
+    # Preserve the caller's ordering rather than dict order, so the sort a
+    # caller applied before de-duplicating still means something.
+    keep = {id(v) for v in best.values()}
+    return [it for it in items if id(it) in keep]
+
+
 def queue():
     """What is left to read, newest first. Completed entries are NOT here,
     and neither are rooms — a room is its own card in the Reader, tracked by
     its own done-mark store, not a row in My Documents."""
+    read = _read_slugs()
     live = [i for i in _load()["items"]
-            if not i.get("completed") and i.get("kind") != "room"]
+            if not i.get("completed") and i.get("kind") != "room"
+            and i.get("slug") not in read]
     live.sort(key=lambda i: i.get("created") or i.get("added") or "", reverse=True)
-    return [_decorate(i) for i in live]
+    return [_decorate(i) for i in _dedupe(live)]
 
 
 def completed(limit=50):
@@ -317,7 +369,7 @@ def completed(limit=50):
     done = [i for i in _load()["items"]
             if i.get("completed") and i.get("kind") != "room"]
     done.sort(key=lambda i: i.get("completed") or "", reverse=True)
-    return [_decorate(i, with_progress=False) for i in done[:limit]]
+    return [_decorate(i, with_progress=False) for i in _dedupe(done)[:limit]]
 
 
 def counts():
@@ -431,6 +483,17 @@ def _sitedocs():
         return []
 
 
+def _walkthroughs():
+    """The build films off lab_root, served in place at /walkthroughs/.
+    Dormant (empty) when no lab_root is configured, which is every install but
+    the owner's."""
+    try:
+        from . import walkthroughs
+        return walkthroughs.rows(WALKTHROUGH_DIR)
+    except Exception:
+        return []
+
+
 def _sources():
     """Every producer the sweep reads, declared in one place.
 
@@ -441,7 +504,8 @@ def _sources():
     rather than a missing seam. tests/test_readinglist.py roots all of these at
     one fixture directory and keeps a guard test that an empty root finds
     nothing; a new source that skips the seam fails that test on sight."""
-    return _explainer_dossiers() + _plans() + _vault_documents() + _sitedocs()
+    return (_explainer_dossiers() + _plans() + _vault_documents()
+            + _sitedocs() + _walkthroughs())
 
 
 def _is_stale(created, days=FRESH_DAYS):
