@@ -6103,18 +6103,8 @@ const JOB_PHASE_CLASS = {
 
 async function refreshJobs() {
   const { jobs } = await api("/api/jobs");
-  const strip = $("#jobs-strip");
-  strip.innerHTML = "";
-  jobs.slice(0, 10).forEach((j) => {
-    const ph = jobPhase(j);
-    const prefix = ph === "running" ? "running: " : ph === "waiting"
-      ? "waiting: " : ph === "error" ? "failed: " : "";
-    const pill = el("div", "job-pill " + (JOB_PHASE_CLASS[ph] || ph),
-      prefix + (j.title || j.prompt || "").slice(0, 60));
-    pill.addEventListener("click", () => openSession(j.id));
-    strip.appendChild(pill);
-  });
-  // the Jobs window shows the same jobs as full rows
+  // The pill strip is GONE (owner, 2026-08-05): it rendered the same
+  // /api/jobs list the full rows below render, so it was the list twice.
   const full = $("#jobs-list");
   if (full) {
     full.innerHTML = "";
@@ -6143,11 +6133,18 @@ async function loadOrphans() {
   let s;
   try {
     s = await api("/api/orphanwork");
-    if (s.stale) s = await post("/api/orphanwork/refresh", {});
   } catch (e) {
     return;
   }
   renderOrphans(s);
+  // ALWAYS re-sweep in the background, not only past the 6h stale window:
+  // a merge done outside this view (a terminal session, the daily routine)
+  // leaves dead rows in the cached store, and already-landed work sitting
+  // under "Unlanded" is exactly what this section must not show. The
+  // cached render above keeps first paint instant.
+  try {
+    renderOrphans(await post("/api/orphanwork/refresh", {}));
+  } catch (e) { /* the cached render stands */ }
 }
 
 function renderOrphans(s) {
@@ -6184,15 +6181,23 @@ function orphanRow(it) {
   if (it.kind !== "unpushed") {
     const foot = el("div", "orphan-foot");
     if (it.action && it.action.status === "running") {
-      foot.appendChild(el("span", "hint", it.action.name + "…"));
+      foot.appendChild(el("span", "hint",
+        it.action.name + "… " + (it.action.output || "").slice(0, 120)));
     } else {
+      // Land replaced Merge as the primary action (owner, 2026-08-05:
+      // "why doesn't it just land?"): for a committed clean branch it IS
+      // merge+push; for a dirty worktree it finishes the work first.
+      const land = el("button", "fchip sm", "Land");
+      land.title = it.dirty
+        ? "Dispatch a session to finish and commit this, then Vira merges + pushes it"
+        : "Merge this branch into live main and push";
+      land.addEventListener("click", () => armOrphanAction(foot, it, "land"));
       const resume = el("button", "fchip sm", "Resume");
+      resume.title = "Work on it without landing — the session stops short of merge";
       resume.addEventListener("click", () => orphanResume(it));
-      const mrg = el("button", "fchip sm", "Merge");
-      mrg.addEventListener("click", () => armOrphanAction(foot, it, "merge"));
       const disc = el("button", "fchip sm", "Discard");
       disc.addEventListener("click", () => armOrphanAction(foot, it, "discard"));
-      foot.append(resume, mrg, disc);
+      foot.append(land, resume, disc);
     }
     card.appendChild(foot);
     if (it.action && it.action.status && it.action.status !== "running") {
@@ -6242,7 +6247,11 @@ async function orphanResume(it) {
 // row's own foot — anchored to the button clicked, the armSkinApply shape.
 function armOrphanAction(foot, it, name) {
   foot.innerHTML = "";
-  const label = name === "merge"
+  const label = name === "land"
+    ? (it.dirty
+      ? `Land ${it.branch}? A session finishes and commits it, then Vira merges + pushes.`
+      : `Land ${it.branch}? Merges into live main and pushes.`)
+    : name === "merge"
     ? `Merge ${it.branch} into live main?`
     : it.dirty
       ? `Discard ${it.dirty} uncommitted change${it.dirty === 1 ? "" : "s"}? This destroys them.`
@@ -6256,10 +6265,20 @@ function armOrphanAction(foot, it, name) {
 }
 
 async function runOrphanAction(foot, it, name) {
-  foot.textContent = name === "merge" ? "Merging…" : "Discarding…";
+  foot.textContent = name === "land" ? "Landing…"
+    : name === "merge" ? "Merging…" : "Discarding…";
   try {
     const body = name === "discard" ? { key: it.key, force: true } : { key: it.key };
-    await post(`/api/orphanwork/${name}`, body);
+    const r = await post(`/api/orphanwork/${name}`, body);
+    // A dirty row's landing runs through a finishing session — open its
+    // terminal so the landing is watchable, and let the row's action
+    // field carry the state (it can run for a while; no bounded poll).
+    if (name === "land" && r.job_id) {
+      openSession(r.job_id);
+      toast("Landing — a session is finishing the work; Vira merges when it's done");
+      loadOrphans();
+      return;
+    }
     startPoll(async (h) => {
       const s = await api("/api/orphanwork");
       const still = (s.items || []).find((x) => x.key === it.key);
@@ -6274,7 +6293,8 @@ async function runOrphanAction(foot, it, name) {
       }
     }, 1500, 60000);
   } catch (e) {
-    toast((name === "merge" ? "Merge" : "Discard") + " failed: " + e.message);
+    toast((name === "land" ? "Land" : name === "merge" ? "Merge" : "Discard")
+      + " failed: " + errText(e));
     loadOrphans();
   }
 }
@@ -6285,6 +6305,22 @@ $("#orphan-refresh")?.addEventListener("click", async () => {
     renderOrphans(s);
   } catch (e) {
     toast("Sweep failed: " + e.message);
+  }
+});
+
+$("#orphan-landall")?.addEventListener("click", async () => {
+  const rows = document.querySelectorAll("#orphan-list .orphan-row").length;
+  if (!rows) { toast("Nothing unlanded"); return; }
+  if (!confirm(`Land all ${rows} row${rows === 1 ? "" : "s"}? Vira works through `
+    + "them one at a time — dirty worktrees get a finishing session, then "
+    + "each branch merges into live main and pushes.")) return;
+  try {
+    const r = await post("/api/orphanwork/land-all", {});
+    toast(r.started ? `Landing ${r.count} — one at a time; watch the rows`
+                    : "Nothing to land");
+    loadOrphans();
+  } catch (e) {
+    toast("Land all failed: " + errText(e));
   }
 });
 

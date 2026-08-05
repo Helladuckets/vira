@@ -3135,6 +3135,37 @@ def api_orphanwork_discard(req: OrphanDiscardReq):
     return {"started": True}
 
 
+@app.post("/api/orphanwork/land")
+def api_orphanwork_land(req: OrphanKeyReq):
+    """Finish-and-merge in one gesture: a dirty row gets a finishing
+    session dispatched into its worktree first, then the server merges +
+    pushes when it completes; a clean committed row merges directly.
+    Passive blocked — both halves act on the real repo."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — land from the live "
+                                 "checkout instead")
+    it = _orphan_item(req.key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    if it.get("kind") == "unpushed":
+        raise HTTPException(409, "main needs a push, not a landing")
+    try:
+        jid = orphanwork.land(it)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"started": True, "job_id": jid}
+
+
+@app.post("/api/orphanwork/land-all")
+def api_orphanwork_land_all():
+    """One serial pass over every row — see orphanwork.land_all."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive instance — land from the live "
+                                 "checkout instead")
+    n = orphanwork.land_all()
+    return {"started": n > 0, "count": n}
+
+
 # ---------- contact atlas (the face-graph of interconnection) ----------
 
 @app.get("/api/atlas")
