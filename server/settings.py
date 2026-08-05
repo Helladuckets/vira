@@ -56,6 +56,8 @@ DEFAULTS = {
     "brief_remote_events": [],           # event-title substrings treated as remote/virtual
                                          # (a remote event never conflicts with an in-person one)
     "fixture_mode": None,                # None = auto (fixture when crm_root missing)
+    "ytdlp_path": "",                    # yt-dlp binary for reading-room staging;
+                                         # empty = probe PATH (fullingest.ytdlp_path)
     "apple_contacts_push": True,         # contact-card saves push to Apple Contacts
                                          # (macOS only; AppleScript spoke, syncs to phone)
     "mail_body_index": False,            # incremental mail-body sweep in the

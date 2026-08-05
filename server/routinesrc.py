@@ -103,6 +103,17 @@ TOKENS = {
          "plain git plus a job-ledger join, no model call. A branch a "
          "live session owns is not orphan work and is excluded."),
     ],
+    "__room_ingest__": [
+        ("fullingest", "run_all", "What this loop runs", ""),
+        ("fullingest", "stage", "Staging the material",
+         "Every un-staged room item's material fetched into the vault's "
+         "raw/reading-room/ — YouTube captions via yt-dlp, article text "
+         "via a minimal fetch. Deterministic; no model call."),
+        ("fullingest", "reconcile", "Linking what was synthesized",
+         "Items whose source-summary landed in wiki/ get their vault "
+         "field written and their obsolete pointer note retired to "
+         "pending-user-deletion/."),
+    ],
     "__lesson_recurrence__": [
         ("lessonwatch", "run_pass", "What this loop runs",
          "Rung 1 is deterministic (gather, score, count restatements); "
@@ -152,6 +163,11 @@ EFFECTS = {
         "data/orphan-work.json — the unlanded-work rows in The Forge · Runs. "
         "You are pinged when a genuinely new orphan appears, never on "
         "the first-ever sweep.",
+    "__room_ingest__":
+        "the vault's raw/reading-room/ (staged material), each room store's "
+        "vault fields, and pending-user-deletion/ (retired pointer notes). "
+        "The wiki summaries themselves are written by the vault's own "
+        "nightly ingest, not this loop.",
     "__lesson_recurrence__":
         "data/lesson-recurrence.json — the Rules panel under The Forge · "
         "Record; a tier-2 rule at threshold stages a proposed idea in "

@@ -109,5 +109,7 @@
   "lesson_promote_at": 3,
   "_lesson_promote_at": "Distinct sessions that must describe breaking a tier-2 rule before the counter stages a promotion proposal (a `proposed` idea in the Queue — never a ledger write).",
   "lesson_candidates_per_rule": 12,
-  "_lesson_candidates_per_rule": "Rung-2 cost ceiling: at most this many candidate reversals are adjudicated per rule per pass (newest first; drops are counted in the run record, never silent)."
+  "_lesson_candidates_per_rule": "Rung-2 cost ceiling: at most this many candidate reversals are adjudicated per rule per pass (newest first; drops are counted in the run record, never silent).",
+  "ytdlp_path": "",
+  "_ytdlp_path": "yt-dlp binary used by the reading-room full ingest to stage YouTube caption transcripts into the vault (server/fullingest.py). Empty = probe PATH; absent binary = YouTube items report 'yt-dlp not installed' and articles still stage."
 }

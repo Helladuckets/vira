@@ -1,4 +1,6 @@
-"""Reading-room -> vault projection."""
+"""Reading-room -> vault projection (hub-only since the 2026-08-05 full
+ingest — pointer notes are no longer minted; see test_fullingest.py for
+the staging/reconcile half)."""
 import json
 import os
 import shutil
@@ -7,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from server import readingroom, roomvault, vault
+from server import fullingest, readingroom, roomvault, vault
 
 
 def item(**kw):
@@ -38,6 +40,8 @@ class Base(unittest.TestCase):
         self.addCleanup(self.p_rooms.stop)
         self.addCleanup(self.p_vault.stop)
         self.addCleanup(shutil.rmtree, self.tmp, True)
+        fullingest._summaries_cache.clear()
+        roomvault._notes_cache.clear()
 
     def room(self, items, slug="demo", definition=None):
         doc = {"slug": slug, "title": "Demo Room", "subtitle": "A subtitle.",
@@ -52,106 +56,81 @@ class Base(unittest.TestCase):
     def note(self, rel):
         return (self.vault / rel).read_text(encoding="utf-8")
 
+    def summary(self, stem, iid):
+        (self.vault / "wiki" / f"{stem}.md").write_text(
+            "---\ntitle: \"S\"\ntype: source-summary\n"
+            f"room_item_id: {iid}\n---\n\n# S\n", encoding="utf-8")
+
+    def pointer(self, stem, iid):
+        d = self.vault / roomvault.ROOMS_SUBDIR
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{stem}.md").write_text(
+            "---\ntitle: \"P\"\ntype: reading-room-item\n"
+            f"room_item_id: {iid}\n---\n\n# P\n", encoding="utf-8")
+
 
 class IngestTests(Base):
-    def test_creates_a_pointer_note_and_a_hub(self):
+    def test_writes_the_hub_and_mints_no_pointer_notes(self):
         self.room([item()])
         res = roomvault.ingest("demo")
-        self.assertEqual(res["created"], 1)
         self.assertTrue((self.vault / "wiki" / "demo-reading-room.md").exists())
-        n = self.note("wiki/rooms/a-talk-about-things.md")
-        self.assertIn("type: reading-room-item", n)
-        self.assertIn("room_slug: demo", n)
-        self.assertIn("What it is.", n)
-        self.assertIn("Why it matters.", n)
-        self.assertIn("https://example.com/talk", n)
+        self.assertFalse((self.vault / "wiki" / "rooms").exists())
+        self.assertEqual((res["linked"], res["pending"]), (0, 1))
 
-    def test_pointer_is_not_a_source_summary(self):
-        # The type asserts a raw was read and synthesized. These are not.
-        self.room([item()])
-        roomvault.ingest("demo")
-        self.assertNotIn("source-summary",
-                         self.note("wiki/rooms/a-talk-about-things.md"))
-
-    def test_rerun_is_idempotent_and_writes_nothing(self):
-        self.room([item()])
-        roomvault.ingest("demo")
-        p = self.vault / "wiki" / "rooms" / "a-talk-about-things.md"
-        before = p.read_text(encoding="utf-8")
-        mtime = p.stat().st_mtime
-        res = roomvault.ingest("demo")
-        self.assertEqual((res["created"], res["updated"]), (0, 0))
-        self.assertEqual(res["unchanged"], 1)
-        self.assertEqual(p.read_text(encoding="utf-8"), before)
-        self.assertEqual(p.stat().st_mtime, mtime)
-
-    def test_retitled_item_updates_its_own_note(self):
-        # The id is the URL, so a retitled item must keep its note rather
-        # than mint a second node in the graph for one thing.
-        it = item()
-        self.room([it])
-        roomvault.ingest("demo")
-        self.room([item(title="A Talk About Things (Revised)", id=it["id"])])
-        res = roomvault.ingest("demo")
-        self.assertEqual((res["created"], res["updated"]), (0, 1))
-        notes = sorted(p.name for p in (self.vault / "wiki" / "rooms").glob("*.md"))
-        self.assertEqual(notes, ["a-talk-about-things.md"])
-        self.assertIn("(Revised)", self.note("wiki/rooms/a-talk-about-things.md"))
-
-    def test_created_date_survives_an_update(self):
-        self.room([item()])
-        roomvault.ingest("demo")
-        p = self.vault / "wiki" / "rooms" / "a-talk-about-things.md"
-        p.write_text(p.read_text(encoding="utf-8")
-                     .replace(f"created: {roomvault.date.today().isoformat()}",
-                              "created: 2020-01-01"), encoding="utf-8")
-        self.room([item(note="Changed.")])
-        roomvault.ingest("demo")
-        self.assertIn("created: 2020-01-01", p.read_text(encoding="utf-8"))
-
-    def test_consumed_item_links_the_real_note_and_mints_none(self):
+    def test_consumed_item_links_the_real_note(self):
         (self.vault / "wiki" / "machines-of-loving-grace.md").write_text(
             "# real note\n", encoding="utf-8")
         self.room([item(title="Machines of Loving Grace", status="HAVE",
                         vault="wiki/machines-of-loving-grace.md")])
         res = roomvault.ingest("demo")
-        self.assertEqual((res["created"], res["linked_existing"]), (0, 1))
-        self.assertFalse((self.vault / "wiki" / "rooms").exists())
+        self.assertEqual(res["linked"], 1)
         self.assertIn("[[machines-of-loving-grace]]",
                       self.note("wiki/demo-reading-room.md"))
 
-    def test_a_stale_vault_ref_falls_back_to_a_pointer(self):
+    def test_a_synthesized_summary_links_before_reconcile(self):
+        it = item()
+        self.summary("a-talk-summary", it["id"])
+        self.room([it])
+        res = roomvault.ingest("demo")
+        self.assertEqual(res["linked"], 1)
+        self.assertIn("[[a-talk-summary]]",
+                      self.note("wiki/demo-reading-room.md"))
+
+    def test_a_legacy_pointer_still_links_until_retired(self):
+        it = item()
+        self.pointer("a-talk-pointer", it["id"])
+        self.room([it])
+        res = roomvault.ingest("demo")
+        self.assertEqual(res["linked"], 1)
+        self.assertIn("[[a-talk-pointer]]",
+                      self.note("wiki/demo-reading-room.md"))
+
+    def test_the_summary_outranks_the_legacy_pointer(self):
+        it = item()
+        self.pointer("a-talk-pointer", it["id"])
+        self.summary("a-talk-summary", it["id"])
+        self.room([it])
+        roomvault.ingest("demo")
+        h = self.note("wiki/demo-reading-room.md")
+        self.assertIn("[[a-talk-summary]]", h)
+        self.assertNotIn("[[a-talk-pointer]]", h)
+
+    def test_a_stale_vault_ref_reads_as_pending(self):
         # A link that does not resolve reads as consumed and leads nowhere.
         self.room([item(status="HAVE", vault="wiki/deleted-note.md")])
         res = roomvault.ingest("demo")
-        self.assertEqual((res["created"], res["linked_existing"]), (1, 0))
+        self.assertEqual((res["linked"], res["pending"]), (0, 1))
 
-    def test_slug_never_shadows_an_existing_note(self):
-        # Obsidian resolves [[link]] by filename across directories, so a
-        # colliding stem would silently re-point live links.
-        (self.vault / "wiki" / "a-talk-about-things.md").write_text(
-            "# unrelated\n", encoding="utf-8")
+    def test_rerun_is_idempotent_and_writes_nothing(self):
         self.room([item()])
         roomvault.ingest("demo")
-        made = sorted(p.stem for p in (self.vault / "wiki" / "rooms").glob("*.md"))
-        self.assertEqual(made, ["a-talk-about-things-lecture"])
-        self.assertEqual(self.note("wiki/a-talk-about-things.md"), "# unrelated\n")
-
-    def test_two_items_with_one_title_get_distinct_notes(self):
-        self.room([item(url="https://example.com/one"),
-                   item(url="https://example.com/two")])
+        p = self.vault / "wiki" / "demo-reading-room.md"
+        before = p.read_text(encoding="utf-8")
+        mtime = p.stat().st_mtime
         res = roomvault.ingest("demo")
-        self.assertEqual(res["created"], 2)
-        self.assertEqual(len(list((self.vault / "wiki" / "rooms").glob("*.md"))), 2)
-
-    def test_people_link_only_when_the_page_exists(self):
-        (self.vault / "wiki" / "ada-lovelace.md").write_text("x", encoding="utf-8")
-        self.room([item(people=["Ada Lovelace", "Nobody Here"])])
-        roomvault.ingest("demo")
-        n = self.note("wiki/rooms/a-talk-about-things.md")
-        self.assertIn("[[ada-lovelace]]", n)
-        self.assertIn("Nobody Here", n)
-        self.assertNotIn("[[nobody-here]]", n)
+        self.assertFalse(res["hub_changed"])
+        self.assertEqual(p.read_text(encoding="utf-8"), before)
+        self.assertEqual(p.stat().st_mtime, mtime)
 
     def test_hub_carries_every_item_and_the_definition(self):
         self.room([item(prio="P1"), item(url="https://e.com/2", prio="P3",
@@ -170,8 +149,6 @@ class IngestTests(Base):
         self.assertIn("items: 2", h)
 
     def test_hub_names_recurring_people_with_no_page(self):
-        # Linking them would be 165 ghost nodes; naming the gap is the
-        # to-do, and a page created later gets linked on the next run.
         items = [item(url=f"https://e.com/{i}", title=f"Thing {i}",
                       people=["Chris Olah"]) for i in range(3)]
         self.room(items)
@@ -179,12 +156,6 @@ class IngestTests(Base):
         h = self.note("wiki/demo-reading-room.md")
         self.assertIn("Chris Olah — 3 items", h)
         self.assertNotIn("[[chris-olah]]", h)
-
-    def test_a_one_off_name_is_not_listed_as_a_gap(self):
-        self.room([item(people=["Passing Mention"])])
-        roomvault.ingest("demo")
-        self.assertNotIn("Passing Mention —",
-                         self.note("wiki/demo-reading-room.md"))
 
     def test_a_person_with_a_page_is_not_a_gap(self):
         (self.vault / "wiki" / "chris-olah.md").write_text("x", encoding="utf-8")
@@ -198,31 +169,16 @@ class IngestTests(Base):
     def test_dry_run_writes_nothing(self):
         self.room([item()])
         res = roomvault.ingest("demo", dry_run=True)
-        self.assertEqual(res["created"], 1)
-        self.assertFalse((self.vault / "wiki" / "rooms").exists())
+        self.assertEqual(res["pending"], 1)
         self.assertFalse((self.vault / "wiki" / "demo-reading-room.md").exists())
 
-    def test_an_item_that_left_the_room_is_reported_not_deleted(self):
-        self.room([item(), item(url="https://e.com/gone", title="Gone Thing")])
-        roomvault.ingest("demo")
+    def test_a_legacy_pointer_whose_item_left_is_reported_not_deleted(self):
+        gone = item(url="https://e.com/gone", title="Gone Thing")
+        self.pointer("gone-thing", gone["id"])
         self.room([item()])
         res = roomvault.ingest("demo")
         self.assertEqual(res["orphans"], ["gone-thing.md"])
         self.assertTrue((self.vault / "wiki" / "rooms" / "gone-thing.md").exists())
-
-    def test_frontmatter_quotes_titles_and_links(self):
-        self.room([item(title="Talk: A Thing", venue="Show: Live")])
-        roomvault.ingest("demo")
-        n = self.note("wiki/rooms/talk-a-thing.md")
-        self.assertIn('title: "Talk: A Thing"', n)
-        self.assertIn('venue: "Show: Live"', n)
-        self.assertIn('room: "[[demo-reading-room]]"', n)
-
-    def test_paywalled_is_carried(self):
-        self.room([item(pay=True)])
-        roomvault.ingest("demo")
-        self.assertIn("paywalled: true",
-                      self.note("wiki/rooms/a-talk-about-things.md"))
 
 
 class RefusalTests(Base):
@@ -231,7 +187,7 @@ class RefusalTests(Base):
         with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
             with self.assertRaises(roomvault.IngestError):
                 roomvault.ingest("demo")
-        self.assertFalse((self.vault / "wiki" / "rooms").exists())
+        self.assertFalse((self.vault / "wiki" / "demo-reading-room.md").exists())
 
     def test_unknown_room_raises(self):
         with self.assertRaises(roomvault.IngestError):
@@ -262,8 +218,6 @@ class StoreWriteIsolationTests(Base):
         self.assertIsNotNone(readingroom.load_room("demo"))
 
     def test_no_unpatched_vault_root_reaches_a_real_home(self):
-        # The shape of the original bug: a default vault_root pointing at a
-        # real directory. Nothing in the store path may consult it.
         with mock.patch.object(vault, "vault_root",
                                side_effect=AssertionError(
                                    "build() consulted vault_root")):
@@ -271,11 +225,13 @@ class StoreWriteIsolationTests(Base):
 
 
 class SyncTests(Base):
-    def test_sync_projects(self):
+    def test_sync_projects_and_kicks_the_full_ingest(self):
         self.room([item()])
-        res = roomvault.sync("demo")
-        self.assertEqual(res["created"], 1)
+        with mock.patch.object(fullingest, "sync") as kick:
+            res = roomvault.sync("demo")
+        self.assertEqual(res["pending"], 1)
         self.assertTrue((self.vault / "wiki" / "demo-reading-room.md").exists())
+        kick.assert_called_once_with("demo")
 
     def test_sync_swallows_failure(self):
         self.room([item()])

@@ -19,31 +19,28 @@ Reader has to be able to ASK where an item's note ended up, and that
 lookup reuses the same `room_item_id` key, derived live rather than
 stored.
 
-WHAT DOES *NOT* GET A NOTE. An item the owner has already consumed
-carries `vault: wiki/<slug>.md` — a real source-summary written from the
-material itself. Minting a pointer note beside it would put two nodes in
-the graph for one thing and bury the substantive one. So those items are
-catalogued in the hub, linking straight at the existing note, and the
-existing note is never touched: it is the owner's, written from a raw
-source, and a machine pass has no business editing it.
+THE POINTER-NOTE ERA ENDED 2026-08-05 (owner's ruling: pointer pages
+"don't help me at all" — every item's material is fully ingested
+instead; see server/fullingest.py). This module no longer MINTS
+`wiki/rooms/<item>.md` pointer notes. What each item gets now is a REAL
+source-summary: fullingest stages the material into raw/reading-room/,
+the vault's own nightly ingest (or a bulk fleet) synthesizes the
+summary carrying `room_item_id`, and fullingest.reconcile writes the
+item's `vault` field and retires the item's legacy pointer note into
+pending-user-deletion/. Until an item's summary lands, its legacy
+pointer (if one exists from the pointer era) keeps serving; a brand-new
+item simply has no note yet and the hub says so by linking nothing.
 
-SO THE OUTPUT IS TWO SHAPES, matching the vault's own taxonomy
-(~/TC-IL/CLAUDE.md §Taxonomy):
+SO THE OUTPUT IS ONE SHAPE now, plus a legacy one it still reads:
 
   wiki/<room>-reading-room.md   type: reference — the catalog page. Every
-                                item, annotated with the room's own read
-                                of why it is there. `reference` is the
-                                vault's existing word for a catalog that
-                                points outward at external resources.
+                                item, annotated, linking each item's
+                                summary (or its not-yet-retired pointer).
 
-  wiki/rooms/<item>.md          type: reading-room-item — one per
-                                un-consumed item. Deliberately NOT
-                                `source-summary`: that type asserts a raw
-                                file was read and synthesized, and these
-                                are pointers to material the owner has
-                                not consumed yet. Claiming otherwise
-                                would corrupt the density ladder the
-                                whole vault reads by.
+  wiki/rooms/<item>.md          LEGACY pointer notes, read-only here:
+                                still indexed (notes_by_item) so the
+                                Reader resolves them until reconcile
+                                retires each one behind its summary.
 
 Passive instances refuse outright: vault_root lives outside the cloned
 data/, so a test clone writing here would land in the live Obsidian vault
@@ -59,10 +56,8 @@ from . import readingroom, vault
 ROOMS_SUBDIR = "wiki/rooms"
 HUB_SUBDIR = "wiki"
 
-ITEM_TYPE = "reading-room-item"
 HUB_TYPE = "reference"
 
-MAX_PERSON_TAGS = 8
 # A slug long enough to stay readable as a filename and a wikilink.
 MAX_SLUG = 72
 
@@ -83,10 +78,6 @@ def _yaml_str(v):
     Properties pane, and an unquoted [[link]] parses as a nested flow
     sequence (the vault's frontmatter-link-quoting rule)."""
     return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _yaml_list(vals):
-    return "[" + ", ".join(_yaml_str(v) for v in vals) + "]"
 
 
 def _existing_stems(root):
@@ -113,100 +104,12 @@ def _vault_ref(item, root):
     return stem if (root / raw).exists() or (root / "wiki" / f"{stem}.md").exists() else ""
 
 
-def _person_link(name, stems):
-    """Link a person only when their page exists. An unresolved link per
-    person across hundreds of items would fill the graph with ghost nodes
-    that look like knowledge and hold none."""
-    slug = _slugify(name, cap=64)
-    return f"[[{slug}]]" if slug in stems else name
-
-
 def _facts_line(it):
     bits = [it["mode"].capitalize(), it.get("type") or "", it.get("venue") or "",
             it.get("date") or it.get("year") or ""]
     return " · ".join(b for b in bits if b)
 
 
-def _status_phrase(status):
-    return {"HAVE": "already in the vault",
-            "PARTIAL": "met secondhand — not consumed directly",
-            "MISSING": "not consumed yet"}.get(status, status)
-
-
-def item_note(it, room, stems, root):
-    """Render one item note. Pure — takes everything it needs, so the
-    writer can diff it against what is on disk before touching the file."""
-    people = [p for p in (it.get("people") or []) if p]
-    links = [_person_link(p, stems) for p in people]
-    ref = _vault_ref(it, root)
-    hub = f"{room['slug']}-reading-room"
-
-    tags = ["reading-room", room["slug"], "cat/reading-room"]
-    if it.get("type"):
-        tags.append(it["type"])
-    for p in people[:MAX_PERSON_TAGS]:
-        tags.append(_slugify(p, cap=64))
-    seen, uniq = set(), []
-    for t in tags:
-        if t and t not in seen:
-            seen.add(t)
-            uniq.append(t)
-
-    fm = [
-        "---",
-        f"title: {_yaml_str(it['title'])}",
-        f"type: {ITEM_TYPE}",
-        f"room: {_yaml_str(f'[[{hub}]]')}",
-        f"room_slug: {room['slug']}",
-        f"room_item_id: {it['id']}",
-        f"room_status: {it.get('status', '')}",
-        f"item_type: {it.get('type', '')}",
-        f"mode: {it.get('mode', '')}",
-        f"prio: {it.get('prio', '')}",
-    ]
-    if it.get("url"):
-        fm.append(f"url: {_yaml_str(it['url'])}")
-    if it.get("date") or it.get("year"):
-        fm.append(f"date: {it.get('date') or it.get('year')}")
-    if it.get("venue"):
-        fm.append(f"venue: {_yaml_str(it['venue'])}")
-    if people:
-        fm.append(f"people: {_yaml_list(people)}")
-    if it.get("pay"):
-        fm.append("paywalled: true")
-    fm.append(f"tags: [{', '.join(uniq)}]")
-    fm.append(f"created: {date.today().isoformat()}")
-    fm.append(f"updated: {date.today().isoformat()}")
-    if ref:
-        fm.append("sources:")
-        fm.append(f"  - {_yaml_str(f'[[{ref}]]')}")
-        fm.append("source_count: 1")
-    else:
-        fm.append("sources: []")
-        fm.append("source_count: 0")
-    fm.append("---")
-
-    body = ["", f"# {it['title']}", ""]
-    if it.get("note"):
-        body += [it["note"], ""]
-    body.append(f"**{_facts_line(it)}** · {it.get('prio', '')} · "
-                f"{_status_phrase(it.get('status', ''))}"
-                + (" · paywalled" if it.get("pay") else ""))
-    body.append("")
-    if it.get("url"):
-        body += [f"[Open the source]({it['url']})", ""]
-    if it.get("why"):
-        body += ["## Why it is in the room", "", it["why"], ""]
-    if links:
-        body += ["## People", "", ", ".join(links), ""]
-    if ref:
-        body += ["## Already in the vault", "",
-                 f"Consumed and summarized at [[{ref}]].", ""]
-    body += ["---", "",
-             f"Catalogued in [[{hub}]] — the *{room['title']}* reading room. "
-             "This page is a pointer to external material, not a summary of "
-             "it; the room store in Vira is the source of truth.", ""]
-    return "\n".join(fm + body)
 
 
 MIN_RECURRING = 3      # appearances before an un-paged name is worth naming
@@ -283,8 +186,8 @@ def hub_note(room, rows, stems=None):
             b += [f"**Method.** {d['notes']}", ""]
 
     b += ["## The catalog", "",
-          "Un-consumed items link to their pointer page in `wiki/rooms/`; "
-          "items already consumed link straight to their summary.", ""]
+          "Each item links to its source-summary in the vault; an unlinked "
+          "item's material has not been ingested yet.", ""]
     for prio in ("P1", "P2", "P3"):
         group = [(it, tgt) for it, tgt in rows if it.get("prio") == prio]
         if not group:
@@ -308,7 +211,9 @@ def hub_note(room, rows, stems=None):
     b += ["---", "",
           "Generated from Vira's reading-room store (`server/roomvault.py`). "
           "The room is the source of truth; re-running the ingest refreshes "
-          "this page and every pointer under `wiki/rooms/`.", ""]
+          "this page. Item material is fully ingested via "
+          "`server/fullingest.py` — staged raw in `raw/reading-room/`, "
+          "source-summary in `wiki/`.", ""]
     return "\n".join(fm + b)
 
 
@@ -353,8 +258,11 @@ def _write(path, text, dry_run):
 
 
 def ingest(slug, dry_run=False):
-    """Project one room into the vault. Idempotent: safe to re-run after
-    every room refresh. Returns a summary dict."""
+    """Project one room's CATALOG into the vault. Since 2026-08-05 this
+    mints no pointer notes — it renders the hub, linking each item to the
+    best note that exists: the owner/reconciled summary, else the item's
+    synthesized summary awaiting reconcile, else its legacy pointer note.
+    Idempotent: safe to re-run after every room refresh."""
     if os.environ.get("VIRA_PASSIVE"):
         raise IngestError(
             "passive instance: vault_root is outside the cloned data/, so "
@@ -366,43 +274,23 @@ def ingest(slug, dry_run=False):
     if not root.exists():
         raise IngestError(f"vault root does not exist: {root}")
 
-    rooms_dir = root / ROOMS_SUBDIR
-    known = _index_by_item_id(rooms_dir)
+    from . import fullingest
+    known = _index_by_item_id(root / ROOMS_SUBDIR)
+    summaries = fullingest.summaries_by_item(root)
     stems = _existing_stems(root)
-    # Our own pointer pages must not block slug allocation for themselves.
-    ours = {p.stem for p in known.values()}
 
-    rows, written, updated, linked, taken = [], 0, 0, 0, set()
+    rows, linked, pending = [], 0, 0
     for it in room["items"]:
         ref = _vault_ref(it, root)
+        if not ref and it["id"] in summaries:
+            ref = summaries[it["id"]].stem
+        if not ref and it["id"] in known:
+            ref = known[it["id"]].stem
+        rows.append((it, ref))
         if ref:
-            # Already consumed — the real summary is the target. No pointer.
-            rows.append((it, ref))
             linked += 1
-            continue
-
-        path = known.get(it["id"])
-        if path is None:
-            base = _slugify(it["title"])
-            cand = base
-            n = 0
-            while (cand in stems and cand not in ours) or cand in taken:
-                n += 1
-                cand = (f"{base}-{_slugify(it.get('type') or 'item')}"
-                        if n == 1 else f"{base}-{it['id'][:6]}")
-                if n > 2:
-                    cand = f"{base}-{it['id']}"
-                    break
-            path = rooms_dir / f"{cand}.md"
-        taken.add(path.stem)
-        rows.append((it, path.stem))
-        text = item_note(it, room, stems, root)
-        existed = path.exists()
-        if _write(path, text, dry_run):
-            if existed:
-                updated += 1
-            else:
-                written += 1
+        else:
+            pending += 1
 
     hub_path = root / HUB_SUBDIR / f"{slug}-reading-room.md"
     hub_changed = _write(hub_path, hub_note(room, rows, stems), dry_run)
@@ -411,8 +299,7 @@ def ingest(slug, dry_run=False):
                      if iid not in {i["id"] for i in room["items"]})
     return {
         "room": slug, "title": room["title"], "items": len(room["items"]),
-        "created": written, "updated": updated, "linked_existing": linked,
-        "unchanged": len(room["items"]) - linked - written - updated,
+        "linked": linked, "pending": pending,
         "hub": str(hub_path.relative_to(root)), "hub_changed": hub_changed,
         "orphans": orphans, "dry_run": bool(dry_run),
     }
@@ -428,11 +315,22 @@ def sync(slug):
     pure store write, and a cross-boundary write hung off it fires for
     every caller that never heard of a vault — including tests, which is
     exactly how 11 fixture rooms landed in the live Obsidian vault on
-    2026-07-29. Entry points sync; store functions do not."""
+    2026-07-29. Entry points sync; store functions do not.
+
+    Since 2026-08-05 it also kicks the full ingest (stage + reconcile,
+    fullingest.sync — a daemon thread) so a room refresh's new items get
+    their material staged for the nightly synthesis without anyone
+    remembering to run anything."""
     try:
-        return ingest(slug)
+        res = ingest(slug)
     except Exception:  # noqa: BLE001 — see above
         return None
+    try:
+        from . import fullingest
+        fullingest.sync(slug)
+    except Exception:  # noqa: BLE001 — the projection already succeeded
+        pass
+    return res
 
 
 def ingest_all(dry_run=False):
@@ -523,27 +421,35 @@ def resolve(slug, items, root=None):
     Three states, and the caller must be able to tell them apart because
     they mean different things to a reader:
       owner   — `vault`, a summary written from the material itself
-      room    — a pointer note this module minted, or one the owner attached
+      room    — a synthesized summary awaiting reconcile, a legacy pointer
+                note, or a note the owner attached by hand
       absent  — nothing, and only then may a surface say so
     """
+    from . import fullingest
     idx = notes_by_item(root)
     links = _load_links()
+    vroot = Path(root or vault.vault_root()).expanduser()
+    summaries = fullingest.summaries_by_item(vroot)
     for it in items:
         owner = (it.get("vault") or "").strip()
         if owner:
             it["vault_note"] = owner
             it["vault_note_kind"] = "owner"
             continue
-        found = links.get(link_key(slug, it.get("id", ""))) or idx.get(it.get("id", ""))
+        found = links.get(link_key(slug, it.get("id", "")))
+        if not found:
+            note = summaries.get(it.get("id", ""))
+            if note is not None:
+                found = str(note.relative_to(vroot).as_posix())
+        found = found or idx.get(it.get("id", ""))
         it["vault_note"] = found or ""
         it["vault_note_kind"] = "room" if found else ""
     return items
 
 
 def summary_line(res):
-    return (f"{res['title']}: {res['items']} items — {res['created']} new "
-            f"notes, {res['updated']} updated, {res['linked_existing']} "
-            f"linked to existing vault notes, {res['unchanged']} unchanged. "
+    return (f"{res['title']}: {res['items']} items — {res['linked']} linked "
+            f"to vault notes, {res['pending']} awaiting full ingest. "
             f"Hub: {res['hub']}."
             + (f" {len(res['orphans'])} orphaned notes (item left the room)."
                if res["orphans"] else "")
