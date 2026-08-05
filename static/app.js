@@ -17758,9 +17758,14 @@ function renderReaderHead() {
   titleRow.appendChild(sw);
   host.appendChild(titleRow);
 
+  // ONE description, in the slot every tab already uses. The docs view grew a
+  // second paragraph of its own when it became the built-history library, and
+  // two blurbs saying the same thing read as a bug.
   const sub = isDocs
-    ? "Dossiers, plans, retros and briefs — wherever each one actually lives. "
-      + "Mark one read and it drops off; the document stays where it was saved."
+    ? "The story of how everything got built — the plan that proposed it, the "
+      + "film of the session that made it, the retro of the night it shipped. "
+      + "Grouped by the feature it belongs to; documents live wherever they "
+      + "were saved."
     : (page?.subtitle || "");
   if (sub) host.appendChild(el("div", "rdr-sub", sub));
 
