@@ -17912,6 +17912,15 @@ let rdocKinds = new Set(lsGet("vira-rdoc-kinds", []));
 // days as read, so a to-read default hid 23 films and 449 documents behind
 // the Show filter — a library missing its read books is not a library. "To
 // read" survives as the filter's first option, one click away.
+// ONE-TIME REPAIR: the filter shipped defaulting to "unread" for a few hours
+// the same day, and any browser that touched the dropdown that afternoon
+// holds that value forever — a changed DEFAULT cannot reach a saved key. A
+// stored "unread" without the stamp is that afternoon's debris, not a
+// choice; picking To read after this sticks like any other choice.
+if (!localStorage.getItem("vira-rdoc-read-v2")) {
+  localStorage.setItem("vira-rdoc-read-v2", "1");
+  if (lsGet("vira-rdoc-read", "") === "unread") lsSet("vira-rdoc-read", "all");
+}
 let rdocRead = lsGet("vira-rdoc-read", "all");
 // list = Finder's rows; grid = the gallery (sections, motion tiles, bands).
 let rdocView = lsGet("vira-rdoc-view", "list");
