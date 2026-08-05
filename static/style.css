@@ -5540,7 +5540,12 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   .rdg-film { flex-basis: 230px; width: 230px; }
   .rdg-tiles { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .rdg-name { font-size: 21px; }
+  /* Always visible on touch — and therefore in the FLOW: an absolute
+     button that never hides would sit on the tile's kicker forever. */
   .rdg-mark, .rdg-line .rdg-mark { opacity: 1; }
+  .rdg-tile .rdg-mark, .rdg-film .rdg-mark {
+    position: static; margin-top: 8px; display: inline-block;
+  }
   .rdg-ldate { display: none; }
 }
 

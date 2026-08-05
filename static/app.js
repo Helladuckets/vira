@@ -18146,9 +18146,11 @@ function rdocBar() {
 
   // Read state is the LEAST important axis (owner's call), so it is one
   // small labeled select, not a seg — but it is the door to the 400+ read
-  // documents, so its options carry counts.
-  const cQ = readerCounts.queued ?? (readerQueue || []).length;
-  const cD = readerCounts.completed ?? (readerDone || []).length;
+  // documents, so its options carry counts. Counted from the SERVED lists
+  // (post-dedupe), not the store's raw counts, so the option label always
+  // matches the count line it produces.
+  const cQ = (readerQueue || []).length;
+  const cD = (readerDone || []).length;
   const rd = el("select", "rdoc-sel");
   [["unread", "To read (" + cQ + ")"],
    ["read", "Read (" + cD + ")"],
@@ -18487,6 +18489,10 @@ function renderRdocGrid(list, groups) {
         const v = el("video", "rdg-motion");
         v.src = box.dataset.motion;
         v.muted = true; v.loop = true; v.playsInline = true;
+        // autoplay as an ATTRIBUTE too: a hidden tab rejects play() calls,
+        // and the attribute is what makes the browser start the loop itself
+        // once the page is actually visible.
+        v.autoplay = true;
         v.play().catch(() => {});
         box._vid = v;
         box.appendChild(v);
