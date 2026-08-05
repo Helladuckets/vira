@@ -87,6 +87,37 @@ class NormAndEligibility(unittest.TestCase):
         self.assertEqual(ae["comp"], "ote")     # OTE marker in the JD
         self.assertEqual(strat["comp"], "")     # no salary, no marker
 
+    def test_conditional_sales_ote_disclaimer_is_not_role_comp(self):
+        disclaimer = (
+            "The annual compensation range for this role is listed below. "
+            "For sales roles, the range provided is the role’s On Target "
+            "Earnings (\"OTE\") range, meaning that the range includes both "
+            "the sales commissions/sales bonuses target and annual base "
+            "salary for the role. Annual Salary: $240,000 - $300,000 USD")
+        self.assertEqual(jobboards._comp_kind(disclaimer, 240000), "base")
+
+    def test_role_specific_ote_survives_conditional_disclaimer(self):
+        jd = (
+            "This is a quota-carrying position with uncapped commission. "
+            "For sales roles, the range provided is the role's On-Target "
+            "Earnings (OTE) range, meaning that the range includes both the "
+            "sales commission/sales bonus target and annual base salary for "
+            "the role.")
+        self.assertEqual(jobboards._comp_kind(jd, 180000), "ote")
+
+    def test_sales_title_still_cuts_when_disclaimer_is_generic(self):
+        disclaimer = (
+            "For sales roles, the range provided is the role's On Target "
+            "Earnings (OTE) range, meaning that the range includes both the "
+            "sales commissions/sales bonuses target and annual base salary "
+            "for the role.")
+        rec = {"uid": "x4", "title": "Enterprise Account Executive",
+               "comp": jobboards._comp_kind(disclaimer, 200000),
+               "locations": ["New York City, NY"]}
+        jobboards.evaluate(rec, ADJ)
+        self.assertEqual(rec["comp"], "base")
+        self.assertEqual(rec["cut"], "selling role — cut")
+
     def test_ashby_remote_tag_appended(self):
         with mock.patch.object(jobboards, "_get", return_value=ASHBY_PAYLOAD):
             out = jobboards.fetch_ashby(ASHBY_BOARD)

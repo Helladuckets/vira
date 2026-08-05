@@ -157,11 +157,32 @@ def _strip_html(text):
     return re.sub(r"\s+", " ", text).strip()
 
 
+_CONDITIONAL_SALES_OTE = re.compile(
+    r"\bfor sales roles,\s*the range provided is the role(?:'|’)?s\s+"
+    r"on[- ]target earnings\s*\([^)]*\)\s*range,\s*meaning that the range\s+"
+    r"includes both the sales commissions?/sales bonuses? target and annual\s+"
+    r"base salary for the role\.?",
+    re.I)
+
+_ROLE_OTE = re.compile(
+    r"on[- ]target earnings|\bOTE\b|uncapped commission|quota[- ]carrying|"
+    r"commission[- ]based compensation|"
+    r"base salary\s+(?:plus|and)\s+(?:a\s+)?commission|"
+    r"eligible for (?:a\s+)?variable (?:compensation|pay)",
+    re.I)
+
+
 def _comp_kind(jd_text, salary_min=None):
-    """`ote` is the hard cut signal; `base` only claimed when a salary is
-    actually stated without an OTE marker."""
-    if re.search(r"on[- ]target earnings|\bOTE\b|uncapped commission",
-                 jd_text or "", re.I):
+    """Classify the role's compensation, not a board-wide disclosure.
+
+    Some employers append a conditional explanation of what the displayed
+    range means *for sales roles* to every posting.  That sentence is not
+    evidence that the posting in hand is quota-compensated, so discard it
+    before looking for role-specific OTE markers.  Selling titles remain an
+    independent owner-adjudication cut in jobshared.cut_reason.
+    """
+    role_text = _CONDITIONAL_SALES_OTE.sub(" ", jd_text or "")
+    if _ROLE_OTE.search(role_text):
         return "ote"
     if salary_min:
         return "base"

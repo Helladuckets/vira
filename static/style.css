@@ -4363,6 +4363,29 @@ a.rm-name:hover { color: var(--accent); }
   margin: 8px 0 4px;
 }
 .app-filters .idea-sort { max-width: 46%; }
+.app-multi-btn {
+  cursor: pointer; text-align: left; min-width: 96px;
+}
+.app-multi-btn::after { content: " \25be"; color: var(--text-faint); }
+.app-multi-btn.on {
+  border-color: var(--sel-line); color: var(--sel-text);
+  background: var(--sel-bg);
+}
+.app-filter-pop { width: 240px; max-width: calc(100vw - 24px); }
+.app-filter-pop-body { max-height: 46vh; overflow-y: auto; }
+.app-filter-row {
+  display: flex; align-items: center; gap: 8px; cursor: pointer;
+  padding: 6px 5px; border-radius: var(--radius); font-size: 12px;
+  color: var(--text-dim);
+}
+.app-filter-row:hover { background: var(--hover-wash); color: var(--text); }
+.app-filter-row.on { color: var(--sel-text); background: var(--sel-bg); }
+.app-filter-check { flex: none; accent-color: var(--accent); }
+.app-filter-name { flex: 1 1 auto; min-width: 0; }
+.app-filter-pop-foot {
+  display: flex; justify-content: flex-end; gap: 6px;
+  margin-top: 4px; padding-top: 8px; border-top: 1px solid var(--line);
+}
 #app-starred.on {
   border-color: var(--sel-line); color: var(--sel-text);
   background: var(--sel-bg);

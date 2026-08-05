@@ -421,18 +421,8 @@
         <option value="unverified">Unverified</option>
         <option value="">Everything</option>
       </select>
-      <select id="app-tier" class="idea-sort" title="Tier">
-        <option value="">Any tier</option>
-        <option value="shortlist">Your eight picks</option>
-        <option value="cut">Cut lane</option>
-        <option value="1">Tier 1</option>
-        <option value="2">Tier 2</option>
-        <option value="3">Tier 3</option>
-        <option value="pass">Passed on</option>
-        <option value="analyzed">Analyzed only</option>
-        <option value="raw">Not yet analyzed</option>
-        <option value="fresh">New on the boards</option>
-      </select>
+      <button id="app-tier" class="idea-sort app-multi-btn" type="button"
+              title="Filter by one or more tiers" aria-haspopup="true">Any tier</button>
       <select id="app-comp" class="idea-sort" title="Comp structure">
         <option value="">Any comp</option>
         <option value="base">Base salary</option>
@@ -444,15 +434,8 @@
         <option value="85">Fit 85+</option>
         <option value="70">Fit 70+</option>
       </select>
-      <select id="app-status" class="idea-sort" title="Status">
-        <option value="">Any status</option>
-        <option value="none">Untouched</option>
-        <option value="applied">Applied</option>
-        <option value="interviewing">Interviewing</option>
-        <option value="offer">Offer</option>
-        <option value="closed">Closed</option>
-        <option value="skipped">Skipped</option>
-      </select>
+      <button id="app-status" class="idea-sort app-multi-btn" type="button"
+              title="Filter by one or more statuses" aria-haspopup="true">Any status</button>
       <button id="app-starred" class="btn" title="Show starred only">Starred</button>
     </div>
     <div class="runbar">
