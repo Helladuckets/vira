@@ -323,7 +323,7 @@ def _now():
 
 def _load_defs():
     try:
-        s = json.loads(DEFS.read_text())
+        s = json.loads(DEFS.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         s = {}
     if not isinstance(s, dict) or "circuits" not in s:
@@ -372,7 +372,8 @@ def _seed_plan_outputs(s):
 def _save_defs(s):
     DEFS.parent.mkdir(parents=True, exist_ok=True)
     tmp = DEFS.with_name(DEFS.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
+    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False),
+                   encoding="utf-8")
     tmp.replace(DEFS)
 
 
@@ -540,7 +541,7 @@ def delete_circuit(cid):
 
 def _load_runs():
     try:
-        s = json.loads(RUNS.read_text())
+        s = json.loads(RUNS.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         s = {}
     if not isinstance(s, dict) or "runs" not in s:
@@ -551,7 +552,8 @@ def _load_runs():
 def _save_runs(s):
     RUNS.parent.mkdir(parents=True, exist_ok=True)
     tmp = RUNS.with_name(RUNS.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
+    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False),
+                   encoding="utf-8")
     tmp.replace(RUNS)
 
 
