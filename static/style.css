@@ -1412,14 +1412,6 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
 
-#jobs-strip { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 12px; }
-.job-pill {
-  flex: none; font-size: 12px; padding: 6px 12px; border-radius: 2px;
-  border: 1px solid var(--line); background: var(--bg-card); color: var(--text-dim);
-  cursor: pointer; max-width: 220px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.job-pill.running { border-color: var(--accent); color: var(--accent); }
-.job-pill.error { border-color: var(--red); color: var(--red); }
 /* ---------- Claude-branded live terminal (job panel) ---------- */
 .term-panel { background: var(--term-bg); }
 .term-panel .term-head {
@@ -3911,7 +3903,7 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
 /* -- data: mono -- */
 .topbar-sub, .feed-time, .bubble-time, .brief-time, .sub-kpi-num,
 .sub-monthly, .sub-hdate, .sub-hamt, .cl-count, .idea-meta, .routine-last,
-.cir-run-when, .atlas-tip-sub, .job-pill, .brief-date, .sub-yearly,
+.cir-run-when, .atlas-tip-sub, .brief-date, .sub-yearly,
 .mtile-n, .group-count, .palette-kind {
   font-family: var(--mono);
 }

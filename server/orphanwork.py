@@ -22,10 +22,13 @@ Two rungs, the house shape:
               genuinely NEW items (the jobboards baseline rule: the first-
               ever sweep never pings, only what appears afterwards does).
 
-Everything here is READ-ONLY except the three explicit actions (resume,
-merge, discard), and even those never reimplement branch.sh — they shell
-out to it and pass its stderr through verbatim. The sweeper inventories
-and pings; nothing merges, discards, or resumes without an owner click.
+Everything here is READ-ONLY except the explicit actions (resume, merge,
+discard, and land — the finish-and-merge chain), and none of those ever
+reimplement branch.sh — they shell out to it and pass its stderr through
+verbatim. The sweeper inventories and pings; nothing merges, discards,
+resumes, or lands without an owner click ("Land" / "Land all" IS that
+click: the owner deciding a row should reach main, with the finishing
+session and the merge chained behind the one decision).
 
 Store data/orphan-work.json is derived-plus-dismissals, like brief-state
 and reconnect.json — NOT in the backup rotation (a lost dismissal is a
@@ -57,6 +60,8 @@ STORE = ROOT / "data" / "orphan-work.json"
 STALE_AFTER_S = 6 * 3600     # a sweep older than this is served stale=true
 ACTION_TIMEOUT = 600         # branch.sh merge/discard, same ceiling worktree.py uses
 DIRTY_MTIME_CAP = 50         # dirty paths stat'd for the "when was this touched" signal
+LAND_WAIT_S = 3 * 3600       # ceiling on waiting for a landing session to finish
+LAND_POLL_S = 20             # how often the landing watcher re-reads the ledger
 
 _actions_lock = threading.Lock()
 _actions = {}                 # branch -> {name, status, output, started, finished}
@@ -410,22 +415,25 @@ def _run_action(slug, argv, name, post_ok=None):
     return True, "started"
 
 
+def _push_and_note(merge_text):
+    """The post-merge epilogue: push (the standing push-by-default rule)
+    and, if server/ changed, name the restart the owner must run — the
+    server never restarts itself."""
+    push = gitutil.git(ROOT, "push", timeout=60)
+    lines = [("push: " + ((push.stdout or "") + (push.stderr or "")).strip())
+             if push.returncode == 0 else
+             ("push FAILED: "
+              + ((push.stderr or "") + (push.stdout or "")).strip())]
+    if "server/" in merge_text:
+        lines.append(
+            "server code changed — restart is the owner's: "
+            "launchctl kickstart -k gui/501/nyc.durham.vira")
+    return "\n".join(lines)
+
+
 def merge(slug):
-    """branch.sh merge <slug>, then push (the standing push-by-default
-    rule) and, if server/ changed, name the restart the owner must run —
-    the server never restarts itself."""
-    def post_ok(merge_text):
-        push = gitutil.git(ROOT, "push", timeout=60)
-        lines = [("push: " + ((push.stdout or "") + (push.stderr or "")).strip())
-                 if push.returncode == 0 else
-                 ("push FAILED: "
-                  + ((push.stderr or "") + (push.stdout or "")).strip())]
-        if "server/" in merge_text:
-            lines.append(
-                "server code changed — restart is the owner's: "
-                "launchctl kickstart -k gui/501/nyc.durham.vira")
-        return "\n".join(lines)
-    return _run_action(slug, ["merge", slug], "merge", post_ok=post_ok)
+    """branch.sh merge <slug>, then the push/restart epilogue."""
+    return _run_action(slug, ["merge", slug], "merge", post_ok=_push_and_note)
 
 
 def discard(slug, force=False):
@@ -457,9 +465,9 @@ menu: merge it, spin up a test instance, or discard it.
 """
 
 
-def resume_prompt(item):
-    """The composed resume prompt — also servable read-only for a passive
-    instance to copy into another session (the apply-prompt pattern)."""
+def _prompt_fields(item):
+    """The shared evidence block both session prompts embed: worktree
+    status, unmerged commits, and the originating-job line."""
     wt = item.get("worktree") or ""
     branch = item.get("branch") or ""
     status_out, log_out = "(worktree not available)", "(worktree not available)"
@@ -472,9 +480,15 @@ def resume_prompt(item):
     job = item.get("job")
     job_block = (f"\nThe originating job was: \"{job.get('title')}\" "
                 f"(final status: {job.get('status')})\n") if job else ""
-    return RESUME_PROMPT.format(
-        worktree=wt, branch=branch, live_root=str(ROOT), job_block=job_block,
-        status=status_out[:4000], log=log_out[:3000])
+    return {"worktree": wt, "branch": branch, "live_root": str(ROOT),
+            "job_block": job_block, "status": status_out[:4000],
+            "log": log_out[:3000]}
+
+
+def resume_prompt(item):
+    """The composed resume prompt — also servable read-only for a passive
+    instance to copy into another session (the apply-prompt pattern)."""
+    return RESUME_PROMPT.format(**_prompt_fields(item))
 
 
 def resume(item):
@@ -490,10 +504,18 @@ def resume(item):
             f"no worktree for {item.get('branch')} — recreate it with "
             "scripts/branch.sh before resuming")
     branch = item.get("branch") or ""
-    # Refuse while anything live owns the branch — checked FRESH at click
-    # time, never off the possibly day-old item row (the judge's high
-    # finding: sweep-time state must not authorize a second agent into a
-    # tree a session is writing).
+    _refuse_if_busy(branch)
+    from . import session
+    prompt = resume_prompt(item)
+    return session.sessions.launch(
+        prompt, cwd=wt, meta={"kind": "orphan-resume", "branch": item.get("branch")})
+
+
+def _refuse_if_busy(branch):
+    """The dispatch refusals resume() has always had, shared with land():
+    checked FRESH at click time, never off the possibly day-old item row
+    (the judge's high finding: sweep-time state must not authorize a
+    second agent into a tree a session is writing)."""
     with _actions_lock:
         a = _actions.get(branch)
         if a and a.get("status") == "running":
@@ -510,8 +532,197 @@ def resume(item):
         raise ValueError(
             f"a session is already live on {branch} "
             f"(job {row.get('id')}) — steer, answer, or finish it "
-            "instead of resuming over it")
+            "instead of dispatching over it")
+
+
+# ---------------------------------------------------------------- landing
+
+LAND_PROMPT = """You are finishing stalled work in a branch-first repository so it can LAND.
+
+Worktree: {worktree}
+Branch: {branch}
+Live checkout (read-only for you — do not edit it): {live_root}
+
+An earlier session started this work and never finished it. The owner has \
+decided this branch should land on main. Your job is to carry the work to \
+done and leave the branch READY TO MERGE — Vira merges and pushes it the \
+moment you finish, so do NOT run the merge or push yourself.
+{job_block}
+Uncommitted changes (git status --porcelain):
+{status}
+
+Commits on this branch not yet on main (git log --oneline main..branch):
+{log}
+
+Do this, in order:
+1. Read what is already there and understand what was being built.
+2. Finish it — or, if it is already complete, verify it.
+3. Run the test suite and fix what it catches.
+4. COMMIT everything on this branch with a clear message. A clean, \
+committed tree is the signal Vira merges on.
+5. End with a short summary of what the branch now contains.
+
+If you conclude the work is WRONG — superseded, duplicated, or not worth \
+landing — do NOT commit: say so plainly and stop. An uncommitted tree is \
+never merged, so your refusal holds.
+"""
+
+
+def land_prompt(item):
+    return LAND_PROMPT.format(**_prompt_fields(item))
+
+
+def _job_row(jid):
+    for r in joblog.list_records():
+        if r.get("id") == jid:
+            return r
+    return None
+
+
+def _set_action(branch, name, status, output):
+    with _actions_lock:
+        prev = _actions.get(branch) or {}
+        _actions[branch] = {
+            "name": name, "status": status, "output": output,
+            "started": (prev.get("started")
+                        if prev.get("status") == "running" else _now_iso()),
+            "finished": None if status == "running" else _now_iso()}
+
+
+def _merge_sync(slug):
+    """branch.sh merge + the push/restart epilogue, synchronously.
+    branch.sh is the sole authority for preflight/refusals — its combined
+    output is passed through verbatim. Returns (ok, text)."""
+    try:
+        out = subprocess.run(
+            [str(ROOT / "scripts" / "branch.sh"), "merge", slug],
+            cwd=str(ROOT), capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+            timeout=ACTION_TIMEOUT, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, f"merge failed to run: {e}"
+    text = ((out.stdout or "") + (out.stderr or "")).strip()
+    if out.returncode != 0:
+        return False, text
+    extra = _push_and_note(text)
+    if extra:
+        text = text + "\n" + extra
+    return True, text
+
+
+def _launch_land_session(item):
+    wt = item.get("worktree")
+    if not wt:
+        raise ValueError(
+            f"no worktree for {item.get('branch')} — recreate it with "
+            "scripts/branch.sh before landing")
     from . import session
-    prompt = resume_prompt(item)
     return session.sessions.launch(
-        prompt, cwd=wt, meta={"kind": "orphan-resume", "branch": item.get("branch")})
+        land_prompt(item), cwd=wt,
+        meta={"kind": "orphan-land", "machine": True,
+              "branch": item.get("branch")})
+
+
+def _land_tail(item, slug, branch, jid):
+    """The blocking tail of a landing: wait out the finishing session
+    (when there is one), re-check the tree, then merge + push. `jid` is
+    None on the direct-merge path. Returns (ok, text)."""
+    if jid:
+        deadline = time.time() + LAND_WAIT_S
+        row = _job_row(jid)
+        while time.time() < deadline:
+            row = _job_row(jid)
+            if row and row.get("status") != "running":
+                break
+            time.sleep(LAND_POLL_S)
+        else:
+            return False, (f"landing session {jid} still running after "
+                           f"{LAND_WAIT_S // 3600}h — Land again once it "
+                           "finishes")
+        if not row or row.get("status") != "done":
+            st = (row or {}).get("status") or "gone"
+            return False, (f"landing session {jid} ended '{st}' — nothing "
+                           "was merged; open its terminal to see why")
+        wt = item.get("worktree")
+        dirty = _dirty_lines(Path(wt)) if wt else None
+        if dirty:
+            return False, ("landing session finished but left uncommitted "
+                           "changes — it likely judged the work not worth "
+                           "landing; read its summary before merging by hand")
+        ahead, _behind = _ahead_behind(branch)
+        if not ahead:
+            return False, ("landing session finished with no commits ahead "
+                           "of main — nothing to merge")
+    return _merge_sync(slug)
+
+
+def _land_finish(item, slug, branch, jid):
+    """Run the landing tail, re-sweep BEFORE the action status flips off
+    "running" (the _run_action ordering rule), then record the outcome."""
+    try:
+        ok, text = _land_tail(item, slug, branch, jid)
+    except Exception as e:  # noqa: BLE001 — the outcome must always land
+        ok, text = False, f"landing failed: {e}"
+    try:
+        refresh()
+    except Exception:  # noqa: BLE001 — a re-sweep must never eat the outcome
+        pass
+    _set_action(branch, "land", "ok" if ok else "failed", (text or "")[-4000:])
+
+
+def land(item):
+    """One gesture from a row to landed-on-main.
+
+    A clean, committed branch merges + pushes directly. A dirty worktree
+    first gets a FINISHING session dispatched into it (finish, verify,
+    COMMIT — never merge; see LAND_PROMPT); this thread waits for it and
+    merges the moment the tree is clean and ahead. The wait state is
+    in-process: a server restart mid-wait loses only the auto-merge hop —
+    the session itself is detached and survives, and the row comes back
+    reading clean+committed, where Land is a direct merge.
+
+    Returns the landing session's job id (None on the direct-merge path).
+    Raises ValueError on the same refusals resume() has."""
+    branch = item.get("branch") or ""
+    if item.get("kind") == "unpushed" or branch == "main":
+        raise ValueError("main needs a push, not a landing")
+    slug = branch.split("/", 1)[-1]
+    _refuse_if_busy(branch)
+    jid = _launch_land_session(item) if item.get("dirty") else None
+    _set_action(branch, "land", "running",
+                (f"finishing session {jid} is running — merges on completion"
+                 if jid else "merging…"))
+    threading.Thread(target=_land_finish, args=(item, slug, branch, jid),
+                     daemon=True, name=f"vira-orphan-land-{slug}"[:60]).start()
+    return jid
+
+
+def land_all():
+    """Land every non-dismissed row, SERIALLY — the merge protocol lands
+    one branch at a time, and each dirty row's finishing session runs to
+    completion before the next row starts. Returns how many rows the
+    pass will attempt; progress rides each row's action field."""
+    todo = [it for it in compose()["items"]
+            if it.get("kind") != "unpushed"
+            and (it.get("branch") or "") not in ("", "main")]
+    if not todo:
+        return 0
+
+    def run():
+        for it in todo:
+            branch = it.get("branch") or ""
+            slug = branch.split("/", 1)[-1]
+            try:
+                _refuse_if_busy(branch)
+                jid = _launch_land_session(it) if it.get("dirty") else None
+            except ValueError as e:
+                _set_action(branch, "land", "failed", str(e))
+                continue
+            _set_action(branch, "land", "running",
+                        (f"finishing session {jid} is running — merges on "
+                         "completion" if jid else "merging…"))
+            _land_finish(it, slug, branch, jid)
+
+    threading.Thread(target=run, daemon=True,
+                     name="vira-orphan-land-all").start()
+    return len(todo)

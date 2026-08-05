@@ -490,15 +490,31 @@ class RouteLayer(_RepoCase):
                             params={"key": "nope"})
         self.assertEqual(r.status_code, 404)
 
+    def test_land_404_on_unknown_key(self):
+        r = self.client.post("/api/orphanwork/land", json={"key": "nope"})
+        self.assertEqual(r.status_code, 404)
+
+    def test_land_403_when_passive(self):
+        self.make_worktree("r8", commits=1)
+        orphanwork.refresh()
+        key = orphanwork.compose()["items"][0]["key"]
+        os.environ["VIRA_PASSIVE"] = "1"
+        r = self.client.post("/api/orphanwork/land", json={"key": key})
+        self.assertEqual(r.status_code, 403)
+
+    def test_land_all_403_when_passive(self):
+        os.environ["VIRA_PASSIVE"] = "1"
+        r = self.client.post("/api/orphanwork/land-all")
+        self.assertEqual(r.status_code, 403)
+
 
 @unittest.skipUnless(os.name == "posix",
                      "the branch.sh stand-in is a shell script")
-class ActionRunner(_RepoCase):
-    """merge()/discard() against a stand-in scripts/branch.sh that just
-    echoes its argv and exits 0 — branch.sh itself is not re-tested here
-    (its own suite owns that); this proves orphanwork calls it correctly,
-    passes its output through, pushes on a successful merge, and guards
-    against two actions racing on the same branch."""
+class _BranchShCase(_RepoCase):
+    """Shared action fixture: a stand-in scripts/branch.sh that echoes its
+    argv and exits 0, plus a bare remote so the post-merge push has a
+    target. branch.sh itself is not re-tested here — its own suite owns
+    that; these classes prove orphanwork drives it correctly."""
 
     def setUp(self):
         super().setUp()
@@ -521,6 +537,11 @@ class ActionRunner(_RepoCase):
                 return a
             time.sleep(0.05)
         self.fail(f"action for {branch} never finished")
+
+
+class ActionRunner(_BranchShCase):
+    """merge()/discard(): passes output through, pushes on a successful
+    merge, and guards against two actions racing on the same branch."""
 
     def test_in_flight_action_is_refused(self):
         orphanwork._actions["claude/x"] = {
@@ -569,6 +590,143 @@ class ActionRunner(_RepoCase):
         a = self._wait("claude/will-fail")
         self.assertEqual(a["status"], "failed")
         self.assertIn("refusing", a["output"])
+
+
+class Landing(_BranchShCase):
+    """land()/land_all() — the finish-and-merge chain. The finishing
+    session is stubbed at session.sessions; the ledger read rides the
+    joblog.list_records patch every _RepoCase carries."""
+
+    def _item(self, slug, **over):
+        base = {"key": f"wt:claude/{slug}", "branch": f"claude/{slug}",
+                "worktree": str(self.root / ".worktrees" / slug),
+                "dirty": 0, "ahead": 1}
+        base.update(over)
+        return base
+
+    def test_main_is_never_landed(self):
+        with self.assertRaises(ValueError):
+            orphanwork.land({"kind": "unpushed", "branch": "main"})
+
+    def test_a_busy_branch_is_refused(self):
+        orphanwork._actions["claude/busy"] = {
+            "name": "merge", "status": "running", "output": "",
+            "started": "now", "finished": None}
+        with self.assertRaises(ValueError):
+            orphanwork.land(self._item("busy"))
+
+    def test_a_clean_committed_row_merges_directly(self):
+        wt = self.make_worktree("clean1", commits=1)
+        jid = orphanwork.land(self._item("clean1", worktree=str(wt)))
+        self.assertIsNone(jid)
+        a = self._wait("claude/clean1")
+        self.assertEqual(a["status"], "ok")
+        self.assertIn("branch.sh merge clean1", a["output"])
+        self.assertIn("push:", a["output"])
+
+    def test_a_dirty_row_dispatches_a_finishing_session_then_merges(self):
+        wt = self.make_worktree("d1", commits=1)
+        captured = {}
+
+        def fake_launch(prompt, cwd=None, **kw):
+            captured["prompt"] = prompt
+            captured["cwd"] = cwd
+            captured["meta"] = kw.get("meta")
+            return "job-land-1"
+
+        with mock.patch("server.session.sessions") as reg, \
+             mock.patch("server.joblog.list_records",
+                        return_value=[{"id": "job-land-1", "status": "done"}]):
+            reg.launch.side_effect = fake_launch
+            jid = orphanwork.land(self._item("d1", worktree=str(wt), dirty=2))
+            self.assertEqual(jid, "job-land-1")
+            a = self._wait("claude/d1")
+        self.assertEqual(a["status"], "ok")
+        self.assertIn("branch.sh merge d1", a["output"])
+        self.assertIn("push:", a["output"])
+        # The session's contract: finish and COMMIT, never merge or push.
+        self.assertIn("do NOT run the merge", captured["prompt"])
+        self.assertIn("COMMIT everything", captured["prompt"])
+        self.assertEqual(captured["cwd"], str(wt))
+        # machine marker: a landing session must never park in the reply
+        # window — the watcher is waiting on its terminal status.
+        self.assertTrue(captured["meta"]["machine"])
+        self.assertEqual(captured["meta"]["kind"], "orphan-land")
+
+    def test_a_session_that_ends_badly_never_merges(self):
+        wt = self.make_worktree("d2", commits=1)
+        merged = mock.MagicMock(return_value=(True, "x"))
+        with mock.patch.object(orphanwork, "_merge_sync", merged), \
+             mock.patch("server.session.sessions") as reg, \
+             mock.patch("server.joblog.list_records",
+                        return_value=[{"id": "j2", "status": "error"}]):
+            reg.launch.return_value = "j2"
+            orphanwork.land(self._item("d2", worktree=str(wt), dirty=1))
+            a = self._wait("claude/d2")
+        self.assertEqual(a["status"], "failed")
+        self.assertIn("ended 'error'", a["output"])
+        merged.assert_not_called()
+
+    def test_a_session_that_leaves_dirt_never_merges(self):
+        wt = self.make_worktree("d3", commits=1, dirty=True)
+        merged = mock.MagicMock(return_value=(True, "x"))
+        with mock.patch.object(orphanwork, "_merge_sync", merged), \
+             mock.patch("server.session.sessions") as reg, \
+             mock.patch("server.joblog.list_records",
+                        return_value=[{"id": "j3", "status": "done"}]):
+            reg.launch.return_value = "j3"
+            orphanwork.land(self._item("d3", worktree=str(wt), dirty=1))
+            a = self._wait("claude/d3")
+        self.assertEqual(a["status"], "failed")
+        self.assertIn("left uncommitted", a["output"])
+        merged.assert_not_called()
+
+    def test_a_session_with_nothing_ahead_never_merges(self):
+        wt = self.make_worktree("d4", commits=0)
+        merged = mock.MagicMock(return_value=(True, "x"))
+        with mock.patch.object(orphanwork, "_merge_sync", merged), \
+             mock.patch("server.session.sessions") as reg, \
+             mock.patch("server.joblog.list_records",
+                        return_value=[{"id": "j4", "status": "done"}]):
+            reg.launch.return_value = "j4"
+            orphanwork.land(self._item("d4", worktree=str(wt), dirty=1))
+            a = self._wait("claude/d4")
+        self.assertEqual(a["status"], "failed")
+        self.assertIn("no commits ahead", a["output"])
+        merged.assert_not_called()
+
+    def test_the_wait_times_out_honestly(self):
+        wt = self.make_worktree("d5", commits=1)
+        merged = mock.MagicMock(return_value=(True, "x"))
+        with mock.patch.object(orphanwork, "_merge_sync", merged), \
+             mock.patch.object(orphanwork, "LAND_WAIT_S", 0), \
+             mock.patch("server.session.sessions") as reg, \
+             mock.patch("server.joblog.list_records",
+                        return_value=[{"id": "j5", "status": "running"}]):
+            reg.launch.return_value = "j5"
+            orphanwork.land(self._item("d5", worktree=str(wt), dirty=1))
+            a = self._wait("claude/d5")
+        self.assertEqual(a["status"], "failed")
+        self.assertIn("still running", a["output"])
+        merged.assert_not_called()
+
+    def test_land_all_lands_every_row(self):
+        self.make_worktree("s1", commits=1)
+        self.make_worktree("s2", commits=1)
+        orphanwork.refresh()
+        done = []
+
+        def fake_finish(item, slug, branch, jid):
+            done.append(slug)
+            orphanwork._set_action(branch, "land", "ok", "done")
+
+        with mock.patch.object(orphanwork, "_land_finish", new=fake_finish):
+            n = orphanwork.land_all()
+            t0 = time.time()
+            while len(done) < 2 and time.time() - t0 < 5:
+                time.sleep(0.05)
+        self.assertEqual(n, 2)
+        self.assertEqual(sorted(done), ["s1", "s2"])
 
 
 if __name__ == "__main__":
