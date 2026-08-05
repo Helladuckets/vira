@@ -2549,8 +2549,8 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 .atlas-coverage { margin: 8px 0 10px; }
 .atlas-coverage:empty { display: none; }
-.atlas-bar { display: flex; gap: 8px; align-items: center; margin: 0; }
-.atlas-bar .search { flex: 1; margin: 0; min-width: 0; }
+.atlas-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+.atlas-bar .search { flex: 1 1 140px; margin: 0; min-width: 0; }
 .atlas-bar .fchip.on { color: var(--accent); border-color: var(--accent); }
 .atlas-legend {
   display: flex; flex-wrap: wrap; gap: 6px; margin: 0;
