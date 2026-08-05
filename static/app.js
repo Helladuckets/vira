@@ -3793,7 +3793,7 @@ function renderEmail(it, m) {
     const bOrig = el("button", "seg-btn", "Original");
     seg.appendChild(bText);
     seg.appendChild(bOrig);
-    wrap.insertBefore(seg, bodyBox);
+    wrap.appendChild(seg);      // lands above the body box, appended below
     bText.addEventListener("click", () => {
       bText.classList.add("on"); bOrig.classList.remove("on");
       textView.style.display = ""; if (frame) frame.style.display = "none";
