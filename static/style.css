@@ -2987,19 +2987,17 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   body.focus-mode .dock { opacity: .55; }
   body.focus-mode .dock:hover { opacity: 1; }
 
-  /* DEFINITION IS THE ONE WINDOW FOCUS MODE DOES NOT RECEDE (owner,
-     2026-08-04). Define is reachable from a right-click ANYWHERE in Vira,
-     including while a document is lit — and there the window opened behind
-     the scrim: blurred, dimmed and pointer-inert, so asking Vira to define
-     a word produced a definition you could not see. It sits above the lit
-     surface (z 800) rather than beside it, because it is an annotation ON
-     what you are reading. Still an ordinary window otherwise — drag it,
-     resize it, close it. */
-  /* No `.open` in the selector: that class is added inside a
-     requestAnimationFrame, so a window opened while the tab is not painting
-     carries the state without the class — and this rule must never depend on
-     a frame having run. A closed window is display:none regardless. */
-  body.focus-mode #win-find-define,
+  /* A SUMMONED DEFINITION DOES NOT RECEDE — an IDLE ONE DOES (owner,
+     2026-08-04; narrowed 2026-08-05). Define is reachable from a
+     right-click ANYWHERE, including while a document is lit — and there the
+     window opened behind the scrim, so asking for a definition produced one
+     you could not see. It sits above the lit surface (z 800) because it is
+     an annotation ON what you are reading. The exemption used to name
+     #win-find-define unconditionally, which meant a Definition window left
+     open (a parked tile in a stage layout, an old lookup) floated over
+     EVERY later focus surface as a black box. openDefine now grants the
+     temporal `win-clear` mark at summon time instead — dropped, like every
+     spawned-clear window, the moment all treatments end. */
   body.focus-mode .fwin.win-clear {
     filter: none;
     transform: none;

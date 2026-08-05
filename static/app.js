@@ -2414,6 +2414,10 @@ async function openDefine(term) {
     // already open — so without this a second lookup would land behind
     // whatever the owner has raised since the first.
     focusWin(winState["find-define"].el);
+    // A SUMMONED definition rides above the scrim; an idle one recedes with
+    // the desk. The unconditional CSS exemption this replaces floated a
+    // parked Definition tile over every later focus surface as a black box.
+    markSpawnedClear(winState["find-define"].el);
   } else {
     // No floating windows on a phone: the card is a tab of Find, exactly as
     // Concepts and Related are.
