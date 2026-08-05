@@ -4152,6 +4152,52 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
     hidden overflow keeps the corner grip off a scrollbar */
 }
 .rdr-def-input:focus { border-color: var(--accent-line); }
+
+/* Definition pills — people / sources / standing watch (2026-08-05) */
+.rdr-pillbox {
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center;
+  padding: 6px; background: var(--bg-raised);
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.rdr-pill {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 7px; font-size: 11.5px; color: var(--text-dim);
+  background: var(--bg-card); border: 1px solid var(--line-warm);
+  border-radius: 999px; max-width: 100%;
+}
+.rdr-pill.linked { color: var(--text); border-color: var(--steel-line); }
+.rdr-pill-name {
+  background: none; border: none; padding: 0; font: inherit;
+  color: inherit; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; max-width: 260px;
+}
+.rdr-pill.linked .rdr-pill-name { cursor: pointer; color: var(--steel); }
+.rdr-pill.linked .rdr-pill-name:hover { text-decoration: underline; }
+.rdr-pill-x {
+  background: none; border: none; padding: 0 1px; cursor: pointer;
+  color: var(--text-faint); font-size: 13px; line-height: 1;
+}
+.rdr-pill-x:hover { color: var(--red); }
+.rdr-pill-entry { position: relative; flex: 1 1 150px; min-width: 130px; }
+.rdr-pill-input {
+  width: 100%; background: none; border: none; outline: none;
+  color: var(--text); font-size: 12px; padding: 3px 2px;
+  font-family: inherit;
+}
+.rdr-typeahead {
+  position: absolute; left: 0; right: -6px; top: calc(100% + 4px);
+  z-index: 60; display: flex; flex-direction: column;
+  background: var(--bg-modal); border: 1px solid var(--line-warm);
+  border-radius: var(--radius); overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);   /* neutral depth — exempt */
+}
+.rdr-ta-row {
+  background: none; border: none; text-align: left; cursor: pointer;
+  padding: 6px 9px; font-size: 12px; color: var(--text);
+  font-family: inherit;
+}
+.rdr-ta-row:hover { background: var(--bg-card); }
+.rdr-ta-row.dim { color: var(--text-faint); font-size: 11.5px; }
 .rdr-def-acts {
   display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
   margin-top: 12px;

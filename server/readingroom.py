@@ -256,6 +256,95 @@ def list_rooms():
     return out
 
 
+MAX_PILLS = 24
+SOURCE_KINDS = ("youtube", "rss")
+
+
+def _clean_people(raw):
+    """People as PILLS — {name, ref, qualifier}, the ref a vault-relative
+    person page (wiki/cat-wu.md) so a refresh tracks THE Cat Wu who heads
+    Claude Code product, not any name-match. The legacy comma string (older
+    definitions, the interview's free-text answer) still parses: each name
+    becomes an unresolved pill with an empty ref."""
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        raw = [p.strip() for p in raw.split(",") if p.strip()]
+    if not isinstance(raw, list):
+        raise BuildError("definition.people must be a list or a comma string")
+    out = []
+    for i, p in enumerate(raw):
+        if isinstance(p, str):
+            p = {"name": p}
+        if not isinstance(p, dict):
+            raise BuildError(
+                f"definition.people[{i}] must be an object or a name")
+        name = _text(p.get("name"), f"definition.people[{i}].name",
+                     cap=80, required=True)
+        ref = _text(p.get("ref"), f"definition.people[{i}].ref", cap=200)
+        if ref and (ref.startswith(("/", "http")) or ".." in ref):
+            raise BuildError(
+                f"definition.people[{i}].ref must be a vault-relative "
+                f"note path, got {ref!r}")
+        out.append({"name": name, "ref": ref,
+                    "qualifier": _text(p.get("qualifier"),
+                                       f"definition.people[{i}].qualifier",
+                                       cap=200)})
+    return out[:MAX_PILLS]
+
+
+def _clean_sources(raw):
+    """Publishing surfaces as FEEDS — each one enumerable deterministically
+    on refresh (the whole point: keyword search alone missed known-channel
+    items twice). label names it for the owner; feed is the URL the sweep
+    fetches; kind youtube|rss decides the parse."""
+    if raw is None:
+        raw = []
+    if not isinstance(raw, list):
+        raise BuildError("definition.sources must be a list")
+    out = []
+    for i, s in enumerate(raw):
+        if not isinstance(s, dict):
+            raise BuildError(f"definition.sources[{i}] must be an object")
+        label = _text(s.get("label"), f"definition.sources[{i}].label",
+                      cap=80, required=True)
+        feed = _text(s.get("feed"), f"definition.sources[{i}].feed",
+                     cap=400, required=True)
+        if not feed.startswith(("http://", "https://")):
+            raise BuildError(
+                f"definition.sources[{i}].feed must be http(s), "
+                f"got {feed[:60]!r}")
+        kind = s.get("kind") or "rss"
+        if kind not in SOURCE_KINDS:
+            raise BuildError(
+                f"definition.sources[{i}].kind must be one of "
+                f"{'|'.join(SOURCE_KINDS)}, got {kind!r}")
+        out.append({"label": label, "feed": feed, "kind": kind})
+    return out[:MAX_PILLS]
+
+
+def _clean_watch(raw):
+    """The standing watch list — 'new Dario essays', 'Boris interviews' —
+    split out of the notes blob so the refresh prompt can state it as its
+    own contract instead of hoping the model finds it in prose."""
+    if raw is None:
+        raw = []
+    if isinstance(raw, str):
+        raw = [w.strip() for w in raw.split(",") if w.strip()]
+    if not isinstance(raw, list):
+        raise BuildError("definition.watch must be a list")
+    return [_text(w, "definition.watch[]", cap=160)
+            for w in raw if str(w).strip()][:MAX_PILLS]
+
+
+def people_line(d):
+    """The pills as the display/legacy comma string."""
+    ppl = d.get("people") or []
+    if isinstance(ppl, str):
+        return ppl
+    return ", ".join(p.get("name", "") for p in ppl if p.get("name"))
+
+
 def clean_definition(raw):
     """The room's DEFINITION — the owner-visible spec of what this room
     tracks and why: subject, ranking rule, people, modes, depth, standing
@@ -268,7 +357,9 @@ def clean_definition(raw):
     d = {}
     d["subject"] = _text(raw.get("subject"), "definition.subject", cap=200)
     d["why"] = _text(raw.get("why"), "definition.why")
-    d["people"] = _text(raw.get("people"), "definition.people", cap=400)
+    d["people"] = _clean_people(raw.get("people"))
+    d["sources"] = _clean_sources(raw.get("sources"))
+    d["watch"] = _clean_watch(raw.get("watch"))
     modes = raw.get("modes") or []
     if isinstance(modes, str):
         modes = [m.strip() for m in modes.split(",") if m.strip()]
@@ -412,6 +503,208 @@ def build(slug, title, subtitle, items, legacy_key=""):
     }
 
 
+# ------------------------------------------- sources: resolve + sweep ---
+#
+# The deterministic half of a refresh. A room's definition names its
+# publishing surfaces as feeds; enumerating them and diffing against the
+# item URLs is a set operation, not a judgment call — so it happens HERE,
+# in code, and the model is handed the residual to verify and rank.
+# Measured need, 2026-08-05: the 07-27 keyword sweep missed two items
+# (Dianne Penn on Lenny's, the Boris YC keynote) sitting in channels the
+# room already named in prose.
+
+_YT_ID_RE = re.compile(r"(?:[?&]v=|youtu\.be/|/shorts/)([A-Za-z0-9_-]{11})")
+# YouTube spells the id three ways depending on which rendering the UA
+# gets: "channelId":"UC…" / "externalId":"UC…" (JSON blobs) or the page
+# head's RSS link, channel_id=UC… — measured 2026-08-05: the plain-UA
+# page carries ONLY the third.
+_YT_CHANNEL_RE = re.compile(
+    r'(?:"channelId"\s*:\s*"|"externalId"\s*:\s*"|channel_id=)'
+    r"(UC[0-9A-Za-z_-]{16,})")
+_FEED_LINK_RE = re.compile(
+    r'<link[^>]+type="application/(?:rss|atom)\+xml"[^>]*href="([^"]+)"',
+    re.I)
+FEED_TIMEOUT = 8
+MAX_CANDIDATES = 60
+
+
+def _http_get(url, timeout=FEED_TIMEOUT):
+    """One small GET — module-level so tests stub it and nothing here ever
+    spends real network in a suite."""
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "vira-reader"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", errors="replace")
+
+
+def resolve_source(text):
+    """What the owner typed -> an enumerable {label, feed, kind}.
+
+    Accepts a YouTube handle/channel URL (resolved ONCE, at save time, to
+    the channel's RSS feed — the id is stable so the fetch never repeats),
+    a direct feed URL, or a page URL advertising an RSS/atom alternate.
+    Raises ValueError for anything else: a source that cannot be
+    enumerated is prose and belongs in notes, not in this list."""
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("empty source")
+
+    m = re.match(r"^@([\w.-]+)$", text)
+    yt = re.search(r"youtube\.com/(@[\w.-]+|channel/(UC[0-9A-Za-z_-]{16,}))",
+                   text)
+    if m or yt:
+        if yt and yt.group(2):
+            cid, label = yt.group(2), yt.group(1)
+        else:
+            handle = ("@" + m.group(1)) if m else yt.group(1)
+            page = _http_get(f"https://www.youtube.com/{handle}")
+            found = _YT_CHANNEL_RE.search(page)
+            if not found:
+                raise ValueError(
+                    f"could not resolve {handle} to a YouTube channel id")
+            cid, label = found.group(1), handle
+        return {"label": label, "kind": "youtube",
+                "feed": "https://www.youtube.com/feeds/videos.xml"
+                        f"?channel_id={cid}"}
+
+    if not text.startswith(("http://", "https://")):
+        raise ValueError(
+            f"{text!r} is not a URL or @handle — free-text guidance "
+            "belongs in the notes field")
+    body = _http_get(text)
+    stripped = body.lstrip()
+    if stripped.startswith("<?xml") or "<rss" in stripped[:400] \
+            or "<feed" in stripped[:400]:
+        m2 = re.search(r"<title[^>]*>([^<]+)</title>", body)
+        label = (m2.group(1).strip() if m2
+                 else re.sub(r"^www\.", "",
+                             re.sub(r"^https?://", "", text).split("/")[0]))
+        return {"label": label[:80], "feed": text, "kind": "rss"}
+    alt = _FEED_LINK_RE.search(body)
+    if alt:
+        from urllib.parse import urljoin
+        feed = urljoin(text, alt.group(1))
+        label = re.sub(r"^www\.", "",
+                       re.sub(r"^https?://", "", text).split("/")[0])
+        return {"label": label[:80], "feed": feed, "kind": "rss"}
+    raise ValueError(f"no feed found at {text} — is there an RSS URL?")
+
+
+def _parse_feed(xml_text):
+    """Atom or RSS2 -> [{title, url, date}]. Namespace-blind on purpose:
+    YouTube's feed is Atom with three namespaces, podcast feeds are RSS2
+    with arbitrary extensions, and matching on local names covers both."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+    out = []
+    for node in root.iter():
+        tag = node.tag.rsplit("}", 1)[-1]
+        if tag not in ("entry", "item"):
+            continue
+        title = url = when = ""
+        for c in node:
+            ct = c.tag.rsplit("}", 1)[-1]
+            if ct == "title":
+                title = (c.text or "").strip()
+            elif ct == "link":
+                url = (c.get("href") or c.text or "").strip() or url
+            elif ct in ("published", "pubDate", "updated") and not when:
+                when = (c.text or "").strip()
+        if title or url:
+            out.append({"title": title, "url": url, "date": _feed_date(when)})
+    return out
+
+
+def _feed_date(raw):
+    """Best-effort YYYY-MM-DD from Atom (ISO) or RSS2 (RFC 2822) stamps."""
+    raw = (raw or "").strip()
+    if re.match(r"^\d{4}-\d{2}-\d{2}", raw):
+        return raw[:10]
+    try:
+        from email.utils import parsedate_to_datetime
+        return parsedate_to_datetime(raw).date().isoformat()
+    except Exception:                                    # noqa: BLE001
+        return ""
+
+
+def _norm_url(url):
+    return re.sub(r"^www\.", "",
+                  re.sub(r"^https?://", "", (url or "").strip().lower())
+                  ).rstrip("/")
+
+
+def enumerate_sources(room):
+    """Sweep every feed the room names; return what the feeds carry that
+    the room does not. Never raises — a dead feed is a named error line,
+    not a failed refresh. YouTube entries diff on the VIDEO ID (item URLs
+    carry query-string variants); everything else on the normalized URL."""
+    d = room.get("definition") or {}
+    sources = d.get("sources") or []
+    items = room.get("items") or []
+    known_vids = set()
+    known_urls = set()
+    for it in items:
+        u = it.get("url") or ""
+        known_urls.add(_norm_url(u))
+        mv = _YT_ID_RE.search(u)
+        if mv:
+            known_vids.add(mv.group(1))
+    candidates, errors = [], []
+    for s in sources:
+        try:
+            entries = _parse_feed(_http_get(s["feed"]))
+        except Exception as e:                           # noqa: BLE001
+            errors.append(f"{s['label']}: {type(e).__name__}: {e}")
+            continue
+        for e in entries:
+            mv = _YT_ID_RE.search(e["url"])
+            if mv and mv.group(1) in known_vids:
+                continue
+            if not mv and _norm_url(e["url"]) in known_urls:
+                continue
+            if len(candidates) < MAX_CANDIDATES:
+                candidates.append({**e, "source": s["label"]})
+    return {"candidates": candidates, "errors": errors,
+            "swept": len(sources)}
+
+
+def merge_items(slug, new_items):
+    """Append/merge into an existing room WITHOUT re-emitting it — the
+    answer to the single-string ceiling that blocked the 2026-08-03 scout
+    write (350 items is ~70k tokens; no single model message carries it).
+
+    Existing items ride through clean_items' own dedupe, so an incoming
+    duplicate either vanishes or wins only by being the richer record;
+    ids stay URL-derived so done-marks survive; the additions ping fires
+    through the same path a rebuild uses. Raises KeyError on an unknown
+    room, BuildError on a bad payload."""
+    if not isinstance(new_items, list):
+        raise BuildError("items must be a list")
+    path = ROOMS_DIR / f"{slug}.json"
+    with locked(ROOT / "data" / "reading" / f"{slug}.build"):
+        room = load_room(slug)
+        if room is None:
+            raise KeyError(slug)
+        prev_ids = {it.get("id") for it in room["items"]}
+        merged = clean_items(list(room["items"]) + list(new_items))
+        new_titles = [it["title"] for it in merged
+                      if it["id"] not in prev_ids]
+        room["items"] = merged
+        room["updated"] = datetime.now(timezone.utc).astimezone() \
+            .isoformat(timespec="seconds")
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(room, ensure_ascii=False, indent=1),
+                       encoding="utf-8")
+        tmp.replace(path)
+    if new_titles:
+        _ping_additions(slug, room["title"], new_titles)
+    return {"slug": slug, "items": len(merged), "added": len(new_titles),
+            "titles": new_titles}
+
+
 def export_html(slug):
     """The standalone page, rendered from the store on demand — for the
     full-tab link and for sharing. Raises KeyError on an unknown room."""
@@ -452,37 +745,76 @@ def update_prompt(slug):
         f"The room was last refreshed on {since} and holds {n} items.",
     ]
     d = room.get("definition") or {}
-    if any(d.get(k) for k in ("subject", "why", "people", "notes")):
+    if any(d.get(k) for k in ("subject", "why", "people", "notes", "watch")):
         lines += ["", "STANDING INSTRUCTIONS (owner-edited; these govern "
                       "what belongs and how it ranks):"]
         for label, key in (("Subject", "subject"),
-                           ("What the owner wants out of it", "why"),
-                           ("Prioritize these people", "people"),
-                           ("Notes", "notes")):
+                           ("What the owner wants out of it", "why")):
             if d.get(key):
                 lines.append(f"- {label}: {d[key]}")
+        ppl = d.get("people") or []
+        if isinstance(ppl, str):                  # a pre-pill definition
+            lines.append(f"- Prioritize these people: {ppl}")
+        elif ppl:
+            lines.append("- Prioritize these people — each resolved to an "
+                         "identity, so track THAT person, not name-matches:")
+            for p in ppl:
+                bit = f"  - {p['name']}"
+                if p.get("qualifier"):
+                    bit += f" — {p['qualifier']}"
+                if p.get("ref"):
+                    bit += f" (identity page: {p['ref']})"
+                lines.append(bit)
+        if d.get("watch"):
+            lines.append("- Standing watch — always check for these:")
+            lines += [f"  - {w}" for w in d["watch"]]
+        if d.get("notes"):
+            lines.append(f"- Notes: {d['notes']}")
         if d.get("modes"):
             lines.append("- Include: " + ", ".join(d["modes"]))
         if d.get("depth"):
             lines.append(f"- Depth: {d['depth']}")
+
+    # The deterministic half runs HERE, before any model judgment: the
+    # room's feeds are enumerated and diffed against its items, and the
+    # session is handed the residual as ground truth to verify and rank.
+    swept = enumerate_sources(room)
+    if swept["swept"]:
+        cands, errors = swept["candidates"], swept["errors"]
+        lines += ["", f"DETERMINISTIC SWEEP — the room's {swept['swept']} "
+                  "source feeds were enumerated just now and diffed against "
+                  "the room:"]
+        if cands:
+            lines.append(
+                f"These {len(cands)} entries are in the feeds and NOT in "
+                "the room. They come from the channels themselves, so the "
+                "URLs are real; your job is judgment, not discovery — "
+                "verify each is in scope, rank it against the room's "
+                "'why', and include what belongs:")
+            lines += [f"- {c['date'] or '????'} · {c['title'][:100]} "
+                      f"({c['url']}) [from {c['source']}]" for c in cands]
+        else:
+            lines.append("Every feed entry is already in the room — the "
+                         "feeds hold nothing new.")
+        for err in errors:
+            lines.append(f"- FEED ERROR, sweep this source by hand: {err}")
     lines += [
         "",
         "Do this, in order:",
         f"1. Read the current room store at {path} — its `items` array is "
-        "the room. EVERY existing item must carry forward into your "
-        "rebuild — item ids are derived from URLs, and a dropped item "
-        "orphans the owner's done-marks.",
-        f"2. Research what is new on this subject since {since}: new talks, "
-        "papers, posts, podcast episodes, interviews. Real URLs only — never "
-        "invent an item you cannot link. If genuinely nothing new exists, "
-        "say so and stop; do not pad.",
-        "3. Merge: existing items unchanged (keep their titles, URLs, dates, "
-        "modes, priorities and notes exactly), new items appended with "
-        "honest mode/prio/why fields.",
-        f"4. Rebuild via the mcp__vira__create_reading_room tool with the SAME "
-        f"slug \"{slug}\" — the server keeps ids stable so progress survives, "
-        "and it notifies the owner of what arrived on its own.",
-        "5. Report what you added, in one short list.",
+        "the room; know what it covers so you never re-propose it.",
+        f"2. Judge the deterministic-sweep candidates above (if any), then "
+        f"research what ELSE is new on this subject since {since} — "
+        "appearances outside the room's own feeds: conference talks, other "
+        "podcasts, essays, papers. Real URLs only — never invent an item "
+        "you cannot link. If genuinely nothing new exists, say so and "
+        "stop; do not pad.",
+        f"3. Add what belongs via the mcp__vira__add_reading_room_items "
+        f"tool with slug \"{slug}\" — pass ONLY the new items; the server "
+        "merges by stable id, keeps every existing item and its done-marks, "
+        "and notifies the owner of what arrived. NEVER re-emit the whole "
+        "room (create_reading_room is for restructuring, not refreshes).",
+        "4. Report what you added, in one short list.",
     ]
     return "\n".join(lines)
 
