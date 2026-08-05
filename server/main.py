@@ -3282,9 +3282,10 @@ def api_orphanwork_land_all():
 # ---------- contact atlas (the face-graph of interconnection) ----------
 
 @app.get("/api/atlas")
-def api_atlas():
-    """The cached materialized graph — never rebuilt per request."""
-    return atlas.compose()
+def api_atlas(vault: bool = False):
+    """The cached materialized graph — never rebuilt per request.
+    `?vault=1` merges the wiki overlay (people beyond the CRM)."""
+    return atlas.compose(vault=vault)
 
 
 class AtlasRefreshReq(BaseModel):
@@ -3298,8 +3299,8 @@ def api_atlas_refresh(req: AtlasRefreshReq | None = None):
 
 
 @app.get("/api/atlas/node/{pid}")
-def api_atlas_node(pid: str):
-    detail = atlas.node_detail(pid)
+def api_atlas_node(pid: str, vault: bool = False):
+    detail = atlas.node_detail(pid, vault=vault)
     if not detail:
         raise HTTPException(404, "not in the atlas")
     return detail

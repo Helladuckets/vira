@@ -70,7 +70,7 @@
     }
     S.loading = true;
     try {
-      const g = await api("/api/atlas");
+      const g = await api("/api/atlas" + (vaultOn() ? "?vault=1" : ""));
       if (g.status === "empty") {
         showEmpty(g.building);
         if (g.building) setTimeout(() => atlasLoad(true), 4000);
@@ -118,6 +118,12 @@
   // in three different corners is exactly the thing worth seeing.
 
   const LENS_KEY = "vira-atlas-lens";
+
+  // "Beyond the CRM" — merge the vault's wiki people into the web. The
+  // server composes the merged payload (?vault=1) so lenses and counts
+  // stay honest; the toggle just decides which payload is asked for.
+  const VAULT_KEY = "vira-atlas-vault";
+  const vaultOn = () => !!lsGet(VAULT_KEY, false);
 
   function activeLens() {
     const ls = S.graph?.lenses || [];
@@ -226,8 +232,8 @@
       ...e,
       an: S.byId.get(e.a), bn: S.byId.get(e.b),
       structural: e.signals.some((s) =>
-        ["photo_cooccur", "group_cochat", "family", "colleague"]
-          .includes(s.type)),
+        ["photo_cooccur", "group_cochat", "family", "colleague",
+         "wiki_link", "wiki_org"].includes(s.type)),
     })).filter((e) => e.an && e.bn);
     S.egoEdges = (g.ego_edges || []).map((e) => ({
       ...e, an: S.ego, bn: S.byId.get(e.b),
@@ -252,9 +258,11 @@
     card.style.display = "none";
     applyLens(false);
     updateIsoBar();
+    $("#atlas-vault")?.classList.toggle("on", vaultOn());
     $("#atlas-meta").textContent =
-      `${g.nodes.length} people · ${g.edges.length} ties · built `
-      + fmtTime(g.generated);
+      `${g.nodes.length} people · ${g.edges.length} ties`
+      + (g.vault?.people ? ` · ${g.vault.people} from your notes` : "")
+      + ` · built ` + fmtTime(g.generated);
 
     const fit = Math.min(stage.clientWidth || 1100,
                          stage.clientHeight || 700);
@@ -621,7 +629,10 @@
     ctx.lineWidth = isSel || p === S.hover
       ? 3 : p.ego ? 2.5 : 1.6;
     ctx.strokeStyle = isSel ? "#d4ccba" : color;
+    // vault people wear a dashed ring — in the notes, not yet met
+    if (p.vault) ctx.setLineDash([4, 3]);
     ctx.stroke();
+    ctx.setLineDash([]);
 
     // face (clipped) or letter tile
     const entry = S.imgs.get(p.id);
@@ -1020,7 +1031,8 @@
     card.innerHTML = "";
     card.appendChild(el("div", "hint", "loading…"));
     try {
-      const d = await api("/api/atlas/node/" + p.id);
+      const d = await api("/api/atlas/node/" + p.id
+                          + (vaultOn() ? "?vault=1" : ""));
       if (editorId || !(S.sel.size === 1 && S.sel.has(p))) return;
       renderCard(d);
     } catch {
@@ -1122,16 +1134,20 @@
   function renderCard(d) {
     card.innerHTML = "";
     const head = el("div", "atlas-card-head");
-    const av = avatarNode(d.node.id, d.node.name, true, d.node.face != null);
+    const av = avatarNode(d.node.id, d.node.name, !d.node.vault,
+                          d.node.face != null);
     if (d.node.face) av.querySelector("img")
       ?.setAttribute("src", "/api/atlas/face/" + d.node.id);
     head.appendChild(av);
     const mid = el("div", "atlas-card-name");
     const nm = el("div", "click", d.node.name);
-    nm.addEventListener("click", () => openPerson(d.node.id));
+    nm.addEventListener("click", () => d.node.vault
+      ? openNote(d.node.ref, d.node.name) : openPerson(d.node.id));
     mid.appendChild(nm);
-    const sub = [d.node.title, d.node.company].filter(Boolean).join(" · ")
-      || d.node.relationship_class || "";
+    const sub = d.node.vault
+      ? (d.node.qualifier || d.node.company || "in your notes")
+      : [d.node.title, d.node.company].filter(Boolean).join(" · ")
+        || d.node.relationship_class || "";
     if (sub) mid.appendChild(el("div", "hint", sub));
     head.appendChild(mid);
     const x = el("button", "idea-del", "×");
@@ -1140,6 +1156,11 @@
     card.appendChild(head);
 
     const chips = el("div", "atlas-card-chips");
+    if (d.node.vault) {
+      const wk = el("span", "atlas-deg click", "in your notes — open page");
+      wk.addEventListener("click", () => openNote(d.node.ref, d.node.name));
+      chips.appendChild(wk);
+    }
     if (d.node.degree)
       chips.appendChild(el("span", "atlas-deg",
         ["1st", "2nd", "3rd"][d.node.degree - 1] || d.node.degree + "th"));
@@ -1182,9 +1203,11 @@
       list.appendChild(row);
     });
     if (!d.edges.length)
-      list.appendChild(el("div", "hint",
-        "No contact-to-contact ties above the threshold — connected "
-        + "through you only."));
+      list.appendChild(el("div", "hint", d.node.vault
+        ? "No ties above the threshold — their page shares no links, "
+          + "sources or orgs with the rest of the web yet."
+        : "No contact-to-contact ties above the threshold — connected "
+          + "through you only."));
     else
       list.appendChild(el("div", "hint",
         "Click a tie — or more people on the map — to add them to the "
@@ -1245,10 +1268,13 @@
         tip.innerHTML = "";
         tip.appendChild(el("div", "atlas-tip-name", p.name));
         const clab = S.bands.find((b) => b.id === p.band);
-        const bits = [p.degree && ["1st", "2nd", "3rd"][p.degree - 1],
+        const bits = [p.vault && "in your notes",
+                      p.degree && ["1st", "2nd", "3rd"][p.degree - 1],
                       clab?.label, p.company].filter(Boolean);
         if (bits.length)
           tip.appendChild(el("div", "atlas-tip-sub", bits.join(" · ")));
+        if (p.vault && p.qualifier)
+          tip.appendChild(el("div", "atlas-tip-sub", p.qualifier));
       } else {
         tip.style.display = "none";
       }
@@ -1293,7 +1319,9 @@
   canvas.addEventListener("dblclick", (e) => {
     const rect = canvas.getBoundingClientRect();
     const p = nodeAt(e.clientX - rect.left, e.clientY - rect.top);
-    if (p && !p.ego) openPerson(p.id);
+    if (!p || p.ego) return;
+    if (p.vault) openNote(p.ref, p.name);
+    else openPerson(p.id);
   });
 
   canvas.addEventListener("wheel", (e) => {
@@ -1316,16 +1344,21 @@
     if (!p || p.ego) return;             // fall through to the Vira menu
     e.preventDefault();
     const ctxObj = { component: "Visual Network",
-                     person: { pid: p.id, name: p.name },
-                     snippet: "" };
+                     person: p.vault ? null : { pid: p.id, name: p.name },
+                     snippet: p.vault
+                       ? `${p.name} — vault wiki page ${p.ref}` : "" };
     showContextMenu(e.clientX, e.clientY, [
       { head: "Network · " + p.name },
-      { label: "Open profile", run: () => openPerson(p.id) },
+      p.vault
+        ? { label: "Open wiki page", run: () => openNote(p.ref, p.name) }
+        : { label: "Open profile", run: () => openPerson(p.id) },
       { label: "Feature connections", run: () => setSelection([p]) },
       { label: S.sel.has(p) ? "Remove from selection"
                             : "Add to selection",
         run: () => toggleSelect(p) },
-      { label: "Set group…",
+      // group assignments key on CRM pids; a vault id has no row to hold
+      // one, so the chooser is CRM-only
+      !p.vault && { label: "Set group…",
         run: () => groupChooser(e.clientX, e.clientY, p) },
       { sep: true },
       { label: "New idea about this…",
@@ -1374,6 +1407,16 @@
       isoChanged(false);
     } else if (chromeOpen()) setChrome(false);
   });
+
+  $("#atlas-vault")?.addEventListener("click", (e) => {
+    const on = !vaultOn();
+    lsSet(VAULT_KEY, on);
+    e.target.classList.toggle("on", on);
+    // the node set genuinely changes, so this is a re-init, not a redraw
+    S.loadedGen = null;
+    atlasLoad(true);
+  });
+  $("#atlas-vault")?.classList.toggle("on", vaultOn());
 
   $("#atlas-ego")?.addEventListener("click", (e) => {
     S.hideEgo = !S.hideEgo;

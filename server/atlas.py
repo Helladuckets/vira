@@ -774,14 +774,24 @@ def refresh(narrate=False):
                      daemon=True, name="vira-atlas-refresh").start()
 
 
-def compose():
+def compose(vault=False):
     """The window payload: the cached view + build status, with the
-    user-curated group overrides applied."""
+    user-curated group overrides applied. `vault=True` merges the wiki
+    overlay (server/atlasvault.py) BEFORE lenses run, so the companies
+    lens and the coverage line band vault people too; the default stays
+    CRM-only so every other consumer is untouched."""
     with _lock:
         graph = _read()
     if not graph:
         return {"status": "empty", "building": _building.is_set()}
     apply_overrides(graph)
+    if vault:
+        from . import atlasvault
+        try:
+            atlasvault.merge(graph)
+        except Exception:
+            graph["vault"] = {"people": 0, "ties": 0, "linked": 0,
+                              "error": "vault overlay unavailable"}
     graph["status"] = "ok"
     graph["building"] = _building.is_set()
     # Lenses are a regroup of the nodes this payload already carries, so
@@ -993,9 +1003,10 @@ def person_groups(pid):
             "in_atlas": any(n["id"] == pid for n in g["nodes"])}
 
 
-def node_detail(pid):
-    """One node + its resolved edges, for the side card."""
-    graph = compose()
+def node_detail(pid, vault=False):
+    """One node + its resolved edges, for the side card. A `v:` id only
+    exists in the merged view, so vault follows the client's toggle."""
+    graph = compose(vault=vault or pid.startswith("v:"))
     if graph.get("status") != "ok":
         return None
     names = {n["id"]: n["name"] for n in graph["nodes"]}
