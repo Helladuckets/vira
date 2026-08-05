@@ -13193,18 +13193,21 @@ const APPS_PAGE = 200;
 // expensive part. The count line always states how many are being held
 // back, so the default can never read as "that's all there is".
 let appsFilters = { company: "", q: "", fit: "", status: "", starred: false,
-                    avail: "live", tier: "", comp: "" };
+                    avail: "live", tier: "", comp: "", loc: "",
+                    sort: "relevance" };
 // A saved value the dropdown no longer offers must fall back, not stick:
 // the retired "untriaged" tier matches no role, so a browser carrying it
 // would render an empty list with every control looking unset.
 const APPS_TIERS = ["", "shortlist", "cut", "1", "2", "3", "pass",
                     "analyzed", "raw", "fresh"];
 const APPS_AVAIL = ["live", "gone", "unverified", ""];
+const APPS_SORTS = ["relevance", "newest", "fit"];
 try {
   appsFilters = { ...appsFilters,
                   ...lsGet("vira-apps-filter", {}) };
   if (!APPS_TIERS.includes(appsFilters.tier)) appsFilters.tier = "";
   if (!APPS_AVAIL.includes(appsFilters.avail)) appsFilters.avail = "live";
+  if (!APPS_SORTS.includes(appsFilters.sort)) appsFilters.sort = "relevance";
   delete appsFilters.view;              // the retired mode toggle
 } catch (e) { /* corrupt saved filters -> defaults */ }
 
@@ -13217,6 +13220,7 @@ async function loadApplications() {
   if (!appsData && host) host.innerHTML = "<p class='hint'>Loading roles…</p>";
   appsData = await api("/api/applications");
   buildAppsCompanySelect();
+  buildAppsLocSelect();
   renderApplications();
   loadBoardsStrip().catch(() => {});
   appsCheckStale().catch(() => {});
@@ -13245,6 +13249,7 @@ async function appsCheckStale() {
       clearInterval(appsStaleTimer);
       appsData = await api("/api/applications");
       buildAppsCompanySelect();
+      buildAppsLocSelect();
       renderApplications();
       loadBoardsStrip();
     } catch (e) { clearInterval(appsStaleTimer); }
@@ -13262,14 +13267,67 @@ async function loadBoardsStrip() {
     ? new Date(s.fetched).toLocaleTimeString([], { hour: "2-digit",
                                                    minute: "2-digit" })
     : "never";
-  $("#app-boards-line").textContent =
+  const scoringLive = s.scoring && s.scoring.live;
+  let line =
     `Live boards: ${okBoards}/${s.registered} polling · ${s.roles_open} open` +
     ` · ${s.eligible} eligible · ${s.fresh} new · swept ${when}`;
+  // Scoring is automatic now (owner's call, 2026-08-05): the strip
+  // REPORTS the pipeline instead of offering a button — a batch in
+  // flight, or the count still queued behind it.
+  if (!scoringLive && s.auto_score !== false && s.unscored_eligible)
+    line += ` · ${s.unscored_eligible} queued for auto-scoring`;
+  $("#app-boards-line").textContent = line;
+  const chip = $("#app-scoring");
+  if (chip) {
+    chip.style.display = scoringLive ? "" : "none";
+    if (scoringLive) {
+      chip.textContent = `Scoring ${s.scoring.roles} — watch`;
+      chip.dataset.jid = s.scoring.job || "";
+    }
+  }
   const score = $("#app-score");
   if (score) {
-    score.style.display = s.unscored_eligible ? "" : "none";
+    // the manual button survives only when auto-scoring is switched off
+    score.style.display =
+      (s.auto_score === false && s.unscored_eligible) ? "" : "none";
     score.textContent = `Score new (${s.unscored_eligible})`;
   }
+}
+
+function buildAppsLocSelect() {
+  const sel = $("#app-loc");
+  if (!sel || !appsData) return;
+  const m = appsData.meta || {};
+  const elig = m.eligibility || {};
+  const rule = m.location_rule || {};
+  sel.innerHTML = "";
+  const add = (parent, value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    parent.appendChild(o);
+  };
+  add(sel, "", "All locations");
+  if (rule.configured) {
+    const places = (rule.places || []).join(" / ");
+    const label = places
+      ? places + (rule.remote_ok ? " + remote" : "")
+      : (rule.remote_ok ? "Remote-friendly" : "your rule");
+    add(sel, "eligible", `Your locations — ${label} (${elig.eligible ?? 0})`);
+    add(sel, "outside", `Elsewhere (${elig.outside ?? 0})`);
+  }
+  const grp = document.createElement("optgroup");
+  grp.label = "Places";
+  (m.locations || []).forEach((l) =>
+    add(grp, "place:" + l.name, `${l.name} (${l.count})`));
+  if (grp.childElementCount) sel.appendChild(grp);
+  // a saved facet the data no longer carries must fall back, not stick
+  if (![...sel.querySelectorAll("option")]
+        .some((o) => o.value === appsFilters.loc)) {
+    appsFilters.loc = "";
+    saveAppsFilters();
+  }
+  sel.value = appsFilters.loc;
 }
 
 function buildAppsCompanySelect() {
@@ -13296,8 +13354,12 @@ function appsFiltered() {
   if (!appsData) return [];
   const f = appsFilters;
   const q = (f.q || "").trim().toLowerCase();
-  return appsData.roles.filter((r) => {
+  const rows = appsData.roles.filter((r) => {
     if (f.company && r.company !== f.company) return false;
+    if (f.loc === "eligible" && r.eligible !== true) return false;
+    if (f.loc === "outside" && r.eligible !== false) return false;
+    if (f.loc && f.loc.startsWith("place:")
+        && !(r.places || []).includes(f.loc.slice(6))) return false;
     if (f.starred && !r.starred) return false;
     if (f.status && (r.status || "none") !== f.status) return false;
     const av = r.availability || "unverified";
@@ -13321,11 +13383,34 @@ function appsFiltered() {
       return false;
     if (q) {
       const hay = (r.title + " " + r.company + " " + r.team + " " +
+                   (r.locations || []).join(" ") + " " +
                    (r.tags || []).join(" ")).toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
+  // sort() is stable, so ties keep the server's relevance order
+  if (f.sort === "newest")
+    rows.sort((a, b) =>
+      (b.first_seen || "").localeCompare(a.first_seen || ""));
+  else if (f.sort === "fit")
+    rows.sort((a, b) => (b.fit ?? b.fit_old ?? -1)
+                      - (a.fit ?? a.fit_old ?? -1));
+  return rows;
+}
+
+function appSeen(r) {
+  // first_seen is when a board sweep first saw the posting — for
+  // baseline roles that is only the day the board was registered, so
+  // no age is claimed for them
+  if (!r.first_seen || r.baseline) return "";
+  const d = new Date(r.first_seen);
+  if (isNaN(d)) return "";
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  if (days < 0) return "";
+  if (days === 0) return "listed today";
+  if (days < 30) return `listed ${days}d ago`;
+  return "listed " + d.toISOString().slice(0, 10);
 }
 
 function fmtComp(r) {
@@ -13471,7 +13556,7 @@ function appRow(r) {
   const subBits = [r.company, r.team,
                    (r.locations || []).slice(0, 2).join(" / "),
                    r.seniority, fmtComp(r),
-                   r.equity ? "equity" : ""].filter(Boolean);
+                   r.equity ? "equity" : "", appSeen(r)].filter(Boolean);
   main.appendChild(el("div", "app-sub", subBits.join(" · ")));
   if (r.lane) main.appendChild(el("div", "app-lane", r.lane));
   else if (r.reason) main.appendChild(el("div", "app-reason", r.reason));
@@ -13716,6 +13801,23 @@ $("#app-run-copy").addEventListener("click", async () => {
       appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
     });
   }
+  const sort = $("#app-sort");
+  if (sort) {
+    sort.value = appsFilters.sort || "relevance";
+    sort.addEventListener("change", () => {
+      appsFilters.sort = sort.value;
+      appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
+    });
+  }
+  const loc = $("#app-loc");
+  if (loc) loc.addEventListener("change", () => {
+    appsFilters.loc = loc.value;
+    appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
+  });
+  const scoring = $("#app-scoring");
+  if (scoring) scoring.addEventListener("click", () => {
+    if (scoring.dataset.jid) openSession(scoring.dataset.jid);
+  });
   const comp = $("#app-comp");
   if (comp) {
     comp.value = appsFilters.comp || "";

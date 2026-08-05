@@ -346,8 +346,11 @@ class Runner:
         if self.spec.get("publish_plan"):
             return False
         meta = self.spec.get("meta") or {}
-        return not (meta.get("routine_id") or meta.get("circuit_run")
-                    or meta.get("judge_of"))
+        # `machine` is the generic marker for the same rule — any dispatch
+        # no owner is watching (the jobboards auto-score) sets it rather
+        # than growing this tuple a key at a time.
+        return not (meta.get("machine") or meta.get("routine_id")
+                    or meta.get("circuit_run") or meta.get("judge_of"))
 
     async def await_reply(self):
         """Park at a completed turn boundary with the session still open.

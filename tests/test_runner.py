@@ -337,7 +337,8 @@ class ReplyWindowTests(RunnerCase):
         for spec in ({"publish_plan": True},
                      {"meta": {"routine_id": "muse"}},
                      {"meta": {"circuit_run": "cr_x", "stage": "build"}},
-                     {"meta": {"judge_of": "abc123"}}):
+                     {"meta": {"judge_of": "abc123"}},
+                     {"meta": {"kind": "board-score", "machine": True}}):
             with self.subTest(spec=spec):
                 self.assertFalse(self.make_runner(**spec).parks_at_turn_end())
 

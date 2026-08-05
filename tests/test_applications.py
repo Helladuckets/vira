@@ -68,6 +68,22 @@ Blake,Invented,https://example.com/in/blake,,Example Labs Ventures,Partner,02 Ja
 Casey,Madeup,https://example.com/in/casey,,Unrelated Co,Analyst,03 Jan 2026
 """
 
+# The catalog computes location eligibility through
+# jobboards.location_rule(), which reads the RUNNING machine's config —
+# pinned here so eligibility assertions test the code, not this Mac.
+NYC_CFG = {"applications_locations": ["New York", "NYC"],
+           "applications_remote_ok": True}
+
+# bound BEFORE the base class patches the name — _nyc_rule replaces
+# jobboards.location_rule, so calling it through the module would recurse
+_real_location_rule = jobboards.location_rule
+
+
+def _nyc_rule():
+    with mock.patch.object(jobboards.settings, "raw",
+                           return_value=NYC_CFG):
+        return _real_location_rule()
+
 
 class ApplicationsBase(unittest.TestCase):
     def setUp(self):
@@ -103,6 +119,7 @@ class ApplicationsBase(unittest.TestCase):
             # what the code writes never isolates what it reads.
             mock.patch.object(jobboards, "boards_dir",
                               lambda: self.universe / "boards"),
+            mock.patch.object(jobboards, "location_rule", _nyc_rule),
         ]
         for p in patches:
             p.start()
@@ -489,6 +506,75 @@ class ApplyRouteTest(ApplicationsBase):
         self.assertEqual(
             applications.get_state()["g-examplelabs-1234567"]["last_job"],
             "job-123")
+
+
+class PlacesAndLocationTest(ApplicationsBase):
+    """The location layer (2026-08-05): canonical place facets, an
+    eligibility verdict on EVERY role (stamped by a sweep or computed
+    against the owner's rule), and the compose metadata the location
+    dropdown is built from."""
+
+    def test_places_normalize_split_aliases_and_remote(self):
+        self.assertEqual(
+            applications.places_for(
+                ["San Francisco, CA | New York City, NY",
+                 "NYC", "Remote - US", "Remote-Friendly, United States",
+                 "London, UK", "london"]),
+            ["San Francisco", "New York", "Remote", "London"])
+
+    def test_norm_respects_a_stamp_and_computes_otherwise(self):
+        rule = jobboards.location_rule()
+        src = {"slug": "x", "company": "X"}
+        stamped = applications._norm(
+            {"title": "T", "eligible": False,
+             "locations": ["New York, NY"],
+             "url": "https://job-boards.greenhouse.io/x/jobs/1"},
+            src, {}, rule)
+        self.assertIs(stamped["eligible"], False)   # the sweep's verdict wins
+        computed = applications._norm(
+            {"title": "T", "locations": ["London, UK"],
+             "url": "https://job-boards.greenhouse.io/x/jobs/2"},
+            src, {}, rule)
+        self.assertIs(computed["eligible"], False)
+        nyc = applications._norm(
+            {"title": "T", "locations": ["New York, NY"],
+             "url": "https://job-boards.greenhouse.io/x/jobs/3"},
+            src, {}, rule)
+        self.assertIs(nyc["eligible"], True)
+
+    def test_first_seen_and_baseline_ride_through(self):
+        r = applications._norm(
+            {"title": "T", "locations": ["Remote"],
+             "first_seen": "2026-08-01T00:00:00+00:00", "baseline": True,
+             "url": "https://jobs.ashbyhq.com/x/aaaa-bbbb"},
+            {"slug": "boards", "company": None}, {},
+            jobboards.location_rule())
+        self.assertEqual(r["first_seen"], "2026-08-01T00:00:00+00:00")
+        self.assertTrue(r["baseline"])
+
+    def test_catalog_roles_all_carry_a_verdict(self):
+        roles, _ = applications.load_roles()
+        for r in roles:
+            self.assertIn(r["eligible"], (True, False))
+        by = {r["uid"]: r for r in roles}
+        self.assertTrue(by["g-examplelabs-1234567"]["eligible"])   # NYC
+        self.assertEqual(by["g-examplelabs-1234567"]["places"],
+                         ["New York"])
+
+    def test_compose_meta_carries_facets_counts_and_the_rule(self):
+        with mock.patch.object(applications.settings, "raw",
+                               return_value=NYC_CFG):
+            data = applications.compose()
+        names = {l["name"]: l["count"] for l in data["meta"]["locations"]}
+        self.assertIn("New York", names)
+        self.assertIn("Remote", names)
+        el = data["meta"]["eligibility"]
+        self.assertEqual(el["eligible"] + el["outside"],
+                         len(data["roles"]))
+        lr = data["meta"]["location_rule"]
+        self.assertTrue(lr["configured"])
+        self.assertEqual(lr["places"], ["New York", "NYC"])
+        self.assertTrue(lr["remote_ok"])
 
 
 if __name__ == "__main__":

@@ -674,7 +674,14 @@ def poll_once(notify_new=True):
     with _lock:
         _write_json(_snapshot_path(), {"fetched": now, "boards": board_meta,
                                        "roles": roles})
-        _write_json(_state_path(), {"roles": st_roles, "boards": st_boards})
+        # the state file carries more than this function's two keys (the
+        # auto-score record below) — re-read at write time so a wholesale
+        # write cannot drop what another writer added mid-poll
+        cur = _read_json(_state_path(), {})
+        out_state = {"roles": st_roles, "boards": st_boards}
+        if cur.get("score") is not None:
+            out_state["score"] = cur["score"]
+        _write_json(_state_path(), out_state)
     return {"ok": True, "at": now, "boards": board_meta,
             "total": len([r for r in roles.values() if not r.get("closed")]),
             "new": len(new_uids), "eligible_new": len(eligible_new),
@@ -821,6 +828,7 @@ def status():
             fresh += 1
         if r.get("eligible") and not r.get("cut") and uid not in scored:
             unscored += 1
+    sc = state.get("score") or {}
     return {
         "registered": len(reg["boards"]),
         "boards": snapshot.get("boards") or {},
@@ -830,6 +838,10 @@ def status():
                         if r.get("eligible") and not r.get("cut")),
         "fresh": fresh,
         "unscored_eligible": unscored,
+        "auto_score": auto_score_enabled(),
+        "scoring": ({"job": sc.get("job"), "roles": sc.get("roles"),
+                     "at": sc.get("at"), "live": _score_job_live(sc)}
+                    if sc.get("job") else None),
     }
 
 
@@ -917,6 +929,89 @@ def score_prompt(limit=40):
     return "\n".join(lines), len(todo)
 
 
+# ---------------------------------------------------------- auto-scoring
+
+# The owner's ruling (2026-08-05): no Score-new button. A new eligible role
+# gets scored as it arrives, and the standing backlog drains batch by batch
+# behind the same gate — one dispatch in flight at a time, so the spend is
+# serialized, and score_prompt's per-batch cap (40) bounds each session.
+
+SCORE_STALE_HOURS = 3   # a score job silent this long no longer blocks
+
+
+def auto_score_enabled():
+    return settings.raw().get("boards_auto_score", True) is not False
+
+
+def _score_job_live(sc):
+    """Whether the recorded score dispatch is still running. Asks the live
+    session registry — the poller runs inside the server process, and the
+    supervisor re-attaches detached runners across restarts, so a running
+    job answers here even after a bounce. The age cap is the backstop: a
+    runner that died without finalizing must not wedge auto-scoring."""
+    jid = (sc or {}).get("job")
+    if not jid:
+        return False
+    try:
+        started = datetime.fromisoformat(sc.get("at") or "")
+        age = (datetime.now(timezone.utc) - started).total_seconds()
+        if age > SCORE_STALE_HOURS * 3600:
+            return False
+    except (ValueError, TypeError):
+        pass
+    try:
+        from . import session
+        snap = session.sessions.get(jid)
+    except Exception:  # noqa: BLE001 — a broken registry never blocks
+        return False
+    return bool(snap) and snap.get("status") == "running"
+
+
+def _record_score(entry):
+    with _lock:
+        state = _read_json(_state_path(), {})
+        if entry is None:
+            if state.pop("score", None) is None:
+                return
+        else:
+            state["score"] = entry
+        _write_json(_state_path(), state)
+
+
+def maybe_auto_score():
+    """Dispatch the scoring session for unscored eligible roles, unasked.
+
+    Guards, in cost order: the config switch (`boards_auto_score`), one
+    dispatch in flight at a time, the AI-ready probe (a machine with no
+    model connected must not mint dead jobs — the routines rule), then
+    the batch itself. The poller never runs under VIRA_PASSIVE, so a test
+    clone never dispatches. Returns a small dict saying what happened;
+    callers log it, nothing raises."""
+    if not auto_score_enabled():
+        return {"ok": False, "reason": "disabled"}
+    sc = (_read_json(_state_path(), {}).get("score")) or {}
+    if _score_job_live(sc):
+        return {"ok": False, "reason": "in flight", "job": sc.get("job")}
+    from . import routines
+    if not routines._ai_ready():
+        return {"ok": False, "reason": "no AI connected"}
+    prompt, n = score_prompt()
+    if not n:
+        if sc:
+            _record_score(None)     # done — clear the finished record
+        return {"ok": False, "reason": "nothing to score"}
+    try:
+        from . import applications, session
+        jid = session.sessions.launch(
+            prompt, cwd=str(applications.self_record()),
+            model=settings.raw().get("boards_score_model") or None,
+            meta={"kind": "board-score", "machine": True})
+    except ValueError as e:      # live-session cap — retry next tick
+        return {"ok": False, "reason": str(e)[:160]}
+    _record_score({"job": jid, "at": _now(), "roles": n})
+    return {"ok": True, "job": jid, "roles": n}
+
+
 # ------------------------------------------------------------------ poller
 
 class Poller(threading.Thread):
@@ -925,10 +1020,14 @@ class Poller(threading.Thread):
     registered. Started from main._startup, skipped under VIRA_PASSIVE
     like every worker."""
 
+    SCORE_CHECK_S = 180   # auto-score attempt cadence between polls
+
     def __init__(self):
         super().__init__(daemon=True, name="vira-jobboards")
         self.status = "starting"
         self.next_poll = time.time() + 90     # settle after boot
+        self.next_score = time.time() + 120
+        self.score_note = ""
 
     def poll_now(self):
         self.next_poll = 0.0
@@ -938,14 +1037,22 @@ class Poller(threading.Thread):
             try:
                 if not load_registry()["boards"]:
                     self.status = "dormant — no boards registered"
-                elif time.time() >= self.next_poll:
-                    r = poll_once()
-                    minutes = float(settings.raw().get("boards_poll_minutes")
-                                    or 15)
-                    self.next_poll = time.time() + minutes * 60
-                    self.status = (f"ok — {r.get('new', 0)} new / "
-                                   f"{r.get('closed', 0)} closed at "
-                                   f"{datetime.now().strftime('%H:%M')}")
+                else:
+                    if time.time() >= self.next_poll:
+                        r = poll_once()
+                        minutes = float(settings.raw()
+                                        .get("boards_poll_minutes") or 15)
+                        self.next_poll = time.time() + minutes * 60
+                        self.status = (f"ok — {r.get('new', 0)} new / "
+                                       f"{r.get('closed', 0)} closed at "
+                                       f"{datetime.now().strftime('%H:%M')}")
+                        self.next_score = 0.0   # new sweep — check at once
+                    if time.time() >= self.next_score:
+                        sc = maybe_auto_score()
+                        self.next_score = time.time() + self.SCORE_CHECK_S
+                        self.score_note = (
+                            f"scoring {sc['roles']} (job {sc['job']})"
+                            if sc.get("ok") else sc.get("reason", ""))
             except Exception as e:  # noqa: BLE001 — the loop never dies
                 self.status = f"error: {str(e)[:160]}"
                 self.next_poll = time.time() + 900

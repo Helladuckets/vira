@@ -174,6 +174,48 @@ def _fresh(job):
         return False
 
 
+# ------------------------------------------------------------ place facets
+
+# Canonical city names for the location filter. Location strings are
+# free text typed by hundreds of recruiters ("New York, NY" / "New York
+# City" / "NYC" / "New York, NY, US"), so the facet is the FIRST comma
+# segment of each pipe-separated part, folded through this alias table.
+# Merging is case-insensitive; the display name is the canonical spelling
+# where one exists, else the first spelling seen.
+PLACE_ALIASES = {
+    "nyc": "New York", "new york city": "New York",
+    "new york metro": "New York",
+    "sf": "San Francisco", "sf bay area": "San Francisco",
+    "bay area": "San Francisco",
+    "washington": "Washington DC", "washington dc": "Washington DC",
+    "washington d c": "Washington DC",
+}
+
+
+def places_for(locs):
+    """Location strings -> canonical place facets, deduped, order kept.
+    Any part carrying the word 'remote' facets as Remote; the rest facet
+    by their leading city segment."""
+    from . import jobboards
+    out, seen = [], set()
+    for loc in locs or []:
+        for part in re.split(r"[|;]", str(loc)):
+            part = part.strip()
+            if not part:
+                continue
+            if jobboards.REMOTE_RE.search(part):
+                name = "Remote"
+            else:
+                seg = part.split(",")[0].strip()
+                key = re.sub(r"[^a-z ]", "", seg.lower())
+                key = re.sub(r"\s+", " ", key).strip()
+                name = PLACE_ALIASES.get(key) or seg
+            if name.casefold() not in seen:
+                seen.add(name.casefold())
+                out.append(name)
+    return out
+
+
 def _availability(uid, avail, own_closed=""):
     """One role's availability, from the boards state (jobboards owns the
     verdict). Three values, and the third is the point: `unverified` means
@@ -188,22 +230,34 @@ def _availability(uid, avail, own_closed=""):
     return "unverified", ""
 
 
-def _norm(job, source, avail=None):
-    """Normalize a teardown/frontier job record to the module's role shape."""
+def _norm(job, source, avail=None, rule=None):
+    """Normalize a teardown/frontier job record to the module's role shape.
+    `rule` (jobboards.location_rule) lets eligibility be computed for
+    corpus roles that never went through a board sweep — a stamped
+    `eligible` (the snapshot's) always wins over the computed one."""
     company = source["company"] or job.get("company") or "?"
     salary_min = job.get("annualMin", job.get("salaryMin"))
     salary_max = job.get("annualMax", job.get("salaryMax"))
     uid = role_uid(job)
     state, when = _availability(uid, avail or {}, job.get("closed") or "")
+    locs = job.get("locations") or []
+    if "eligible" in job and job.get("eligible") is not None:
+        eligible = bool(job["eligible"])
+    elif rule is not None:
+        from . import jobboards
+        eligible = jobboards.eligible_location({"locations": locs}, rule)
+    else:
+        eligible = None
     return {
         "uid": uid,
         "company": company,
         "title": job.get("title") or "?",
         "team": job.get("team") or job.get("dept") or "",
         "family": job.get("family") or job.get("function") or "",
-        "locations": job.get("locations") or [],
+        "locations": locs,
+        "places": places_for(locs),
         "remote": job.get("remote") or ("remote" if any(
-            "remote" in (l or "").lower() for l in job.get("locations") or [])
+            "remote" in (l or "").lower() for l in locs)
             else ""),
         "seniority": job.get("seniority") or "",
         "salaryMin": salary_min,
@@ -219,8 +273,10 @@ def _norm(job, source, avail=None):
         "source": source["slug"],
         "comp_kind": job.get("comp") or "",
         "fresh": _fresh(job),
+        "first_seen": job.get("first_seen") or "",
+        "baseline": bool(job.get("baseline")),
         "cut": job.get("cut") or "",
-        "eligible": job.get("eligible", None),
+        "eligible": eligible,
         "availability": state,
         "availability_when": when,
     }
@@ -250,6 +306,7 @@ def load_roles():
             return _cache["roles"]
     from . import jobboards
     avail = jobboards.availability_map()
+    rule = jobboards.location_rule()
     seen = {}
     meta = {"sources": []}
     for s in srcs:
@@ -260,7 +317,7 @@ def load_roles():
         jobs = data.get("jobs") or []
         fresh = 0
         for j in jobs:
-            r = _norm(j, s, avail)
+            r = _norm(j, s, avail, rule)
             if r["uid"] not in seen:
                 seen[r["uid"]] = r
                 fresh += 1
@@ -351,6 +408,7 @@ def load_universe():
     corpus = {r["uid"]: r for r in load_roles()[0]}
     from . import jobboards
     avail = jobboards.availability_map()
+    rule = jobboards.location_rule()
     out = []
     if role_dir.is_dir():
         for f in sorted(role_dir.glob("*.json")):
@@ -364,13 +422,20 @@ def load_universe():
             tier = str(sc.get("final_tier") or sc.get("tier") or "") \
                 if sc else ""
             av_state, av_when = _availability(uid, avail)
+            locs = j.get("locations") or []
             out.append({
                 "uid": uid,
                 "company": j.get("company") or "?",
                 "title": j.get("title") or "?",
                 "team": j.get("team") or j.get("dept") or "",
                 "family": j.get("function") or "",
-                "locations": j.get("locations") or [],
+                "locations": locs,
+                "places": places_for(locs),
+                "eligible": jobboards.eligible_location(
+                    {"locations": locs}, rule),
+                "first_seen": j.get("first_seen")
+                              or cr.get("first_seen") or "",
+                "baseline": bool(cr.get("baseline")),
                 "remote": j.get("remote") or "",
                 "seniority": j.get("seniority") or "",
                 "salaryMin": j.get("salaryMin"),
@@ -395,7 +460,8 @@ def load_universe():
                 "blurb": (j.get("blurb") or "")[:400],
                 "source": "universe",
                 "in_universe": True,
-                "fresh": _fresh(j),
+                # role files carry no first_seen; the corpus overlay does
+                "fresh": _fresh(j) or bool(cr.get("fresh")),
                 "shortlist": 0,               # page-order rank when picked
                 "cut": "",                    # reason text when cut
                 "availability": av_state,
@@ -547,6 +613,28 @@ def compose(company=None, view=None):
         "gone": sum(1 for r in roles if r["availability"] == "gone"),
         "unverified": sum(1 for r in roles
                           if r["availability"] == "unverified"),
+    }
+    facets = {}
+    elig = {"eligible": 0, "outside": 0}
+    for r in roles:
+        for p in r.get("places") or []:
+            facets[p] = facets.get(p, 0) + 1
+        if r.get("eligible") is True:
+            elig["eligible"] += 1
+        elif r.get("eligible") is False:
+            elig["outside"] += 1
+    meta["locations"] = [
+        {"name": k, "count": v}
+        for k, v in sorted(facets.items(), key=lambda kv: (-kv[1], kv[0]))]
+    meta["eligibility"] = elig
+    cfg = settings.raw()
+    meta["location_rule"] = {
+        "places": list(cfg.get("applications_locations") or []),
+        "remote_ok": cfg.get("applications_remote_ok", True) is not False,
+        # unconfigured means unfiltered (jobboards.eligible_location) —
+        # the dropdown only offers the rule rows when there is a rule
+        "configured": bool(cfg.get("applications_locations"))
+                      or "applications_remote_ok" in cfg,
     }
     state = get_state()
     companies = {}
