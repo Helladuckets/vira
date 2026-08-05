@@ -12356,6 +12356,7 @@ function evStartSweepPoll() {
 // ----- Brain: grounded chat over the vault -----
 
 $("#note-back")?.addEventListener("click", closeNote);
+$("#story-back")?.addEventListener("click", () => closeStory());
 // keep: promote this glance to its own window, so it survives the next click
 $("#note-keep")?.addEventListener("click", () => {
   const panel = $("#note-panel");
@@ -14977,6 +14978,178 @@ function isDesktopOpenSpace(target) {
     && !target.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad");
 }
 
+// ==================== The module story — "What is this?" ====================
+// Right-click a module (its chrome, empty space, or dock icon) and the menu
+// answers with the BUILD STORY: the registry's own description of what the
+// module is, plus every film, plan, dossier and retro the built-history
+// library holds about it. The server side is server/modulestory.py; the docs
+// come back in reading-list row shape, so each opens through openReaderItem
+// exactly as it would from the Reader.
+
+// Window ids that have no story: the launcher and the palette are chrome.
+// Companions resolve server-side to their host (find), so they pass through.
+function storyWinId(id) {
+  if (!id || id === "launchpad" || id === "palette") return null;
+  return id;
+}
+
+// One-click chores, module by module — only actions that already exist as
+// routes or functions; each names what happens next rather than implying an
+// instant repaint the module will not do.
+const WIN_ACTIONS = {
+  feed: [{ label: "Mark all read", run: () => {
+    const btn = $("#feed-markread");
+    if (btn) { btn.click(); toast("Marked all read"); }
+    else toast("Nothing unread");
+  } }],
+  brief: [{ label: "Rewrite today's narrative", run: async () => {
+    toast("Rewriting the narrative…");
+    try {
+      await post("/api/brief/narrative?force=true", {});
+      briefLoadedAt = 0; loadBrief().catch(() => {});
+    } catch (e) { toast("Rewrite failed: " + errText(e)); }
+  } }],
+  atlas: [{ label: "Rebuild the graph", run: async () => {
+    try {
+      await post("/api/atlas/refresh", {});
+      toast("Rebuilding in the background — reopen the Network to see it");
+    } catch (e) { toast("Refresh failed: " + errText(e)); }
+  } }],
+  subs: [{ label: "Refresh charges now", run: async () => {
+    toast("Polling Mercury…");
+    try { await post("/api/subs/refresh", {}); viewLoad("subs"); toast("Charges refreshed"); }
+    catch (e) { toast("Refresh failed: " + errText(e)); }
+  } }],
+  applications: [{ label: "Sweep the job boards now", run: async () => {
+    try {
+      await post("/api/jobboards/poll-now", {});
+      toast("Sweeping the boards — rows update as results land");
+    } catch (e) { toast("Sweep failed: " + errText(e)); }
+  } }],
+  reader: [{ label: "Scan for new documents", run: () => readerBackfill() }],
+  map: [{ label: "Refresh the system map", run: async () => {
+    try {
+      await post("/api/map/refresh", {});
+      toast("Map refresh dispatched — a session updates the registry");
+    } catch (e) { toast("Refresh failed: " + errText(e)); }
+  } }],
+  evidence: [{ label: "Compose new case studies", run: async () => {
+    try {
+      await post("/api/evidence/compose", {});
+      toast("Composing drafts from recent episodes…");
+      viewLoad("evidence");
+    } catch (e) { toast("Compose failed: " + errText(e)); }
+  } }],
+};
+
+const STORY_KINDS = [
+  ["walkthrough", "Session films"],
+  ["dossier", "Dossiers"],
+  ["plan", "Plans"],
+  ["brief", "Morning briefs"],
+  ["retro", "Session retros"],
+];
+
+function closeStory() { exitFocus($("#story-panel")); }
+
+function storyDocRow(d) {
+  const row = el("div", "story-row" + (d.read ? " read" : ""));
+  row.appendChild(rdocThumb(d));
+  const main = el("div", "story-main");
+  main.appendChild(el("div", "story-name", d.title));
+  const sub = (d.film || {}).description || "";
+  if (sub) main.appendChild(el("div", "story-sub", sub));
+  row.appendChild(main);
+  if (d.read) row.appendChild(el("span", "story-readtag", "read"));
+  row.appendChild(el("div", "story-date",
+    d.created ? fmtTime(d.created) : ""));
+  cardAction(row, () => openReaderItem(d));
+  return row;
+}
+
+async function openModuleStory(winId) {
+  let s;
+  try {
+    s = await api("/api/module/story/" + encodeURIComponent(winId));
+  } catch (e) { toast("No build story here: " + errText(e)); return; }
+
+  const panel = $("#story-panel");
+  panel.classList.add("open");
+  enterFocus(panel, () => panel.classList.remove("open"));
+
+  $("#story-title").textContent =
+    "What is " + (WIN_TITLES[s.id] || s.title || s.id) + "?";
+  const body = $("#story-body");
+  body.innerHTML = "";
+
+  if (s.what) body.appendChild(el("p", "story-what", s.what));
+
+  const docs = s.docs || [];
+  if (!docs.length) {
+    body.appendChild(el("div", "empty left",
+      "No documents tagged to this module yet."
+      + (s.pending ? " " + s.pending + " are still being tagged — the story "
+                     + "fills in as the tagger reaches them." : "")));
+    return;
+  }
+
+  const byKind = {};
+  docs.forEach((d) => (byKind[d.kind] = byKind[d.kind] || []).push(d));
+  STORY_KINDS.forEach(([kind, label]) => {
+    const items = byKind[kind];
+    if (!items || !items.length) return;
+    const sec = el("div", "story-sec");
+    // Retros are raw material and there can be dozens; they fold. The
+    // films, dossiers and plans are the story and stay open.
+    const folds = kind === "retro" && items.length > 5;
+    const head = el(folds ? "button" : "div",
+      "story-shead" + (folds ? " folds" : ""),
+      label + " · " + items.length);
+    sec.appendChild(head);
+    const list = el("div", "story-list");
+    if (folds) {
+      list.style.display = "none";
+      head.addEventListener("click", () => {
+        const shut = list.style.display === "none";
+        list.style.display = shut ? "" : "none";
+        head.classList.toggle("on", shut);
+      });
+    }
+    items.forEach((d) => list.appendChild(storyDocRow(d)));
+    sec.appendChild(list);
+    body.appendChild(sec);
+  });
+
+  const foot = el("div", "story-foot");
+  if (s.pending) foot.appendChild(el("span", "hint",
+    s.pending + " documents are still being tagged — the story grows."));
+  const lib = el("button", "story-lib", "Browse in the Reader library");
+  lib.addEventListener("click", () => storyToLibrary(s, docs));
+  foot.appendChild(lib);
+  body.appendChild(foot);
+}
+
+// Hand the story off to the Reader's library view, filtered to this module's
+// DOMINANT tag. One tag, not the whole set: the library filter ANDs its
+// tags, so passing several would match nothing.
+function storyToLibrary(s, docs) {
+  const counts = {};
+  (docs || []).forEach((d) => ((d.tags || {}).module || []).forEach((t) => {
+    if ((s.tags || []).includes(t)) counts[t] = (counts[t] || 0) + 1;
+  }));
+  const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0]
+    || (s.tags || [])[0];
+  if (best) {
+    rdocTags = new Set([best]);
+    lsSet("vira-rdoc-tags", [best]);
+  }
+  readerSel = "docs";
+  lsSet("vira-reader-sel", "docs");
+  closeStory();
+  openApp("reader");
+  renderReaderDocs();
+}
+
 // The empty desktop has one direct gesture: a primary-button double-click
 // clears the desk through the same path as Close all modules in its context
 // menu. Window title bars keep their own double-click behavior.
@@ -15036,34 +15209,23 @@ document.addEventListener("contextmenu", (e) => {
     return;
   }
 
-  // A module in a stage layout: grow / send home, and — the only way to take
-  // one OUT of a layout — remove it. A parked tile has no close button (the
-  // whole surface is the grow gesture), and closing a grown card sends it
-  // home, so without this a layout could be added to but never pruned.
-  // A CARD IS CONTENT; THE FRAME AROUND IT IS CHROME. Right-clicking a card
-  // used to hand back the window's layout menu — Send home / Remove from this
-  // layout — which says nothing about the thing under the cursor. Window
-  // management stays one right-click away on the title bar or any empty part
-  // of the window; it just no longer outranks the content. `ctx.target` is
-  // set only where ctxDescribe recognised something specific, so this is the
-  // general rule rather than a Reader special case.
+  // Layout-management rows live in EDIT MODE ONLY (owner's call, 2026-08-05).
+  // At runtime a parked tile grows on click and a grown card's close button
+  // sends it home, so Send home / Remove from this layout were menu noise on
+  // every right-click — pruning a layout is an editing act, reached via
+  // right-click the layout entry > Edit layout. The rows themselves are
+  // unchanged there: "in the layout" simply means open, because commitEdit
+  // captures every open window and records the closed ones as closed.
   const fwin = t.closest(".fwin");
   const fid = fwin?.dataset.wid;
-  if (fid && !ctx.target && (layoutMode === "stage" || editing) && fid !== "palette") {
-    // while editing, "in the layout" simply means open — commitEdit captures
-    // every open window and records the closed ones as closed
-    const member = editing ? !!winState[fid]?.open : !!slotRects[fid];
-    if (!editing && layoutMode === "stage") {
-      if (grown.has(fid)) {
-        if (member) items.push({ label: "Send home", run: () => retreatTile(fid) });
-      } else {
-        items.push({ label: "Open", run: () => growTile(fid) });
-      }
+  if (fid && !ctx.target && editing && fid !== "palette") {
+    if (winState[fid]?.open) {
+      items.push({ label: "Remove from this layout",
+                   run: () => removeFromLayout(fid) });
+    } else {
+      items.push({ label: "Add to this layout",
+                   run: () => addToLayout(fid) });
     }
-    if (member) items.push({ label: "Remove from this layout",
-                             run: () => removeFromLayout(fid) });
-    else items.push({ label: "Add to this layout",
-                      run: () => addToLayout(fid) });
     items.push({ sep: true });
   }
 
@@ -15084,6 +15246,10 @@ document.addEventListener("contextmenu", (e) => {
     const wid = dockBtn.dataset.win;
     items.push({ label: "Open " + (WIN_TITLES[wid] || wid),
                  run: () => openWindow(wid) });
+    if (storyWinId(wid)) {
+      items.push({ label: "What is this?", hint: "the build story",
+                   run: () => openModuleStory(storyWinId(wid)) });
+    }
     items.push({ label: "Remove from Dock",
                  run: () => setDockHidden(wid, true) });
     items.push({ sep: true });
@@ -15194,6 +15360,22 @@ document.addEventListener("contextmenu", (e) => {
   const card = t.closest(".feed-item");
   if (card?.dataset.pid && !t.closest("#person-panel"))
     items.push({ label: "Open profile", run: () => openPerson(card.dataset.pid) });
+
+  // The module's own rows — "What is this?" (the build story: registry blurb
+  // + every film, plan, dossier and retro behind the module) plus its
+  // one-click chores. Spliced in right under the head, but ONLY when the
+  // click landed on chrome or empty space: a card's menu is the card's (the
+  // peek-or-keep rule), and a specific target already owns the top slot.
+  const storyWin = storyWinId(fid || t.closest(".view")?.id?.replace(/^view-/, ""));
+  if (storyWin && !ctx.target && !ctx.item && !idea && !ctxRule
+      && !card && !hookEdit && !editing) {
+    const modRows = [{ label: "What is this?", hint: "the build story",
+                       run: () => openModuleStory(storyWin) }];
+    (WIN_ACTIONS[storyWin] || []).forEach((a) => modRows.push(
+      { label: a.label, run: a.run }));
+    modRows.push({ sep: true });
+    items.splice(1, 0, ...modRows);
+  }
 
   items.push({
     label: ctx.target ? "Tell Vira about " + ctx.target.menu + "…"
@@ -20516,7 +20698,8 @@ function initDesktop() {
   buildPalette();
   // the person and job panels behave like windows too:
   // drag + focus-raise + edge resize + content zoom
-  ["#person-panel", "#group-panel", "#email-panel", "#job-panel"].forEach((sel) => {
+  ["#person-panel", "#group-panel", "#email-panel", "#job-panel",
+   "#story-panel"].forEach((sel) => {
     const panel = document.querySelector(sel);
     const head = panel.querySelector(".panel-head");
     makeDraggable(panel, head);

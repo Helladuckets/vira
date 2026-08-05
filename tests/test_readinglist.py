@@ -447,5 +447,56 @@ class SlugTests(Base):
             self.assertRegex(readinglist.slugify(text), reading.NAME_RE)
 
 
+class WalkthroughLocatorTests(Base):
+    """Films resolve against the lab mount, never static/. The day after the
+    library shipped, every one of the 32 films read `missing: true` — the
+    row's own thumbnail rendered while the click refused with "no longer
+    where it was saved" — because source_path resolved /walkthroughs/ under
+    ROOT/static like any other url locator (2026-08-05)."""
+
+    def film(self, slug):
+        d = self.films / slug
+        d.mkdir()
+        (d / "index.html").write_text("<title>x</title>", encoding="utf-8")
+
+    def test_a_film_on_disk_is_not_missing(self):
+        self.film("vira-2026-07-30-onboarding")
+        it = readinglist.register("Film", "walkthrough",
+                                  "/walkthroughs/vira-2026-07-30-onboarding/")
+        self.assertFalse(readinglist._missing(it))
+
+    def test_a_dormant_install_reads_a_film_as_missing(self):
+        it = readinglist.register("Film", "walkthrough",
+                                  "/walkthroughs/somewhere/")
+        from server import walkthroughs
+        with mock.patch.object(readinglist, "WALKTHROUGH_DIR", None), \
+             mock.patch.object(walkthroughs.settings, "raw", return_value={}):
+            self.assertTrue(readinglist._missing(it))
+
+    def test_a_registered_but_deleted_film_is_missing(self):
+        it = readinglist.register("Film", "walkthrough",
+                                  "/walkthroughs/never-captured/")
+        self.assertTrue(readinglist._missing(it))
+
+
+class LibraryTests(Base):
+    def test_the_library_holds_read_and_unread_alike(self):
+        readinglist.register("A", "plan", "/docs/a.html")
+        b = readinglist.register("B", "plan", "/docs/b.html")
+        readinglist.complete(b["id"], True)
+        rows = readinglist.library()
+        self.assertEqual({r["title"]: r["read"] for r in rows},
+                         {"A": False, "B": True})
+
+    def test_the_library_dedupes_twins_split_across_read_states(self):
+        # A plan registered both ways (plans.save_plan + the sitedocs sweep);
+        # reading one copy is reading the document, and the library must not
+        # hand the story panel the same build twice.
+        readinglist.register("Same Title", "plan", "pl_1", "plan")
+        url = readinglist.register("Same Title", "plan", "/docs/same-title.html")
+        readinglist.complete(url["id"], True)
+        self.assertEqual(len(readinglist.library()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

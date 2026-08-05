@@ -241,6 +241,18 @@ def source_path(it):
     lk = it.get("locator_kind")
     if lk == "url":
         rel = it["locator"].lstrip("/")
+        if rel.startswith("walkthroughs/"):
+            # Films are served IN PLACE off lab_root (walkthroughs.py), never
+            # from static/ — resolving them there read all 32 films as
+            # missing, so every click refused with "no longer where it was
+            # saved" while the row's own thumbnail rendered fine (found live
+            # 2026-08-05, the day after the library shipped).
+            from . import walkthroughs
+            wroot = walkthroughs.root(WALKTHROUGH_DIR)
+            if not wroot:
+                return None
+            p = wroot / rel[len("walkthroughs/"):]
+            return p / "index.html" if p.is_dir() else p
         p = ROOT / "static" / rel
         return p / "index.html" if p.is_dir() else p
     if lk == "vault":
@@ -370,6 +382,27 @@ def completed(limit=50):
             if i.get("completed") and i.get("kind") != "room"]
     done.sort(key=lambda i: i.get("completed") or "", reverse=True)
     return [_decorate(i, with_progress=False) for i in _dedupe(done)[:limit]]
+
+
+def library():
+    """Every registered document, read and unread alike, deduped ONCE across
+    both states, newest first, each row carrying `read`.
+
+    This is the archive read the module-story view needs: a module's build
+    story is mostly documents already marked read, which queue() deliberately
+    excludes and completed() only serves as a capped undo tail. Deduping the
+    whole set at once also collapses the twin pairs that split across the two
+    lists (the _read_slugs case) — a merged copy's own `completed` stamp is
+    its read state."""
+    items = [i for i in _load()["items"] if i.get("kind") != "room"]
+    items.sort(key=lambda i: i.get("created") or i.get("added") or "",
+               reverse=True)
+    rows = []
+    for i in _dedupe(items):
+        row = _decorate(i, with_progress=False)
+        row["read"] = bool(i.get("completed"))
+        rows.append(row)
+    return rows
 
 
 def counts():
