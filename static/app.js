@@ -17102,7 +17102,10 @@ let rmDone = new Set();
 let rmState = null;
 
 const RM_PRIO_RANK = { P1: 0, P2: 1, P3: 2 };
-const RM_STATUS_LABEL = { MISSING: "unseen", PARTIAL: "secondhand" };
+// PARTIAL stays a data value (the builder's honest "met secondhand"), but
+// it no longer renders a badge or a filter — Unseen + hide-done cover the
+// workflow (owner's call, 2026-08-05).
+const RM_STATUS_LABEL = { MISSING: "unseen" };
 // Labels say what the item IS (video/audio/text), not what to do with it —
 // "Watch"/"Read" on a card read like buttons that open the thing (owner's
 // report, 2026-07-27). Data values stay watch|listen|read.
@@ -17137,9 +17140,8 @@ const RM_EXPLAIN = {
   status: ["Coverage",
     "How much of this has already reached you, derived by diffing the "
     + "research against your vault when the room was built. Unseen = "
-    + "never crossed your radar. Secondhand = you met it through "
-    + "summaries or references, not the original. When unsure, the "
-    + "builder chooses Secondhand — overclaiming is the costly error."],
+    + "never crossed your radar. Click to narrow to what you have never "
+    + "seen at all; pair with hide-done for what is left."],
   mode: ["Format",
     "What the item IS — video, audio, or text — mapped from its type. "
     + "A filter, not a link: click to narrow to what fits the moment."],
@@ -17235,7 +17237,7 @@ function rmBuild() {
     bar.appendChild(rmChip(p, "prio", p, "prio")));
   const present = {};
   items.forEach((it) => { present[it.status] = 1; present[it.mode] = 1; });
-  [["MISSING", "Unseen"], ["PARTIAL", "Secondhand"]].forEach(([v, label]) => {
+  [["MISSING", "Unseen"]].forEach(([v, label]) => {
     if (present[v]) bar.appendChild(rmChip(label, "status", v, "status"));
   });
   [["watch", "Video"], ["listen", "Audio"], ["read", "Text"]]
@@ -17346,6 +17348,31 @@ function rmRow(it) {
   // bar is, un-clickable the same way too.
   const bits = [it.date, it.type, it.venue].filter(Boolean).join(" · ");
   if (bits) body.appendChild(el("div", "rm-bits", bits));
+
+  // The explicit choice: the original, or your wiki page on it. Every item
+  // is ingested into the vault (roomvault), so the wiki link is the norm —
+  // rendered only when the server actually resolved a note, because a
+  // surface may only claim what it can see. The source link is labeled by
+  // its domain so provenance reads at a glance (owner's ask, 2026-08-05:
+  // "a very clear choice of linking to the full article or to the wiki").
+  const links = el("div", "rm-links");
+  if (it.url) {
+    let host = "";
+    try { host = new URL(it.url).hostname.replace(/^www\./, ""); } catch {}
+    const src = el("a", "rm-link", (host || "original") + " ↗");
+    src.href = it.url;
+    src.target = "_blank";
+    src.rel = "noopener";
+    links.appendChild(src);
+  }
+  if (it.vault_note) {
+    const wk = el("button", "rm-link wiki",
+      it.vault_note_kind === "owner" ? "your note" : "wiki");
+    wk.addEventListener("click", () => openNote(it.vault_note, it.title));
+    links.appendChild(wk);
+  }
+  if (links.childNodes.length) body.appendChild(links);
+
   if (it.note) body.appendChild(el("div", "rm-note", it.note));
 
   const foot = el("div", "rm-foot");
