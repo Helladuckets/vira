@@ -498,5 +498,61 @@ class LibraryTests(Base):
         self.assertEqual(len(readinglist.library()), 1)
 
 
+class CompletedUncappedTests(Base):
+    """limit=None serves the WHOLE read list — the docs view's Read filter
+    shows it grouped, and a capped tail there is a silent truncation."""
+
+    def test_limit_none_returns_every_completed_entry(self):
+        for i in range(60):
+            it = readinglist.register(f"Doc {i}", "dossier", f"/d{i}/")
+            readinglist.complete(it["id"])
+        self.assertEqual(len(readinglist.completed()), 50)   # the default tail
+        self.assertEqual(len(readinglist.completed(limit=None)), 60)
+
+
+class WalkthroughResolutionTests(Base):
+    """/walkthroughs/ is a MOUNT off lab_root, not a static/ subtree.
+
+    Resolving films under static/ read all 32 as missing, so the client
+    refused to open documents the server was serving fine (2026-08-05,
+    "the files aren't findable")."""
+
+    def film(self, slug):
+        d = self.films / slug
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "index.html").write_text("<title>F</title>", encoding="utf-8")
+        return f"/walkthroughs/{slug}/"
+
+    def test_a_film_on_disk_is_not_missing(self):
+        loc = self.film("vira-2026-07-30-onboarding")
+        readinglist.register("Film", "walkthrough", loc)
+        self.assertFalse(readinglist.queue()[0]["missing"])
+
+    def test_source_path_resolves_into_the_walkthrough_root(self):
+        loc = self.film("vira-2026-07-30-onboarding")
+        it = readinglist.register("Film", "walkthrough", loc)
+        p = readinglist.source_path(it)
+        self.assertEqual(
+            p, (self.films / "vira-2026-07-30-onboarding").resolve()
+            / "index.html")
+
+    def test_a_film_that_left_the_disk_reads_missing(self):
+        readinglist.register("Film", "walkthrough", "/walkthroughs/gone/")
+        self.assertTrue(readinglist.queue()[0]["missing"])
+
+    def test_escape_from_the_walkthrough_root_is_refused(self):
+        (Path(self.tmp.name) / "secret.html").write_text("x", encoding="utf-8")
+        it = readinglist.register("Sneak", "walkthrough",
+                                  "/walkthroughs/../secret.html")
+        self.assertIsNone(readinglist.source_path(it))
+        self.assertTrue(readinglist.queue()[0]["missing"])
+
+    def test_a_dormant_install_reads_missing_rather_than_raising(self):
+        with mock.patch.object(readinglist, "WALKTHROUGH_DIR",
+                               Path(self.tmp.name) / "absent"):
+            readinglist.register("Film", "walkthrough", "/walkthroughs/x/")
+            self.assertTrue(readinglist.queue()[0]["missing"])
+
+
 if __name__ == "__main__":
     unittest.main()

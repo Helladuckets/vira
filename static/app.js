@@ -17748,7 +17748,6 @@ function fdWatch() {
 let readerPages = null;
 let readerQueue = [];
 let readerCounts = {};
-let readerDoneOpen = lsGet("vira-reader-done-open", false);
 // What is SELECTED (persists): "room:<name>" | "docs".
 // What is SHOWING: room | docs | stage (stage = a document opened on top).
 let readerSel = lsGet("vira-reader-sel", "");
@@ -17761,9 +17760,10 @@ const READER_KIND = {
   brief: "brief", room: "reading room", walkthrough: "walkthrough",
 };
 
-// The read tail, kept so the tag picker can count across the whole library
-// rather than only what is unread — 425 of 519 documents here are filed read,
-// and a facet count that ignored them would be wrong about almost everything.
+// The read side of the library — the FULL list, uncapped (425 of 519
+// documents here are filed read). It backs the Show filter's Read and
+// Everything views and the tag picker's counts; a capped tail would be a
+// silent truncation the moment either filter showed it.
 let readerDone = [];
 
 async function fetchReaderPages() {
@@ -17829,6 +17829,8 @@ async function completeReaderItem(it, done = true) {
   if (done) {
     toast("Marked read — still saved where it lives",
           [["Undo", () => completeReaderItem(it, false)]]);
+  } else {
+    toast("Back on the to-read list");
   }
 }
 
@@ -17897,9 +17899,25 @@ let rdocGroup = lsGet("vira-rdoc-group", "module");
 let rdocQ = lsGet("vira-rdoc-q", "");
 let rdocTags = new Set(lsGet("vira-rdoc-tags", []));
 let rdocKinds = new Set(lsGet("vira-rdoc-kinds", []));
+// Read state is a FILTER, not a second list: To read (default) / Read /
+// Everything all flow through the same grouped renderer. The old read fold
+// under the list is gone — the Queue's rule: completed work must not live in
+// two places under the live list.
+let rdocRead = lsGet("vira-rdoc-read", "unread");
+// list = Finder's rows; grid = the gallery (sections, motion tiles, bands).
+let rdocView = lsGet("vira-rdoc-view", "list");
 let rdocOpen = {};
 let rdocVocab = {};
 let rdocTagStatus = {};
+
+// The base set the current Show filter selects — every downstream count,
+// facet and render reads THIS, so the picker can never offer a tag that
+// yields nothing on screen.
+function rdocBase() {
+  if (rdocRead === "read") return readerDone || [];
+  if (rdocRead === "all") return (readerQueue || []).concat(readerDone || []);
+  return readerQueue || [];
+}
 
 function rdocOpenSet() {
   const key = "vira-rdoc-open-" + (rdocGroup || "flat");
@@ -17989,8 +18007,28 @@ function rdocThumb(it) {
   return box;
 }
 
+// The read/unread controls are VERBS, never state adjectives — a button
+// reading "Read" looks like a label saying "this is read" while actually
+// marking it, and "unread" reads as a status while actually un-reading it
+// (the owner's exact complaint, 2026-08-05). "Mark read" / "Mark unread"
+// can only be read one way; state itself shows as row/tile dimming.
+function rdocMarkBtn(it, cls) {
+  const read = !!it.completed;
+  const b = el("button", cls || "reader-done-btn",
+    read ? "Mark unread" : "Mark read");
+  b.title = read
+    ? "Put it back on the to-read list"
+    : "Mark read — it leaves the to-read list and stays where it is saved";
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    completeReaderItem(it, !read);
+  });
+  return b;
+}
+
 function rdocRow(it) {
   const row = el("div", "rdoc-row" + (it.missing ? " missing" : "")
+    + (it.completed ? " read" : "")
     + (it.kind === "walkthrough" ? " film" : ""));
   row.appendChild(rdocThumb(it));
 
@@ -18032,13 +18070,7 @@ function rdocRow(it) {
     });
     acts.appendChild(secBtn);
   }
-  const doneBtn = el("button", "reader-done", "Read");
-  doneBtn.title = "Mark read — it drops off the list and stays where it is saved";
-  doneBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    completeReaderItem(it);
-  });
-  acts.appendChild(doneBtn);
+  acts.appendChild(rdocMarkBtn(it));
   row.appendChild(acts);
 
   // Whole-card activation, the Vira-wide rule (cardAction skips buttons,
@@ -18054,6 +18086,22 @@ function rdocBar() {
   const bar = $("#reader-bar");
   if (!bar) return;
   bar.innerHTML = "";
+
+  // The view toggle leads the bar — List is Finder's rows, Grid is the
+  // gallery. A control this asked-for ("where's my grid view button?")
+  // does not hide in a menu.
+  const seg = el("div", "rdoc-viewseg");
+  [["list", "List"], ["grid", "Grid"]].forEach(([v, lab]) => {
+    const b = el("button", "rdoc-vbtn" + (rdocView === v ? " on" : ""), lab);
+    b.addEventListener("click", () => {
+      if (rdocView === v) return;
+      rdocView = v;
+      lsSet("vira-rdoc-view", v);
+      renderReaderDocs();
+    });
+    seg.appendChild(b);
+  });
+  bar.appendChild(seg);
 
   const grp = el("select", "rdoc-sel");
   RDOC_AXES.forEach((a) => {
@@ -18096,6 +18144,33 @@ function rdocBar() {
   });
   bar.appendChild(kindWrap);
 
+  // Read state is the LEAST important axis (owner's call), so it is one
+  // small labeled select, not a seg — but it is the door to the 400+ read
+  // documents, so its options carry counts. Counted from the SERVED lists
+  // (post-dedupe), not the store's raw counts, so the option label always
+  // matches the count line it produces.
+  const cQ = (readerQueue || []).length;
+  const cD = (readerDone || []).length;
+  const rd = el("select", "rdoc-sel");
+  [["unread", "To read (" + cQ + ")"],
+   ["read", "Read (" + cD + ")"],
+   ["all", "Everything (" + (cQ + cD) + ")"]].forEach(([v, lab]) => {
+    const o = el("option", "", lab);
+    o.value = v;
+    if (v === rdocRead) o.selected = true;
+    rd.appendChild(o);
+  });
+  rd.title = "Which side of the library to show";
+  rd.addEventListener("change", () => {
+    rdocRead = rd.value;
+    lsSet("vira-rdoc-read", rdocRead);
+    renderReaderDocs();
+  });
+  const rdPair = el("label", "rdoc-pair");
+  rdPair.appendChild(el("span", "rdoc-lab", "Show"));
+  rdPair.appendChild(rd);
+  bar.appendChild(rdPair);
+
   const q = el("input", "rdoc-q");
   q.type = "search";
   q.placeholder = "Search the library";
@@ -18114,7 +18189,12 @@ function rdocBar() {
   });
   const col = el("button", "rdoc-mini", "Collapse all");
   col.addEventListener("click", () => rdocExpandAll(false));
-  if (rdocGroup) { fold.appendChild(exp); fold.appendChild(col); }
+  // Grid sections are always open — the grid IS the map — so the fold
+  // controls only exist in list view.
+  if (rdocGroup && rdocView === "list") {
+    fold.appendChild(exp);
+    fold.appendChild(col);
+  }
   bar.appendChild(fold);
 
   const st = rdocTagStatus || {};
@@ -18139,7 +18219,10 @@ let rdocLastGroups = [];
 function rdocTagPicker(anchor) {
   const rows = [];
   const counts = {};
-  (readerQueue || []).concat(readerDone || []).forEach((it) => {
+  // Counts run over the CURRENT base (the Show filter included), the
+  // Queue picker's rule: the picker must never offer a tag that yields
+  // nothing on the screen it filters.
+  rdocBase().forEach((it) => {
     if (!rdocMatchesExceptTags(it)) return;
     Object.values(it.tags || {}).forEach((v) => (v || []).forEach((t) => {
       counts[t] = (counts[t] || 0) + 1;
@@ -18193,7 +18276,12 @@ function rdocTagPicker(anchor) {
     });
     pop.appendChild(clear);
   }
-  placeCtxPop(pop, anchor);
+  // placeCtxPop takes COORDINATES — handing it the element itself fed
+  // Math.min a DOM node, left/top came out NaN, and the popup fell to the
+  // screen corner (the owner's screenshot). Anchor it under the button;
+  // placeCtxPop already clamps to the viewport.
+  const r = anchor.getBoundingClientRect();
+  placeCtxPop(pop, r.left, r.bottom + 4);
   filter.focus();
 }
 
@@ -18211,66 +18299,107 @@ function rdocGroupLabel(key) {
   return key;
 }
 
+// Newest first; a walkthrough leads its own date — the film is the thing
+// you actually want to look at. Shared by both views.
+function rdocSortNew(items) {
+  return items.slice().sort((a, b) => {
+    const d = String(b.created || "").localeCompare(String(a.created || ""));
+    if (d) return d;
+    return (a.kind === "walkthrough" ? -1 : 0)
+      - (b.kind === "walkthrough" ? -1 : 0);
+  });
+}
+
 function renderReaderDocs(opts = {}) {
   const list = $("#reader-list");
   if (!list) return;
   const focus = opts.keepFocus ? document.activeElement : null;
   const selStart = focus && focus.selectionStart;
   rdocBar();
+  const restoreFocus = () => {
+    if (focus && focus.id !== undefined
+        && document.body.contains(focus) === false) {
+      const q = $(".rdoc-q");
+      if (q) {
+        q.focus();
+        if (selStart != null) q.setSelectionRange(selStart, selStart);
+      }
+    }
+  };
 
-  const all = readerQueue || [];
+  const all = rdocBase();
   const rows = all.filter(rdocMatches);
   list.innerHTML = "";
 
   if (!all.length) {
     list.appendChild(el("div", "empty left",
-      "Nothing queued. Dossiers, plans, retros, walkthroughs and briefs land "
-      + "here as they are made — and drop off once you mark them read."));
+      rdocRead === "read"
+        ? "Nothing read yet — mark documents read and they file here."
+        : "Nothing queued. Dossiers, plans, retros, walkthroughs and briefs "
+          + "land here as they are made — and drop off once you mark them "
+          + "read."));
     rdocLastGroups = [];
+    restoreFocus();
     return;
   }
 
+  // The count line names the AXIS the Show filter selected — "92 to read"
+  // can never read as the whole library while 425 read sit behind it.
+  const noun = rdocRead === "unread" ? "to read"
+    : rdocRead === "read" ? "read" : "documents";
   const count = el("div", "rdoc-count",
     rows.length === all.length
-      ? all.length + " documents"
-      : rows.length + " of " + all.length + " documents");
+      ? all.length + " " + noun
+      : rows.length + " of " + all.length + " " + noun);
   list.appendChild(count);
 
+  if (!rows.length) {
+    list.appendChild(el("div", "empty left", "Nothing matches. Loosen a filter."));
+    rdocLastGroups = [];
+    restoreFocus();
+    return;
+  }
+
+  // Bucket once; both views read the same groups. Flat is one unnamed group.
+  let groups;
+  if (!rdocGroup) {
+    groups = [{ key: "", items: rdocSortNew(rows) }];
+  } else {
+    const byKey = new Map();
+    rows.forEach((it) => {
+      const k = rdocBucket(it);
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(it);
+    });
+    groups = [...byKey.entries()].map(([key, items]) => ({ key, items }));
+    groups.sort((a, b) => {
+      if (a.key === RDOC_UNTAGGED) return 1;
+      if (b.key === RDOC_UNTAGGED) return -1;
+      return b.items.length - a.items.length || a.key.localeCompare(b.key);
+    });
+  }
+  rdocLastGroups = rdocGroup ? groups : [];
+
+  if (rdocView === "grid") {
+    renderRdocGrid(list, groups);
+    restoreFocus();
+    return;
+  }
+
   // The column header — Finder's, and the thing that makes a list read as a
-  // list rather than a stack of rows.
+  // list rather than a stack of rows. List view only; the grid has its own
+  // section anatomy.
   const head = el("div", "rdoc-head");
   ["", "Name", "Tags", "Kind", "Added", ""].forEach((h, i) => {
     head.appendChild(el("div", "rdoc-h h" + i, h));
   });
   list.appendChild(head);
 
-  if (!rows.length) {
-    list.appendChild(el("div", "empty left", "Nothing matches. Loosen a filter."));
-    rdocLastGroups = [];
-    return;
-  }
-
   if (!rdocGroup) {
-    const flat = rows.slice().sort((a, b) =>
-      String(b.created || "").localeCompare(String(a.created || "")));
-    flat.forEach((it) => list.appendChild(rdocRow(it)));
-    rdocLastGroups = [];
+    groups[0].items.forEach((it) => list.appendChild(rdocRow(it)));
+    restoreFocus();
     return;
   }
-
-  const byKey = new Map();
-  rows.forEach((it) => {
-    const k = rdocBucket(it);
-    if (!byKey.has(k)) byKey.set(k, []);
-    byKey.get(k).push(it);
-  });
-  const groups = [...byKey.entries()].map(([key, items]) => ({ key, items }));
-  groups.sort((a, b) => {
-    if (a.key === RDOC_UNTAGGED) return 1;
-    if (b.key === RDOC_UNTAGGED) return -1;
-    return b.items.length - a.items.length || a.key.localeCompare(b.key);
-  });
-  rdocLastGroups = groups;
 
   const open = rdocOpenSet();
   // A live search opens every group holding a match, or the grouping would
@@ -18280,39 +18409,247 @@ function renderReaderDocs(opts = {}) {
   groups.forEach((g) => {
     const isOpen = searching || open.has(g.key);
     const wrap = el("div", "rdoc-group" + (isOpen ? " open" : ""));
-    const head = el("button", "rdoc-ghead");
-    head.appendChild(el("span", "rdoc-caret", "›"));
-    head.appendChild(el("span", "rdoc-gname", rdocGroupLabel(g.key)));
-    head.appendChild(el("span", "rdoc-gn", String(g.items.length)));
+    const ghead = el("button", "rdoc-ghead");
+    ghead.appendChild(el("span", "rdoc-caret", "›"));
+    ghead.appendChild(el("span", "rdoc-gname", rdocGroupLabel(g.key)));
+    ghead.appendChild(el("span", "rdoc-gn", String(g.items.length)));
     const kinds = [...new Set(g.items.map((i) => i.kind))];
     if (kinds.includes("walkthrough")) {
-      head.appendChild(el("span", "rdoc-gfilm", "film"));
+      ghead.appendChild(el("span", "rdoc-gfilm", "film"));
     }
-    head.addEventListener("click", () => {
+    ghead.addEventListener("click", () => {
       if (open.has(g.key)) open.delete(g.key); else open.add(g.key);
       rdocSaveOpen();
       renderReaderDocs();
     });
-    wrap.appendChild(head);
+    wrap.appendChild(ghead);
 
     const body = el("div", "rdoc-gbody");
     if (isOpen) {
-      // Newest first inside a group, and a walkthrough leads its own date —
-      // the film is the thing you actually want to look at.
-      g.items.slice().sort((a, b) => {
-        const d = String(b.created || "").localeCompare(String(a.created || ""));
-        if (d) return d;
-        return (a.kind === "walkthrough" ? -1 : 0) - (b.kind === "walkthrough" ? -1 : 0);
-      }).forEach((it) => body.appendChild(rdocRow(it)));
+      rdocSortNew(g.items).forEach((it) => body.appendChild(rdocRow(it)));
     }
     wrap.appendChild(body);
     list.appendChild(wrap);
   });
 
-  if (focus && focus.id !== undefined && document.body.contains(focus) === false) {
-    const q = $(".rdoc-q");
-    if (q) { q.focus(); if (selStart != null) q.setSelectionRange(selStart, selStart); }
+  restoreFocus();
+}
+
+// ==================== The grid view — the library as a gallery ==============
+//
+// The thedurham.nyc lab treatment turned inward: each group is an editorial
+// SECTION — a mono kicker whose count counts up, a display-serif name that
+// shimmers once on reveal, a hairline that draws itself — and inside the
+// section the documents band by KIND ("grouped within themselves"): session
+// films as a shelf of tiles playing their own motion loops, plans and
+// dossiers as boxes, retros and briefs folded to compact lines. Sections
+// stagger in as they scroll into view. Everything honors
+// prefers-reduced-motion, and a film's loop only streams while its tile is
+// actually on screen.
+
+const RDG_LINE_CAP = 14;
+let rdgMore = new Set();   // line bands shown past the cap — session-only
+let rdgObs = null;         // reveal observer, rebuilt per render
+let rdgVidObs = null;      // film-loop attach/detach observer
+
+function rdgCountUp(node) {
+  const target = parseInt(node.dataset.n || "0", 10);
+  if (!target) { node.textContent = "0"; return; }
+  const t0 = performance.now();
+  const dur = Math.min(900, 300 + target * 12);
+  const tick = (t) => {
+    const p = Math.min(1, (t - t0) / dur);
+    const eased = 1 - Math.pow(1 - p, 3);
+    node.textContent = String(Math.round(target * eased));
+    if (p < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+function renderRdocGrid(list, groups) {
+  if (rdgObs) rdgObs.disconnect();
+  if (rdgVidObs) rdgVidObs.disconnect();
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  rdgObs = reduce ? null : new IntersectionObserver((ents) => {
+    ents.forEach((en) => {
+      if (!en.isIntersecting) return;
+      en.target.classList.add("rv");
+      rdgObs.unobserve(en.target);
+      const n = en.target.querySelector(".rdg-count[data-n]");
+      if (n && !n.dataset.ran) { n.dataset.ran = "1"; rdgCountUp(n); }
+    });
+  }, { threshold: 0.12 });
+  // Loops attach only while the tile is on screen — thirty films must never
+  // stream at once — and detach again when it scrolls away.
+  rdgVidObs = new IntersectionObserver((ents) => {
+    ents.forEach((en) => {
+      const box = en.target;
+      if (en.isIntersecting && !reduce) {
+        if (box._vid || !box.dataset.motion) return;
+        const v = el("video", "rdg-motion");
+        v.src = box.dataset.motion;
+        v.muted = true; v.loop = true; v.playsInline = true;
+        // autoplay as an ATTRIBUTE too: a hidden tab rejects play() calls,
+        // and the attribute is what makes the browser start the loop itself
+        // once the page is actually visible.
+        v.autoplay = true;
+        v.play().catch(() => {});
+        box._vid = v;
+        box.appendChild(v);
+      } else if (box._vid) {
+        box._vid.remove();
+        box._vid = null;
+      }
+    });
+  }, { threshold: 0.25 });
+
+  const wrap = el("div", "rdoc-grid" + (reduce ? "" : " anim"));
+  groups.forEach((g) => wrap.appendChild(rdgSection(g)));
+  list.appendChild(wrap);
+}
+
+// Reduced motion skips the entrance entirely: content visible at once,
+// counts static — the observer never runs, so rv is applied here.
+function rdgWatch(node) {
+  if (rdgObs) { rdgObs.observe(node); return; }
+  node.classList.add("rv");
+  const n = node.querySelector(".rdg-count[data-n]");
+  if (n) n.textContent = n.dataset.n;
+}
+
+function rdgSection(g) {
+  const sec = el("section", "rdg-sec");
+  const head = el("header", "rdg-sechead");
+  const kick = el("div", "rdg-kicker");
+  const n = el("span", "rdg-count", "0");
+  n.dataset.n = String(g.items.length);
+  kick.appendChild(n);
+  kick.appendChild(el("span", "",
+    " document" + (g.items.length === 1 ? "" : "s")));
+  const films = g.items.filter((i) => i.kind === "walkthrough");
+  if (films.length) {
+    kick.appendChild(el("span", "rdg-kfilm",
+      films.length + " film" + (films.length === 1 ? "" : "s")));
   }
+  head.appendChild(kick);
+  head.appendChild(el("h3", "rdg-name",
+    g.key ? rdocGroupLabel(g.key) : "The library"));
+  head.appendChild(el("div", "rdg-rule"));
+  sec.appendChild(head);
+
+  // The bands — the group grouped within itself, by kind. Band labels only
+  // render when a section holds more than one band, so a pure-retro group
+  // is not narrated to itself.
+  const tiles = g.items.filter((i) => i.kind === "plan" || i.kind === "dossier");
+  const lines = g.items.filter((i) =>
+    i.kind !== "walkthrough" && i.kind !== "plan" && i.kind !== "dossier");
+  const bands = [films.length, tiles.length, lines.length]
+    .filter(Boolean).length;
+  if (films.length) {
+    if (bands > 1) sec.appendChild(el("div", "rdg-bandlab", "Session films"));
+    const shelf = el("div", "rdg-shelf");
+    rdocSortNew(films).forEach((it, i) => shelf.appendChild(rdgFilm(it, i)));
+    sec.appendChild(shelf);
+  }
+  if (tiles.length) {
+    if (bands > 1) sec.appendChild(el("div", "rdg-bandlab", "Plans & dossiers"));
+    const grid = el("div", "rdg-tiles");
+    rdocSortNew(tiles).forEach((it, i) => grid.appendChild(rdgTile(it, i)));
+    sec.appendChild(grid);
+  }
+  if (lines.length) {
+    if (bands > 1) sec.appendChild(el("div", "rdg-bandlab", "Retros & briefs"));
+    sec.appendChild(rdgLineBand(lines, g.key || "flat"));
+  }
+  rdgWatch(sec);
+  return sec;
+}
+
+function rdgFilm(it, i) {
+  const fig = el("figure", "rdg-film rdg-item"
+    + (it.completed ? " read" : "") + (it.missing ? " missing" : ""));
+  fig.style.setProperty("--i", Math.min(i, 12));
+  const frame = el("div", "rdg-filmframe");
+  const film = it.film || {};
+  if (film.thumb) {
+    const img = el("img");
+    img.src = film.thumb;
+    img.loading = "lazy";
+    img.alt = "";
+    frame.appendChild(img);
+  } else {
+    frame.appendChild(el("span", "rdoc-glyph", "film"));
+  }
+  if (film.motion && it.locator) {
+    frame.dataset.motion = it.locator + "motion.mp4";
+    rdgVidObs.observe(frame);
+  }
+  if (it.completed) frame.appendChild(el("span", "rdg-readtag", "read"));
+  fig.appendChild(frame);
+  const cap = el("figcaption", "rdg-filmcap");
+  cap.appendChild(el("div", "rdg-ikicker", "session film · "
+    + (it.created ? fmtTime(it.created) : "")));
+  cap.appendChild(el("div", "rdg-iname", it.title));
+  const sub = film.description || "";
+  if (sub) cap.appendChild(el("div", "rdg-isub", sub));
+  fig.appendChild(cap);
+  fig.appendChild(rdocMarkBtn(it, "reader-done-btn rdg-mark"));
+  cardAction(fig, () => openReaderItem(it));
+  rdgWatch(fig);
+  return fig;
+}
+
+function rdgTile(it, i) {
+  const box = el("article", "rdg-tile rdg-item"
+    + (it.completed ? " read" : "") + (it.missing ? " missing" : ""));
+  box.style.setProperty("--i", Math.min(i, 16));
+  box.appendChild(el("div", "rdg-ikicker",
+    (READER_KIND[it.kind] || it.kind)
+    + (it.created ? " · " + fmtTime(it.created) : "")));
+  box.appendChild(el("div", "rdg-iname", it.title));
+  const tags = rdocTagsOf(it, "theme").slice(0, 1)
+    .concat(rdocTagsOf(it, "concept").slice(0, 1));
+  if (tags.length) {
+    const tr = el("div", "rdg-itags");
+    tags.forEach((t) => tr.appendChild(el("span", "rdoc-chip", t)));
+    box.appendChild(tr);
+  }
+  if (it.completed) box.appendChild(el("span", "rdg-readtag", "read"));
+  box.appendChild(rdocMarkBtn(it, "reader-done-btn rdg-mark"));
+  cardAction(box, () => openReaderItem(it));
+  rdgWatch(box);
+  return box;
+}
+
+function rdgLineBand(items, bandKey) {
+  const wrap = el("div", "rdg-lines");
+  const sorted = rdocSortNew(items);
+  const expanded = rdgMore.has(bandKey);
+  const show = expanded ? sorted : sorted.slice(0, RDG_LINE_CAP);
+  show.forEach((it, i) => {
+    const line = el("div", "rdg-line rdg-item"
+      + (it.completed ? " read" : "") + (it.missing ? " missing" : ""));
+    line.style.setProperty("--i", Math.min(i, 16));
+    line.appendChild(el("span", "rdg-lkind", READER_KIND[it.kind] || it.kind));
+    line.appendChild(el("span", "rdg-lname", it.title));
+    line.appendChild(el("span", "rdg-ldate",
+      it.created ? fmtTime(it.created) : ""));
+    line.appendChild(rdocMarkBtn(it, "reader-done-btn rdg-mark"));
+    cardAction(line, () => openReaderItem(it));
+    rdgWatch(line);
+    wrap.appendChild(line);
+  });
+  // Never a silent cap: the fold names what it holds, one click opens it.
+  if (!expanded && sorted.length > RDG_LINE_CAP) {
+    const more = el("button", "rdg-more",
+      "+ " + (sorted.length - RDG_LINE_CAP) + " more");
+    more.addEventListener("click", () => {
+      rdgMore.add(bandKey);
+      renderReaderDocs();
+    });
+    wrap.appendChild(more);
+  }
+  return wrap;
 }
 
 // Update = dispatch a session that re-researches the subject and rebuilds
@@ -19136,7 +19473,6 @@ async function loadReader(opts = {}) {
   rdocTagStatus = data.tagging || {};
 
   renderReaderDocs();
-  renderReaderDone(readerDone, (data.counts || {}).completed || 0);
 
   // Resolve the selection: the saved one if it still exists, else the
   // first room, else the queue. selectReader renders header + body.
@@ -19154,41 +19490,10 @@ async function loadReader(opts = {}) {
 $("#reader-back")?.addEventListener("click", () =>
   readerShow(readerStageFrom));
 
-// Recently read, folded away. Present for undo, not as a library — the
-// documents themselves are still wherever they were saved.
-// `rows` is a capped tail; `total` is how many have actually been read. The
-// label names the total and the list shows the tail, rather than reporting the
-// cap as if it were the count.
-function renderReaderDone(rows, total) {
-  const host = $("#reader-done");
-  if (!host) return;
-  host.innerHTML = "";
-  if (!rows.length) return;
-  const n = total || rows.length;
-  const head = el("button", "reader-fold",
-    n + " read" + (rows.length < n ? " · showing the last " + rows.length : ""));
-  const body = el("div", "reader-done-body");
-  body.style.display = readerDoneOpen ? "" : "none";
-  head.classList.toggle("on", readerDoneOpen);
-  head.addEventListener("click", () => {
-    readerDoneOpen = !readerDoneOpen;
-    body.style.display = readerDoneOpen ? "" : "none";
-    head.classList.toggle("on", readerDoneOpen);
-    lsSet("vira-reader-done-open", readerDoneOpen);
-  });
-  rows.forEach((it) => {
-    const line = el("div", "reader-donerow");
-    const n = el("button", "reader-donename", it.title);
-    n.addEventListener("click", () => openReaderItem(it));
-    line.appendChild(n);
-    const undo = el("button", "reader-mini", "unread");
-    undo.addEventListener("click", () => completeReaderItem(it, false));
-    line.appendChild(undo);
-    body.appendChild(line);
-  });
-  host.appendChild(head);
-  host.appendChild(body);
-}
+// The read fold that used to sit under the list is GONE (2026-08-05): with
+// the Show filter carrying Read / Everything, a fold was a second place
+// completed work lived — the Queue's rule. Undo is the toast plus the Read
+// view's "Mark unread" buttons.
 
 async function readerBackfill() {
   const btn = $("#reader-scan");
