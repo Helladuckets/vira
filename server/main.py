@@ -63,6 +63,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                skins,
                subs_visuals,
                subscriptions, suggest, triage, uistate, update, vault,
+               doctags, walkthroughs,
                whatsapp)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -128,6 +129,8 @@ ai_health_watcher = aihealth.Watcher()
 jobboards_poller = jobboards.Poller()
 idea_indexer = ideatags.Indexer(                  # backlog tags + vectors
     settings.get("idea_tag_interval_min") or 10)
+doc_indexer = doctags.Indexer(                    # document tags for the Reader
+    settings.get("doc_tag_interval_min") or 10)
 
 
 @app.on_event("startup")
@@ -155,6 +158,7 @@ async def _startup():
     indexer.start()
     text_indexer.start()
     idea_indexer.start()       # keeps the backlog's tags/vectors current
+    doc_indexer.start()        # and the Reader's documents, one batch a tick
     backup.start()
     mercury_poller.start()
     receipts_sweeper.start()
@@ -1408,10 +1412,36 @@ def api_reading_list():
 
     Completed entries are deliberately absent from `queue` — marking a document
     read takes it off the list, because the document still lives wherever its
-    producer put it. `completed` carries a short tail for the undo affordance."""
-    return {"queue": readinglist.queue(),
-            "completed": readinglist.completed(),
-            "counts": readinglist.counts()}
+    producer put it. `completed` carries a short tail for the undo affordance.
+
+    Tags and film metadata are joined HERE rather than stored on the entry:
+    both are derived (a re-tag pass rewrites tags; recapturing a film changes
+    its thumb), and a copy on the row would be a copy that goes stale. Same
+    reason roomvault.resolve annotates at this layer."""
+    q = doctags.annotate(readinglist.queue())
+    done = doctags.annotate(readinglist.completed(limit=400))
+    films = {f["url"]: f for f in walkthroughs.films()}
+
+    def join(rows):
+        for r in rows:
+            f = films.get(r.get("locator"))
+            if f:
+                r["film"] = {"thumb": f["thumb"], "motion": f["motion"],
+                             "project": f["project"], "subject": f["subject"],
+                             "description": f["description"]}
+        return rows
+
+    return {"queue": join(q), "completed": join(done),
+            "counts": readinglist.counts(),
+            "vocab": doctags.vocabulary(q + done),
+            "tagging": doctags.status(q + done)}
+
+
+@app.post("/api/reading/list/tag")
+def api_reading_list_tag(batches: int = 1):
+    """Tag pending documents. Bounded — a click can never become an unbounded
+    spend, the /api/ideas/reindex rule."""
+    return doctags.refresh(batches)
 
 
 @app.post("/api/reading/list/backfill")
@@ -3393,5 +3423,15 @@ app.include_router(skins.router)
 # The instrument behind the picker: references -> aspects -> gain -> knobs ->
 # manifest -> skin, with every stage exposed. Engine in genrestudio.py.
 app.include_router(genreroutes.router)
+
+# ---------- Session walkthroughs (the build films, served in place) --------
+# <lab_root>/walkthroughs/ at /walkthroughs/ — the /design precedent. Served
+# rather than copied because readinglist's contract is the soft pointer and
+# 103MB of film would otherwise have two homes that drift. Dormant without a
+# lab_root, which is every install but the owner's.
+_wt_root = walkthroughs.root()
+if _wt_root:
+    app.mount("/walkthroughs", StaticFiles(directory=_wt_root, html=True),
+              name="walkthroughs")
 
 app.mount("/", StaticFiles(directory=ROOT / "static", html=True), name="static")

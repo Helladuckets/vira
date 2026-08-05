@@ -29,6 +29,8 @@
   "ai_health_enabled": true,
   "_ai_health_enabled": "Deterministic AI-backend health watcher: probes `claude auth status` (or the API key) on a cadence and texts you the moment the model login goes down, so an expired Claude session surfaces out-of-band instead of as a silently dead cockpit job. Uses none of the model itself. false = disable the watcher (the /api/health/ai probe still works on demand).",
   "idea_tag_interval_min": 10,
+  "doc_tag_interval_min": 10,
+  "_doc_tag_interval_min": "Minutes between Reader document tagging passes (server/doctags.py). Each tick tags at most ONE batch of 12, so a fresh library groups itself over an hour or two and nothing waits on it.",
   "_idea_tag_interval_min": "Minutes between backlog tagging passes (server/ideatags.py). Each tick embeds any new ideas locally and makes at most ONE model call, so a fresh backlog tags itself over an hour rather than in one spend.",
   "ai_health_interval_min": 5,
   "_ai_health_interval_min": "Minutes between health probes (clamped to a 60s floor). The probe is cheap and spends no tokens.",

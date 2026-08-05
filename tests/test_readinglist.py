@@ -39,14 +39,22 @@ class Base(unittest.TestCase):
         self.static = root / "static"
         self.docs = self.static / "docs"
         self.vault = root / "vault"
+        # The walkthrough films. Rooted here like every other source: without
+        # it walkthroughs.root() falls back to settings' lab_root and the sweep
+        # reads the owner's REAL directory — 32 films leaking into a fixture
+        # that asserts zero. That is the trap _sources() documents, and this is
+        # the seam that closes it.
+        self.films = root / "walkthroughs"
         (self.static / "explainer").mkdir(parents=True)
         self.docs.mkdir(parents=True)
         self.vault.mkdir()
+        self.films.mkdir()
         for p in (mock.patch.object(readinglist, "STORE", self.store),
                   mock.patch.object(readinglist, "ROOT", root),
                   mock.patch.object(readinglist, "EXPLAINER_DIR",
                                     self.static / "explainer"),
                   mock.patch.object(readinglist, "DOCS_DIR", self.docs),
+                  mock.patch.object(readinglist, "WALKTHROUGH_DIR", self.films),
                   mock.patch.object(plans, "REG_PATH", root / "plans.json"),
                   mock.patch.object(reading, "STORE_DIR", self.readdir),
                   # the only setting these paths read is vault_root; anything
@@ -106,9 +114,41 @@ class RegisterTests(Base):
         self.assertEqual(len(readinglist.completed()), 1)
 
     def test_same_locator_different_kind_is_a_different_entry(self):
+        # The REGISTRY fact this test has always named: register() is
+        # idempotent per (locator_kind, locator), so two kinds are two rows.
+        # Asserted on the store rather than the queue, because the queue is a
+        # VIEW and now de-duplicates — see the two tests below.
         readinglist.register("A", "dossier", "x", "url")
         readinglist.register("A", "plan", "x", "plan")
+        self.assertEqual(len(readinglist._load()["items"]), 2)
+
+    def test_the_queue_shows_one_row_for_a_document_registered_twice(self):
+        """A plan is registered by BOTH producers — plans.save_plan as
+        `plan:pl_...` and the sitedocs sweep as `url:/docs/plans/....html`.
+        Eleven of them on the live store. Same slug, so the queue shows one."""
+        readinglist.register("A", "dossier", "x", "url")
+        readinglist.register("A", "plan", "x", "plan")
+        rows = readinglist.queue()
+        self.assertEqual(len(rows), 1)
+        # The plan locator wins: plans.py resolves it and knows whether the
+        # file is still there, where a url row for a deleted plan reads live.
+        self.assertEqual(rows[0]["locator_kind"], "plan")
+
+    def test_two_documents_with_different_titles_are_never_collapsed(self):
+        """The dedupe keys on SLUG, which is derived from the title — so it
+        can only ever merge things that are the same document under two
+        locators, never two genuinely different ones."""
+        readinglist.register("A", "dossier", "x", "url")
+        readinglist.register("B", "plan", "x", "plan")
         self.assertEqual(len(readinglist.queue()), 2)
+
+    def test_reading_one_copy_reads_the_document(self):
+        """Per-list de-duplication left a twin pair split across queue and
+        completed — mark one read and the other was still queued."""
+        a = readinglist.register("A", "dossier", "x", "url")
+        readinglist.register("A", "plan", "x", "plan")
+        readinglist.complete(a["id"])
+        self.assertEqual(readinglist.queue(), [])
 
     def test_bad_kind_and_bad_locator_kind_are_refused(self):
         with self.assertRaises(ValueError):

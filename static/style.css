@@ -5100,3 +5100,194 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 /* The tour is desktop-only: it drives floating windows, which do not exist
    under the mobile breakpoint. */
 @media (max-width: 1099px) { .tour-card { display: none; } }
+
+/* ==================== The documents library — Finder list, with motion ====
+   The Reader's document list, grouped by the feature each document belongs
+   to. A list rather than a grid because this corpus is five hundred items and
+   a grid shows a dozen per screen; Finder's list view is the shape that scales
+   and the one the owner already reads files in.
+
+   Everything here is token-driven, so the library wears whichever skin is
+   active — the standing rule for any new surface. */
+
+.rdoc-bar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+  margin: 10px 0 8px;
+}
+.rdoc-pair { display: flex; align-items: center; gap: 6px; }
+.rdoc-lab {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint);
+}
+.rdoc-sel, .rdoc-q, .rdoc-tagbtn {
+  background: var(--bg-card); color: var(--text);
+  border: 1px solid var(--line); border-radius: 2px;
+  font: inherit; font-size: 12px; padding: 4px 8px;
+}
+/* The flexible column is the search box, and it needs a floor or a long
+   filter row strangles it to nothing — the min-width:auto trap. */
+.rdoc-q { flex: 1 1 160px; min-width: 120px; }
+.rdoc-tagbtn { cursor: pointer; }
+.rdoc-tagbtn.on { border-color: var(--sel-line); color: var(--sel-text); background: var(--sel-bg); }
+.rdoc-kinds { display: flex; flex-wrap: wrap; gap: 4px; }
+.rdoc-kchip {
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text-dim); font: inherit; font-size: 11px; padding: 2px 9px;
+  cursor: pointer;
+}
+.rdoc-kchip:hover { border-color: var(--accent-line); color: var(--text); }
+.rdoc-kchip.on { border-color: var(--sel-line); color: var(--sel-text); background: var(--sel-bg); }
+.rdoc-fold { display: flex; gap: 4px; }
+.rdoc-mini {
+  background: none; border: 1px solid var(--line); border-radius: 2px;
+  color: var(--text-dim); font: inherit; font-size: 11px; padding: 3px 8px;
+  cursor: pointer;
+}
+.rdoc-mini:hover { border-color: var(--accent-line); color: var(--text); }
+.rdoc-note { font-size: 11px; color: var(--text-faint); }
+.rdoc-count { font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
+
+/* The column header. This is what makes it read as a list rather than a
+   stack — Finder's, in Vira's type. */
+.rdoc-head {
+  display: grid; align-items: center;
+  grid-template-columns: 44px minmax(0, 1fr) minmax(0, 190px) 84px 92px 108px;
+  gap: 10px; padding: 0 8px 5px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--text-faint);
+  position: sticky; top: 0; z-index: 2; background: var(--bg);
+}
+
+.rdoc-group { border-bottom: 1px solid var(--line); }
+.rdoc-ghead {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; color: inherit; font: inherit;
+  padding: 9px 8px; cursor: pointer; text-align: left;
+}
+.rdoc-ghead:hover { background: var(--accent-soft); }
+.rdoc-caret {
+  color: var(--text-faint); font-size: 13px; line-height: 1;
+  transition: transform .16s ease; display: inline-block;
+}
+.rdoc-group.open .rdoc-caret { transform: rotate(90deg); }
+.rdoc-gname {
+  font-size: 12.5px; color: var(--text); letter-spacing: .01em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+}
+.rdoc-gn {
+  font-size: 10.5px; color: var(--text-faint); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 7px; flex: none;
+}
+.rdoc-gfilm {
+  font-size: 9.5px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--accent-bright); border: 1px solid var(--accent-line);
+  border-radius: 999px; padding: 1px 6px; flex: none;
+}
+.rdoc-gbody { overflow: hidden; }
+.rdoc-group.open .rdoc-gbody > .rdoc-row { animation: rdocIn .22s ease both; }
+@keyframes rdocIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
+.rdoc-row {
+  display: grid; align-items: center;
+  grid-template-columns: 44px minmax(0, 1fr) minmax(0, 190px) 84px 92px 108px;
+  gap: 10px; padding: 6px 8px; cursor: pointer;
+  border-top: 1px solid transparent;
+  transition: background .14s ease;
+}
+.rdoc-row:hover { background: var(--accent-soft); }
+.rdoc-row.missing { opacity: .6; }
+
+.rdoc-thumb {
+  width: 44px; height: 28px; border-radius: 2px; overflow: hidden;
+  background: var(--bg-card); border: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: center;
+  position: relative; flex: none;
+}
+.rdoc-thumb img, .rdoc-motion {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.rdoc-motion { position: absolute; inset: 0; }
+.rdoc-thumb.has-motion::after {
+  content: ""; position: absolute; inset: 0;
+  border: 1px solid var(--accent-line); border-radius: 2px;
+  opacity: 0; transition: opacity .16s ease; pointer-events: none;
+}
+.rdoc-row:hover .rdoc-thumb.has-motion::after { opacity: 1; }
+.rdoc-glyph {
+  font-size: 8.5px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text-faint);
+}
+
+.rdoc-main { min-width: 0; }
+.rdoc-name {
+  font-size: 13px; color: var(--text); line-height: 1.35;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rdoc-row:hover .rdoc-name { color: var(--accent-bright); }
+.rdoc-sub {
+  font-size: 11px; color: var(--text-faint); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rdoc-tags { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.rdoc-chip {
+  background: none; border: 1px solid var(--line); border-radius: 999px;
+  color: var(--text-dim); font: inherit; font-size: 10px; padding: 1px 7px;
+  cursor: pointer; max-width: 100%; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.rdoc-chip:hover { border-color: var(--accent-line); color: var(--accent-bright); }
+.rdoc-chip.module { border-color: var(--accent-line); color: var(--accent-bright); }
+.rdoc-chip.theme { border-color: var(--steel-line); color: var(--steel); }
+.rdoc-kind, .rdoc-date { font-size: 11px; color: var(--text-faint); }
+.rdoc-acts {
+  display: flex; gap: 5px; justify-content: flex-end;
+  opacity: 0; transition: opacity .14s ease;
+}
+.rdoc-row:hover .rdoc-acts, .rdoc-row:focus-within .rdoc-acts { opacity: 1; }
+
+/* Tag picker popup */
+.rdoc-pop { min-width: 230px; max-width: 300px; padding: 8px; }
+.rdoc-popq {
+  width: 100%; background: var(--bg-card); color: var(--text);
+  border: 1px solid var(--line); border-radius: 2px;
+  font: inherit; font-size: 12px; padding: 4px 7px; margin-bottom: 6px;
+}
+.rdoc-poplist { max-height: 260px; overflow-y: auto; }
+.rdoc-popitem {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  background: none; border: none; color: var(--text-dim); font: inherit;
+  font-size: 12px; padding: 4px 6px; cursor: pointer; text-align: left;
+  border-radius: 2px;
+}
+.rdoc-popitem:hover { background: var(--accent-soft); color: var(--text); }
+.rdoc-popitem.on { color: var(--sel-text); background: var(--sel-bg); }
+.rdoc-poptag { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.rdoc-popn { flex: none; font-size: 10.5px; color: var(--text-faint); }
+
+/* Mobile: the columns that carry the least drop out first. Tags and kind go,
+   name and date stay — a row must never overflow the document, which is what
+   triggers WebKit's shrink-to-fit and scales the whole app down. */
+@media (max-width: 1099px) {
+  .rdoc-head { display: none; }
+  .rdoc-row {
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas: "thumb main acts";
+    row-gap: 2px;
+  }
+  .rdoc-thumb { grid-area: thumb; }
+  .rdoc-main { grid-area: main; }
+  .rdoc-acts { grid-area: acts; opacity: 1; }
+  .rdoc-tags, .rdoc-kind, .rdoc-date { display: none; }
+  .rdoc-q { flex: 1 1 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rdoc-group.open .rdoc-gbody > .rdoc-row { animation: none; }
+  .rdoc-caret { transition: none; }
+}
