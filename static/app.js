@@ -17907,7 +17907,12 @@ let rdocKinds = new Set(lsGet("vira-rdoc-kinds", []));
 // Everything all flow through the same grouped renderer. The old read fold
 // under the list is gone — the Queue's rule: completed work must not live in
 // two places under the live list.
-let rdocRead = lsGet("vira-rdoc-read", "unread");
+// The library OPENS on everything (owner's call, 2026-08-05, on seeing 9 of
+// his 32 session films): the first sweep auto-filed everything older than 14
+// days as read, so a to-read default hid 23 films and 449 documents behind
+// the Show filter — a library missing its read books is not a library. "To
+// read" survives as the filter's first option, one click away.
+let rdocRead = lsGet("vira-rdoc-read", "all");
 // list = Finder's rows; grid = the gallery (sections, motion tiles, bands).
 let rdocView = lsGet("vira-rdoc-view", "list");
 let rdocOpen = {};
