@@ -5,7 +5,7 @@
   "register": "brand-v1",
   "medium": "app-native",
   "tagline": "Stone, charcoal, oxidized metals.",
-  "description": "Vira's stock dark mode \u2014 the Taurid Capital brand book. Bone accent on graphite, engineered corners, no glass. Applying it resets Vira to stock.",
+  "description": "Vira's stock dark mode — the Taurid Capital brand book. Bone accent on graphite, engineered corners, no glass. Applying it resets Vira to stock.",
   "swatch": [
     "#0d0d0d",
     "#2a2b2d",
@@ -84,6 +84,7 @@
     "--pad": "16px",
     "--mdock-h": "calc(58px + env(safe-area-inset-bottom))",
     "--sans": "\"Helvetica Neue\", Helvetica, Arial, sans-serif",
-    "--mono": "\"IBM Plex Mono\", \"SF Mono\", ui-monospace, Menlo, monospace"
+    "--mono": "\"IBM Plex Mono\", \"SF Mono\", ui-monospace, Menlo, monospace",
+    "--display": "\"Iowan Old Style\", Georgia, \"Times New Roman\", serif"
   }
 }

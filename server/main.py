@@ -1522,14 +1522,17 @@ def api_reading_list():
 
     Completed entries are deliberately absent from `queue` — marking a document
     read takes it off the list, because the document still lives wherever its
-    producer put it. `completed` carries a short tail for the undo affordance.
+    producer put it. `completed` is the FULL read list, uncapped: it feeds the
+    docs view's Read filter, and a filter that silently truncated 425 read
+    documents to a tail would violate the no-silent-truncation rule (the old
+    limit=400 was already under the live count).
 
     Tags and film metadata are joined HERE rather than stored on the entry:
     both are derived (a re-tag pass rewrites tags; recapturing a film changes
     its thumb), and a copy on the row would be a copy that goes stale. Same
     reason roomvault.resolve annotates at this layer."""
     q = doctags.annotate(readinglist.queue())
-    done = doctags.annotate(readinglist.completed(limit=400))
+    done = doctags.annotate(readinglist.completed(limit=None))
     films = {f["url"]: f for f in walkthroughs.films()}
 
     def join(rows):

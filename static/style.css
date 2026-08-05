@@ -71,6 +71,7 @@
   --mdock-h: calc(58px + env(safe-area-inset-bottom));
   --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
   --mono: "IBM Plex Mono", "SF Mono", ui-monospace, Menlo, monospace;
+  --display: "Iowan Old Style", Georgia, "Times New Roman", serif;
   font-size: 16px;
 }
 
@@ -4155,31 +4156,15 @@ h2 { font-weight: 300; letter-spacing: 0.05em; color: var(--text-head); }
    truncates, per the documented rule — clipping an ancestor would hide the
    kind/date line, which is the part worth keeping. */
 .reader-acts { display: flex; gap: 6px; flex: none; align-items: center; }
-.reader-done { margin: 4px 0 14px; }
-.reader-fold {
-  background: none; border: none; padding: 4px 0; cursor: pointer;
-  font: inherit; font-size: 11.5px; color: var(--text-faint);
-  letter-spacing: 0.06em; text-transform: uppercase;
-}
-.reader-fold:hover, .reader-fold.on { color: var(--text-dim); }
-.reader-done-body { padding: 4px 0 0 2px; }
-.reader-donerow {
-  display: flex; align-items: center; gap: 8px; padding: 3px 0;
-}
-.reader-donename {
-  flex: 1 1 auto; min-width: 0; text-align: left; font: inherit;
-  font-size: 12.5px; background: none; border: none; cursor: pointer;
-  color: var(--text-faint); padding: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.reader-donename:hover { color: var(--text-dim); }
-.reader-mini, .reader-done-btn, .reader-item .reader-done {
+/* The read fold under the docs list is gone (2026-08-05) — the Show filter
+   carries Read / Everything now, so the fold's rules went with it. */
+.reader-mini, .reader-done-btn {
   font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em;
   text-transform: uppercase; padding: 4px 9px; border-radius: 2px;
   border: 1px solid var(--line); background: var(--bg-card);
   color: var(--text-dim); cursor: pointer; flex: none;
 }
-.reader-mini:hover, .reader-item .reader-done:hover {
+.reader-mini:hover, .reader-done-btn:hover {
   border-color: var(--accent-line); color: var(--accent-bright);
 }
 .reader-mini.on { border-color: var(--sel-line); color: var(--sel-text); background: var(--sel-bg); }
@@ -5340,6 +5325,200 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   text-overflow: ellipsis; white-space: nowrap; }
 .rdoc-popn { flex: none; font-size: 10.5px; color: var(--text-faint); }
 
+/* List / Grid toggle — a seg, and the first thing on the bar. */
+.rdoc-viewseg {
+  display: flex; border: 1px solid var(--line); border-radius: 2px;
+  overflow: hidden; flex: none;
+}
+.rdoc-vbtn {
+  background: none; border: none; color: var(--text-dim); font: inherit;
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 5px 11px; cursor: pointer;
+}
+.rdoc-vbtn + .rdoc-vbtn { border-left: 1px solid var(--line); }
+.rdoc-vbtn:hover { color: var(--text); }
+.rdoc-vbtn.on {
+  color: var(--sel-text); background: var(--sel-bg);
+}
+
+/* A read row keeps its place in Everything view, dimmed; hover restores it
+   so it stays readable. State is the dimming — the button stays a verb. */
+.rdoc-row.read { opacity: 0.55; }
+.rdoc-row.read:hover { opacity: 1; }
+
+/* ==================== The grid view — the gallery =========================
+   The lab treatment turned inward: editorial sections, mono kickers with
+   count-ups, display-serif names, self-drawing hairlines, film tiles that
+   play their own loops. Tokens only, so every skin reaches it. */
+
+.rdoc-grid { padding-top: 6px; }
+
+.rdg-sec { margin: 0 0 34px; }
+.rdg-sechead { margin-bottom: 14px; }
+.rdg-kicker {
+  font-family: var(--mono); font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--text-faint);
+  display: flex; align-items: baseline; gap: 8px;
+}
+.rdg-count { color: var(--accent-bright); font-size: 11px; }
+.rdg-kfilm {
+  color: var(--accent-bright); border: 1px solid var(--accent-line);
+  border-radius: 999px; padding: 0 7px; font-size: 9.5px;
+}
+.rdg-name {
+  font-family: var(--display); font-weight: 500; font-size: 26px;
+  line-height: 1.15; letter-spacing: 0.005em; margin: 4px 0 10px;
+  background: linear-gradient(100deg, var(--text-head) 20%,
+    var(--accent-bright) 50%, var(--text-head) 80%);
+  background-size: 220% 100%; background-position: 100% 0;
+  -webkit-background-clip: text; background-clip: text;
+  -webkit-text-fill-color: transparent; color: var(--text-head);
+  width: fit-content; max-width: 100%;
+}
+.rdg-rule {
+  height: 1px; background: linear-gradient(90deg, var(--accent-line),
+    var(--line) 60%, transparent);
+  transform-origin: left center;
+}
+.rdg-bandlab {
+  font-family: var(--mono); font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: 0.12em; color: var(--text-faint); margin: 14px 0 8px;
+}
+
+/* Films: a shelf of playing tiles. Scrolls INSIDE itself when it must —
+   the shelf may never widen the document (the shrink-to-fit rule). */
+.rdg-shelf {
+  display: flex; gap: 14px; overflow-x: auto; padding: 2px 2px 8px;
+}
+.rdg-film {
+  flex: 0 0 300px; width: 300px; cursor: pointer; position: relative;
+}
+.rdg-filmframe {
+  position: relative; width: 100%; aspect-ratio: 16 / 10;
+  border: 1px solid var(--line); border-radius: 3px; overflow: hidden;
+  background: var(--bg-card);
+  display: flex; align-items: center; justify-content: center;
+  transition: border-color 0.18s ease, transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.rdg-filmframe img, .rdg-motion {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block;
+}
+.rdg-film:hover .rdg-filmframe {
+  border-color: var(--accent-line); transform: translateY(-2px);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+.rdg-filmcap { padding: 8px 2px 0; }
+.rdg-ikicker {
+  font-family: var(--mono); font-size: 9.5px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-faint);
+}
+.rdg-iname {
+  font-size: 13px; color: var(--text); line-height: 1.35; margin-top: 3px;
+}
+.rdg-film:hover .rdg-iname, .rdg-tile:hover .rdg-iname {
+  color: var(--accent-bright);
+}
+.rdg-isub {
+  font-size: 11px; color: var(--text-faint); margin-top: 2px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Plans and dossiers: boxes. */
+.rdg-tiles {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+.rdg-tile {
+  position: relative; border: 1px solid var(--line); border-radius: 3px;
+  background: var(--bg-card); padding: 12px 12px 14px; cursor: pointer;
+  min-width: 0;
+  transition: border-color 0.18s ease, transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.rdg-tile:hover {
+  border-color: var(--accent-line); transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.4);
+}
+.rdg-tile .rdg-iname { margin-top: 5px; }
+.rdg-itags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 7px; }
+.rdg-itags .rdoc-chip { pointer-events: none; }
+
+/* Retros and briefs: compact lines. */
+.rdg-lines { display: flex; flex-direction: column; }
+.rdg-line {
+  display: flex; align-items: center; gap: 10px; padding: 5px 4px;
+  border-top: 1px solid transparent; cursor: pointer; min-width: 0;
+  transition: background 0.14s ease;
+}
+.rdg-line:hover { background: var(--accent-soft); }
+.rdg-lkind {
+  flex: none; font-family: var(--mono); font-size: 9px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-faint); border: 1px solid var(--line);
+  border-radius: 2px; padding: 1px 6px; width: 64px; text-align: center;
+}
+.rdg-lname {
+  flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rdg-line:hover .rdg-lname { color: var(--text); }
+.rdg-ldate { flex: none; font-size: 11px; color: var(--text-faint); }
+.rdg-more {
+  align-self: flex-start; margin-top: 6px; background: none;
+  border: 1px solid var(--line); border-radius: 2px; color: var(--text-dim);
+  font: inherit; font-size: 11px; padding: 3px 10px; cursor: pointer;
+}
+.rdg-more:hover { border-color: var(--accent-line); color: var(--text); }
+
+/* The mark control surfaces on hover; read items dim and wear a small
+   STATUS tag (mono, no border — nothing button-like about it). */
+.rdg-mark { position: absolute; top: 8px; right: 8px; opacity: 0; z-index: 2; }
+.rdg-line .rdg-mark { position: static; opacity: 0; }
+.rdg-item:hover .rdg-mark, .rdg-item:focus-within .rdg-mark { opacity: 1; }
+.rdg-item.read { opacity: 0.5; }
+.rdg-item.read:hover { opacity: 1; }
+.rdg-item.missing { opacity: 0.45; }
+.rdg-readtag {
+  position: absolute; left: 8px; bottom: 8px; z-index: 2;
+  font-family: var(--mono); font-size: 9px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-bright);
+  background: var(--scrim-strong); border-radius: 2px; padding: 1px 6px;
+  pointer-events: none;
+}
+.rdg-tile > .rdg-readtag { position: static; margin-top: 8px;
+  display: inline-block; background: var(--bg-raised);
+  color: var(--text-faint); }
+
+/* The entrance: sections and items rise in with a stagger, the hairline
+   draws, the name shimmers once, the count counts up (JS). Only under
+   .anim — reduced motion never gets a hidden state to miss. */
+.rdoc-grid.anim .rdg-sec,
+.rdoc-grid.anim .rdg-item {
+  opacity: 0; transform: translateY(10px);
+  transition: opacity 0.5s ease, transform 0.5s ease;
+  transition-delay: calc(var(--i, 0) * 40ms);
+}
+.rdoc-grid.anim .rdg-sec.rv,
+.rdoc-grid.anim .rdg-item.rv { opacity: 1; transform: none; }
+.rdoc-grid.anim .rdg-sec.read, .rdoc-grid.anim .rdg-item.read {
+  transform: none;
+}
+.rdoc-grid.anim .rdg-item.read { opacity: 0; }
+.rdoc-grid.anim .rdg-item.read.rv { opacity: 0.5; }
+.rdoc-grid.anim .rdg-item.read.rv:hover { opacity: 1; }
+.rdoc-grid.anim .rdg-rule { transform: scaleX(0); transition: transform
+  0.9s cubic-bezier(0.22, 0.61, 0.36, 1) 0.15s; }
+.rdoc-grid.anim .rdg-sec.rv .rdg-rule { transform: scaleX(1); }
+.rdoc-grid.anim .rdg-sec.rv .rdg-name {
+  animation: rdgShimmer 1.4s ease 0.2s 1 both;
+}
+@keyframes rdgShimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
 /* Mobile: the columns that carry the least drop out first. Tags and kind go,
    name and date stay — a row must never overflow the document, which is what
    triggers WebKit's shrink-to-fit and scales the whole app down. */
@@ -5355,6 +5534,14 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   .rdoc-acts { grid-area: acts; opacity: 1; }
   .rdoc-tags, .rdoc-kind, .rdoc-date { display: none; }
   .rdoc-q { flex: 1 1 100%; }
+  /* Grid on a phone: narrower film tiles (the shelf still scrolls inside
+     itself), tighter boxes, always-visible mark buttons (no hover), and
+     the date column gives way on lines — the title is what must survive. */
+  .rdg-film { flex-basis: 230px; width: 230px; }
+  .rdg-tiles { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .rdg-name { font-size: 21px; }
+  .rdg-mark, .rdg-line .rdg-mark { opacity: 1; }
+  .rdg-ldate { display: none; }
 }
 
 /* ---------- The module story panel ("What is this?") ---------- */
@@ -5422,4 +5609,5 @@ button.story-shead:hover { color: var(--accent-bright); }
 @media (prefers-reduced-motion: reduce) {
   .rdoc-group.open .rdoc-gbody > .rdoc-row { animation: none; }
   .rdoc-caret { transition: none; }
+  .rdg-filmframe, .rdg-tile { transition: none; }
 }

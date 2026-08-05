@@ -252,6 +252,11 @@ def source_path(it):
             if not wroot:
                 return None
             p = wroot / rel[len("walkthroughs/"):]
+            try:
+                p = p.resolve()
+                p.relative_to(wroot.resolve())  # containment, as _vault_file
+            except (OSError, ValueError):
+                return None
             return p / "index.html" if p.is_dir() else p
         p = ROOT / "static" / rel
         return p / "index.html" if p.is_dir() else p
@@ -377,11 +382,16 @@ def queue():
 
 
 def completed(limit=50):
-    """Recently finished, newest first — for an undo affordance, not a library."""
+    """Finished reading, newest first. limit=None means everything — the docs
+    view's Read filter shows the whole read library grouped like the queue,
+    and a capped tail there would be a silent truncation."""
     done = [i for i in _load()["items"]
             if i.get("completed") and i.get("kind") != "room"]
     done.sort(key=lambda i: i.get("completed") or "", reverse=True)
-    return [_decorate(i, with_progress=False) for i in _dedupe(done)[:limit]]
+    done = _dedupe(done)
+    if limit is not None:
+        done = done[:limit]
+    return [_decorate(i, with_progress=False) for i in done]
 
 
 def library():
