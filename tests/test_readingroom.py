@@ -267,6 +267,28 @@ class EnumerateSourcesTest(Base):
         self.assertEqual({c["title"] for c in out["candidates"]},
                          {"New post"})
 
+    def test_cap_is_round_robin_and_the_overflow_is_counted(self):
+        # One fat feed must not starve the others (measured on first live
+        # run: Lenny's 39 filled the cap, Dwarkesh got zero, nothing said
+        # so). Every source lands entries, and the overflow is a number.
+        room = self.room_with_sources()
+        fat = "".join(
+            f"<item><title>Fat {i}</title>"
+            f"<link>https://blog.example/fat{i}</link></item>"
+            for i in range(readingroom.MAX_CANDIDATES + 10))
+        feeds = {"https://yt.example/feed.xml": ATOM_FEED,   # 1 fresh entry
+                 "https://blog.example/rss":
+                     f"<rss><channel>{fat}</channel></rss>"}
+        with mock.patch.object(readingroom, "_http_get",
+                               side_effect=lambda u, **k: feeds[u]):
+            out = readingroom.enumerate_sources(room)
+            p = readingroom.update_prompt("test-room")
+        self.assertEqual(len(out["candidates"]), readingroom.MAX_CANDIDATES)
+        self.assertIn("Brand new video",
+                      {c["title"] for c in out["candidates"]})
+        self.assertEqual(out["dropped"], 11)
+        self.assertIn("CAP REACHED: 11", p)
+
     def test_no_sources_means_no_network_and_no_sweep_block(self):
         self.build()
         with mock.patch.object(readingroom, "_http_get",

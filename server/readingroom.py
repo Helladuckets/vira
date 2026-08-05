@@ -640,7 +640,12 @@ def enumerate_sources(room):
     """Sweep every feed the room names; return what the feeds carry that
     the room does not. Never raises — a dead feed is a named error line,
     not a failed refresh. YouTube entries diff on the VIDEO ID (item URLs
-    carry query-string variants); everything else on the normalized URL."""
+    carry query-string variants); everything else on the normalized URL.
+
+    The cap is taken ROUND-ROBIN across sources and the overflow is
+    COUNTED, never silent — first live run: Lenny's 39 entries filled the
+    cap and starved Dwarkesh to zero with nothing saying so (the repo's
+    no-silent-caps rule, tripped on this function's first day)."""
     d = room.get("definition") or {}
     sources = d.get("sources") or []
     items = room.get("items") or []
@@ -652,23 +657,32 @@ def enumerate_sources(room):
         mv = _YT_ID_RE.search(u)
         if mv:
             known_vids.add(mv.group(1))
-    candidates, errors = [], []
+    per_source, errors = [], []
     for s in sources:
         try:
             entries = _parse_feed(_http_get(s["feed"]))
         except Exception as e:                           # noqa: BLE001
             errors.append(f"{s['label']}: {type(e).__name__}: {e}")
             continue
+        fresh = []
         for e in entries:
             mv = _YT_ID_RE.search(e["url"])
             if mv and mv.group(1) in known_vids:
                 continue
             if not mv and _norm_url(e["url"]) in known_urls:
                 continue
-            if len(candidates) < MAX_CANDIDATES:
-                candidates.append({**e, "source": s["label"]})
+            fresh.append({**e, "source": s["label"]})
+        per_source.append(fresh)
+    candidates, dropped = [], 0
+    for rank in range(max((len(f) for f in per_source), default=0)):
+        for fresh in per_source:
+            if rank < len(fresh):
+                if len(candidates) < MAX_CANDIDATES:
+                    candidates.append(fresh[rank])
+                else:
+                    dropped += 1
     return {"candidates": candidates, "errors": errors,
-            "swept": len(sources)}
+            "swept": len(sources), "dropped": dropped}
 
 
 def merge_items(slug, new_items):
@@ -796,6 +810,11 @@ def update_prompt(slug):
         else:
             lines.append("Every feed entry is already in the room — the "
                          "feeds hold nothing new.")
+        if swept.get("dropped"):
+            lines.append(
+                f"- CAP REACHED: {swept['dropped']} further feed entries "
+                "were not listed — the feeds hold more than fits here, so "
+                "also sweep the sources directly.")
         for err in errors:
             lines.append(f"- FEED ERROR, sweep this source by hand: {err}")
     lines += [
