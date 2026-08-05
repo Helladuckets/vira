@@ -12,6 +12,7 @@ tests/test_worktree.py's EnsureAgainstARealRepo/TidyAgainstARealRepo use).
 
 Run: .venv/bin/python -m unittest discover tests
 """
+import json
 import os
 import subprocess
 import tempfile
@@ -21,6 +22,10 @@ from pathlib import Path
 from unittest import mock
 
 from server import orphanwork
+
+# Captured BEFORE any fixture pins the name, so the passive-gate tests can
+# drive the real function while every other test keeps the no-op pin.
+_REAL_KICK = orphanwork._kick_assess
 
 
 def _git(*args, cwd, check=True):
@@ -77,6 +82,12 @@ class _RepoCase(unittest.TestCase):
         np = mock.patch("server.notify.agent_ping", return_value=True)
         self.ping = np.start()
         self.addCleanup(np.stop)
+        # refresh() kicks the model assessment on a thread; a fixture must
+        # never spend a real suggest.complete call (the JournalBase lesson:
+        # isolate the side effects of the function you CALL).
+        ka = mock.patch.object(orphanwork, "_kick_assess", lambda: None)
+        ka.start()
+        self.addCleanup(ka.stop)
 
     def make_worktree(self, slug, branch=None, dirty=False, commits=0):
         """A linked worktree on claude/<slug> (or `branch`), off main, with
@@ -727,6 +738,132 @@ class Landing(_BranchShCase):
                 time.sleep(0.05)
         self.assertEqual(n, 2)
         self.assertEqual(sorted(done), ["s1", "s2"])
+
+
+class Evidence(_RepoCase):
+    """Every row carries what a decision needs: the originating job's ask,
+    the changed files, and the unmerged commit subjects."""
+
+    def test_a_dirty_worktree_lists_its_files(self):
+        wt = self.make_worktree("ev1", dirty=True)
+        (wt / "second.py").write_text("# more\n", encoding="utf-8")
+        items = orphanwork.sweep()
+        it = next(i for i in items if i["branch"] == "claude/ev1")
+        self.assertIn("dirty.py", it["files"])
+        self.assertIn("second.py", it["files"])
+
+    def test_a_renamed_file_shows_its_new_path(self):
+        lines = ["R  old.py -> new.py", " M plain.py"]
+        self.assertEqual(orphanwork._dirty_files(lines), ["new.py", "plain.py"])
+
+    def test_an_unmerged_branch_lists_its_commit_subjects(self):
+        self.make_worktree("ev2", commits=2)
+        items = orphanwork.sweep()
+        it = next(i for i in items if i["branch"] == "claude/ev2")
+        self.assertEqual(it["commits"], ["work 1", "work 0"])
+
+    def test_the_job_join_carries_the_prompt_head(self):
+        self.make_worktree("ev3", commits=1)
+        row = {"id": "j1", "branch": "claude/ev3", "status": "done",
+               "prompt": "You are Vira's coding agent.\n\nAdd  the   thing."}
+        with mock.patch("server.joblog.list_records", return_value=[row]):
+            items = orphanwork.sweep()
+        it = next(i for i in items if i["branch"] == "claude/ev3")
+        self.assertIn("Add the thing.", it["job"]["prompt_head"])
+
+
+class Assessment(_RepoCase):
+    """assess_missing(): one model pass, grounded-or-dropped, cached by
+    item key so a changed branch (new key) is re-assessed and an unchanged
+    one never is."""
+
+    def _sweep_store(self, *slugs, commits=1):
+        for s in slugs:
+            self.make_worktree(s, commits=commits)
+        orphanwork.refresh()
+        return {it["branch"]: it for it in orphanwork.compose()["items"]}
+
+    def _fake_complete(self, rows):
+        return mock.patch("server.suggest.complete",
+                          return_value=json.dumps(rows))
+
+    def test_a_valid_read_lands_on_the_composed_item(self):
+        by = self._sweep_store("a1")
+        key = by["claude/a1"]["key"]
+        with self._fake_complete([{"key": key, "verdict": "land",
+                                   "why": "finished and coherent"}]):
+            n = orphanwork.assess_missing()
+        self.assertEqual(n, 1)
+        it = orphanwork.compose()["items"][0]
+        self.assertEqual(it["read"]["verdict"], "land")
+        self.assertEqual(it["read"]["why"], "finished and coherent")
+
+    def test_unknown_keys_and_bad_verdicts_are_dropped(self):
+        by = self._sweep_store("a2")
+        key = by["claude/a2"]["key"]
+        with self._fake_complete([
+                {"key": "nope", "verdict": "land", "why": "x"},
+                {"key": key, "verdict": "merge-it", "why": "x"},
+                {"key": key, "verdict": "discard", "why": ""}]):
+            n = orphanwork.assess_missing()
+        self.assertEqual(n, 0)
+        self.assertNotIn("read", orphanwork.compose()["items"][0])
+
+    def test_an_assessed_key_is_never_re_adjudicated(self):
+        by = self._sweep_store("a3")
+        key = by["claude/a3"]["key"]
+        with self._fake_complete([{"key": key, "verdict": "resume",
+                                   "why": "first read"}]):
+            orphanwork.assess_missing()
+        called = mock.MagicMock(return_value="[]")
+        with mock.patch("server.suggest.complete", called):
+            self.assertEqual(orphanwork.assess_missing(), 0)
+        called.assert_not_called()
+
+    def test_a_new_commit_mints_a_new_key_and_a_fresh_assessment(self):
+        by = self._sweep_store("a4")
+        key = by["claude/a4"]["key"]
+        with self._fake_complete([{"key": key, "verdict": "resume",
+                                   "why": "first read"}]):
+            orphanwork.assess_missing()
+        wt = orphanwork.ROOT / ".worktrees" / "a4"
+        (wt / "later.py").write_text("# new\n", encoding="utf-8")
+        _git("add", "-A", cwd=wt)
+        _git("commit", "-qm", "work 9", cwd=wt)
+        orphanwork.refresh()
+        it = orphanwork.compose()["items"][0]
+        self.assertNotEqual(it["key"], key)
+        self.assertNotIn("read", it)
+
+    def test_a_model_failure_leaves_rows_honestly_unassessed(self):
+        self._sweep_store("a5")
+        with mock.patch("server.suggest.complete",
+                        side_effect=RuntimeError("backend down")):
+            self.assertEqual(orphanwork.assess_missing(), 0)
+        self.assertNotIn("read", orphanwork.compose()["items"][0])
+
+    def test_kick_assess_refuses_on_a_passive_instance(self):
+        # _REAL_KICK was captured at import, before the fixture's pin —
+        # this drives the actual gate, not the no-op.
+        os.environ["VIRA_PASSIVE"] = "1"
+        self.addCleanup(os.environ.pop, "VIRA_PASSIVE", None)
+        ran = mock.MagicMock()
+        with mock.patch.object(orphanwork, "assess_missing", ran):
+            _REAL_KICK()
+            time.sleep(0.1)
+        ran.assert_not_called()
+
+    def test_kick_assess_runs_the_pass_off_thread(self):
+        ran = mock.MagicMock(return_value=0)
+        with mock.patch.object(orphanwork, "assess_missing", ran):
+            _REAL_KICK()
+            t0 = time.time()
+            # wait for the flag, not just the call — the thread's finally
+            # clears it AFTER assess_missing returns
+            while orphanwork._assess_running and time.time() - t0 < 3:
+                time.sleep(0.02)
+        ran.assert_called_once()
+        self.assertFalse(orphanwork._assess_running)
 
 
 if __name__ == "__main__":

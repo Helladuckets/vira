@@ -3463,6 +3463,26 @@ a.sub-name:hover { color: var(--accent); text-decoration: underline; }
   font-size: 12px; color: var(--text-dim); flex: 1 1 160px; min-width: 0;
 }
 .orphan-outcome { flex: 1 0 100%; white-space: normal; margin-top: 4px; }
+/* The evidence lines under an unlanded row: what was asked, the commit
+   subjects, the changed files. Wrapping, never truncating an ancestor —
+   the mobile-overflow rule. */
+.orphan-ev {
+  white-space: normal; overflow-wrap: anywhere;
+  font-size: 11.5px; color: var(--text-faint); margin-top: 2px;
+}
+/* Vira's one-line read + recommended action. Toned by verdict; the
+   matching action button wears .rec so the recommendation and the
+   control agree at a glance. */
+.orphan-read {
+  white-space: normal; font-size: 12px; color: var(--text-dim);
+  margin-top: 5px;
+}
+.orphan-read-v { font-weight: 600; text-transform: uppercase;
+  font-size: 10.5px; letter-spacing: 0.05em; margin-right: 2px; }
+.orphan-read.land .orphan-read-v { color: var(--green); }
+.orphan-read.resume .orphan-read-v { color: var(--accent); }
+.orphan-read.discard .orphan-read-v { color: var(--red); }
+.fchip.rec { border-color: var(--accent); color: var(--accent); }
 .fchip.warn { color: var(--red); border-color: var(--red-line); }
 .fchip.warn:hover { background: var(--red-soft); }
 .grp-why { font-size: 13px; color: var(--text); margin-top: 6px; line-height: 1.4; }

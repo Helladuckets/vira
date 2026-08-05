@@ -46,6 +46,9 @@ worktree.is_worktree(root) to arm the same guard fields for this path too
 ReentryIntoExistingWorktree.
 """
 import hashlib
+import json
+import os
+import re
 import subprocess
 import threading
 import time
@@ -164,7 +167,37 @@ def _job_for_branch(branch, ledger_by_branch):
     if not row:
         return None
     return {"id": row.get("id"), "title": joblog.name(row),
-            "status": row.get("status"), "finished": row.get("finished")}
+            "status": row.get("status"), "finished": row.get("finished"),
+            # what was actually ASKED — the evidence a decision needs; the
+            # machine preamble is squeezed so the task line survives the cap
+            "prompt_head": " ".join((row.get("prompt") or "").split())[:280]}
+
+
+def _dirty_files(dirty_lines):
+    """Porcelain lines -> the changed paths, capped. The 3-char status
+    prefix is fixed-width ("XY "); a rename reads "old -> new" and the
+    NEW path is the one worth showing."""
+    files = []
+    for line in (dirty_lines or [])[:24]:
+        rel = line[3:].strip()
+        if " -> " in rel:
+            rel = rel.split(" -> ", 1)[1]
+        rel = rel.strip('"')
+        if rel:
+            files.append(rel)
+    return files[:12]
+
+
+def _branch_commits(branch, ahead):
+    """Subjects of the unmerged commits — the branch's own account of what
+    it holds. Empty on any git failure (the per-item degrade rule)."""
+    if not ahead:
+        return []
+    lg = gitutil.git(ROOT, "log", "--format=%s", f"main..{branch}",
+                     "-n", "8", timeout=20)
+    if lg.returncode != 0:
+        return []
+    return [l.strip() for l in (lg.stdout or "").splitlines() if l.strip()][:8]
 
 
 def _make_item(branch, wt, dirty_lines, ledger_by_branch):
@@ -199,6 +232,8 @@ def _make_item(branch, wt, dirty_lines, ledger_by_branch):
         "branch": branch,
         "worktree": str(wt) if wt else "",
         "dirty": dirty, "ahead": ahead, "behind": behind,
+        "files": _dirty_files(dirty_lines),
+        "commits": _branch_commits(branch, ahead),
         "kind": "dirty" if dirty else "unmerged",
         "instance_running": bool(wt and worktree._instance_alive(wt)),
         "stalled": bool(job and job.get("status") in ("orphaned", "error")),
@@ -262,7 +297,7 @@ def sweep():
 
 def _blank():
     return {"last_sweep": None, "items": [], "dismissed": {}, "notified": {},
-            "baseline_done": False}
+            "reads": {}, "baseline_done": False}
 
 
 def _read():
@@ -323,6 +358,7 @@ def refresh():
             notify.agent_ping(ping["text"], key=ping["key"])
         except Exception:  # noqa: BLE001 — a ping must never break the sweep
             pass
+    _kick_assess()
     return items
 
 
@@ -332,10 +368,18 @@ def compose():
     sorting on and it is not a worktree to resume."""
     s = _read()
     dismissed = set(s.get("dismissed") or {})
+    reads = s.get("reads") or {}
     items = [dict(it) for it in (s.get("items") or [])
              if it.get("key") not in dismissed]
     with _actions_lock:
         for it in items:
+            # The assessment is keyed on the item KEY, which embeds tip sha
+            # + dirty count — so a new commit or edit mints a new key and
+            # the stale read simply stops matching (the dismissal rule).
+            r = reads.get(it.get("key") or "")
+            if r:
+                it["read"] = {"verdict": r.get("verdict"),
+                              "why": r.get("why")}
             a = _actions.get(it.get("branch") or "")
             if a:
                 it["action"] = {"name": a["name"], "status": a["status"],
@@ -726,3 +770,136 @@ def land_all():
     threading.Thread(target=run, daemon=True,
                      name="vira-orphan-land-all").start()
     return len(todo)
+
+
+# ---------------------------------------------------------------- assessment
+#
+# The owner's complaint that earned this (2026-08-05): "I'm looking at
+# random session names and I just have to arbitrarily decide if I want to
+# land it, resume it, or discard it." A row that asks for a verdict must
+# carry its evidence — so every item now ships what was asked (the ledger
+# prompt head), what changed (files, commit subjects), and ONE model-pass
+# recommendation with the reason on the row. The recommendation is a READ,
+# never an action: nothing lands or discards on its say-so.
+
+READS_MAX = 200
+VERDICTS = ("land", "resume", "discard")
+
+ASSESS_PROMPT = """You are Vira's release reviewer. Below is every piece of UNLANDED work \
+in the owner's repo: agent worktrees holding uncommitted edits, and branches \
+with commits never merged into main. For each item recommend exactly one of:
+- "land"    — finished, coherent work worth merging into main
+- "resume"  — real work, but unfinished or unclear; a session should finish or inspect it
+- "discard" — stale, duplicated, superseded, or a runaway experiment
+
+Judge only from the evidence given: what the originating job asked (when \
+known), the files changed, the commit subjects, and the age. Be decisive and \
+skeptical — several parallel experiments editing the same file are usually \
+duplicates; a diff far wider than its stated task is usually a runaway. When \
+genuinely unsure prefer "resume" over "land": merging junk is worse than a look.
+
+Reply with STRICT JSON only — a list of objects \
+{{"key": "...", "verdict": "...", "why": "..."}} covering every item. "why" \
+is ONE short plain sentence the owner reads on the row.
+
+ITEMS:
+{items}
+"""
+
+_assess_lock = threading.Lock()
+_assess_running = False
+
+
+def _evidence_lines(it):
+    """One item's evidence block for the assessment prompt."""
+    out = [f"key: {it.get('key')}",
+           f"  branch: {it.get('branch')} — {it.get('age_days', 0)}d old, "
+           f"{it.get('dirty', 0)} uncommitted change(s), "
+           f"{it.get('ahead', 0)} unmerged commit(s)"]
+    job = it.get("job") or {}
+    if job.get("prompt_head"):
+        out.append(f"  job asked: {job['prompt_head']}")
+    elif job.get("title"):
+        out.append(f"  job: {job['title']}")
+    if it.get("commits"):
+        out.append("  commits: " + " | ".join(it["commits"]))
+    if it.get("files"):
+        out.append("  files: " + ", ".join(it["files"]))
+    return "\n".join(out)
+
+
+def assess_missing():
+    """ONE suggest.complete pass over every item whose key has no cached
+    read. Grounded-or-dropped (the evidence.py discipline): a row naming
+    an unknown key or an off-vocabulary verdict is discarded, never
+    coerced. Returns how many reads were stored."""
+    s = _read()
+    reads = s.get("reads") or {}
+    todo = [it for it in (s.get("items") or [])
+            if it.get("kind") != "unpushed" and it.get("key") not in reads]
+    if not todo:
+        return 0
+    from . import suggest
+    prompt = ASSESS_PROMPT.format(
+        items="\n".join(_evidence_lines(it) for it in todo))
+    try:
+        raw = suggest.complete(prompt)
+        m = re.search(r"\[.*\]", raw or "", re.S)
+        rows = json.loads(m.group(0)) if m else []
+    except Exception:  # noqa: BLE001 — an unassessed row is the honest degrade
+        return 0
+    valid = {it["key"] for it in todo}
+    now = _now_iso()
+    accepted = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        k = r.get("key")
+        v = str(r.get("verdict") or "").strip().lower()
+        why = " ".join(str(r.get("why") or "").split())[:240]
+        if k in valid and v in VERDICTS and why:
+            accepted[k] = {"verdict": v, "why": why, "when": now}
+    if not accepted:
+        return 0
+
+    def fn(store):
+        cur = dict(store.get("reads") or {})
+        for k, v in accepted.items():
+            cur.setdefault(k, v)      # never re-adjudicate behind a cached read
+        if len(cur) > READS_MAX:      # prune by stamp; values are dicts, so
+            for k in sorted(cur, key=lambda x: cur[x].get("when", ""))[
+                    :len(cur) - READS_MAX]:
+                cur.pop(k, None)
+        store["reads"] = cur
+        return store
+
+    jsonstore.mutate(STORE, fn, _blank(), indent=1, ensure_ascii=False)
+    return len(accepted)
+
+
+def _kick_assess():
+    """Run the assessment on a daemon thread, one at a time, and never on
+    a passive instance (the worker convention — a test clone's sweep must
+    not spend model calls on every view open). refresh() calls this, so a
+    row is assessed within one sweep of appearing and the cache makes
+    every later sweep free."""
+    global _assess_running
+    if os.environ.get("VIRA_PASSIVE"):
+        return
+    with _assess_lock:
+        if _assess_running:
+            return
+        _assess_running = True
+
+    def run():
+        global _assess_running
+        try:
+            assess_missing()
+        except Exception:  # noqa: BLE001 — a failed pass just leaves rows unassessed
+            pass
+        finally:
+            with _assess_lock:
+                _assess_running = False
+
+    threading.Thread(target=run, daemon=True,
+                     name="vira-orphan-assess").start()
