@@ -13192,20 +13192,40 @@ const APPS_PAGE = 200;
 // filtered out, never deleted — the analysis stacked on it is the
 // expensive part. The count line always states how many are being held
 // back, so the default can never read as "that's all there is".
-let appsFilters = { company: "", q: "", fit: "", status: "", starred: false,
-                    avail: "live", tier: "", comp: "", loc: "",
+let appsFilters = { company: "", q: "", fit: "", status: [], starred: false,
+                    avail: "live", tier: [], comp: "", loc: "",
                     sort: "relevance" };
 // A saved value the dropdown no longer offers must fall back, not stick:
 // the retired "untriaged" tier matches no role, so a browser carrying it
 // would render an empty list with every control looking unset.
-const APPS_TIERS = ["", "shortlist", "cut", "1", "2", "3", "pass",
-                    "analyzed", "raw", "fresh"];
+const APP_TIER_OPTIONS = [
+  ["shortlist", "Your eight picks"], ["cut", "Cut lane"],
+  ["1", "Tier 1"], ["2", "Tier 2"], ["3", "Tier 3"],
+  ["pass", "Passed on"], ["analyzed", "Analyzed only"],
+  ["raw", "Not yet analyzed"], ["fresh", "New on the boards"],
+];
+const APP_STATUS_OPTIONS = [
+  ["none", "Untouched"], ["applied", "Applied"],
+  ["interviewing", "Interviewing"], ["offer", "Offer"],
+  ["closed", "Closed"], ["skipped", "Skipped"],
+];
+const APPS_TIERS = APP_TIER_OPTIONS.map(([v]) => v);
+const APPS_STATUSES = APP_STATUS_OPTIONS.map(([v]) => v);
 const APPS_AVAIL = ["live", "gone", "unverified", ""];
 const APPS_SORTS = ["relevance", "newest", "fit"];
+
+function appsFilterValues(value, allowed) {
+  // Migrate the old single-select value in place. Unknown and retired values
+  // fall away rather than leaving an invisible filter active.
+  const values = Array.isArray(value) ? value : (value ? [value] : []);
+  return [...new Set(values.filter((v) => allowed.includes(v)))];
+}
+
 try {
   appsFilters = { ...appsFilters,
                   ...lsGet("vira-apps-filter", {}) };
-  if (!APPS_TIERS.includes(appsFilters.tier)) appsFilters.tier = "";
+  appsFilters.tier = appsFilterValues(appsFilters.tier, APPS_TIERS);
+  appsFilters.status = appsFilterValues(appsFilters.status, APPS_STATUSES);
   if (!APPS_AVAIL.includes(appsFilters.avail)) appsFilters.avail = "live";
   if (!APPS_SORTS.includes(appsFilters.sort)) appsFilters.sort = "relevance";
   delete appsFilters.view;              // the retired mode toggle
@@ -13350,6 +13370,87 @@ function buildAppsCompanySelect() {
   sel.value = appsFilters.company || "";
 }
 
+function renderAppsMultiButton(key, options, emptyLabel, pluralLabel) {
+  const btn = $("#app-" + key);
+  if (!btn) return;
+  const selected = appsFilters[key];
+  const labels = new Map(options);
+  btn.textContent = selected.length === 0 ? emptyLabel
+    : selected.length === 1 ? labels.get(selected[0])
+    : `${selected.length} ${pluralLabel}`;
+  btn.classList.toggle("on", selected.length > 0);
+  btn.title = selected.length
+    ? "Filtering by " + selected.map((v) => labels.get(v)).join(", ")
+    : emptyLabel;
+}
+
+function renderAppsMultiButtons() {
+  renderAppsMultiButton("tier", APP_TIER_OPTIONS, "Any tier", "tiers");
+  renderAppsMultiButton("status", APP_STATUS_OPTIONS,
+                        "Any status", "statuses");
+}
+
+function openAppsMultiPicker(anchor, key, options, title) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop app-filter-pop");
+  pop.appendChild(el("div", "ctx-head", title));
+  const body = el("div", "app-filter-pop-body");
+  pop.appendChild(body);
+
+  const draw = () => {
+    body.innerHTML = "";
+    options.forEach(([value, label]) => {
+      const on = appsFilters[key].includes(value);
+      const row = el("label", "app-filter-row" + (on ? " on" : ""));
+      const cb = el("input", "app-filter-check");
+      cb.type = "checkbox";
+      cb.checked = on;
+      cb.addEventListener("change", () => {
+        const selected = new Set(appsFilters[key]);
+        if (cb.checked) selected.add(value); else selected.delete(value);
+        // Keep persisted values in display order, independent of click order.
+        appsFilters[key] = options.map(([v]) => v)
+          .filter((v) => selected.has(v));
+        appsShown = APPS_PAGE;
+        saveAppsFilters();
+        renderApplications();
+        row.classList.toggle("on", cb.checked);
+      });
+      row.appendChild(cb);
+      row.appendChild(el("span", "app-filter-name", label));
+      body.appendChild(row);
+    });
+  };
+  draw();
+
+  const foot = el("div", "app-filter-pop-foot");
+  const clear = el("button", "btn small", "Clear");
+  clear.addEventListener("click", () => {
+    appsFilters[key] = [];
+    appsShown = APPS_PAGE;
+    saveAppsFilters();
+    renderApplications();
+    draw();
+  });
+  const done = el("button", "btn small primary", "Done");
+  done.addEventListener("click", () => pop.remove());
+  foot.appendChild(clear);
+  foot.appendChild(done);
+  pop.appendChild(foot);
+
+  const r = anchor.getBoundingClientRect();
+  placeCtxPop(pop, Math.max(8, r.right - 240), r.bottom + 4);
+}
+
+function appTierMatches(r, value) {
+  if (value === "shortlist") return !!r.shortlist;
+  if (value === "cut") return !!r.cut;
+  if (value === "analyzed") return !!r.in_universe;
+  if (value === "raw") return !r.in_universe;
+  if (value === "fresh") return !!r.fresh;
+  return r.tier === value;
+}
+
 function appsFiltered() {
   if (!appsData) return [];
   const f = appsFilters;
@@ -13361,22 +13462,14 @@ function appsFiltered() {
     if (f.loc && f.loc.startsWith("place:")
         && !(r.places || []).includes(f.loc.slice(6))) return false;
     if (f.starred && !r.starred) return false;
-    if (f.status && (r.status || "none") !== f.status) return false;
+    if (f.status.length && !f.status.includes(r.status || "none"))
+      return false;
     const av = r.availability || "unverified";
     if (f.avail === "live" && av === "gone") return false;
     if (f.avail === "gone" && av !== "gone") return false;
     if (f.avail === "unverified" && av !== "unverified") return false;
-    if (f.tier === "shortlist") {
-      if (!r.shortlist) return false;
-    } else if (f.tier === "cut") {
-      if (!r.cut) return false;
-    } else if (f.tier === "analyzed") {
-      if (!r.in_universe) return false;
-    } else if (f.tier === "raw") {
-      if (r.in_universe) return false;
-    } else if (f.tier === "fresh") {
-      if (!r.fresh) return false;
-    } else if (f.tier && r.tier !== f.tier) return false;
+    if (f.tier.length && !f.tier.some((v) => appTierMatches(r, v)))
+      return false;
     if (f.comp && (r.comp_kind || "") !== f.comp) return false;
     if (f.fit === "scored" && r.fit == null) return false;
     if (f.fit && f.fit !== "scored" && (r.fit == null || r.fit < +f.fit))
@@ -13464,6 +13557,7 @@ function renderApplications() {
   }
   const starBtn = $("#app-starred");
   if (starBtn) starBtn.classList.toggle("on", !!appsFilters.starred);
+  renderAppsMultiButtons();
   host.innerHTML = "";
   rows.slice(0, appsShown).forEach((r) => host.appendChild(appRow(r)));
   if (!rows.length)
@@ -13795,11 +13889,9 @@ $("#app-run-copy").addEventListener("click", async () => {
   }
   const tier = $("#app-tier");
   if (tier) {
-    tier.value = appsFilters.tier || "";
-    tier.addEventListener("change", () => {
-      appsFilters.tier = tier.value;
-      appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
-    });
+    tier.addEventListener("click", () =>
+      openAppsMultiPicker(tier, "tier", APP_TIER_OPTIONS,
+                          "Show any selected tier"));
   }
   const sort = $("#app-sort");
   if (sort) {
@@ -13828,11 +13920,9 @@ $("#app-run-copy").addEventListener("click", async () => {
   }
   const status = $("#app-status");
   if (status) {
-    status.value = appsFilters.status || "";
-    status.addEventListener("change", () => {
-      appsFilters.status = status.value;
-      appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();
-    });
+    status.addEventListener("click", () =>
+      openAppsMultiPicker(status, "status", APP_STATUS_OPTIONS,
+                          "Show any selected status"));
   }
   const starred = $("#app-starred");
   if (starred) starred.addEventListener("click", () => {
