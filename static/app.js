@@ -4494,9 +4494,20 @@ function ideaRow(it) {
   // Vira-wide menu already carries "Edit idea"), long-press on a phone.
   // Nothing expands on an idea card yet, so a plain click does nothing.
   const text = el("div", "idea-text", it.text);
-  text.title = "Right-click (or long-press) to edit";
+  text.title = "Right-click (or long-press) for edit and image actions";
   top.appendChild(text);
-  longPress(box, () => editIdea(box, it));
+  // Long-press used to go straight to edit. It opens a MENU now, because a
+  // phone has no right-click and no drag-and-drop, so this gesture is the
+  // only place the image actions can live there (owner's ask: "a long
+  // press, paste option would work"). Edit is the first row, so the old
+  // gesture is one tap away rather than gone.
+  longPress(box, (e) => showContextMenu(e.clientX, e.clientY, [
+    { head: "Idea", sub: (it.text || "").slice(0, 60) },
+    { label: "Edit idea", run: () => editIdea(box, it) },
+    ...ideaImageMenuItems(it, e.clientX, e.clientY),
+  ]));
+  // Drop a screenshot straight onto the card it belongs to.
+  dropImages(box, (files) => attachImages(it, files));
 
   const del2 = el("button", "idea-del", "×");
   del2.title = "Delete";
@@ -4560,6 +4571,10 @@ function ideaRow(it) {
   statWrap.appendChild(sel);
   ctl.appendChild(statWrap);
   box.appendChild(ctl);
+
+  // Attached screenshots and photos, directly under the idea they explain.
+  const strip = ideaImageStrip(it);
+  if (strip) box.appendChild(strip);
 
   const metaBits = [it.source, it.note,
     it.updated ? "updated " + fmtTime(it.updated) : ""].filter(Boolean);
@@ -5258,6 +5273,340 @@ function clGroupNodes(g, opts = {}) {
   return nodes;
 }
 
+// ==================== images attached to an idea ====================
+// A screenshot of the bug, a photo of the thing, a mockup to build from.
+// Three ways in, because the three surfaces genuinely differ:
+//
+//   DESKTOP  drag a file onto the composer or onto an existing card; or
+//            Cmd+V with the composer focused (the screenshot workflow).
+//   BOTH     the "Image" button and the card's right-click / long-press
+//            menu, which open a file picker.
+//   PHONE    long-press an idea -> "Paste image", which opens a field to
+//            paste INTO.
+//
+// That last one is not a stylistic choice. navigator.clipboard.read() needs
+// a secure context, and Vira on the phone is plain HTTP over the tailnet —
+// so a "read my clipboard" button is dead there, permanently. A real paste
+// EVENT carries the image regardless of protocol, because the user performed
+// it. So the phone path is always a field you paste into; the async
+// clipboard read is only ever an optimisation tried first on desktop.
+
+const IMG_ACCEPT = "image/png,image/jpeg,image/gif,image/webp,image/heic,image/*";
+
+// Every entry point funnels into here, so what counts as an image is
+// decided once. A DataTransfer from a drop, a ClipboardData from a paste
+// and a file input all expose the same shapes.
+function imageFilesFrom(src) {
+  const out = [];
+  if (!src) return out;
+  const push = (f) => {
+    if (f && (f.type || "").startsWith("image/")) out.push(f);
+  };
+  if (src.files && src.files.length) Array.from(src.files).forEach(push);
+  // Safari's clipboard exposes items but sometimes an empty files list.
+  if (!out.length && src.items) {
+    Array.from(src.items).forEach((i) => {
+      if (i.kind === "file") push(i.getAsFile());
+    });
+  }
+  return out;
+}
+
+function readDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ""));
+    r.onerror = () => reject(new Error("could not read that file"));
+    r.readAsDataURL(file);
+  });
+}
+
+// Upload straight onto an existing idea. Sequential on purpose: the store
+// is one locked JSON file, and three parallel writes to it buy nothing.
+// Each failure is reported by name — dropping four images and being told
+// only that "something failed" is the version of this that wastes time.
+async function attachImages(it, files) {
+  const rows = Array.from(files || []);
+  if (!rows.length) return;
+  let updated = null;
+  const failed = [];
+  toast(rows.length === 1 ? "Attaching image…"
+                          : `Attaching ${rows.length} images…`);
+  for (const f of rows) {
+    try {
+      updated = await post(`/api/ideas/${it.id}/images`,
+                           { name: f.name || "image", data: await readDataUrl(f) });
+    } catch (e) { failed.push(`${f.name || "image"}: ${errText(e)}`); }
+  }
+  if (updated) {
+    // Assign INTO the cached object rather than replacing it: `it` is the
+    // same object the row's closures captured, and swapping in a fresh one
+    // would leave those two copies to drift.
+    const cached = ideasCache.find((x) => x.id === it.id);
+    Object.assign(it, updated);
+    if (cached && cached !== it) Object.assign(cached, updated);
+    renderIdeas();
+  }
+  if (failed.length) toast("Could not attach — " + failed.join("; "));
+  else toast(rows.length === 1 ? "Image attached — Vira is reading it"
+                               : "Images attached — Vira is reading them");
+  return failed;
+}
+
+// A hidden file input, minted per use and thrown away. On iOS this is what
+// offers Photo Library / Take Photo / Choose File, which is the whole
+// mobile picker for free.
+function pickImages(onFiles) {
+  const inp = document.createElement("input");
+  inp.type = "file";
+  inp.accept = IMG_ACCEPT;
+  inp.multiple = true;
+  inp.style.display = "none";
+  document.body.appendChild(inp);
+  inp.addEventListener("change", () => {
+    const files = imageFilesFrom(inp);
+    inp.remove();
+    if (files.length) onFiles(files);
+  });
+  inp.click();
+}
+
+// The paste catcher. Opened anchored to whatever was clicked or pressed.
+// The field is a real textarea because that is what iOS offers its own
+// Paste bubble on; the paste event is claimed before the text lands, so
+// pasting a screenshot never leaves stray characters behind.
+function openPasteImage(x, y, onFiles) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop");
+  pop.appendChild(el("div", "ctx-head", "Paste an image"));
+  const ta = el("textarea", "hook-input");
+  ta.rows = 2;
+  ta.placeholder = "Press and hold here, then choose Paste";
+  pop.appendChild(ta);
+  pop.appendChild(el("div", "ctx-note",
+    "On a phone: long-press the field above and tap Paste. On a computer: "
+    + "Cmd+V (or Ctrl+V)."));
+  const row = el("div", "row-end");
+  const pick = el("button", "btn small", "Choose a file instead");
+  pick.addEventListener("click", () => { pop.remove(); pickImages(onFiles); });
+  const cancel = el("button", "btn small", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  row.appendChild(pick);
+  row.appendChild(cancel);
+  pop.appendChild(row);
+  ta.addEventListener("paste", (e) => {
+    const files = imageFilesFrom(e.clipboardData);
+    if (!files.length) return;      // plain text: let it paste, say nothing
+    e.preventDefault();
+    pop.remove();
+    onFiles(files);
+  });
+  placeCtxPop(pop, x, y);
+  ta.focus();
+}
+
+// Desktop can often skip the catcher entirely. clipboard.read() needs a
+// secure context and a permission the user may refuse, so EVERY failure
+// path falls through to the field rather than reporting an error — the
+// fallback always works, and it is not worth a message.
+async function pasteImageFor(x, y, onFiles) {
+  if (navigator.clipboard?.read) {
+    try {
+      for (const item of await navigator.clipboard.read()) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        onFiles([new File([blob], "pasted." + (type.split("/")[1] || "png"),
+                          { type })]);
+        return;
+      }
+    } catch { /* no permission, no secure context, or nothing to read */ }
+  }
+  openPasteImage(x, y, onFiles);
+}
+
+// Drag-and-drop for one node.
+//
+// BOTH events must be cancelled, and the drop one UNCONDITIONALLY once a
+// file drag has been accepted. Cancelling dragover alone only makes the
+// node a drop target; if the drop itself is left to its default the
+// browser NAVIGATES TO THE DROPPED FILE — so dropping a PDF on the
+// composer would replace Vira with a PDF viewer and lose every open
+// window. So the guard is: took the drag, therefore own the drop, and
+// then say why nothing happened.
+function dropImages(node, onFiles) {
+  const over = (on) => node.classList.toggle("img-dropping", on);
+  const hasFiles = (e) =>
+    Array.from(e.dataTransfer?.types || []).includes("Files");
+  node.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    over(true);
+  });
+  // Moving onto a child fires dragleave on the parent, so check we really
+  // left rather than flickering the outline on every internal boundary.
+  node.addEventListener("dragleave", (e) => {
+    if (!node.contains(e.relatedTarget)) over(false);
+  });
+  node.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.stopPropagation();      // a card's drop is not also the composer's
+    over(false);
+    const files = imageFilesFrom(e.dataTransfer);
+    if (!files.length) {
+      toast("That is not an image — Vira takes PNG, JPEG, GIF, WebP or HEIC");
+      return;
+    }
+    onFiles(files);
+  });
+  return node;
+}
+
+// THE CATCH-ALL, and it is the load-bearing half of the rule above.
+// Cancelling the drop on the drop ZONES only protects the zones. A file
+// released ten pixels low — on the hint paragraph, on the staging row, in
+// the gap between two cards — lands on the document, whose default is to
+// NAVIGATE TO THE FILE: every floating window, every streaming job
+// terminal and every staged screenshot gone, from a near-miss. This
+// feature is also what first teaches the owner to drag files at Vira at
+// all, so the near-miss is not hypothetical.
+//
+// `defaultPrevented` is what keeps this from stealing anything: these run
+// last (bubble phase, on document), so any real zone — dropImages above,
+// the Forge viewport in forge.js — has already claimed the event, and we
+// leave it alone. Everywhere else the drag is refused honestly (the
+// cursor reads "no") and the drop is swallowed.
+["dragover", "drop"].forEach((type) =>
+  document.addEventListener(type, (e) => {
+    if (e.defaultPrevented) return;
+    if (!Array.from(e.dataTransfer?.types || []).includes("Files")) return;
+    e.preventDefault();
+    if (type === "dragover") e.dataTransfer.dropEffect = "none";
+  }));
+
+// ----- images staged before the idea exists -----
+// Dropping a screenshot on the composer is the natural way to start "this,
+// but broken". There is no idea to attach it to yet, so the files wait here
+// and upload the instant Add mints one.
+let stagedImages = [];
+
+function renderStaged() {
+  const box = $("#idea-staged");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!stagedImages.length) return;
+  stagedImages.forEach((f, i) => {
+    const chip = el("div", "idea-img staged");
+    const img = document.createElement("img");
+    img.src = URL.createObjectURL(f);
+    // Revoke once painted: an object URL held for the session is a leak,
+    // and the browser has the bytes decoded by load time.
+    img.addEventListener("load", () => URL.revokeObjectURL(img.src));
+    img.alt = f.name || "staged image";
+    chip.appendChild(img);
+    const rm = el("button", "idea-img-del", "×");
+    rm.title = "Remove";
+    rm.addEventListener("click", () => {
+      stagedImages.splice(i, 1);
+      renderStaged();
+    });
+    chip.appendChild(rm);
+    box.appendChild(chip);
+  });
+  const note = el("span", "idea-staged-note",
+    stagedImages.length === 1
+      ? "1 image — attaches when you add the idea"
+      : `${stagedImages.length} images — attach when you add the idea`);
+  box.appendChild(note);
+}
+
+function stageImages(files) {
+  stagedImages = stagedImages.concat(Array.from(files || []));
+  renderStaged();
+  const inp = $("#idea-input");
+  if (inp && !inp.value.trim()) inp.focus();
+}
+
+// ----- the thumbnail strip on a card -----
+
+function ideaImageStrip(it) {
+  const rows = it.images || [];
+  if (!rows.length) return null;
+  const box = el("div", "idea-imgs");
+  rows.forEach((im) => {
+    const chip = el("div", "idea-img");
+    if (im.missing) {
+      // Say what happened. A silently absent thumbnail reads as a rendering
+      // bug; a row that names the gap reads as the fact it is.
+      chip.classList.add("gone");
+      chip.appendChild(el("span", "idea-img-gone", "file missing"));
+    } else {
+      const img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = `/api/ideas/${it.id}/images/${im.id}/thumb`;
+      img.alt = im.name || "attached image";
+      chip.appendChild(img);
+      chip.title = im.text
+        ? (im.name || "image") + " — " + im.text.replace(/\s+/g, " ").slice(0, 200)
+        : (im.name || "image");
+      cardAction(chip, () => openImageLightbox(it, im));
+    }
+    const rm = el("button", "idea-img-del", "×");
+    rm.title = "Remove this image";
+    rm.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (!confirm("Remove this image from the idea?")) return;
+      try {
+        const u = await del(`/api/ideas/${it.id}/images/${im.id}`);
+        Object.assign(it, u);
+        renderIdeas();
+      } catch (err) { alert("Remove failed: " + err.message); }
+    });
+    chip.appendChild(rm);
+    box.appendChild(chip);
+  });
+  return box;
+}
+
+// A plain overlay rather than the media viewer: that one addresses the
+// media index by attachment id and knows nothing about these files. Click
+// anywhere or press Escape to dismiss.
+function openImageLightbox(it, im) {
+  const back = el("div", "img-lightbox");
+  const fig = el("figure", "img-lightbox-fig");
+  const img = document.createElement("img");
+  img.src = `/api/ideas/${it.id}/images/${im.id}`;
+  img.alt = im.name || "attached image";
+  fig.appendChild(img);
+  const cap = el("figcaption", "img-lightbox-cap", im.name || "image");
+  if (im.text) {
+    const what = im.text_source === "ocr" ? "Vira read" : "Vira sees";
+    cap.appendChild(el("div", "img-lightbox-read",
+                       what + ": " + im.text.replace(/\s+/g, " ").slice(0, 400)));
+  }
+  fig.appendChild(cap);
+  back.appendChild(fig);
+  const close = () => { back.remove(); document.removeEventListener("keydown", key); };
+  const key = (e) => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+  back.addEventListener("click", close);
+  document.addEventListener("keydown", key);
+  document.body.appendChild(back);
+}
+
+// The menu rows both surfaces share — desktop right-click and phone
+// long-press offer exactly the same things, composed once so they cannot
+// drift apart.
+function ideaImageMenuItems(it, x, y) {
+  return [
+    { label: "Paste image", hint: "from your clipboard",
+      run: () => pasteImageFor(x, y, (files) => attachImages(it, files)) },
+    { label: "Choose image…", hint: "photos or files",
+      run: () => pickImages((files) => attachImages(it, files)) },
+  ];
+}
+
 function initIdeas() {
   const inp = $("#idea-input");
   const add = $("#idea-add");
@@ -5338,19 +5687,61 @@ function initIdeas() {
   }
 
   if (!inp || !add) return;
+
+  // Attaching to a NEW idea: drop or paste onto the composer stages the
+  // files, and Add uploads them once the idea exists.
+  const bar = inp.closest(".runbar");
+  if (bar && !bar.dataset.imgWired) {
+    bar.dataset.imgWired = "1";
+    dropImages(bar, stageImages);
+    inp.addEventListener("paste", (e) => {
+      const files = imageFilesFrom(e.clipboardData);
+      if (!files.length) return;    // ordinary text paste, untouched
+      e.preventDefault();
+      stageImages(files);
+    });
+    $("#idea-add-image")?.addEventListener("click", (e) => {
+      // Deliberately the CHOOSER, never the silent clipboard read. This is
+      // the discoverable door, and reading the clipboard behind it would
+      // mean clicking "Image" to browse for a mockup and silently staging
+      // whatever photo happened to be copied an hour ago — with no way from
+      // this control to the file picker at all. Auto-read belongs only on
+      // the menu row that says "Paste image".
+      const r = e.currentTarget.getBoundingClientRect();
+      openPasteImage(r.left, r.bottom + 6, stageImages);
+    });
+  }
+
   const submit = async () => {
     const text = inp.value.trim();
-    if (!text) return;
+    // An image with no words is still a thought — "this, but broken" — so a
+    // staged screenshot alone can mint an idea. It gets a placeholder line
+    // because every sort, search and dispatch prompt reads `text`, and an
+    // idea with none of it would be a blank row.
+    if (!text && !stagedImages.length) return;
     add.disabled = true;
     const project = ($("#idea-add-project")?.value) || undefined;
+    const body = { text: text || `(screenshot — ${stagedImages[0].name || "image"})` };
+    if (project && project !== ADD_PROJECT) body.project = project;
     try {
-      const it = await post("/api/ideas",
-        project && project !== ADD_PROJECT ? { text, project } : { text });
+      const it = await post("/api/ideas", body);
       ideasCache.unshift(it);
       inp.value = "";
       if (!projectsCache.includes(it.project)) projectsCache.push(it.project);
       renderProjectControls();
       renderIdeas();
+      if (stagedImages.length) {
+        // Clear only what actually landed. A staged file usually came from
+        // a drag or a paste, so it exists nowhere the owner can re-pick it
+        // — dropping it on a failed upload means retaking the screenshot.
+        const files = stagedImages;
+        const failed = await attachImages(it, files);
+        const badNames = new Set(
+          (failed || []).map((m) => m.split(":")[0]));
+        stagedImages = failed && failed.length
+          ? files.filter((f) => badNames.has(f.name || "image")) : [];
+        renderStaged();
+      }
       // "You already had that idea" — asked the moment it is worth asking.
       nudgeDuplicates(it).catch(() => {});
     } catch (e) { alert("Add failed: " + e.message); }
@@ -5515,12 +5906,44 @@ function ideaFoldBlock(rows) {
     ""].join("\n");
 }
 
+// Screenshots and photos the owner attached to the idea. The agent is
+// handed ABSOLUTE PATHS and told to open them with its own file-reading
+// tool — that is the highest-fidelity path there is, because the model
+// sees the pixels rather than a description of them, and it needs no
+// vision backend on this machine.
+//
+// Vira's own read of each image (OCR, or a local caption) rides along as a
+// one-line hint. It is deliberately a HINT and not a substitute: it says
+// what the picture is about so the agent can prioritise which to open
+// first, and it is the only thing that survives if the file has moved.
+// Mirrors server/ideaimages.py prompt_block — same shape either way.
+function ideaImageBlock(it) {
+  const rows = (it.images || []).filter((im) => im && !im.missing && im.path);
+  if (!rows.length) return "";
+  const out = ["",
+    `The owner attached ${rows.length} image${rows.length > 1 ? "s" : ""}`
+    + " to this idea. They are part of the ask, not decoration —",
+    "open each one with your file-reading tool before you start:",
+    ""];
+  rows.forEach((im, i) => {
+    out.push(`${i + 1}. ${im.path}   (${im.name || "image"})`);
+    if (im.text) {
+      const label = im.text_source === "ocr"
+        ? "text Vira read off it" : "Vira's description of it";
+      out.push(`   ${label}: ${im.text.replace(/\s+/g, " ").slice(0, 300)}`);
+    }
+  });
+  out.push("");
+  return out.join("\n");
+}
+
 // The task itself — identical in every prompt shape that carries an idea.
 function ideaTaskLines(it, extra, fold) {
   return [
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
+    ideaImageBlock(it),
     ideaFoldBlock(fold),
     ideaExtraBlock(extra),
   ];
@@ -14671,6 +15094,8 @@ document.addEventListener("contextmenu", (e) => {
   const idea = ideaBox && ideasCache.find((x) => x.id === ideaBox.dataset.ideaId);
   if (idea) {
     items.push({ label: "Edit idea", run: () => editIdea(ideaBox, idea) });
+    // Same two rows the phone's long-press menu carries, composed once.
+    ideaImageMenuItems(idea, e.clientX, e.clientY).forEach((r) => items.push(r));
     if (idea.status === "open" || idea.status === "on-hold") {
       // The card drops its Plan button once a plan exists; this is where
       // re-planning stays reachable, saying plainly that it makes another.

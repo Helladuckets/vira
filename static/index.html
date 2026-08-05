@@ -154,8 +154,17 @@
                placeholder="Add an idea or on-hold item…" autocomplete="off">
         <select id="idea-add-project" class="idea-sort"
                 title="Project this idea belongs to"></select>
+        <!-- The discoverable door to attaching a screenshot. Drag-and-drop
+             and paste both work on the bar itself, but neither announces
+             itself, and on a phone neither exists — so the button is what
+             makes the workflow reachable rather than merely present. -->
+        <button class="btn" id="idea-add-image" type="button"
+                title="Attach a screenshot or photo to this idea">Image</button>
         <button class="btn primary" id="idea-add">Add</button>
       </div>
+      <!-- Images dropped or pasted before the idea exists wait here; they
+           upload the moment Add mints it. -->
+      <div id="idea-staged" class="idea-staged"></div>
       <div id="idea-dupnudge"></div>
       <div class="ideas-sortbar">
         <div class="idea-searchwrap">

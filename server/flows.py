@@ -634,7 +634,7 @@ def flow_for_idea(idea_id, template=DEFAULT_IDEA_TEMPLATE):
     idea are two experiments, and silently reusing the first would discard
     whatever he had changed.
     """
-    from . import ideas
+    from . import ideaimages, ideas
     idea = next((i for i in ideas.list_items() if i["id"] == idea_id), None)
     if not idea:
         raise KeyError(idea_id)
@@ -642,7 +642,12 @@ def flow_for_idea(idea_id, template=DEFAULT_IDEA_TEMPLATE):
     if not starter:
         raise ValueError(f"unknown starter {template!r}")
     text = str(idea.get("text") or "").strip()
+    # The NAME is the owner's words alone; the run INPUT also carries the
+    # paths of any screenshots attached to the idea, or a Flow built from
+    # "this, but broken" would reach the graph with the evidence stripped
+    # off it.
     name = (text[:60] + ("…" if len(text) > 60 else "")) or "Idea"
+    text = (text + ideaimages.prompt_block(idea)).strip()
     rec = circuits.save_circuit({
         "id": None,
         "name": name,

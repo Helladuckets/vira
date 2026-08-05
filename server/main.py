@@ -39,7 +39,8 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                reading,
                readinglist,
                readingroom,
-               fixtures, groupchat, ideas, ideatags, imessage, jobboards,
+               fixtures, groupchat, ideaimages, ideas, ideatags, imessage,
+               jobboards,
                jobfiles,
                joblog,
                journal,
@@ -330,11 +331,22 @@ def api_ideas():
     truncation a paged search endpoint invites."""
     with admission.cpu("ideas.list"):
         items = ideas.list_items()
-        return {"items": ideatags.annotate(items),
+        return {"items": _ideas_out(ideatags.annotate(items)),
                 "projects": ideas.list_projects(),
                 "project_paths": ideas.project_paths(),
                 "vocab": ideatags.vocabulary(items),
                 "tag_status": ideatags.status(items)}
+
+
+def _ideas_out(rows):
+    """Fill each idea's image manifest in with the on-disk path the browser
+    needs to compose a dispatch prompt. Done here rather than inside
+    ideatags.annotate: that is the tag layer, and resolving filesystem paths
+    is not its job."""
+    for r in rows:
+        if r.get("images"):
+            r["images"] = ideaimages.images_of(r)
+    return rows
 
 
 class IdeaAddReq(BaseModel):
@@ -372,7 +384,89 @@ def api_ideas_update(idea_id: str, req: IdeaUpdateReq):
                           tags_add=req.tags_add, tags_drop=req.tags_drop)
     except KeyError:
         raise HTTPException(404, "unknown idea")
-    return ideatags.annotate([it])[0]
+    return _ideas_out(ideatags.annotate([it]))[0]
+
+
+# ----- images attached to an idea (server/ideaimages.py) -----
+# A screenshot of the bug, a photo of the thing, a mockup to build from.
+# The bytes land under data/idea-images/; the manifest rides the idea, and
+# every dispatch prompt carries the absolute path so the agent opens the
+# real pixels rather than a description of them.
+
+class IdeaImageReq(BaseModel):
+    name: str | None = ""
+    data: str = ""            # base64, bare or as a data: URL
+
+
+@app.post("/api/ideas/{idea_id}/images")
+def api_idea_image_add(idea_id: str, req: IdeaImageReq):
+    try:
+        ideaimages.attach(idea_id, req.name or "", req.data or "")
+    except KeyError:
+        raise HTTPException(404, "unknown idea")
+    except ValueError as e:
+        # The message is written for the owner and rendered verbatim.
+        raise HTTPException(400, str(e))
+    except OSError as e:
+        raise HTTPException(500, f"could not store that image: {e}")
+    it = next((i for i in ideas.list_items() if i["id"] == idea_id), None)
+    return _ideas_out(ideatags.annotate([it]))[0]
+
+
+@app.delete("/api/ideas/{idea_id}/images/{img_id}")
+def api_idea_image_remove(idea_id: str, img_id: str):
+    try:
+        ideaimages.detach(idea_id, img_id)
+    except KeyError:
+        raise HTTPException(404, "unknown idea or image")
+    it = next((i for i in ideas.list_items() if i["id"] == idea_id), None)
+    return _ideas_out(ideatags.annotate([it]))[0]
+
+
+@app.post("/api/ideas/{idea_id}/images/{img_id}/reread")
+def api_idea_image_reread(idea_id: str, img_id: str):
+    """Read the image again — for one attached while Ollama was down, or
+    whose OCR came back empty. Synchronous: the owner asked for it and is
+    waiting on the answer."""
+    try:
+        with admission.cpu("ideas.image.read"):
+            ideaimages.reread(idea_id, img_id)
+    except KeyError:
+        raise HTTPException(404, "unknown idea or image")
+    it = next((i for i in ideas.list_items() if i["id"] == idea_id), None)
+    return _ideas_out(ideatags.annotate([it]))[0]
+
+
+# nosniff on both readers: these are owner-uploaded bytes served back to a
+# browser, and the type is re-sniffed off the file rather than trusted from
+# the manifest.
+@app.get("/api/ideas/{idea_id}/images/{img_id}/thumb")
+def api_idea_image_thumb(idea_id: str, img_id: str):
+    # Gated: a cache MISS decodes and resizes a full-size screenshot with
+    # Pillow, on a request thread. A Queue holding several cards of fresh
+    # 6K screenshots issues that many uncached thumb requests on first
+    # paint at once — the GIL-starvation shape admission.py exists for, and
+    # it would present as the whole server going dark with the gate idle.
+    # A cache hit costs a stat and leaves the slot immediately.
+    with admission.cpu("ideas.image.thumb"):
+        p = ideaimages.thumbnail(idea_id, img_id)
+    if p:
+        return FileResponse(p, media_type="image/jpeg",
+                            headers={"Cache-Control": "public, max-age=86400",
+                                     "X-Content-Type-Options": "nosniff"})
+    # No thumbnail is not an error — it means this machine could not render
+    # one (HEIC without a plugin, no sips). Serve the original.
+    return api_idea_image_file(idea_id, img_id)
+
+
+@app.get("/api/ideas/{idea_id}/images/{img_id}")
+def api_idea_image_file(idea_id: str, img_id: str):
+    p = ideaimages.file_path(idea_id, img_id)
+    if not p:
+        raise HTTPException(404, "unknown image")
+    return FileResponse(p, media_type=ideaimages.mime_of(p),
+                        headers={"Cache-Control": "public, max-age=86400",
+                                 "X-Content-Type-Options": "nosniff"})
 
 
 # ----- the derived layer: tags, similarity, and the fold-in question -----
@@ -468,9 +562,14 @@ def api_ideas_project_path(req: ProjectPathReq):
 @app.delete("/api/ideas/{idea_id}")
 def api_ideas_remove(idea_id: str):
     try:
-        return ideas.remove(idea_id)
+        out = ideas.remove(idea_id)
     except KeyError:
         raise HTTPException(404, "unknown idea")
+    # Its attachments go with it. Purged here rather than inside
+    # ideas.remove: ideas.py owns the store and must not import the image
+    # module, so the dependency runs one way only.
+    ideaimages.purge(idea_id)
+    return out
 
 
 # ----- saved plans (Plan-mode output: vault note + in-app viewer) -----
@@ -3286,7 +3385,12 @@ def api_idea_approve(idea_id: str, req: IdeaApproveReq):
     if req.build:
         try:
             run = circuits.start_run(
-                "plan-build-judge", item["text"], cwd=req.cwd,
+                # Attached screenshots ride along, or approving-and-building
+                # an idea would hand the circuit the words without the
+                # evidence the owner attached to them.
+                "plan-build-judge",
+                (item["text"] + ideaimages.prompt_block(item)).strip(),
+                cwd=req.cwd,
                 notify=True, source=f"idea:{idea_id}", idea_id=idea_id)
             ideas.stamp_note(idea_id,
                              f"approved and building (run {run['id'][:10]})")
