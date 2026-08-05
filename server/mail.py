@@ -168,7 +168,7 @@ def create_draft(account, to, subject, body, in_reply_to=None, references=None):
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = ((references + " ") if references else "") + in_reply_to
     msg.set_content(body)
-    con = imaplib.IMAP4_SSL(acct["host"])
+    con = imaplib.IMAP4_SSL(acct["host"], timeout=30)
     try:
         con.login(addr, password)
         folder = _drafts_folder(con)
@@ -232,7 +232,9 @@ class MailWatcher:
         if not password:
             self.status[addr] = f"no password in keychain (service {keychain_service()})"
             return
-        con = imaplib.IMAP4_SSL(host)
+        # timeout, not default-None: a stalled read otherwise wedges the
+        # watcher thread forever (the textindex Indexer incident)
+        con = imaplib.IMAP4_SSL(host, timeout=30)
         try:
             con.login(addr, password)
             con.select("INBOX", readonly=True)

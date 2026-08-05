@@ -465,7 +465,10 @@ function feedCard(it) {
     // a group message opens the GROUP as the subject (the sender's own
     // profile stays one right-click away); items predating chat_id — and
     // WhatsApp groups, which have no chat.db row — keep opening the person
-    if (it.group && it.chat_id && it.channel === "imessage")
+    // (an email opens the EMAIL: read it, reply to it — profile stays one
+    // right-click away, and on a button in the panel head)
+    if (it.channel === "email") openEmail(it);
+    else if (it.group && it.chat_id && it.channel === "imessage")
       openGroupChat({ chat: it.chat_id, name: it.group_name });
     else if (it.person_id) openPerson(it.person_id);
   });
@@ -3723,6 +3726,201 @@ const GP_RELATION = {
   subset: "a smaller circle of this group",
   overlap: "overlapping circle",
 };
+
+// ---------- email panel — read + reply (feed email cards) ----------
+
+function closeEmailPanel() { exitFocus($("#email-panel")); }
+$("#email-back").addEventListener("click", closeEmailPanel);
+
+async function openEmail(it) {
+  const panel = $("#email-panel");
+  panel.classList.add("open");
+  enterFocus(panel, () => panel.classList.remove("open"));
+  panel.dataset.pid = it.person_id || "";
+  panel.dataset.pname = it.person_name || it.handle || "";
+  panel.dataset.esubj = it.subject || "";
+  const body = $("#email-body");
+  body.innerHTML = "";
+  body.appendChild(el("div", "spin", "Opening the email…"));
+  $("#email-title").textContent = it.subject || "Email";
+  const prof = $("#email-profile");
+  prof.hidden = !it.person_id;
+  prof.onclick = it.person_id
+    ? () => { closeEmailPanel(); openPerson(it.person_id); } : null;
+  let m;
+  try {
+    const q = new URLSearchParams({ account: it.account || "" });
+    if (it.rowid) q.set("rowid", it.rowid);
+    if (it.message_id) q.set("mid", it.message_id);
+    m = await api("/api/mail/message?" + q.toString());
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty", "Couldn't load the email: " + e.message));
+    return;
+  }
+  renderEmail(it, m);
+}
+
+function renderEmail(it, m) {
+  const body = $("#email-body");
+  body.innerHTML = "";
+  $("#email-title").textContent = m.subject || "Email";
+  const wrap = el("div", "em-wrap");
+
+  wrap.appendChild(el("div", "em-subject", m.subject || "(no subject)"));
+  const meta = el("div", "em-meta");
+  const who = el("div", "em-from");
+  who.appendChild(el("span", "em-from-name",
+    m.from_name || m.from_addr || "unknown sender"));
+  if (m.from_name && m.from_addr)
+    who.appendChild(el("span", "em-from-addr", " <" + m.from_addr + ">"));
+  meta.appendChild(who);
+  const bits = [];
+  if (m.when) bits.push(fmtTime(m.when));
+  if (m.account) bits.push("to " + m.account);
+  if ((m.cc || []).length) bits.push("cc " + m.cc.join(", "));
+  meta.appendChild(el("div", "em-when", bits.join(" · ")));
+  wrap.appendChild(meta);
+
+  // the body: readable text first; marketing mail keeps an Original view
+  const bodyBox = el("div", "em-bodybox");
+  const textView = el("div", "em-text", m.text || "(no readable text)");
+  bodyBox.appendChild(textView);
+  let frame = null;
+  if (m.html) {
+    const seg = el("div", "seg mini em-seg");
+    const bText = el("button", "seg-btn on", "Text");
+    const bOrig = el("button", "seg-btn", "Original");
+    seg.appendChild(bText);
+    seg.appendChild(bOrig);
+    wrap.insertBefore(seg, bodyBox);
+    bText.addEventListener("click", () => {
+      bText.classList.add("on"); bOrig.classList.remove("on");
+      textView.style.display = ""; if (frame) frame.style.display = "none";
+    });
+    bOrig.addEventListener("click", () => {
+      bOrig.classList.add("on"); bText.classList.remove("on");
+      textView.style.display = "none";
+      if (!frame) {
+        // sandbox with NO tokens: scripts, forms, and top-navigation are
+        // all blocked — the mail's own layout renders, nothing runs
+        frame = document.createElement("iframe");
+        frame.className = "em-frame";
+        frame.setAttribute("sandbox", "");
+        frame.srcdoc = m.html;
+        bodyBox.appendChild(frame);
+      }
+      frame.style.display = "";
+    });
+  }
+  wrap.appendChild(bodyBox);
+
+  // reply — a real email reply, threaded onto this message
+  const reply = el("div", "em-reply");
+  const first = (m.from_name || m.from_addr || "").split(" ")[0];
+  reply.appendChild(el("div", "em-reply-label",
+    "Reply to " + (m.reply_to || m.from_addr || first || "sender")));
+  const ta = document.createElement("textarea");
+  ta.className = "em-reply-text";
+  ta.placeholder = "Write your reply…";
+  reply.appendChild(ta);
+  const bar = el("div", "em-reply-bar");
+  const status = el("div", "em-reply-status");
+
+  if (it.person_id) {
+    const draftAi = el("button", "btn small", "Draft with Vira");
+    draftAi.addEventListener("click", async () => {
+      draftAi.disabled = true;
+      draftAi.textContent = "Drafting…";
+      try {
+        const res = await post("/api/suggest",
+          { person_id: it.person_id, channel: "email" });
+        const s = (res.suggestions || [])[0];
+        if (s) { ta.value = s.text; ta.focus(); }
+        else status.textContent = "No draft came back.";
+      } catch (e) {
+        status.textContent = "Draft failed: " + e.message;
+      }
+      draftAi.disabled = false;
+      draftAi.textContent = "Draft with Vira";
+    });
+    bar.appendChild(draftAi);
+  }
+
+  const saveDraft = el("button", "btn small", "Save as draft");
+  saveDraft.addEventListener("click", async () => {
+    if (!ta.value.trim()) { status.textContent = "Nothing to save yet."; return; }
+    saveDraft.disabled = true;
+    saveDraft.textContent = "Saving…";
+    try {
+      const r = await post("/api/mail/draft", {
+        to: m.reply_to || m.from_addr,
+        subject: reSubject(m.subject),
+        body: ta.value,
+        account: m.account,
+        in_reply_to: m.message_id,
+        references: m.references,
+      });
+      toast("Draft saved in " + r.account);
+      confettiAt(saveDraft);
+    } catch (e) {
+      status.textContent = "Draft failed: " + e.message;
+    }
+    saveDraft.disabled = false;
+    saveDraft.textContent = "Save as draft";
+  });
+  bar.appendChild(saveDraft);
+
+  const send = el("button", "btn small primary", "Send reply");
+  send.addEventListener("click", async () => {
+    if (!ta.value.trim()) { status.textContent = "Write a reply first."; return; }
+    send.disabled = true;
+    send.textContent = "Sending…";
+    status.textContent = "";
+    try {
+      const r = await post("/api/mail/reply", {
+        account: m.account,
+        text: ta.value,
+        to: m.reply_to || m.from_addr,
+        subject: m.subject,
+        message_id: m.message_id,
+        references: m.references,
+        graph_id: m.graph_id,
+      });
+      if (r.sent) {
+        send.textContent = "Sent";
+        toast("Reply sent" + (r.to ? " to " + r.to : ""));
+        confettiAt(send);
+        ta.value = "";
+        setTimeout(() => { send.textContent = "Send reply"; send.disabled = false; }, 1500);
+      } else {
+        // the honest degrade: M365 without Mail.Send consent lands the
+        // reply as an Outlook draft, and the note names the one-time fix
+        send.textContent = "Send reply";
+        send.disabled = false;
+        status.textContent = r.note || "Saved as a draft instead.";
+        toast("Reply saved as an Outlook draft — see the note below.");
+      }
+    } catch (e) {
+      send.textContent = "Send reply";
+      send.disabled = false;
+      status.textContent = "Send failed: " + e.message;
+    }
+  });
+  bar.appendChild(send);
+
+  reply.appendChild(bar);
+  reply.appendChild(status);
+  wrap.appendChild(reply);
+  body.appendChild(wrap);
+}
+
+function reSubject(s) {
+  s = (s || "").trim();
+  return /^re:/i.test(s) ? s : "Re: " + s;
+}
+
+// ---------- group panel ----------
 
 function closeGroupPanel() { exitFocus($("#group-panel")); }
 $("#group-back").addEventListener("click", closeGroupPanel);
@@ -13936,6 +14134,11 @@ function ctxDescribe(target) {
   } else if (target.closest("#group-panel")) {
     const gp = target.closest("#group-panel");
     ctx.component = gp.dataset.gname ? "Group: " + gp.dataset.gname : "Group";
+  } else if (target.closest("#email-panel")) {
+    const ep = target.closest("#email-panel");
+    ctx.component = ep.dataset.esubj ? "Email: " + ep.dataset.esubj : "Email";
+    if (ep.dataset.pid)
+      ctx.person = { pid: ep.dataset.pid, name: ep.dataset.pname };
   } else if (target.closest(".rm-item")?.dataset.itemId) {
     // A reading-room card is the most specific thing under the cursor and
     // it carries everything the menu needs: a source URL, a vault path, a
@@ -19211,7 +19414,7 @@ function initDesktop() {
   buildPalette();
   // the person and job panels behave like windows too:
   // drag + focus-raise + edge resize + content zoom
-  ["#person-panel", "#group-panel", "#job-panel"].forEach((sel) => {
+  ["#person-panel", "#group-panel", "#email-panel", "#job-panel"].forEach((sel) => {
     const panel = document.querySelector(sel);
     const head = panel.querySelector(".panel-head");
     makeDraggable(panel, head);

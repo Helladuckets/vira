@@ -264,7 +264,10 @@ def backfill_imap(acct, limit=400, log=print):
     n = 0
     try:
         wm = int(get_state(con, key, 0) or 0)
-        imap = imaplib.IMAP4_SSL(host)
+        # timeout is load-bearing: imaplib's default is NO timeout, and
+        # one stalled read wedged the Indexer thread for a week (the
+        # gmail watermark sat at 2021 while every tick hung here).
+        imap = imaplib.IMAP4_SSL(host, timeout=60)
         try:
             imap.login(addr, pw)
             box = channels.imap_special_folder(imap, "\\All", "INBOX")

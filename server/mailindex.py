@@ -312,7 +312,7 @@ def _run_imap(acct, mode, since, limit, log):
     wm = mediaindex.get_state(idx, key)
     since_uid = int(wm) if (mode == "incremental" and wm) else None
 
-    con = imaplib.IMAP4_SSL(host)
+    con = imaplib.IMAP4_SSL(host, timeout=60)
     n = 0
     max_uid = int(wm) if wm else 0
     try:

@@ -47,6 +47,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                lessonwatch,
                loopwatch,
                mail,
+               mailread,
                media,
                mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
                orphanwork,
@@ -1849,6 +1850,47 @@ def api_mail_draft(req: DraftReq):
         return mail.create_draft(req.account, req.to, req.subject, req.body,
                                  req.in_reply_to, req.references)
     except Exception as e:  # noqa: BLE001 — surface IMAP/Graph errors
+        raise HTTPException(502, str(e)[:500])
+
+
+@app.get("/api/mail/message")
+def api_mail_message(account: str, rowid: str = "", mid: str = ""):
+    """The full email behind a feed card — body, recipients, threading
+    ids — so clicking one reads like opening the mail, not the caption."""
+    try:
+        return mailread.get_message(account, rowid or None, mid or None)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    except Exception as e:  # noqa: BLE001 — surface IMAP/Graph errors
+        raise HTTPException(502, str(e)[:500])
+
+
+class MailReplyReq(BaseModel):
+    account: str
+    text: str
+    to: str | None = None
+    subject: str | None = None
+    message_id: str | None = None
+    references: str | None = None
+    graph_id: str | None = None
+
+
+@app.post("/api/mail/reply")
+def api_mail_reply(req: MailReplyReq):
+    """Send a real threaded email reply. Gmail goes out over SMTP now;
+    M365 sends via Graph once Mail.Send is consented, and until then the
+    reply lands as an Outlook draft with the response saying so."""
+    if os.environ.get("VIRA_PASSIVE"):
+        raise HTTPException(403, "passive test instance — outbound email "
+                                 "is blocked here")
+    try:
+        return mailread.send_reply(
+            req.account, req.text, to=req.to, subject=req.subject,
+            message_id=req.message_id, references=req.references,
+            graph_id=req.graph_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:  # noqa: BLE001 — surface send failures
         raise HTTPException(502, str(e)[:500])
 
 
