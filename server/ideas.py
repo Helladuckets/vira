@@ -13,7 +13,12 @@ Item shape:
   { "id": "idea_<hex>", "text": str,
     "status": proposed|open|on-hold|deferred|done|dropped,
     "project": str, "source": str, "note": str,
-    "created": ISO8601, "updated": ISO8601 }
+    "created": ISO8601, "updated": ISO8601,
+    "images": [ {id, name, mime, bytes, added, text, text_source} ] }
+
+`images` is the manifest for screenshots and photos the owner attached; the
+bytes themselves live on disk under data/idea-images/ and belong to
+server/ideaimages.py (see "attached images" below).
 
 Every idea belongs to a PROJECT so the backlog can serve all of the owner's
 projects, not just Vira itself. The store keeps a curated `projects` list
@@ -253,6 +258,68 @@ def stamp_note(idea_id, text, status=None, append=False):
     if status is not None:
         kw["status"] = status
     return update(idea_id, **kw)
+
+
+# ---------- attached images ----------
+# The bytes live on disk (server/ideaimages.py owns them); the MANIFEST
+# lives here, on the idea record, because an attachment is the owner's own
+# evidence and not derived — a sidecar keyed by content hash is the right
+# home for tags and vectors, which any pass may rebuild, and the wrong home
+# for the one screenshot that says what the bug actually looks like.
+#
+# The mutators live in ideas.py rather than ideaimages.py so every write to
+# this store still goes through the one lock that guards it. The dependency
+# therefore runs one way only: ideaimages imports ideas, never the reverse.
+
+def _find(s, idea_id):
+    for it in s["items"]:
+        if it["id"] == idea_id:
+            return it
+    raise KeyError(idea_id)
+
+
+def attach_image(idea_id, meta):
+    """Append one image's manifest entry. `meta` is composed by
+    ideaimages.attach — the file is already on disk when this runs."""
+    with _lock, locked(STORE):
+        s = _load()
+        it = _find(s, idea_id)
+        it.setdefault("images", []).append(dict(meta))
+        it["updated"] = _now()
+        _save(s)
+        return dict(it)
+
+
+def detach_image(idea_id, img_id):
+    with _lock, locked(STORE):
+        s = _load()
+        it = _find(s, idea_id)
+        imgs = it.get("images") or []
+        keep = [im for im in imgs if im.get("id") != img_id]
+        if len(keep) == len(imgs):
+            raise KeyError(img_id)
+        it["images"] = keep
+        it["updated"] = _now()
+        _save(s)
+        return dict(it)
+
+
+def update_image(idea_id, img_id, **fields):
+    """Stamp what Vira read off an image (text / text_source).
+
+    Deliberately does NOT touch `updated`: the read is Vira's own background
+    pass, not the owner touching the idea, and letting it bump the stamp
+    would silently reorder the Last-updated sort minutes after an upload."""
+    with _lock, locked(STORE):
+        s = _load()
+        it = _find(s, idea_id)
+        for im in (it.get("images") or []):
+            if im.get("id") == img_id:
+                im.update({k: v for k, v in fields.items()
+                           if k in ("text", "text_source", "name")})
+                _save(s)
+                return dict(im)
+    raise KeyError(img_id)
 
 
 def remove(idea_id):

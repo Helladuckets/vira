@@ -134,6 +134,30 @@ def _hash(text):
     return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:12]
 
 
+def item_text(it):
+    """An idea's text PLUS whatever Vira read off its attached images.
+
+    Everything in this module that asks WHAT AN IDEA IS ABOUT reads through
+    here — tokens, the embedding, the tag prompt, and the content hash that
+    decides when to re-tag. An idea can be a screenshot and one line ("this
+    is broken"); on its own words that idea is untaggable and matches
+    nothing, while with the OCR folded in it tags, embeds and answers the
+    duplicate nudge like any other.
+
+    Deliberately NOT used where the text is DISPLAYED (`a_text`/`b_text` on
+    the similarity rows): those are the owner's own words on screen, and
+    appending a wall of OCR to a label would be wrong.
+
+    Because the content hash reads through here too, attaching an image — or
+    Vira finishing its read of one — re-tags that idea on the next pass,
+    exactly as editing its text does."""
+    base = (it.get("text") or "").strip()
+    extra = "\n".join(
+        (im.get("text") or "").strip() for im in (it.get("images") or []))
+    extra = extra.strip()
+    return f"{base}\n{extra}".strip() if extra else base
+
+
 # ---------- store ----------
 
 def _read():
@@ -293,7 +317,7 @@ def _unpack(b):
 def _embed_text(it):
     """What gets embedded: the idea plus its project, so two ideas about
     the same subject in different projects sit slightly apart."""
-    return f"{it.get('project') or ''}: {it.get('text') or ''}"[:2000]
+    return f"{it.get('project') or ''}: {item_text(it)}"[:2000]
 
 
 def embed_pending(items=None, limit=200, timeout=None):
@@ -397,7 +421,7 @@ def _cos_rel(cos, base, top):
 # ---------- similarity ----------
 
 def _tokens(it):
-    words = re.findall(r"[a-z0-9]{3,}", (it.get("text") or "").lower())
+    words = re.findall(r"[a-z0-9]{3,}", item_text(it).lower())
     return {w for w in words if w not in _STOP}
 
 
@@ -676,7 +700,7 @@ def _tag_prompt(batch, vocab):
     shape = ", ".join(f'"{a["id"]}": []' for a in AXES)
     items = "\n\n".join(
         f"- id: {it['id']}\n  project: {it.get('project') or 'Vira'}\n"
-        f"  idea: {(it.get('text') or '')[:900]}" for it in batch)
+        f"  idea: {item_text(it)[:900]}" for it in batch)
     return TAG_PROMPT.format(axes=axes, vocab=_vocab_block(vocab),
                              items=items, shape=shape)
 
@@ -688,7 +712,7 @@ def _pending(items, s):
     out = []
     for it in items:
         e = s["entries"].get(it["id"]) or {}
-        if e.get("hash") != _hash(it.get("text") or ""):
+        if e.get("hash") != _hash(item_text(it)):
             out.append(it)
     return out
 
@@ -726,7 +750,7 @@ def tag_pending(items=None, batches=1):
                 it = by_id[row["id"]]
                 e = st["entries"].setdefault(it["id"], {})
                 e["tags"] = _clean_tags(row)
-                e["hash"] = _hash(it.get("text") or "")
+                e["hash"] = _hash(item_text(it))
                 e["tagged"] = _now()
 
         s = _update(merge)    # pruning belongs to refresh() alone (see _prune)
