@@ -10,10 +10,11 @@ Run: .venv/bin/python -m unittest tests.test_jobboards
 import json
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from server import jobboards
+from server import applications, jobboards
 
 
 GH_BOARD = {"company": "Example Labs", "ats": "greenhouse", "slug": "exlabs"}
@@ -411,6 +412,127 @@ class PollDiffAndNotify(unittest.TestCase):
         self.assertEqual(s["eligible"], 1)
         self.assertEqual(s["fresh"], 2)
         self.assertEqual(s["unscored_eligible"], 1)
+
+
+class AutoScore(PollDiffAndNotify):
+    """maybe_auto_score — the poller dispatches scoring itself (owner's
+    ruling 2026-08-05: no Score-new button). One dispatch in flight at a
+    time, the AI probe gates a fresh install, and nothing ever raises."""
+
+    def _seed_score(self, **kw):
+        entry = {"job": "j-prev", "at": jobboards._now(), "roles": 5}
+        entry.update(kw)
+        jobboards._record_score(entry)
+        return entry
+
+    def _state(self):
+        return jobboards._read_json(jobboards._state_path(), {})
+
+    def test_disabled_by_config(self):
+        cfg = dict(NYC_CONFIG, boards_auto_score=False)
+        with mock.patch.object(jobboards.settings, "raw",
+                               return_value=cfg):
+            r = jobboards.maybe_auto_score()
+        self.assertEqual(r["reason"], "disabled")
+
+    def test_a_live_dispatch_blocks_a_second(self):
+        self._seed_score()
+        fake = mock.Mock()
+        fake.get.return_value = {"status": "running"}
+        with mock.patch("server.session.sessions", fake):
+            r = jobboards.maybe_auto_score()
+        self.assertEqual(r["reason"], "in flight")
+        fake.launch.assert_not_called()
+
+    def test_no_ai_connected_means_no_dispatch(self):
+        self._poll(GH_PAYLOAD)
+        with mock.patch("server.routines._ai_ready", return_value=False):
+            r = jobboards.maybe_auto_score()
+        self.assertEqual(r["reason"], "no AI connected")
+
+    def test_an_empty_backlog_clears_the_finished_record(self):
+        self._seed_score()
+        fake = mock.Mock()
+        fake.get.return_value = {"status": "done"}
+        with mock.patch("server.session.sessions", fake), \
+                mock.patch("server.routines._ai_ready",
+                           return_value=True), \
+                mock.patch.object(jobboards, "_scored_uids",
+                                  return_value=set()):
+            r = jobboards.maybe_auto_score()
+        self.assertEqual(r["reason"], "nothing to score")
+        self.assertNotIn("score", self._state())
+
+    def test_dispatch_records_the_job_and_marks_it_machine(self):
+        self._poll(GH_PAYLOAD)
+        fake = mock.Mock()
+        fake.get.return_value = None
+        fake.launch.return_value = "j-new"
+        with mock.patch("server.session.sessions", fake), \
+                mock.patch("server.routines._ai_ready",
+                           return_value=True), \
+                mock.patch.object(jobboards, "_scored_uids",
+                                  return_value=set()):
+            r = jobboards.maybe_auto_score()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["job"], "j-new")
+        self.assertEqual(r["roles"], 1)     # the AE is cut
+        kw = fake.launch.call_args.kwargs
+        # machine marker: the session must never park in the reply window
+        self.assertEqual(kw["meta"],
+                         {"kind": "board-score", "machine": True})
+        self.assertEqual(kw["cwd"], str(applications.self_record()))
+        self.assertEqual(self._state()["score"]["job"], "j-new")
+
+    def test_a_full_session_cap_is_reported_not_raised(self):
+        self._poll(GH_PAYLOAD)
+        fake = mock.Mock()
+        fake.get.return_value = None
+        fake.launch.side_effect = ValueError("live-session cap reached")
+        with mock.patch("server.session.sessions", fake), \
+                mock.patch("server.routines._ai_ready",
+                           return_value=True), \
+                mock.patch.object(jobboards, "_scored_uids",
+                                  return_value=set()):
+            r = jobboards.maybe_auto_score()
+        self.assertFalse(r["ok"])
+        self.assertIn("cap", r["reason"])
+        self.assertNotIn("score", self._state())
+
+    def test_a_stale_running_record_does_not_wedge_the_pipeline(self):
+        old = (datetime.now(timezone.utc) - timedelta(hours=4)) \
+            .isoformat(timespec="seconds")
+        self._seed_score(at=old)
+        self._poll(GH_PAYLOAD)
+        fake = mock.Mock()
+        # the registry still says running — the age cap wins
+        fake.get.return_value = {"status": "running"}
+        fake.launch.return_value = "j-new"
+        with mock.patch("server.session.sessions", fake), \
+                mock.patch("server.routines._ai_ready",
+                           return_value=True), \
+                mock.patch.object(jobboards, "_scored_uids",
+                                  return_value=set()):
+            r = jobboards.maybe_auto_score()
+        self.assertTrue(r["ok"])
+        self.assertEqual(self._state()["score"]["job"], "j-new")
+
+    def test_a_poll_preserves_the_score_record(self):
+        self._seed_score()
+        self._poll(GH_PAYLOAD)
+        self.assertEqual(self._state()["score"]["job"], "j-prev")
+
+    def test_status_reports_the_scoring_pipeline(self):
+        self._seed_score()
+        fake = mock.Mock()
+        fake.get.return_value = {"status": "running"}
+        with mock.patch("server.session.sessions", fake), \
+                mock.patch.object(jobboards, "_scored_uids",
+                                  return_value=set()):
+            s = jobboards.status()
+        self.assertTrue(s["auto_score"])
+        self.assertEqual(s["scoring"]["job"], "j-prev")
+        self.assertTrue(s["scoring"]["live"])
 
 
 if __name__ == "__main__":

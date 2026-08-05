@@ -400,12 +400,20 @@
       <span id="app-boards-line" class="hint"></span>
       <button id="app-refresh" class="btn"
               title="Fetch every registered board now, diff, and ping on new eligible roles">Refresh</button>
+      <button id="app-scoring" class="btn" style="display:none"
+              title="A scoring session is running — click to watch it"></button>
       <button id="app-score" class="btn" style="display:none"
               title="Dispatch an agent session that deep-reads and two-scores the unscored eligible roles into the universe">Score new</button>
       <button id="app-add-board" class="btn"
               title="Register a new company board (one registry entry; the next poll sweeps it)">+ board</button>
     </div>
     <div class="app-filters">
+      <select id="app-sort" class="idea-sort" title="Sort order">
+        <option value="relevance">Relevance (picks, tier, fit)</option>
+        <option value="newest">Newest first</option>
+        <option value="fit">Highest fit</option>
+      </select>
+      <select id="app-loc" class="idea-sort" title="Location"></select>
       <select id="app-company" class="idea-sort" title="Company"></select>
       <select id="app-avail" class="idea-sort" title="Availability">
         <option value="live">Still available</option>
