@@ -6294,7 +6294,7 @@ async function runOrphanAction(foot, it, name) {
     }, 1500, 60000);
   } catch (e) {
     toast((name === "land" ? "Land" : name === "merge" ? "Merge" : "Discard")
-      + " failed: " + e.message);
+      + " failed: " + errText(e));
     loadOrphans();
   }
 }
@@ -6320,7 +6320,7 @@ $("#orphan-landall")?.addEventListener("click", async () => {
                     : "Nothing to land");
     loadOrphans();
   } catch (e) {
-    toast("Land all failed: " + e.message);
+    toast("Land all failed: " + errText(e));
   }
 });
 
