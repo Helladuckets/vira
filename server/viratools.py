@@ -341,7 +341,7 @@ def _mail_imap(acct, query, limit):
     password = mail.keychain_password(addr)
     if not password:
         return ["  (no keychain password)"]
-    con = imaplib.IMAP4_SSL(host)
+    con = imaplib.IMAP4_SSL(host, timeout=30)
     out = []
     try:
         con.login(addr, password)

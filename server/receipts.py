@@ -167,7 +167,7 @@ def _candidates_imap(merchant, acct):
     if not password:
         return []
     name = merchant.get("display_name", "").strip()
-    con = imaplib.IMAP4_SSL(host)
+    con = imaplib.IMAP4_SSL(host, timeout=60)
     out = []
     try:
         con.login(addr, password)
