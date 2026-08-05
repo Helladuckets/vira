@@ -948,6 +948,14 @@ def score_prompt(limit=40):
 
 SCORE_STALE_HOURS = 3   # a score job silent this long no longer blocks
 
+# Floor between dispatches, live or dead. A failing ACCOUNT (the monthly
+# spend limit, hit 2026-08-05 within an hour of auto-scoring going live)
+# still probes green — `claude auth status` says logged in — so every
+# launch dies in seconds and without a floor the poller mints a dead
+# ledger job every few minutes, ~500 a day. A healthy batch takes longer
+# than this anyway, so the happy path never waits.
+SCORE_GAP_MIN = 20
+
 
 def auto_score_enabled():
     return settings.raw().get("boards_auto_score", True) is not False
@@ -1002,6 +1010,15 @@ def maybe_auto_score():
     sc = (_read_json(_state_path(), {}).get("score")) or {}
     if _score_job_live(sc):
         return {"ok": False, "reason": "in flight", "job": sc.get("job")}
+    if sc.get("at"):
+        try:
+            age = (datetime.now(timezone.utc)
+                   - datetime.fromisoformat(sc["at"])).total_seconds()
+            if age < SCORE_GAP_MIN * 60:
+                return {"ok": False,
+                        "reason": "cooling down since the last dispatch"}
+        except (ValueError, TypeError):
+            pass
     from . import routines
     if not routines._ai_ready():
         return {"ok": False, "reason": "no AI connected"}

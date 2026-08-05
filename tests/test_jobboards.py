@@ -468,8 +468,22 @@ class AutoScore(PollDiffAndNotify):
             r = jobboards.maybe_auto_score()
         self.assertEqual(r["reason"], "no AI connected")
 
+    def test_a_recent_dispatch_cools_down_before_the_next(self):
+        """The spend-limit case: the account probes green while every
+        launch dies in seconds, so without a floor between dispatches the
+        poller mints a dead ledger job every few minutes."""
+        self._seed_score()                      # at = now, job not live
+        fake = mock.Mock()
+        fake.get.return_value = {"status": "error"}
+        with mock.patch("server.session.sessions", fake):
+            r = jobboards.maybe_auto_score()
+        self.assertIn("cooling down", r["reason"])
+        fake.launch.assert_not_called()
+
     def test_an_empty_backlog_clears_the_finished_record(self):
-        self._seed_score()
+        old = (datetime.now(timezone.utc) - timedelta(minutes=45)) \
+            .isoformat(timespec="seconds")
+        self._seed_score(at=old)                # past the dispatch floor
         fake = mock.Mock()
         fake.get.return_value = {"status": "done"}
         with mock.patch("server.session.sessions", fake), \
