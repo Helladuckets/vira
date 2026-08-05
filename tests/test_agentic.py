@@ -501,6 +501,47 @@ class CircuitTests(unittest.TestCase):
         self.assertEqual(final["stages"]["a"]["status"], "error")
         self.assertEqual(final["stages"]["b"]["status"], "skipped")
 
+    # ---- both stores are UTF-8 on every platform (CI run 30957788792) ----
+    # Both writes dump ensure_ascii=False and the builtin definitions carry
+    # em-dashes, so an unencoded write fell back to cp1252 on Windows and the
+    # next utf-8 read died on byte 0x97.
+    #
+    # They assert BYTES, never a round trip: a round trip passes on a UTF-8
+    # machine under the broken code too, which is exactly why this reached
+    # main from a green Mac job. The degrade case reproduces the CI error
+    # verbatim on ANY platform (verified: it raises the same
+    # UnicodeDecodeError on byte 0x97 against the pre-fix module). The
+    # utf8-bytes case can only bite on Windows, so preflight's encoding
+    # ratchet is its real counterpart — a re-introduced unencoded call
+    # raises the count and fails on both runners.
+
+    def test_the_definitions_store_is_written_as_utf8(self):
+        circuits.save_circuit({"id": "dash", "name": "Dash",
+                               "description": "an em-dash — inside prose",
+                               "stages": [{"id": "a", "name": "a",
+                                           "prompt": "x", "needs": []}]})
+        raw = circuits.DEFS.read_bytes()
+        self.assertIn("—".encode("utf-8"), raw)
+        self.assertNotIn(b"\x97", raw)          # the cp1252 em-dash
+        back = circuits.get_circuit("dash")
+        self.assertIn("—", back["description"])
+
+    def test_a_store_written_in_the_wrong_encoding_degrades(self):
+        # an install that ran the buggy version has cp1252 bytes on disk; the
+        # fixed read must fall through to the SAME unreadable-file path the
+        # module already had, not raise into every caller. For the defs store
+        # that path reseeds the builtins (a circuit library is recoverable);
+        # for runs it is an empty list (history is not).
+        circuits.DEFS.parent.mkdir(parents=True, exist_ok=True)
+        circuits.DEFS.write_bytes(b'{"circuits": [{"id": "x", '
+                                  b'"description": "bad \x97 byte"}]}')
+        defs = circuits._load_defs()
+        ids = {c["id"] for c in defs["circuits"]}
+        self.assertIn("plan-build-judge", ids)     # builtins back
+        self.assertNotIn("x", ids)                 # the unreadable one is gone
+        circuits.RUNS.write_bytes(b'{"runs": [{"id": "r", "note": "\x97"}]}')
+        self.assertEqual(circuits._load_runs(), {"runs": []})
+
 
 # ---------- routines ----------
 

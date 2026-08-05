@@ -98,7 +98,9 @@ def _load():
     this store, so an in-memory cache would clobber the other's writes."""
     try:
         s = json.loads(REG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        # a registry an install already wrote in cp1252 (pre-42693d5 on
+        # Windows) must degrade like any unreadable file, not raise
         s = {"plans": []}
     if not isinstance(s, dict) or "plans" not in s:
         s = {"plans": []}
@@ -201,7 +203,9 @@ def get_plan(pid):
         if p["id"] == pid:
             try:
                 md = Path(p["path"]).read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, UnicodeDecodeError):
+                # a plan file written in cp1252 reads as MISSING rather than
+                # taking the viewer down — the note is still on disk to repair
                 md = ""
             return {**p, "markdown": md, "missing": not md}
     raise KeyError(pid)
