@@ -170,6 +170,24 @@ class PollDiffAndNotify(unittest.TestCase):
             r = jobboards.poll_once()
         return r, sent
 
+    def test_a_catalog_tombstone_that_reappears_does_not_kill_the_sweep(self):
+        """The 2026-08-02 wedge: a catalog-closing sweep mints state
+        entries carrying ONLY {closed: ts} (a corpus role no board had
+        served). When one then shows up in a fetch, poll_once read its
+        missing first_seen and crashed — every sweep died mid-loop for
+        three days and the snapshot was never written again."""
+        state_path = jobboards._state_path()
+        state = jobboards._read_json(state_path, {})
+        state.setdefault("roles", {})["g-exlabs-111"] = {
+            "closed": "2026-08-01T00:00:00+00:00"}
+        jobboards._write_json(state_path, state)
+        r, _ = self._poll(GH_PAYLOAD)          # must not raise
+        self.assertTrue(r["ok"])
+        snap = jobboards._read_json(jobboards._snapshot_path(), {})
+        rec = snap["roles"]["g-exlabs-111"]
+        self.assertTrue(rec.get("first_seen"))  # stamped now, not missing
+        self.assertNotIn("closed", rec)         # it is listed again
+
     def test_new_then_stable_then_closed(self):
         r1, sent1 = self._poll(GH_PAYLOAD)
         self.assertEqual(r1["new"], 2)
