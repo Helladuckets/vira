@@ -605,6 +605,16 @@ def poll_once(notify_new=True):
                 else:
                     new_uids.append(uid)
             else:
+                # A catalog-closing sweep mints state entries carrying ONLY
+                # {closed: ts} — a corpus role no board had ever served.
+                # When such a role then appears in a fetch, the entry has
+                # no first_seen, and reading it crashed EVERY sweep from
+                # 2026-08-02 to 08-05: poll_once died mid-loop, the
+                # snapshot was never written, and the boards feed sat
+                # silently three days stale behind an "error: 'first_seen'"
+                # status line nothing surfaced. Its first board sighting
+                # is now — which is also the honest date.
+                prior.setdefault("first_seen", now)
                 prior["last_seen"] = now
                 prior.pop("closed", None)
             rec["first_seen"] = st_roles[uid]["first_seen"]
