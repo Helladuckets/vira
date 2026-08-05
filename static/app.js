@@ -6176,6 +6176,31 @@ function orphanRow(it) {
     bits.push(`${it.age_days}d old`);
   }
   main.appendChild(el("div", "link-sub", bits.join(" · ")));
+  // The evidence the decision needs, on the row (owner, 2026-08-05: "I
+  // just have to arbitrarily decide"): what was asked, what the commits
+  // say, which files changed.
+  if (it.kind !== "unpushed") {
+    if (it.job && it.job.prompt_head) {
+      main.appendChild(el("div", "link-sub orphan-ev",
+        "asked: " + it.job.prompt_head.slice(0, 160)));
+    }
+    if (it.commits && it.commits.length) {
+      main.appendChild(el("div", "link-sub orphan-ev",
+        "commits: " + it.commits.join(" | ").slice(0, 160)));
+    }
+    if (it.files && it.files.length) {
+      const extra = it.dirty > it.files.length
+        ? ` +${it.dirty - it.files.length} more` : "";
+      main.appendChild(el("div", "link-sub orphan-ev",
+        "files: " + it.files.slice(0, 6).join(", ") + extra));
+    }
+    if (it.read && it.read.verdict) {
+      const r = el("div", "orphan-read " + it.read.verdict);
+      r.appendChild(el("span", "orphan-read-v", "Vira: " + it.read.verdict));
+      r.appendChild(document.createTextNode(" — " + (it.read.why || "")));
+      main.appendChild(r);
+    }
+  }
   card.appendChild(main);
 
   if (it.kind !== "unpushed") {
@@ -6187,15 +6212,16 @@ function orphanRow(it) {
       // Land replaced Merge as the primary action (owner, 2026-08-05:
       // "why doesn't it just land?"): for a committed clean branch it IS
       // merge+push; for a dirty worktree it finishes the work first.
-      const land = el("button", "fchip sm", "Land");
+      const rec = it.read && it.read.verdict;
+      const land = el("button", "fchip sm" + (rec === "land" ? " rec" : ""), "Land");
       land.title = it.dirty
         ? "Dispatch a session to finish and commit this, then Vira merges + pushes it"
         : "Merge this branch into live main and push";
       land.addEventListener("click", () => armOrphanAction(foot, it, "land"));
-      const resume = el("button", "fchip sm", "Resume");
+      const resume = el("button", "fchip sm" + (rec === "resume" ? " rec" : ""), "Resume");
       resume.title = "Work on it without landing — the session stops short of merge";
       resume.addEventListener("click", () => orphanResume(it));
-      const disc = el("button", "fchip sm", "Discard");
+      const disc = el("button", "fchip sm" + (rec === "discard" ? " rec" : ""), "Discard");
       disc.addEventListener("click", () => armOrphanAction(foot, it, "discard"));
       foot.append(land, resume, disc);
     }
