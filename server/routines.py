@@ -139,6 +139,23 @@ SEEDS = [
                        "update_module_map tool.",
     },
     {
+        "id": "room-ingest",
+        "name": "Room ingest — stage material, link summaries",
+        "kind": "digest",
+        "every_hours": 24,
+        "enabled": True,
+        "notify": False,
+        "model": "",
+        "prompt": "__room_ingest__",      # internal dispatch, no session
+        "description": "Daily full-ingest pass over every reading room: "
+                       "stage new items' material (captions, article text) "
+                       "into the vault's raw/reading-room/, link items "
+                       "whose source-summary has landed, and retire their "
+                       "obsolete pointer notes. Deterministic — the "
+                       "synthesis itself belongs to the vault's own "
+                       "nightly ingest.",
+    },
+    {
         "id": "orphan-sweep",
         "name": "Orphan sweep — unlanded work",
         "kind": "digest",
@@ -355,7 +372,7 @@ def _muse_prompt():
 # model session is launched, so they run fine on a machine with no AI.
 _INTERNAL_TOKENS = ("__refresh_groupings__", "__refresh_intros__",
                     "__refresh_atlas__", "__refresh_reconnect__",
-                    "__orphan_sweep__")
+                    "__orphan_sweep__", "__room_ingest__")
 
 
 # _ai_ready's probe shells out per provider, and a skipped routine stays
@@ -448,6 +465,13 @@ def dispatch(r):
         _stamp(r["id"], last_run=_now_iso(), last_job=None,
                last_run_id=None, last_status="done")
         return {"internal": "orphan_sweep"}
+    if (r.get("prompt") or "") == "__room_ingest__":
+        from . import fullingest
+        threading.Thread(target=fullingest.run_all, daemon=True,
+                         name="vira-room-ingest").start()
+        _stamp(r["id"], last_run=_now_iso(), last_job=None,
+               last_run_id=None, last_status="done")
+        return {"internal": "room_ingest"}
     prompt = _muse_prompt() if r["kind"] == "muse" else (r.get("prompt") or "")
     if prompt == "__module_map__":       # composed fresh per run, like muse
         from . import modulemap
