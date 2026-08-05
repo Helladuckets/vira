@@ -129,6 +129,8 @@ ai_health_watcher = aihealth.Watcher()
 jobboards_poller = jobboards.Poller()
 idea_indexer = ideatags.Indexer(                  # backlog tags + vectors
     settings.get("idea_tag_interval_min") or 10)
+doc_indexer = doctags.Indexer(                    # document tags for the Reader
+    settings.get("doc_tag_interval_min") or 10)
 
 
 @app.on_event("startup")
@@ -156,6 +158,7 @@ async def _startup():
     indexer.start()
     text_indexer.start()
     idea_indexer.start()       # keeps the backlog's tags/vectors current
+    doc_indexer.start()        # and the Reader's documents, one batch a tick
     backup.start()
     mercury_poller.start()
     receipts_sweeper.start()

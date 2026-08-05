@@ -12,6 +12,7 @@ reading the code:
     that read happens in the PASS, never on a request.
 """
 import json
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -319,6 +320,50 @@ class TagPass(unittest.TestCase):
                                return_value='{"1": {"module": ["reader"]}}'):
             doctags.tag_pending(items, batches=1)
         ex.assert_not_called()
+
+
+class Wiring(unittest.TestCase):
+    """A background worker that is built and never started is dead code that
+    reads as a feature.
+
+    doctags.Indexer shipped in the first cut of this module with no
+    instantiation and no `.start()` — so the 380 untagged documents on the
+    live library would have sat there forever while `status()` cheerfully
+    reported them as pending. Same shape as the branch guard's dropped spec
+    fields and `model_used`'s missing writer: a reader with no writer, silent
+    and looking correct.
+
+    The check is general on purpose. It does not name doctags — it asserts
+    that EVERY worker main.py constructs at module level is also started, so
+    the next one cannot ship dark either."""
+
+    def _main_src(self):
+        return (Path(__file__).resolve().parent.parent
+                / "server" / "main.py").read_text(encoding="utf-8")
+
+    def test_every_worker_main_builds_is_also_started(self):
+        src = self._main_src()
+        built = set(re.findall(
+            r"^(\w+)\s*=\s*\w+\.(?:Indexer|Watcher|Poller|Scheduler|Sweeper)\(",
+            src, re.M))
+        self.assertTrue(built, "no workers found — has main.py moved?")
+        unstarted = {n for n in built if f"{n}.start()" not in src}
+        self.assertEqual(unstarted, set(),
+                         f"built but never started: {sorted(unstarted)}")
+
+    def test_the_document_indexer_is_one_of_them(self):
+        src = self._main_src()
+        self.assertIn("doctags.Indexer(", src)
+        self.assertIn("doc_indexer.start()", src)
+
+    def test_its_interval_key_has_a_default(self):
+        """settings.get raises KeyError on a key with no DEFAULTS entry, and
+        this one is read at module import — so a missing default is not a
+        degraded worker, it is an app that cannot boot (the mail_body_index
+        incident, one import earlier)."""
+        from server import settings
+        self.assertIn("doc_tag_interval_min", settings.DEFAULTS)
+        self.assertIsInstance(settings.get("doc_tag_interval_min"), int)
 
 
 class Prompt(unittest.TestCase):
