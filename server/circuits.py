@@ -322,9 +322,15 @@ def _now():
 # ---------- definitions store ----------
 
 def _load_defs():
+    # The encoding on both ends (42693d5) stopped NEW stores being written in
+    # cp1252 on Windows — the CI failure on 601965b, byte 0x97, the cp1252
+    # em-dash the builtin definitions are full of. This handles the store an
+    # install ALREADY wrote that way: a utf-8 read of it raises
+    # UnicodeDecodeError, which was not in the degrade list, so the fix would
+    # have turned a recoverable file into an exception in every caller.
     try:
         s = json.loads(DEFS.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         s = {}
     if not isinstance(s, dict) or "circuits" not in s:
         s = {"circuits": []}
@@ -540,9 +546,10 @@ def delete_circuit(cid):
 # ---------- runs store ----------
 
 def _load_runs():
+    # same pair as _load_defs — a run's stage output is arbitrary model prose
     try:
         s = json.loads(RUNS.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         s = {}
     if not isinstance(s, dict) or "runs" not in s:
         s = {"runs": []}
