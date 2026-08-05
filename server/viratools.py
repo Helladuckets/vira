@@ -759,6 +759,38 @@ async def _t_create_reading_room(args):
         args.get("subtitle"), args.get("items_json")))
 
 
+def _add_reading_room_items_text(slug, items_json):
+    from . import readingroom
+    try:
+        items = json.loads(items_json or "")
+    except json.JSONDecodeError as e:
+        return (f"error: items_json is not valid JSON ({e}). Pass ONLY the "
+                "new items as a JSON array.")
+    try:
+        res = readingroom.merge_items(slug, items)
+    except KeyError:
+        return f"error: no room named {slug!r} — create_reading_room builds one"
+    except readingroom.BuildError as e:
+        return f"error: {e}"
+    except OSError as e:
+        return f"error: could not write the room ({e})"
+    # Same cross-boundary rule as create: the vault projection hangs off the
+    # real entry point, never off the store write itself.
+    from . import roomvault
+    synced = roomvault.sync(slug)
+    line = (f"merged into {slug}: {res['added']} added, "
+            f"{res['items']} items total."
+            + (" Added: " + "; ".join(res["titles"][:12]) if res["titles"]
+               else " Nothing new — every item was already in the room."))
+    return line + (f" {roomvault.summary_line(synced)}" if synced else "")
+
+
+async def _t_add_reading_room_items(args):
+    return _txt(await asyncio.to_thread(
+        _add_reading_room_items_text, args.get("slug"),
+        args.get("items_json")))
+
+
 def _configure_applications_text(config_json):
     from . import frontdoor
     try:
@@ -855,6 +887,16 @@ TOOL_SPECS = [
      "notified of any items the rebuild added.",
      {"slug": str, "title": str, "subtitle": str, "items_json": str},
      _t_create_reading_room),
+    ("add_reading_room_items",
+     "Add NEW items to an existing reading room without re-emitting it — "
+     "the refresh write path. Pass the room's slug and ONLY the new items "
+     "as items_json (a JSON array, same item shape as create_reading_room). "
+     "The server validates, merges by stable URL-derived id (a duplicate "
+     "of an existing item is dropped, so over-including is safe), keeps "
+     "every existing item and the owner's done-marks untouched, and "
+     "notifies the owner of what arrived. Never rebuild a whole room just "
+     "to add to it.",
+     {"slug": str, "items_json": str}, _t_add_reading_room_items),
     ("configure_applications",
      "Apply first-run setup for the Applications module. Pass config_json "
      "as a JSON string: {record_dir, locations: [str], remote_ok: bool, "
@@ -906,6 +948,7 @@ TOOL_NAMES = [f"mcp__vira__{name}" for name, *_ in TOOL_SPECS]
 WRITE_TOOLS = {
     "mcp__vira__update_module_map",
     "mcp__vira__create_reading_room",
+    "mcp__vira__add_reading_room_items",
     "mcp__vira__configure_applications",
     "mcp__vira__update_person_profile",
 }

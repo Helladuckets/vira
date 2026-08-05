@@ -1297,7 +1297,11 @@ def reading_room_page(slug: str):
 class RoomDefinitionReq(BaseModel):
     subject: str = ""
     why: str = ""
-    people: str = ""
+    # people accepts the legacy comma string OR the pill list
+    # [{name, ref, qualifier}]; clean_definition normalizes either.
+    people: str | list = ""
+    sources: list = []            # [{label, feed, kind}]
+    watch: list = []              # standing-watch strings
     modes: list = []
     depth: str = ""
     notes: str = ""
@@ -1320,6 +1324,50 @@ def api_reading_room_definition(name: str, req: RoomDefinitionReq):
         raise HTTPException(404, "no such reading room")
     except readingroom.BuildError as e:
         raise HTTPException(422, str(e))
+
+
+class VaultPersonReq(BaseModel):
+    name: str
+    qualifier: str = ""
+
+
+@app.get("/api/vault/people")
+def api_vault_people(q: str = ""):
+    """Typeahead over the vault's type:person pages — the grounding layer
+    for a room's people pills. Names only, never page bodies."""
+    from . import vaultpeople
+    return {"people": vaultpeople.search(q)}
+
+
+@app.post("/api/vault/people")
+def api_vault_people_create(req: VaultPersonReq):
+    """Mint a stub person page for a name the index cannot resolve —
+    curating a room grows the people graph as a side effect."""
+    from . import vaultpeople
+    try:
+        return vaultpeople.create_stub(req.name, req.qualifier)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except FileExistsError as e:
+        raise HTTPException(409, str(e))
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(400, str(e))
+
+
+class SourceResolveReq(BaseModel):
+    text: str
+
+
+@app.post("/api/reading/source-resolve")
+def api_reading_source_resolve(req: SourceResolveReq):
+    """What the owner typed -> an enumerable feed pill, resolved once at
+    save time (a @handle costs one page fetch here, never again)."""
+    try:
+        return readingroom.resolve_source(req.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:                              # noqa: BLE001
+        raise HTTPException(502, f"could not reach that source: {e}")
 
 
 @app.get("/api/reading/rooms/{name}/update-prompt")

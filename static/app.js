@@ -16885,7 +16885,7 @@ function forkRoom(room) {
   openNewRoom({
     subject: d.subject || room?.title || "",
     why: d.why || "",
-    people: d.people || "",
+    people: rdrPeopleLine(d.people),
     modes: (d.modes && d.modes.length) ? d.modes : undefined,
     depth: d.depth || undefined,
   });
@@ -16978,6 +16978,170 @@ const READER_METHOD =
   + "It refreshes on demand and weekly (the room scout); when a refresh "
   + "lands new items, Vira pings you.";
 
+// ---- definition pills ----
+// People, sources and the standing watch are STRUCTURED, not prose: a
+// person pill carries its vault identity page (wiki/cat-wu.md — THE Cat
+// Wu who heads Claude Code product, not any name-match), a source pill
+// carries the feed the refresh enumerates deterministically, a watch pill
+// is one standing instruction. Legacy definitions stored people as a
+// comma string; both shapes render.
+
+function rdrNormPeople(raw) {
+  if (!raw) return [];
+  if (typeof raw === "string") {
+    return raw.split(",").map((s) => s.trim()).filter(Boolean)
+      .map((n) => ({ name: n, ref: "", qualifier: "" }));
+  }
+  return raw.map((p) => ({ name: p.name || "", ref: p.ref || "",
+                           qualifier: p.qualifier || "" }))
+    .filter((p) => p.name);
+}
+
+function rdrPeopleLine(raw) {
+  return typeof raw === "string" ? raw
+    : (raw || []).map((p) => p.name).join(", ");
+}
+
+// One pill row: pills + an entry input (+ an optional typeahead dropdown).
+// cfg: label(item), title(item), linked(item), onOpen(item),
+//      add(text, done) — called on Enter; done(itemOrNull) appends,
+//      suggest(q, pick) — optional; renders dropdown rows via pick(item).
+function rdrPillBox(state, key, cfg) {
+  const box = el("div", "rdr-pillbox");
+  const entry = el("div", "rdr-pill-entry");
+  const inp = el("input", "rdr-pill-input");
+  inp.placeholder = cfg.placeholder || "";
+  const drop = el("div", "rdr-typeahead");
+  drop.style.display = "none";
+
+  const closeDrop = () => { drop.style.display = "none"; drop.innerHTML = ""; };
+  const paint = () => {
+    box.querySelectorAll(".rdr-pill").forEach((n) => n.remove());
+    state[key].forEach((item, i) => {
+      const linked = !!(cfg.linked && cfg.linked(item));
+      const pill = el("span", "rdr-pill" + (linked ? " linked" : ""));
+      const lab = el(linked ? "button" : "span", "rdr-pill-name",
+                     cfg.label(item));
+      if (cfg.title && cfg.title(item)) lab.title = cfg.title(item);
+      if (linked && cfg.onOpen) {
+        lab.addEventListener("click", () => cfg.onOpen(item));
+      }
+      pill.appendChild(lab);
+      const x = el("button", "rdr-pill-x", "×");
+      x.setAttribute("aria-label", "Remove " + cfg.label(item));
+      x.addEventListener("click", () => { state[key].splice(i, 1); paint(); });
+      pill.appendChild(x);
+      box.insertBefore(pill, entry);
+    });
+  };
+  const append = (item) => {
+    if (!item) return;
+    state[key].push(item);
+    inp.value = "";
+    closeDrop();
+    paint();
+  };
+  const dropRow = (label, run, dim) => {
+    const b = el("button", "rdr-ta-row" + (dim ? " dim" : ""), label);
+    // pointerdown, not click: the input's blur closes the dropdown before
+    // a click could land.
+    b.addEventListener("pointerdown", (e) => { e.preventDefault(); run(); });
+    drop.appendChild(b);
+  };
+
+  let taTimer = null;
+  inp.addEventListener("input", () => {
+    if (!cfg.suggest) return;
+    clearTimeout(taTimer);
+    const q = inp.value.trim();
+    if (!q) { closeDrop(); return; }
+    taTimer = setTimeout(() => cfg.suggest(q, drop, dropRow, append,
+                                           closeDrop), 180);
+  });
+  inp.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const q = inp.value.trim();
+      if (q && cfg.add) cfg.add(q, append, inp);
+    } else if (e.key === "Escape" && drop.style.display !== "none") {
+      e.stopPropagation();
+      closeDrop();
+    }
+  });
+  inp.addEventListener("blur", () => setTimeout(closeDrop, 150));
+
+  entry.appendChild(inp);
+  entry.appendChild(drop);
+  box.appendChild(entry);
+  paint();
+  return box;
+}
+
+function rdrPeopleEditor(state) {
+  const dup = (name) => state.people.some(
+    (p) => p.name.toLowerCase() === name.toLowerCase());
+  return rdrPillBox(state, "people", {
+    placeholder: "Add a person — typing searches your wiki’s people pages",
+    label: (p) => p.name,
+    title: (p) => p.qualifier || (p.ref ? p.ref : "not linked to a wiki page"),
+    linked: (p) => !!p.ref,
+    onOpen: (p) => openNote(p.ref, p.name),
+    add: (q, append) => { if (!dup(q)) append({ name: q, ref: "", qualifier: "" }); },
+    suggest: async (q, drop, dropRow, append, closeDrop) => {
+      let hits = [];
+      try { hits = (await api("/api/vault/people?q="
+                              + encodeURIComponent(q))).people || []; }
+      catch { hits = []; }
+      drop.innerHTML = "";
+      hits.filter((h) => !dup(h.name)).slice(0, 6).forEach((h) => {
+        dropRow(h.name + (h.qualifier ? " — " + h.qualifier : ""),
+                () => append(h));
+      });
+      dropRow("Add “" + q + "” as a plain name", () => {
+        if (!dup(q)) append({ name: q, ref: "", qualifier: "" });
+      }, true);
+      dropRow("Add “" + q + "” + create a wiki page", async () => {
+        try {
+          const made = await post("/api/vault/people", { name: q });
+          if (!dup(made.name)) append(made);
+          toast("Created " + made.ref);
+        } catch (e) { toast("Couldn’t create the page: " + (e.message || e)); }
+      }, true);
+      drop.style.display = "";
+    },
+  });
+}
+
+function rdrSourceEditor(state) {
+  return rdrPillBox(state, "sources", {
+    placeholder: "Add a source — @youtubehandle, a feed URL, or a site with RSS",
+    label: (s) => s.label,
+    title: (s) => s.feed,
+    linked: (s) => !!s.feed,
+    onOpen: (s) => window.open(s.feed, "_blank", "noopener"),
+    add: async (q, append, inp) => {
+      inp.disabled = true;
+      try {
+        const src = await post("/api/reading/source-resolve", { text: q });
+        if (!state.sources.some((s) => s.feed === src.feed)) append(src);
+        else toast("Already on the list");
+      } catch (e) {
+        toast("Couldn’t resolve: " + (e.message || e));
+      } finally { inp.disabled = false; inp.focus(); }
+    },
+  });
+}
+
+function rdrWatchEditor(state) {
+  return rdrPillBox(state, "watch", {
+    placeholder: "Add a standing watch — e.g. new Dario essays",
+    label: (w) => w,
+    title: () => "",
+    linked: () => false,
+    add: (q, append) => { if (!state.watch.includes(q)) append(q); },
+  });
+}
+
 function renderReaderDefs() {
   const host = $("#reader-defs");
   if (!host) return;
@@ -17008,14 +17172,12 @@ function renderReaderDefs() {
      (room && room.subtitle) || page.subtitle || ""],
     ["subject", "Subject — the corpus this room tracks", d.subject],
     ["why", "Why — the ranking rule (what P1 means here)", d.why],
-    ["people", "People to track", d.people],
-    ["notes", "Standing instructions for refreshes", d.notes],
   ];
   const inputs = {};
   fields.forEach(([key, label, val]) => {
     form.appendChild(el("label", "rdr-def-label", label));
-    // All four are textareas: every field gets the corner grip, and
-    // auto-sizing to content kills the scrollbar-under-the-grip glitch.
+    // Textareas: every field gets the corner grip, and auto-sizing to
+    // content kills the scrollbar-under-the-grip glitch.
     const inp = el("textarea", "rdr-def-input");
     inp.rows = 1;
     inp.value = val || "";
@@ -17023,6 +17185,31 @@ function renderReaderDefs() {
     inputs[key] = inp;
     form.appendChild(inp);
   });
+
+  // The structured fields — pills, not prose (2026-08-05).
+  const pillState = {
+    people: rdrNormPeople(d.people),
+    sources: (d.sources || []).map((s) => ({ ...s })),
+    watch: (d.watch || []).slice(),
+  };
+  form.appendChild(el("label", "rdr-def-label",
+    "People to track — linked pills open their wiki page"));
+  form.appendChild(rdrPeopleEditor(pillState));
+  form.appendChild(el("label", "rdr-def-label",
+    "Sources — feeds enumerated deterministically on every refresh"));
+  form.appendChild(rdrSourceEditor(pillState));
+  form.appendChild(el("label", "rdr-def-label",
+    "Standing watch — always checked on refresh"));
+  form.appendChild(rdrWatchEditor(pillState));
+
+  form.appendChild(el("label", "rdr-def-label",
+    "Standing instructions for refreshes"));
+  const notesInp = el("textarea", "rdr-def-input");
+  notesInp.rows = 1;
+  notesInp.value = d.notes || "";
+  notesInp.addEventListener("input", () => rdrAutosize(notesInp));
+  inputs.notes = notesInp;
+  form.appendChild(notesInp);
   host.appendChild(form);
   // Sized synchronously — callers show the panel BEFORE rendering, because
   // a hidden textarea reports scrollHeight 0 (and rAF never fires in a
@@ -17040,7 +17227,9 @@ function renderReaderDefs() {
         subtitle: inputs.subtitle.value.trim(),
         subject: inputs.subject.value.trim(),
         why: inputs.why.value.trim(),
-        people: inputs.people.value.trim(),
+        people: pillState.people,
+        sources: pillState.sources,
+        watch: pillState.watch,
         notes: inputs.notes.value.trim(),
         modes: d.modes || [], depth: d.depth || "",
       };
