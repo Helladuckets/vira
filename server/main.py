@@ -50,7 +50,8 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                mail,
                mailread,
                media,
-               mediaindex, mercury, models, modulemap, msgraph, notify, onboard,
+               mediaindex, mercury, models, modulemap, modulestory, msgraph,
+               notify, onboard,
                orphanwork,
                photos, pickfolder, plans, profilerefresh, radar, reconnect,
                textindex,
@@ -854,6 +855,16 @@ def api_jobboards_score(req: BoardScoreReq):
 @app.get("/api/map")
 def api_map():
     return modulemap.payload()
+
+
+@app.get("/api/module/story/{win_id}")
+def api_module_story(win_id: str):
+    """The build story behind a window — right-click, "What is this?".
+    Registry blurb + every library document tagged to that module."""
+    s = modulestory.story(win_id)
+    if not s:
+        raise HTTPException(404, "no story for that module")
+    return s
 
 
 @app.post("/api/map/refresh")
