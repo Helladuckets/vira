@@ -97,7 +97,7 @@ def _load():
     """Fresh read every time — a detached runner and the server both touch
     this store, so an in-memory cache would clobber the other's writes."""
     try:
-        s = json.loads(REG_PATH.read_text())
+        s = json.loads(REG_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         s = {"plans": []}
     if not isinstance(s, dict) or "plans" not in s:
@@ -108,7 +108,8 @@ def _load():
 def _save(s):
     REG_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = REG_PATH.with_name(REG_PATH.name + ".tmp")
-    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False))
+    tmp.write_text(json.dumps(s, indent=1, ensure_ascii=False),
+                   encoding="utf-8")
     tmp.replace(REG_PATH)
 
 
@@ -157,7 +158,7 @@ def save_plan(md, idea_id=None, job_id=None, lab_url=None):
             fpath = pdir / f"{stamp}-{slug}-{n}.md"
             n += 1
         tmp = fpath.with_name(fpath.name + ".tmp")
-        tmp.write_text(md + "\n")
+        tmp.write_text(md + "\n", encoding="utf-8")
         tmp.replace(fpath)
         entry = {
             "id": "pl_" + uuid.uuid4().hex[:10],
@@ -199,7 +200,7 @@ def get_plan(pid):
     for p in _load()["plans"]:
         if p["id"] == pid:
             try:
-                md = Path(p["path"]).read_text()
+                md = Path(p["path"]).read_text(encoding="utf-8")
             except OSError:
                 md = ""
             return {**p, "markdown": md, "missing": not md}
