@@ -1,7 +1,8 @@
 """Shared job-hunt logic: what applications.py (the catalog/universe
 module) and jobboards.py (the live board poller) each carried
 privately — the uid scheme, the owner-adjudication cut, score-file
-loading, and the timestamp helper.
+loading, and the timestamp helper. It also owns the board HTTP helper
+shared by the poller and jobdesc.py's single-posting reader.
 
 Deliberately NOT unified: the two role _norm() shapes. applications
 normalizes for the catalog UI (comp_kind/family/apply_url), jobboards
@@ -17,6 +18,28 @@ from pathlib import Path
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# ------------------------------------------------------------------- http
+
+# Board APIs answer a default python UA with a challenge page often enough
+# that the browser UA is load-bearing, not politeness.
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+HTTP_TIMEOUT = 30
+
+
+def http_get(url, as_json=True, headers=None, timeout=HTTP_TIMEOUT):
+    """The one outbound GET the job-hunt pair makes. `requests` is imported
+    HERE rather than at module scope so a machine without it fails on the
+    first fetch instead of at server startup."""
+    import requests
+    h = {"User-Agent": UA}
+    if headers:
+        h.update(headers)
+    r = requests.get(url, headers=h, timeout=timeout)
+    r.raise_for_status()
+    return r.json() if as_json else r.text
 
 
 # ------------------------------------------------------------- uid scheme

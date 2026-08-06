@@ -708,6 +708,24 @@
   <div class="panel-body note-body" id="note-body"></div>
 </div>
 
+<!-- JOB DESCRIPTION PANEL (a role's title in Applications opens the posting
+     HERE, natively, instead of throwing the owner out to the board's own
+     page. The link out stays in the head — it is off-origin, so iOS hands
+     it to Safari and the app survives; see server/jobdesc.py) -->
+<div id="jobdesc-panel" class="panel note-panel jd-panel">
+  <div class="panel-head">
+    <button class="icon-btn" id="jd-back">back</button>
+    <div class="panel-title" id="jd-title">Role</div>
+    <div class="jd-head-actions">
+      <button class="icon-btn" id="jd-refresh" style="display:none"
+              title="Fetch the current description from the board">refresh</button>
+      <a class="icon-btn" id="jd-open" target="_blank" rel="noopener"
+         title="Open the posting on the board">posting</a>
+    </div>
+  </div>
+  <div class="panel-body note-body jd-body" id="jd-body"></div>
+</div>
+
 <!-- MODULE STORY PANEL (right-click a module > "What is this?" — the build
      story: what the module is, plus every film, plan, dossier and retro
      the library holds about how it was built) -->

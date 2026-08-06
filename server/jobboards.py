@@ -42,8 +42,6 @@ from pathlib import Path
 
 from . import jobshared, jsonstore, settings
 
-UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 TIMEOUT = 30
 ATS_KINDS = tuple(jobshared.ATS_PREFIX) + ("manual",)
 JD_CAP = 24000          # keep snapshot JDs bounded
@@ -140,21 +138,36 @@ def _board_id(b):
 # ------------------------------------------------------------ http helper
 
 def _get(url, as_json=True, headers=None):
-    import requests
-    h = {"User-Agent": UA}
-    if headers:
-        h.update(headers)
-    r = requests.get(url, headers=h, timeout=TIMEOUT)
-    r.raise_for_status()
-    return r.json() if as_json else r.text
+    return jobshared.http_get(url, as_json, headers, TIMEOUT)
 
 
 def _strip_html(text):
-    text = re.sub(r"<[^>]+>", " ", text or "")
-    text = (text.replace("&amp;", "&").replace("&lt;", "<")
-            .replace("&gt;", ">").replace("&#39;", "'")
-            .replace("&quot;", '"').replace("&nbsp;", " "))
-    return re.sub(r"\s+", " ", text).strip()
+    """A fetched description -> the readable text the snapshot stores.
+
+    This used to strip tags and THEN unescape entities, which is exactly
+    backwards for a board that escapes its description inside the JSON
+    string: Greenhouse's `&lt;div&gt;` matched no tag, so the strip did
+    nothing and the unescape turned the markup into literal text — every
+    Anthropic jd in the snapshot began `<div class="content-intro">`, and
+    every scoring session deep-read that. It also flattened whitespace,
+    so a real HTML body became one 10,000-character line with no
+    paragraph or bullet left in it.
+
+    `jobdesc.to_markdown` is the one converter now; the snapshot holds
+    what the description panel renders and what a session can read.
+    """
+    from . import jobdesc
+    return jobdesc.to_markdown(text)
+
+
+def snapshot_role(uid):
+    """(role record, the sweep stamp it was fetched on) for one uid — the
+    read `jobdesc` needs, so the snapshot's shape stays this module's
+    business rather than something another module reaches into."""
+    snap = _read_json(_snapshot_path(), {})
+    roles = snap.get("roles")
+    rec = roles.get(uid) if isinstance(roles, dict) else None
+    return (rec if isinstance(rec, dict) else None), (snap.get("fetched") or "")
 
 
 _CONDITIONAL_SALES_OTE = re.compile(
