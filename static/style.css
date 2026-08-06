@@ -5385,11 +5385,14 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 
 /* Films: a shelf of playing tiles. Scrolls INSIDE itself when it must —
    the shelf may never widen the document (the shrink-to-fit rule). */
+/* Films TILE like the plans do (owner's call, 2026-08-05) — the shelf was a
+   horizontal scroller, and the library must never scroll sideways. */
 .rdg-shelf {
-  display: flex; gap: 14px; overflow-x: auto; padding: 2px 2px 8px;
+  display: grid; gap: 14px; padding: 2px 2px 8px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
 }
 .rdg-film {
-  flex: 0 0 300px; width: 300px; cursor: pointer; position: relative;
+  min-width: 0; cursor: pointer; position: relative;
 }
 .rdg-filmframe {
   position: relative; width: 100%; aspect-ratio: 16 / 10;
@@ -5423,11 +5426,33 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Plans and dossiers: boxes. */
+/* Plans and dossiers: boxes. `.rdg-minor` is the retros-and-briefs variant —
+   cards too (owner's call, 2026-08-05: widescreen wants a grid, not a list),
+   just denser. */
+.rdoc-grid { overflow-x: clip; }
 .rdg-tiles {
   display: grid; gap: 12px;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
 }
+.rdg-tiles.rdg-minor {
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+}
+/* An HTML document's rendered face, when the thumbnailer has one. */
+.rdg-tileframe {
+  position: relative; margin: -12px -12px 9px; aspect-ratio: 16 / 10;
+  border-bottom: 1px solid var(--line); overflow: hidden;
+  border-radius: 3px 3px 0 0; background: var(--bg-card);
+}
+.rdg-tileframe img {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; object-position: top; display: block;
+}
+.rdg-more-tile {
+  border: 1px dashed var(--line); border-radius: 3px; background: none;
+  color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer;
+  min-height: 64px;
+}
+.rdg-more-tile:hover { border-color: var(--accent-line); color: var(--text); }
 .rdg-tile {
   position: relative; border: 1px solid var(--line); border-radius: 3px;
   background: var(--bg-card); padding: 12px 12px 14px; cursor: pointer;
@@ -5443,26 +5468,6 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 .rdg-itags { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 7px; }
 .rdg-itags .rdoc-chip { pointer-events: none; }
 
-/* Retros and briefs: compact lines. */
-.rdg-lines { display: flex; flex-direction: column; }
-.rdg-line {
-  display: flex; align-items: center; gap: 10px; padding: 5px 4px;
-  border-top: 1px solid transparent; cursor: pointer; min-width: 0;
-  transition: background 0.14s ease;
-}
-.rdg-line:hover { background: var(--accent-soft); }
-.rdg-lkind {
-  flex: none; font-family: var(--mono); font-size: 9px;
-  text-transform: uppercase; letter-spacing: 0.08em;
-  color: var(--text-faint); border: 1px solid var(--line);
-  border-radius: 2px; padding: 1px 6px; width: 64px; text-align: center;
-}
-.rdg-lname {
-  flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.rdg-line:hover .rdg-lname { color: var(--text); }
-.rdg-ldate { flex: none; font-size: 11px; color: var(--text-faint); }
 .rdg-more {
   align-self: flex-start; margin-top: 6px; background: none;
   border: 1px solid var(--line); border-radius: 2px; color: var(--text-dim);
@@ -5473,7 +5478,6 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 /* The mark control surfaces on hover; read items dim and wear a small
    STATUS tag (mono, no border — nothing button-like about it). */
 .rdg-mark { position: absolute; top: 8px; right: 8px; opacity: 0; z-index: 2; }
-.rdg-line .rdg-mark { position: static; opacity: 0; }
 .rdg-item:hover .rdg-mark, .rdg-item:focus-within .rdg-mark { opacity: 1; }
 .rdg-item.read { opacity: 0.5; }
 .rdg-item.read:hover { opacity: 1; }
@@ -5540,11 +5544,10 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
   .rdg-name { font-size: 21px; }
   /* Always visible on touch — and therefore in the FLOW: an absolute
      button that never hides would sit on the tile's kicker forever. */
-  .rdg-mark, .rdg-line .rdg-mark { opacity: 1; }
+  .rdg-mark { opacity: 1; }
   .rdg-tile .rdg-mark, .rdg-film .rdg-mark {
     position: static; margin-top: 8px; display: inline-block;
   }
-  .rdg-ldate { display: none; }
 }
 
 /* ---------- The module story panel ("What is this?") ---------- */

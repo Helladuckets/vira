@@ -38,6 +38,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                frontdoor,
                reading,
                readinglist,
+               docthumbs,
                readingroom,
                fixtures, groupchat, ideaimages, ideas, ideatags, imessage,
                jobboards,
@@ -133,6 +134,7 @@ idea_indexer = ideatags.Indexer(                  # backlog tags + vectors
     settings.get("idea_tag_interval_min") or 10)
 doc_indexer = doctags.Indexer(                    # document tags for the Reader
     settings.get("doc_tag_interval_min") or 10)
+doc_thumb_sweeper = docthumbs.Sweeper()           # rendered faces for the grid
 
 
 @app.on_event("startup")
@@ -161,6 +163,7 @@ async def _startup():
     text_indexer.start()
     idea_indexer.start()       # keeps the backlog's tags/vectors current
     doc_indexer.start()        # and the Reader's documents, one batch a tick
+    doc_thumb_sweeper.start()  # captures document faces for the library grid
     backup.start()
     mercury_poller.start()
     receipts_sweeper.start()
@@ -1531,8 +1534,9 @@ def api_reading_list():
     both are derived (a re-tag pass rewrites tags; recapturing a film changes
     its thumb), and a copy on the row would be a copy that goes stale. Same
     reason roomvault.resolve annotates at this layer."""
-    q = doctags.annotate(readinglist.queue())
-    done = doctags.annotate(readinglist.completed(limit=None))
+    q = docthumbs.annotate(doctags.annotate(readinglist.queue()))
+    done = docthumbs.annotate(doctags.annotate(
+        readinglist.completed(limit=None)))
     films = {f["url"]: f for f in walkthroughs.films()}
 
     def join(rows):
@@ -1593,6 +1597,17 @@ def api_reading_list_item(item_id: str):
     out["sections"] = readinglist.sections(it)
     out["progress"] = readinglist.progress(it)
     return out
+
+
+@app.get("/api/reading/thumb/{item_id}")
+def api_reading_thumb(item_id: str):
+    """A document's rendered face (server/docthumbs.py). The id is validated
+    against the rl_ scheme before it touches the filesystem."""
+    p = docthumbs.by_id(item_id)
+    if not p:
+        raise HTTPException(404, "no thumbnail for that document")
+    return FileResponse(p, media_type="image/png",
+                        headers={"X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/api/reading/{name}/done")

@@ -2084,7 +2084,31 @@ let findChatWorkspacePlaced = false;
 // Find full-height and Definition overlapping the cloud (see
 // findChatTileWorkspace). Bumping the key re-tiles once for anyone already
 // on v4, then goes back to being a one-time migration.
-const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v5";
+const FIND_CHAT_LAYOUT_KEY = "vira-find-chat-workspace-v6";
+
+// The workspace band every Find-cluster rect derives from, and the Reader's
+// two staged sizes inside it (owner's screenshots, 2026-08-05, measured as
+// PROPORTIONS of his window per the standing rule): a narrow left column at
+// rest, and roughly double that — reaching under the search column — when
+// expanded by double-clicking the Reader's title bar.
+function findWorkspaceBand() {
+  const G = 14, GAP = 12, TOP = 52, BOTTOM = 92;
+  const availW = innerWidth - 2 * G;
+  const availH = innerHeight - TOP - BOTTOM;
+  const boxH = Math.min(availH, Math.max(Math.round(availH * .79), 420));
+  const y0 = TOP + Math.round((availH - boxH) / 2);
+  const readerW = Math.max(300, Math.round(availW * .19));
+  return { G, GAP, TOP, availW, availH, boxH, y0, readerW };
+}
+
+function readerClusterRects() {
+  const b = findWorkspaceBand();
+  return {
+    small: { x: b.G, y: b.y0, w: b.readerW, h: b.boxH },
+    big: { x: b.G, y: b.y0,
+           w: Math.max(b.readerW, Math.round(b.availW * .40)), h: b.boxH },
+  };
+}
 
 // The three session-linked companions, in ONE order every surface reads: the
 // desktop toggle row in Find's toolbar, Find's own mobile tabs, and the nav
@@ -2161,9 +2185,8 @@ function findChatTileWorkspace() {
   const needsTile = layoutMode === "stage"
     || !lsGet(FIND_CHAT_LAYOUT_KEY, false);
   if (!needsTile) { findChatWorkspacePlaced = true; return; }
-  const G = 14, GAP = 12, TOP = 52, BOTTOM = 92;
-  const availW = innerWidth - 2 * G;      // the whole workspace band
-  const availH = innerHeight - TOP - BOTTOM;
+  const b = findWorkspaceBand();
+  const { GAP, availW, availH, boxH, y0 } = b;
   if (availW < 772 || availH < 400) return;
   findChatWorkspacePlaced = true;
   // The grid the owner arranged by hand and asked to be the default
@@ -2174,16 +2197,15 @@ function findChatTileWorkspace() {
   //
   // THE CLUSTER IS A SIZE RELATIVE TO THE WINDOW, not the whole desk. His
   // monitor is very large, and measured off his own screenshot the cluster
-  // takes about two thirds of the width and four fifths of the height,
-  // CENTRED — so the desk stays visible around it instead of the four
-  // windows stretching to the far corners of a 34-inch display. Every ratio
-  // below is his arrangement measured and normalized; a small desk falls
-  // back to the floors and simply fills more of the screen.
+  // takes about two thirds of the width and four fifths of the height.
+  // SHIFTED RIGHT since 2026-08-05 (owner's screenshots, same rule): the
+  // left column is the READER's reserved slot — the library reads beside
+  // the search — so the cluster starts past it instead of centring. The
+  // Reader is placed there when it is open; closed, the slot is just desk.
   const MIN_W = 340 + 240 + 320 + 2 * GAP;      // find + related + definition
-  const boxW = Math.min(availW, Math.max(Math.round(availW * .675), MIN_W));
-  const boxH = Math.min(availH, Math.max(Math.round(availH * .79), 420));
-  const x0 = G + Math.round((availW - boxW) / 2);
-  const y0 = TOP + Math.round((availH - boxH) / 2);
+  const boxW = Math.min(availW - b.readerW - GAP,
+                        Math.max(Math.round(availW * .675), MIN_W));
+  const x0 = b.G + b.readerW + GAP;
 
   const inner = boxW - 2 * GAP;
   let findW = Math.max(340, Math.round(inner * .310));
@@ -2207,12 +2229,41 @@ function findChatTileWorkspace() {
     "find-define": {x: defX, y: y0, w: defW, h: Math.round(boxH * .773)},
     "find-cloud": {x: relX, y: botY, w: relW + GAP + defW, h: botH},
   };
+  // An OPEN Reader takes its reserved column; a closed one is not opened —
+  // "they don't have to open together, but they can" (owner, 2026-08-05).
+  if (winState.reader?.open) rects.reader = readerClusterRects().small;
   Object.entries(rects).forEach(([id, r]) => {
     if (!winState[id]) return;
     setWinRect(winState[id].el, r, true);
     saveWinState(id, r);
   });
   lsSet(FIND_CHAT_LAYOUT_KEY, true);
+}
+
+// Double-click the Reader's title bar to swing it between its two staged
+// sizes: the narrow cluster column and the wide reading size (owner,
+// 2026-08-05). The pre-toggle rect is remembered so a hand-placed Reader
+// returns exactly where it was; geometry persists through saveWinState like
+// any drag, so the ordinary layout guards apply.
+let readerBig = false;
+let readerPrevRect = null;
+
+function readerSizeToggle() {
+  const st = winState.reader;
+  if (!st?.open) return;
+  if (!readerBig) {
+    readerPrevRect = winRect(st.el);
+    const r = readerClusterRects().big;
+    setWinRect(st.el, r, true);
+    saveWinState("reader", r);
+    readerBig = true;
+  } else {
+    const r = readerPrevRect || readerClusterRects().small;
+    setWinRect(st.el, r, true);
+    saveWinState("reader", r);
+    readerBig = false;
+  }
+  focusWin(st.el);
 }
 
 function openFindCompanions() {
@@ -2235,7 +2286,9 @@ function openFindCompanions() {
 // is correct: they asked for it.
 function raiseFindCluster() {
   if (!isDesktop) return;
-  FIND_CLUSTER.forEach((id) => {
+  // Reader first, so the search columns (and Definition, last) stay on top
+  // of it — it is the widest member and would otherwise bury the chat.
+  findClusterIds().forEach((id) => {
     const st = winState[id];
     if (st?.open) focusWin(st.el);
   });
@@ -15649,6 +15702,9 @@ function addZoomControls(bar, target, initial, onChange, resetOnBar = true) {
   if (resetOnBar) {
     bar.addEventListener("dblclick", (e) => { // double-click the bar resets zoom
       if (e.target.closest("button")) return;
+      // A window can claim its bar's double-click for something else (the
+      // Reader's size toggle) by preventDefault-ing in a capture listener.
+      if (e.defaultPrevented) return;
       z = 1;
       apply();
     });
@@ -15805,6 +15861,18 @@ function buildWindow(spec, st, ci) {
 // inert, every other window still readable and clickable.
 const FIND_CLUSTER = ["find", "find-related", "find-cloud", "find-define"];
 
+// THE READER IS A CLUSTER MEMBER WHEN IT IS OPEN (owner, 2026-08-05): the
+// library and the search are one reading ecosystem, so an open Reader stays
+// lit and operable inside the Find workspace instead of receding with the
+// desk — and everything it opens inherits the treatment the way Find's own
+// spawns do (note/job windows already markSpawnedClear at spawn; peeks are
+// focus-mode surfaces, which outrank the workspace). They do NOT have to
+// open together: the Reader is listed only while open, and pressing it acts
+// like `standalone` — it keeps a live treatment without declaring one.
+function findClusterIds() {
+  return winState.reader?.open ? ["reader", ...FIND_CLUSTER] : FIND_CLUSTER;
+}
+
 // Whether the desk is currently stepped back for the cluster. It is a state
 // you are IN, not a fact about which windows happen to be open — that was the
 // bug (owner, 2026-08-04): the companions stay open, so the whole desk stayed
@@ -15835,8 +15903,12 @@ function syncFindWorkspace() {
   const lit = findWorkspaceLit
     && FIND_COMPANIONS.some((c) => !c.standalone && winState[c.id]?.open);
   document.body.classList.toggle("find-workspace", lit);
-  FIND_CLUSTER.forEach((id) =>
-    winState[id]?.el.classList.toggle("find-member", lit));
+  // The Reader is only a member while OPEN, so the class carries that test:
+  // a fixed forEach over member ids would never REMOVE the class from a
+  // reader that closed out of the set.
+  [...FIND_CLUSTER, "reader"].forEach((id) =>
+    winState[id]?.el.classList.toggle("find-member",
+      lit && findClusterIds().includes(id)));
   dropSpawnedClear();
 }
 
@@ -15848,14 +15920,16 @@ document.addEventListener("pointerdown", (e) => {
   if (!isDesktop) return;
   const win = e.target.closest?.(".fwin");
   const id = win ? win.id.replace(/^win-/, "") : "";
-  if (!FIND_CLUSTER.includes(id)) { setFindWorkspaceLit(false); return; }
+  if (!findClusterIds().includes(id)) { setFindWorkspaceLit(false); return; }
   // Definition is `standalone`, so raising it CHANGES NO MODE (owner,
   // 2026-08-04): from a plain desk, looking up a word must not blur every
   // other window — a definition is an annotation, not a declaration that
   // you have moved into the search workspace. Inside a live workspace it is
   // an ordinary member, so pressing it keeps the treatment rather than
   // dropping it, which is why this returns instead of leaving.
-  if (findCompanion(id)?.standalone) return;
+  // The READER behaves the same way (owner, 2026-08-05): pressing into it
+  // keeps a live workspace without declaring one from a plain desk.
+  if (id === "reader" || findCompanion(id)?.standalone) return;
   setFindWorkspaceLit(true);
 }, true);
 
@@ -17997,6 +18071,17 @@ function rdocKindGlyph(kind) {
 // video is only ATTACHED on hover so thirty of them never load at once.
 function rdocThumb(it) {
   const film = it.film || {};
+  // A document with a rendered face (the thumbnailer's capture) shows it in
+  // the list too, not just on its grid tile.
+  if (!film.thumb && it.thumb) {
+    const box = el("div", "rdoc-thumb has-img");
+    const img = el("img");
+    img.src = it.thumb;
+    img.loading = "lazy";
+    img.alt = "";
+    box.appendChild(img);
+    return box;
+  }
   const box = el("div", "rdoc-thumb " + (film.thumb ? "has-img" : "glyph"));
   if (film.thumb) {
     const img = el("img");
@@ -18577,7 +18662,7 @@ function rdgSection(g) {
   }
   if (lines.length) {
     if (bands > 1) sec.appendChild(el("div", "rdg-bandlab", "Retros & briefs"));
-    sec.appendChild(rdgLineBand(lines, g.key || "flat"));
+    sec.appendChild(rdgMinorBand(lines, g.key || "flat"));
   }
   rdgWatch(sec);
   return sec;
@@ -18610,6 +18695,15 @@ function rdgFilm(it, i) {
   cap.appendChild(el("div", "rdg-iname", it.title));
   const sub = film.description || "";
   if (sub) cap.appendChild(el("div", "rdg-isub", sub));
+  // The tagging labels ride BELOW the description as small pills, exactly as
+  // on the plan tiles — they appear as the background tagger reaches each
+  // document, so a fresh film may sit pill-less for a batch or two.
+  const ftags = rdgItemTags(it);
+  if (ftags.length) {
+    const tr = el("div", "rdg-itags");
+    ftags.forEach((t) => tr.appendChild(el("span", "rdoc-chip", t)));
+    cap.appendChild(tr);
+  }
   fig.appendChild(cap);
   fig.appendChild(rdocMarkBtn(it, "reader-done-btn rdg-mark"));
   cardAction(fig, () => openReaderItem(it));
@@ -18617,16 +18711,34 @@ function rdgFilm(it, i) {
   return fig;
 }
 
+// One rule for what a card wears: first module, theme and concept tag, three
+// pills at most — enough to say what it is about without becoming a chip bar.
+function rdgItemTags(it) {
+  return rdocTagsOf(it, "module").slice(0, 1)
+    .concat(rdocTagsOf(it, "theme").slice(0, 1))
+    .concat(rdocTagsOf(it, "concept").slice(0, 1));
+}
+
 function rdgTile(it, i) {
   const box = el("article", "rdg-tile rdg-item"
     + (it.completed ? " read" : "") + (it.missing ? " missing" : ""));
   box.style.setProperty("--i", Math.min(i, 16));
+  // The document's rendered face, where the thumbnailer has captured one
+  // (HTML plans and dossiers) — joined at the route layer like film thumbs.
+  if (it.thumb) {
+    const frame = el("div", "rdg-tileframe");
+    const img = el("img");
+    img.src = it.thumb;
+    img.loading = "lazy";
+    img.alt = "";
+    frame.appendChild(img);
+    box.appendChild(frame);
+  }
   box.appendChild(el("div", "rdg-ikicker",
     (READER_KIND[it.kind] || it.kind)
     + (it.created ? " · " + fmtTime(it.created) : "")));
   box.appendChild(el("div", "rdg-iname", it.title));
-  const tags = rdocTagsOf(it, "theme").slice(0, 1)
-    .concat(rdocTagsOf(it, "concept").slice(0, 1));
+  const tags = rdgItemTags(it);
   if (tags.length) {
     const tr = el("div", "rdg-itags");
     tags.forEach((t) => tr.appendChild(el("span", "rdoc-chip", t)));
@@ -18639,35 +18751,25 @@ function rdgTile(it, i) {
   return box;
 }
 
-function rdgLineBand(items, bandKey) {
-  const wrap = el("div", "rdg-lines");
+// Retros and briefs: CARDS too (owner's call, 2026-08-05 — a widescreen grid
+// view has no business collapsing to a single-column list), just denser than
+// the plan tiles. The named fold survives — never a silent cap.
+function rdgMinorBand(items, bandKey) {
+  const grid = el("div", "rdg-tiles rdg-minor");
   const sorted = rdocSortNew(items);
   const expanded = rdgMore.has(bandKey);
   const show = expanded ? sorted : sorted.slice(0, RDG_LINE_CAP);
-  show.forEach((it, i) => {
-    const line = el("div", "rdg-line rdg-item"
-      + (it.completed ? " read" : "") + (it.missing ? " missing" : ""));
-    line.style.setProperty("--i", Math.min(i, 16));
-    line.appendChild(el("span", "rdg-lkind", READER_KIND[it.kind] || it.kind));
-    line.appendChild(el("span", "rdg-lname", it.title));
-    line.appendChild(el("span", "rdg-ldate",
-      it.created ? fmtTime(it.created) : ""));
-    line.appendChild(rdocMarkBtn(it, "reader-done-btn rdg-mark"));
-    cardAction(line, () => openReaderItem(it));
-    rdgWatch(line);
-    wrap.appendChild(line);
-  });
-  // Never a silent cap: the fold names what it holds, one click opens it.
+  show.forEach((it, i) => grid.appendChild(rdgTile(it, i)));
   if (!expanded && sorted.length > RDG_LINE_CAP) {
-    const more = el("button", "rdg-more",
+    const more = el("button", "rdg-more-tile",
       "+ " + (sorted.length - RDG_LINE_CAP) + " more");
     more.addEventListener("click", () => {
       rdgMore.add(bandKey);
       renderReaderDocs();
     });
-    wrap.appendChild(more);
+    grid.appendChild(more);
   }
-  return wrap;
+  return grid;
 }
 
 // Update = dispatch a session that re-researches the subject and rebuilds
@@ -21038,6 +21140,19 @@ function initDesktop() {
     makeDraggable(panel, head);
     makeResizable(panel, null, 460, 340);
     panel.addEventListener("pointerdown", () => focusWin(panel));
+  }
+  // Double-clicking the READER's title bar toggles its two staged sizes
+  // (owner, 2026-08-05). Registered in the CAPTURE phase with
+  // preventDefault + stopImmediatePropagation so the generic
+  // zoom-reset-on-dblclick on the same bar never also fires.
+  {
+    const rbar = winState.reader?.el?.querySelector(".fwin-bar");
+    rbar?.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button")) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      readerSizeToggle();
+    }, true);
   }
   // clicking the empty backdrop while a profile is focused dismisses it
   // (receded windows are pointer-inert then, so those clicks fall through

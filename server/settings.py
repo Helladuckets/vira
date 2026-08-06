@@ -67,6 +67,7 @@ DEFAULTS = {
     "receipts_sweep_days": 7,            # receipts-pass sweep cadence
     "idea_tag_interval_min": 10,         # backlog tag/vector pass cadence
     "doc_tag_interval_min": 10,          # Reader document tagging cadence
+    "doc_thumb_interval_min": 15,        # Reader document thumbnail cadence
                                          # (one model call per tick at most)
     "subs_notify_threshold_usd": 100,    # renewal ping floor ($/cycle; annuals always ping)
     "vault_root": "",                    # notes vault for the Brain index; empty = dormant

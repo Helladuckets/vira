@@ -124,6 +124,12 @@ def story(win_id):
                          "subject": f.get("subject"),
                          "description": f.get("description")}
 
+    try:
+        from . import docthumbs
+        docthumbs.annotate(hits)
+    except Exception:
+        pass
+
     reg = _registry_entry(row.get("map"))
     counts = {}
     for d in hits:
