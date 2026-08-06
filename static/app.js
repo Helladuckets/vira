@@ -12415,6 +12415,8 @@ function evStartSweepPoll() {
 // ----- Brain: grounded chat over the vault -----
 
 $("#note-back")?.addEventListener("click", closeNote);
+$("#jd-back")?.addEventListener("click", closeJobDescription);
+$("#jd-refresh")?.addEventListener("click", () => loadJobDescription(true));
 $("#story-back")?.addEventListener("click", () => closeStory());
 // keep: promote this glance to its own window, so it survives the next click
 $("#note-keep")?.addEventListener("click", () => {
@@ -14072,6 +14074,130 @@ function appStarSvg() {
   return svg;
 }
 
+// The catalog already has the posting text in its board snapshot. A title
+// opens that text in Vira instead of sending the whole app to a careers page;
+// the original posting remains one explicit link in the panel head.
+let jobdescCtx = null;
+
+function closeJobDescription() { exitFocus($("#jobdesc-panel")); }
+
+function jobdescWhen(stamp) {
+  if (!stamp) return "";
+  const d = new Date(stamp);
+  if (isNaN(d)) return stamp;
+  return d.toLocaleString([], {
+    year: "numeric", month: "short", day: "numeric",
+    hour: "2-digit", minute: "2-digit",
+  });
+}
+
+// Board copy is external input. The vault renderer understands wikilinks and
+// ordinary Markdown links, both of which carry attributes and are unnecessary
+// here. This smaller renderer has no attribute-bearing syntax: it escapes first
+// and only rebuilds the headings, bullets and emphasis jobdesc.to_markdown emits.
+function jobdescToHtml(md) {
+  const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  const inline = (s) => esc(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const out = [];
+  let inList = false;
+  for (const raw of (md || "").split("\n")) {
+    const h = raw.match(/^(#{1,4})\s+(.*)$/);
+    const li = raw.match(/^\s*[-*]\s+(.*)$/);
+    if (!li && inList) { out.push("</ul>"); inList = false; }
+    if (h) out.push(`<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`);
+    else if (li) {
+      if (!inList) { out.push("<ul>"); inList = true; }
+      out.push(`<li>${inline(li[1])}</li>`);
+    } else if (raw.trim()) out.push(`<p>${inline(raw)}</p>`);
+  }
+  if (inList) out.push("</ul>");
+  return out.join("\n");
+}
+
+function renderJobDescription(d) {
+  const body = $("#jd-body");
+  body.innerHTML = "";
+
+  const source = d.source === "live" ? "Current board posting"
+    : d.source === "snapshot" ? "Saved board snapshot"
+    : d.source === "blurb" ? "Catalog excerpt" : "Description unavailable";
+  const when = jobdescWhen(d.as_of);
+  const meta = el("div", "jd-meta");
+  meta.appendChild(el("span", "jd-source", source));
+  if (when) meta.appendChild(el("span", null, " · " + when));
+  if (d.partial) meta.appendChild(el("span", "jd-partial", " · excerpt only"));
+  body.appendChild(meta);
+
+  // A failed live check falls back to the snapshot on purpose. Say so: an
+  // unchanged document with the refresh button still present otherwise reads
+  // like the button did nothing, when the actual result is "saved copy shown".
+  if (d.reason && d.text) {
+    const prefix = d.source === "snapshot"
+      ? "Couldn’t refresh the board; showing the saved snapshot. " : "";
+    body.appendChild(el("div", "jd-warning", prefix + d.reason));
+  }
+
+  if (d.text) {
+    const doc = el("div", "jd-document");
+    doc.innerHTML = jobdescToHtml(d.text);
+    body.appendChild(doc);
+  } else {
+    body.appendChild(el("div", "empty left",
+      d.reason || "No description is available for this role."));
+  }
+
+  const refresh = $("#jd-refresh");
+  refresh.style.display = d.live && d.source !== "live" ? "" : "none";
+  refresh.disabled = false;
+  refresh.textContent = "refresh";
+}
+
+async function loadJobDescription(refresh = false) {
+  if (!jobdescCtx) return;
+  const uid = jobdescCtx.uid;
+  const body = $("#jd-body");
+  body.innerHTML = "";
+  body.appendChild(el("div", "spin",
+    refresh ? "Checking the board…" : "Loading posting…"));
+  const btn = $("#jd-refresh");
+  if (refresh) { btn.disabled = true; btn.textContent = "checking…"; }
+  try {
+    const suffix = refresh ? "?refresh=true" : "";
+    const d = await api(`/api/applications/${encodeURIComponent(uid)}`
+                        + `/description${suffix}`);
+    // A second title can be clicked before the first request returns. Never
+    // repaint the new role with the old role's slower response.
+    if (!jobdescCtx || uid !== jobdescCtx.uid || d.uid !== uid) return;
+    jobdescCtx = { ...jobdescCtx, ...d };
+    $("#jd-title").textContent = d.title || jobdescCtx.title || "Role";
+    const posting = $("#jd-open");
+    posting.href = d.url || jobdescCtx.url || "#";
+    posting.style.display = (d.url || jobdescCtx.url) ? "" : "none";
+    renderJobDescription(d);
+  } catch (e) {
+    if (!jobdescCtx || uid !== jobdescCtx.uid) return;
+    if (btn) { btn.disabled = false; btn.textContent = "refresh"; }
+    body.innerHTML = "";
+    body.appendChild(el("div", "empty left",
+      "Posting unavailable: " + e.message));
+  }
+}
+
+function openJobDescription(r) {
+  jobdescCtx = { uid: r.uid, title: r.title,
+                 url: r.url || r.apply_url || "" };
+  const panel = $("#jobdesc-panel");
+  $("#jd-title").textContent = r.title || "Role";
+  const posting = $("#jd-open");
+  posting.href = jobdescCtx.url || "#";
+  posting.style.display = jobdescCtx.url ? "" : "none";
+  $("#jd-refresh").style.display = "none";
+  panel.classList.add("open");
+  enterFocus(panel, () => panel.classList.remove("open"));
+  loadJobDescription();
+}
+
 function renderApplications() {
   const host = $("#app-list");
   if (!host || !appsData) return;
@@ -14176,6 +14302,12 @@ function appRow(r) {
   a.target = "_blank";
   a.rel = "noopener";
   a.textContent = r.title;
+  a.title = "Read the job description in Vira";
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openJobDescription(r);
+  });
   title.appendChild(a);
   if (r.fit != null) {
     const badge = el("span", "fit-badge" +
@@ -21261,7 +21393,7 @@ function initDesktop() {
   // the person and job panels behave like windows too:
   // drag + focus-raise + edge resize + content zoom
   ["#person-panel", "#group-panel", "#email-panel", "#job-panel",
-   "#story-panel"].forEach((sel) => {
+   "#jobdesc-panel", "#story-panel"].forEach((sel) => {
     const panel = document.querySelector(sel);
     const head = panel.querySelector(".panel-head");
     makeDraggable(panel, head);

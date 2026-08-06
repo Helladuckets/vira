@@ -42,6 +42,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                readingroom,
                fixtures, groupchat, ideaimages, ideas, ideatags, imessage,
                jobboards,
+               jobdesc,
                jobfiles,
                joblog,
                journal,
@@ -752,6 +753,16 @@ def api_applications_state(uid: str, req: AppStateReq):
                                          comment=req.comment)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/applications/{uid}/description")
+def api_applications_description(uid: str, refresh: bool = False):
+    """The posting itself, readable in Vira. Read-only and safe on a
+    passive instance — see server/jobdesc.py."""
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    return jobdesc.describe(role, refresh=refresh)
 
 
 class AppApplyReq(BaseModel):
