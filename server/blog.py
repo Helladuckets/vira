@@ -18,6 +18,7 @@ cloned data/ and pushes) — the send.py precedent. Authoring (add_post) is
 allowed anywhere: it only writes this instance's own data/.
 
 CLI: python -m server.blog add "<title>" <markdown-file>
+     python -m server.blog add-dossier "<title>" <directory> [summary]
      python -m server.blog publish <slug>
      python -m server.blog list
 """
@@ -27,6 +28,7 @@ import html as _html
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -50,6 +52,10 @@ def _store():
 
 def _posts_dir():
     return BLOG_DIR / "posts"
+
+
+def _dossiers_dir():
+    return BLOG_DIR / "dossiers"
 
 
 def _blank():
@@ -81,6 +87,17 @@ def post_md(slug: str) -> str:
     return (_posts_dir() / f"{slug}.md").read_text(encoding="utf-8")
 
 
+def dossier_dir(slug: str) -> Path:
+    return _dossiers_dir() / slug
+
+
+def _slug_taken(slug: str) -> bool:
+    """Return whether any authored blog object already owns ``slug``."""
+    return (get_post(slug) is not None
+            or (_posts_dir() / f"{slug}.md").exists()
+            or dossier_dir(slug).exists())
+
+
 def add_post(title: str, md: str, *, summary: str = "",
              date: str | None = None) -> dict:
     """Author a post (draft). Slug derives from the title; a collision takes
@@ -93,7 +110,7 @@ def add_post(title: str, md: str, *, summary: str = "",
     base = slugify(title)
     _posts_dir().mkdir(parents=True, exist_ok=True)
     slug, n = base, 2
-    while (_posts_dir() / f"{slug}.md").exists():
+    while _slug_taken(slug):
         slug, n = f"{base}-{n}", n + 1
     (_posts_dir() / f"{slug}.md").write_text(md, encoding="utf-8")
     entry = {
@@ -102,6 +119,50 @@ def add_post(title: str, md: str, *, summary: str = "",
         "summary": (summary or "").strip()[:MAX_SUMMARY],
         "date": date or datetime.now().strftime("%Y-%m-%d"),
         "status": "draft",
+        "created": _now(),
+        "updated": _now(),
+    }
+
+    def fn(s):
+        s["posts"] = [p for p in s["posts"] if p.get("slug") != slug]
+        s["posts"].append(entry)
+        return s
+
+    jsonstore.mutate(_store(), fn, _blank())
+    return entry
+
+
+def add_dossier(title: str, source: Path | str, *, summary: str = "",
+                 date: str | None = None) -> dict:
+    """Author a self-contained interactive dossier as a draft.
+
+    The source is a portable directory with ``index.html`` as its entry point.
+    Symlinks are rejected so publishing cannot reach outside the reviewed
+    bundle.
+    """
+    title = (title or "").strip()[:MAX_TITLE]
+    if not title:
+        raise ValueError("title required")
+    src = Path(source).expanduser().resolve()
+    if not src.is_dir() or not (src / "index.html").is_file():
+        raise ValueError("dossier source must be a directory with index.html")
+    for p in src.rglob("*"):
+        if p.is_symlink():
+            raise ValueError(f"dossier source contains symlink: {p}")
+
+    base = slugify(title)
+    _dossiers_dir().mkdir(parents=True, exist_ok=True)
+    slug, n = base, 2
+    while _slug_taken(slug):
+        slug, n = f"{base}-{n}", n + 1
+    shutil.copytree(src, dossier_dir(slug))
+    entry = {
+        "slug": slug,
+        "title": title,
+        "summary": (summary or "").strip()[:MAX_SUMMARY],
+        "date": date or datetime.now().strftime("%Y-%m-%d"),
+        "status": "draft",
+        "kind": "dossier",
         "created": _now(),
         "updated": _now(),
     }
@@ -373,22 +434,44 @@ def publish(slug: str, *, push: bool = True) -> dict:
     entry = get_post(slug)
     if not entry:
         raise ValueError(f"unknown post: {slug}")
-    md = post_md(slug)
-    page = render_post(entry, md)
+    is_dossier = entry.get("kind") == "dossier"
+    page = None if is_dossier else render_post(entry, post_md(slug))
 
     site = _site()
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         stage = Path(td) / slug
-        stage.mkdir()
-        (stage / "index.html").write_text(page, encoding="utf-8")
+        if is_dossier:
+            src = dossier_dir(slug)
+            if not src.is_dir() or not (src / "index.html").is_file():
+                raise RuntimeError(f"dossier bundle missing: {src}")
+            shutil.copytree(src, stage)
+        else:
+            stage.mkdir()
+            (stage / "index.html").write_text(page or "", encoding="utf-8")
         ok, report = _anon_scan(stage)
         if not ok:
             raise RuntimeError("anonymization gate blocked the publish:\n"
                                + report[:2000])
         dest = site / SITE_BLOG_REL / slug
-        dest.mkdir(parents=True, exist_ok=True)
-        (dest / "index.html").write_text(page, encoding="utf-8")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Promote a complete copy from the destination filesystem so a new
+        # bundle cannot leave stale assets behind. Directory renames are
+        # atomic; if promotion fails, restore the previous tree.
+        with tempfile.TemporaryDirectory(prefix=f".{slug}-",
+                                         dir=dest.parent) as deploy_td:
+            deploy_root = Path(deploy_td)
+            candidate = deploy_root / "candidate"
+            previous = deploy_root / "previous"
+            shutil.copytree(stage, candidate)
+            if dest.exists():
+                dest.rename(previous)
+            try:
+                candidate.rename(dest)
+            except Exception:
+                if previous.exists() and not dest.exists():
+                    previous.rename(dest)
+                raise
 
     published = [p for p in list_posts()
                  if p.get("status") == "published" and p.get("slug") != slug]
@@ -402,7 +485,8 @@ def publish(slug: str, *, push: bool = True) -> dict:
     site_json.write_text(json.dumps(site_index, indent=1) + "\n",
                          encoding="utf-8")
 
-    rel_post = (SITE_BLOG_REL / slug / "index.html").as_posix()
+    rel_post = ((SITE_BLOG_REL / slug).as_posix() if is_dossier else
+                (SITE_BLOG_REL / slug / "index.html").as_posix())
     rel_json = (SITE_BLOG_REL / "blog.json").as_posix()
     _git(site, "add", rel_post, rel_json)
     _git(site, "commit", "-m", f"add: blog/{slug} (published by Vira)")
@@ -437,12 +521,19 @@ def main(argv: list[str]) -> int:
         entry = add_post(argv[1], md)
         print(json.dumps(entry, indent=1))
         return 0
+    if cmd == "add-dossier" and len(argv) >= 3:
+        entry = add_dossier(argv[1], argv[2],
+                            summary=argv[3] if len(argv) >= 4 else "")
+        print(json.dumps(entry, indent=1))
+        return 0
     if cmd == "publish" and len(argv) >= 2:
         out = publish(argv[1])
         print(json.dumps(out, indent=1))
         return 0
     print("usage: python -m server.blog add \"<title>\" <md-file> | "
-          "publish <slug> | list", file=sys.stderr)
+          "add-dossier \"<title>\" <directory> [summary] | "
+          "publish <slug> | list",
+          file=sys.stderr)
     return 2
 
 

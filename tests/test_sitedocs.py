@@ -198,6 +198,28 @@ class SweepTests(Base):
         self.assertEqual(sitedocs.registry_rows(self.docs), [])
 
 
+class AddDossierTests(Base):
+    def test_add_dossier_copies_registers_and_indexes(self):
+        source = Path(self.tmp.name) / "atlas"
+        source.mkdir()
+        (source / "index.html").write_text(
+            "<title>AI terminology atlas</title>", encoding="utf-8")
+        (source / "signals.html").write_text("signals", encoding="utf-8")
+        out = sitedocs.add_dossier("AI terminology atlas", source,
+                                   created="2026-08-01")
+        self.assertEqual(out["locator"],
+                         "/docs/dossiers/ai-terminology-atlas/")
+        self.assertTrue((self.docs / "dossiers" / "ai-terminology-atlas" /
+                         "signals.html").is_file())
+        reg = json.loads((self.docs / "registry.json").read_text(encoding="utf-8"))
+        self.assertEqual(reg["items"][-1]["kind"], "dossier")
+        self.assertEqual(reg["items"][-1]["provenance"],
+                         ["local interactive dossier import"])
+        self.assertNotIn(str(source), json.dumps(reg))
+        self.assertIn("AI terminology atlas",
+                      (self.docs / "index.html").read_text(encoding="utf-8"))
+
+
 class IndexTests(Base):
     def test_index_written_and_escaped(self):
         self.build_site()

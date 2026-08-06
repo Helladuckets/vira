@@ -82,6 +82,41 @@ class AddPostTests(StoreBase):
         with self.assertRaises(ValueError):
             blog.add_post("Title", "   ")
 
+    def test_add_dossier_copies_portable_bundle(self):
+        source = self.root / "bundle"
+        source.mkdir()
+        (source / "index.html").write_text("<h1>Atlas</h1>", encoding="utf-8")
+        (source / "app.js").write_text("document.body.dataset.ready='1'",
+                                        encoding="utf-8")
+        entry = blog.add_dossier("AI Atlas", source, summary="Signals")
+        self.assertEqual(entry["kind"], "dossier")
+        self.assertTrue((blog.dossier_dir("ai-atlas") / "app.js").is_file())
+        self.assertEqual(blog.get_post("ai-atlas")["status"], "draft")
+
+    def test_add_dossier_requires_index_and_rejects_symlink(self):
+        source = self.root / "bundle"
+        source.mkdir()
+        with self.assertRaises(ValueError):
+            blog.add_dossier("Missing", source)
+        (source / "index.html").write_text("ok", encoding="utf-8")
+        target = self.root / "outside.txt"
+        target.write_text("outside", encoding="utf-8")
+        try:
+            (source / "outside.txt").symlink_to(target)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        with self.assertRaises(ValueError):
+            blog.add_dossier("Linked", source)
+
+    def test_post_and_dossier_share_one_slug_namespace(self):
+        source = self.root / "bundle"
+        source.mkdir()
+        (source / "index.html").write_text("ok", encoding="utf-8")
+        self.assertEqual(blog.add_post("Same title", "body")["slug"],
+                         "same-title")
+        self.assertEqual(blog.add_dossier("Same title", source)["slug"],
+                         "same-title-2")
+
     def test_render_post_is_a_standalone_document(self):
         e = blog.add_post("A <Post> & Title", "Text.")
         page = blog.render_post(e, "Text.")
@@ -142,6 +177,39 @@ class PublishTests(StoreBase):
                       _git(self.root, "--git-dir", str(self.bare),
                            "log", "-1", "--format=%s", "main"))
         self.assertEqual(blog.get_post("first-light")["status"], "published")
+
+    def test_publish_dossier_copies_all_assets(self):
+        source = self.root / "bundle"
+        source.mkdir()
+        (source / "index.html").write_text("<h1>Atlas</h1>", encoding="utf-8")
+        (source / "signals.html").write_text("<h1>Signals</h1>", encoding="utf-8")
+        (source / "app.js").write_text("document.body.dataset.ready='1'",
+                                        encoding="utf-8")
+        blog.add_dossier("AI Atlas", source, summary="Signals")
+        with mock.patch.object(blog, "_anon_scan", return_value=(True, "clean")):
+            out = blog.publish("ai-atlas", push=False)
+        dest = self.site / "lab" / "blog" / "ai-atlas"
+        self.assertTrue((dest / "index.html").is_file())
+        self.assertTrue((dest / "signals.html").is_file())
+        self.assertTrue((dest / "app.js").is_file())
+        self.assertIn("ai-atlas", out["url"])
+
+    def test_republish_dossier_removes_stale_assets(self):
+        source = self.root / "bundle"
+        source.mkdir()
+        (source / "index.html").write_text("<h1>Atlas</h1>", encoding="utf-8")
+        (source / "stale.js").write_text("old", encoding="utf-8")
+        blog.add_dossier("AI Atlas", source)
+        with mock.patch.object(blog, "_anon_scan", return_value=(True, "clean")):
+            blog.publish("ai-atlas", push=False)
+        (blog.dossier_dir("ai-atlas") / "stale.js").unlink()
+        (blog.dossier_dir("ai-atlas") / "fresh.js").write_text(
+            "new", encoding="utf-8")
+        with mock.patch.object(blog, "_anon_scan", return_value=(True, "clean")):
+            blog.publish("ai-atlas", push=False)
+        dest = self.site / "lab" / "blog" / "ai-atlas"
+        self.assertFalse((dest / "stale.js").exists())
+        self.assertTrue((dest / "fresh.js").is_file())
 
     def test_scan_failure_blocks_and_stages_nothing(self):
         blog.add_post("Leaky", "Contains something private.")
