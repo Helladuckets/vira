@@ -115,7 +115,7 @@ CLI_EXEC = {
 
 def provider_of_model(model):
     """Which provider a model id/alias belongs to. '' means unknown —
-    the caller falls back to the session default (anthropic)."""
+    the caller falls back to the configured session default."""
     m = (model or "").strip().lower()
     if not m:
         return ""
@@ -130,13 +130,41 @@ def provider_of_model(model):
     return ""
 
 
+def default_session_provider():
+    """The engine a dispatch that names NOTHING runs on — read from config
+    (`ai_provider`, the owner's go-to, the same key suggest.py drafts
+    against), never a shipped literal.
+
+    This is what makes automatic work follow the owner. Most machine
+    dispatches name no model at all — orphan resume and land, the journal's
+    unapplied instructions, profile explore, define sourcing, a routine with
+    no model of its own — so a hardcoded fallback pinned every one of them
+    to Anthropic no matter what the owner had configured. On 2026-08-06 that
+    surfaced the hard way: Vira's go-to was Codex, an Implement session ran
+    on claude-opus-5 anyway and died on "You've hit your monthly spend
+    limit", and the Resume button could only relaunch it onto the same dead
+    account — there was no way, anywhere in the UI, to say otherwise.
+
+    Guarded by session capability rather than trusted blindly: google and
+    xai are drafting-only (sessions_quality "" — no agent CLI to drive), so
+    a go-to of Gemini must not take every routine down with a ValueError at
+    launch. Those fall back to anthropic, which is equally the answer when
+    the key is unset or names a provider Vira does not know.
+    """
+    want = str(settings.raw().get("ai_provider") or "").strip().lower()
+    if want in models.PROVIDERS and sessions_quality(want):
+        return want
+    return "anthropic"
+
+
 def session_provider(model=None, provider=None):
     """The provider a launch will run its session on. An explicit provider
-    wins; else the model names it; else anthropic (the gated default)."""
+    wins; else the model names it; else the owner's configured go-to (see
+    default_session_provider) rather than a hardcoded anthropic."""
     p = (provider or "").strip().lower()
     if p in models.PROVIDERS:
         return p
-    return provider_of_model(model) or "anthropic"
+    return provider_of_model(model) or default_session_provider()
 
 
 def uses_cli_exec(spec):

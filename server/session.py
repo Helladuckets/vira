@@ -539,7 +539,7 @@ class Sessions:
             if not Path(cwd).is_dir():
                 cwd = None
         # Which engine drives this session: an explicit provider wins, else
-        # the model names it, else the gated default (anthropic). A
+        # the model names it, else the configured session-capable go-to. A
         # CLI-exec provider runs the detached runner even without the SDK.
         prov = agentbackend.session_provider(model=model, provider=provider)
         if not agentbackend.sessions_quality(prov):

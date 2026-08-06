@@ -28,15 +28,22 @@ class RoutingTest(unittest.TestCase):
             self.assertEqual(agentbackend.provider_of_model(m), want, m)
 
     def test_session_provider_precedence(self):
-        # explicit wins over the model, model over the default
-        self.assertEqual(
-            agentbackend.session_provider(model="gpt-5.1",
-                                          provider="anthropic"), "anthropic")
-        self.assertEqual(agentbackend.session_provider(model="gpt-5.1"),
-                         "openai")
-        self.assertEqual(agentbackend.session_provider(), "anthropic")
-        self.assertEqual(agentbackend.session_provider(model="mystery"),
-                         "anthropic")
+        # explicit wins over the model, model over the configured default.
+        # The config is PINNED rather than inherited from whichever machine
+        # runs this: since the fallback reads `ai_provider`, an unpinned
+        # assertion would pass on a stock install and fail on the owner's
+        # (go-to Codex) and on any CI runner that ever grows a config.
+        with _go_to("anthropic"):
+            self.assertEqual(
+                agentbackend.session_provider(model="gpt-5.1",
+                                              provider="anthropic"),
+                "anthropic")
+            self.assertEqual(agentbackend.session_provider(model="gpt-5.1"),
+                             "openai")
+            self.assertEqual(agentbackend.session_provider(), "anthropic")
+            self.assertEqual(agentbackend.session_provider(model="mystery"),
+                             "anthropic")
+
 
     def test_launch_refuses_a_sessionless_provider(self):
         with self.assertRaises(ValueError) as ctx:
@@ -59,6 +66,79 @@ class RoutingTest(unittest.TestCase):
             reg.launch("do it", model="gpt-5.1-codex", mode="autopilot")
         self.assertEqual(seen["provider"], "openai")
         self.assertEqual(seen["model"], "gpt-5.1-codex")
+
+
+def _go_to(pid):
+    """Pin the configured go-to provider for a block."""
+    return mock.patch.object(agentbackend.settings, "raw",
+                             return_value={"ai_provider": pid})
+
+
+class DefaultSessionProviderTest(unittest.TestCase):
+    """An automatic dispatch follows the owner's configured go-to.
+
+    The defect this pins: most machine dispatches name no model at all
+    (orphan resume/land, journal instructions, profile explore, define
+    sourcing, a routine with no model), so a hardcoded anthropic fallback
+    pinned every one of them to Anthropic however Vira was configured — and
+    on 2026-08-06 an Implement session died on the Anthropic monthly spend
+    limit while the go-to was Codex, with no UI anywhere to say otherwise.
+    """
+
+    def test_a_session_capable_go_to_is_honored(self):
+        with _go_to("openai"):
+            self.assertEqual(agentbackend.default_session_provider(), "openai")
+            self.assertEqual(agentbackend.session_provider(), "openai")
+
+    def test_a_drafting_only_go_to_falls_back_rather_than_raising(self):
+        # google/xai have no agent CLI (sessions_quality ""), so honoring
+        # them literally would make session.launch raise on EVERY automatic
+        # dispatch — every routine down because the drafting backend moved.
+        for pid in ("google", "xai"):
+            with self.subTest(pid=pid), _go_to(pid):
+                self.assertEqual(agentbackend.sessions_quality(pid), "")
+                self.assertEqual(agentbackend.default_session_provider(),
+                                 "anthropic")
+
+    def test_an_unknown_or_unset_go_to_falls_back(self):
+        for cfg in ({"ai_provider": "bogus"}, {"ai_provider": ""}, {}):
+            with self.subTest(cfg=cfg), \
+                 mock.patch.object(agentbackend.settings, "raw",
+                                   return_value=cfg):
+                self.assertEqual(agentbackend.default_session_provider(),
+                                 "anthropic")
+
+    def test_explicit_inputs_still_outrank_the_config(self):
+        # A curated choice must never be overridden by the go-to: a circuit
+        # stage naming fable, or the judge's judge_model, still means it.
+        with _go_to("openai"):
+            self.assertEqual(
+                agentbackend.session_provider(provider="anthropic"),
+                "anthropic")
+            self.assertEqual(agentbackend.session_provider(model="opus"),
+                             "anthropic")
+
+    def test_a_no_model_launch_rides_the_go_to_to_the_spec(self):
+        # The end-to-end shape the owner asked for: resume/land/journal pass
+        # no model, so launch must select the configured engine while leaving
+        # the model unset for _spawn_runner to resolve from that provider's
+        # own configuration.
+        reg = session.Sessions()
+        seen = {}
+
+        def fake_spawn(data):
+            seen.update(data)
+            h = mock.Mock()
+            h.kind = "detached"
+            h.working.return_value = False
+            return h
+
+        with _go_to("openai"), \
+             mock.patch.object(session, "SDK_AVAILABLE", True), \
+             mock.patch.object(reg, "_spawn_runner", fake_spawn):
+            reg.launch("resume the work")
+        self.assertEqual(seen["provider"], "openai")
+        self.assertIsNone(seen["model"])
 
 
 class SandboxTest(unittest.TestCase):

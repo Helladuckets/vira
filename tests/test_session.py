@@ -249,11 +249,14 @@ class ControlTests(unittest.TestCase):
 class LaunchTests(unittest.TestCase):
     def _launch_stubbed(self, reg, **kwargs):
         """Launch through the real code path with the subprocess runner
-        stubbed out (no claude CLI, no joblog writes)."""
+        stubbed out (no claude CLI, no joblog writes). These are legacy
+        Anthropic fallback tests, so they must not inherit a machine whose
+        configured go-to is Codex and take the detached CLI-exec path."""
         def fake_run(_self, s):
             s.data["status"] = "done"
             s.data["finished"] = 1.0
 
+        kwargs.setdefault("provider", "anthropic")
         with mock.patch.object(session.Sessions, "_run_subprocess", fake_run):
             jid = reg.launch("do the thing", cwd="/tmp", **kwargs)
         return jid
@@ -273,12 +276,18 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(reg.get(jid)["mode"], "manual")
 
     def test_sdk_absent_falls_back_and_says_so(self):
+        # The provider is PINNED, not inherited from this machine's config:
+        # the legacy --print fallback is an ANTHROPIC path, and a missing SDK
+        # only makes a session non-live for that provider. A CLI-exec engine
+        # (codex) needs no SDK, so on an install whose go-to is Codex this
+        # same launch is correctly live — which is what failed here once the
+        # default provider started following `ai_provider`.
         reg = make_registry()
         ran = []
         with mock.patch.object(session, "SDK_AVAILABLE", False), \
              mock.patch.object(session.Sessions, "_run_subprocess",
                                lambda self, s: ran.append(s.data["id"])):
-            jid = reg.launch("hello", mode="interactive")
+            jid = reg.launch("hello", mode="interactive", provider="anthropic")
         snap = reg.get(jid)
         self.assertFalse(snap["live"])
         self.assertIn("interactive session unavailable", snap["output"])
@@ -290,11 +299,13 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(ran, [jid])              # the legacy path really ran
 
     def test_steering_rejected_on_non_live_session(self):
+        # provider pinned for the same reason as the fallback test above:
+        # only the SDK-less ANTHROPIC path yields a non-live session.
         reg = make_registry()
         with mock.patch.object(session, "SDK_AVAILABLE", False), \
              mock.patch.object(session.Sessions, "_run_subprocess",
                                lambda self, s: None):
-            jid = reg.launch("hello")
+            jid = reg.launch("hello", provider="anthropic")
         with self.assertRaises(ValueError):
             reg.say(jid, "steer this")
 

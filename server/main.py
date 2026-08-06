@@ -2502,7 +2502,8 @@ class RunReq(BaseModel):
     # never whether the owner can talk to the session.
     mode: str | None = None
     # Which engine drives the session ("anthropic" | "openai"); absent, the
-    # model names it, else the gated default. server/agentbackend.py.
+    # model names it, else the configured session-capable go-to. See
+    # server/agentbackend.py.
     provider: str | None = None
 
 
