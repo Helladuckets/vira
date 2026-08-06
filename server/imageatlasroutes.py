@@ -11,18 +11,20 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from . import imageatlas
+from . import atlasops, imageatlas
 
 router = APIRouter()
 
 
 class BuildReq(BaseModel):
     limit: int | None = None
+    vault: str = imageatlas.PRIMARY
 
 
 class EmbedReq(BaseModel):
@@ -32,6 +34,29 @@ class EmbedReq(BaseModel):
 
 class ConfigPutReq(BaseModel):
     content: object = None
+
+
+class VaultCreateReq(BaseModel):
+    name: str
+    root: str = ""
+
+
+class OpsPlanReq(BaseModel):
+    src: str = imageatlas.PRIMARY
+    paths: list[str]
+    dest: str = ""
+    new_vault: dict | None = None
+
+
+class OpsActReq(BaseModel):
+    plan_id: str
+
+
+def _vid(v: str) -> str:
+    v = (v or imageatlas.PRIMARY).strip()
+    if len(v) > 41 or not v.replace("-", "").isalnum():
+        raise HTTPException(400, "bad vault id")
+    return v
 
 
 # ---------------------------------------------------------------- module ---
@@ -44,7 +69,7 @@ def api_status():
 @router.post("/api/imageatlas/build")
 def api_build(req: BuildReq):
     try:
-        return imageatlas.start_build(limit=req.limit)
+        return imageatlas.start_build(limit=req.limit, vault=_vid(req.vault))
     except PermissionError as e:
         raise HTTPException(403, str(e))
     except RuntimeError as e:
@@ -76,13 +101,25 @@ def viewer_index():
 
 @router.get("/imageatlas/atlases.json")
 def viewer_atlases():
-    a = imageatlas.atlas()
-    name = a.config.name or a.config.root.name if a else "Image atlas"
-    return {
-        "default": "local",
-        "atlases": [{"key": "local", "name": name, "base": "./data/",
-                     "blurb": "Built locally from this vault."}],
-    }
+    """One entry per registered vault. The primary keeps base ./data/ (the
+    original single-vault contract); the rest serve under ./v/<id>/. An
+    unbuilt vault still lists — marked, so the switcher can say why it
+    cannot open yet instead of hiding it."""
+    rows = imageatlas.vault_rows()
+    atlases = []
+    for r in rows:
+        base = "./data/" if r["primary"] else f"./v/{r['id']}/"
+        atlases.append({
+            "key": r["id"], "name": r["name"], "base": base,
+            "vault": True, "built": r["built"],
+            "weight": (f"{r['count']:,} images" if r["built"] else "not built yet"),
+            "blurb": ("Built locally from this vault." if r["built"]
+                      else "Registered — build its atlas to open it."),
+        })
+    if not atlases:
+        atlases = [{"key": imageatlas.PRIMARY, "name": "Image atlas",
+                    "base": "./data/", "vault": True, "built": False}]
+    return {"default": imageatlas.PRIMARY, "atlases": atlases}
 
 
 @router.get("/imageatlas/vendor/{path:path}")
@@ -102,9 +139,71 @@ def viewer_data(path: str):
     return _file(p, cache=p is not None and p.suffix.lower() == ".webp")
 
 
+@router.get("/imageatlas/v/{vid}/{path:path}")
+def viewer_vault_data(vid: str, path: str):
+    base = imageatlas.export_dir(_vid(vid))
+    if base is None:
+        raise HTTPException(404, "no atlas for that vault")
+    p = imageatlas.contained(base, path)
+    return _file(p, cache=p is not None and p.suffix.lower() == ".webp")
+
+
 @router.get("/imageatlas/api/me")
 def viewer_me():
     return {"admin": True}
+
+
+# ------------------------------------------------------------ vault ops ----
+
+@router.get("/imageatlas/api/vaults")
+def api_vaults():
+    return {"vaults": imageatlas.vault_rows(), "ops": True,
+            "passive": bool(os.environ.get("VIRA_PASSIVE"))}
+
+
+@router.post("/imageatlas/api/vaults/create")
+def api_vault_create(req: VaultCreateReq):
+    try:
+        return imageatlas.register_vault(req.name, req.root, create=True)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get("/imageatlas/api/ops")
+def api_ops_recent():
+    return {"plans": atlasops.recent()}
+
+
+@router.post("/imageatlas/api/ops/plan")
+def api_ops_plan(req: OpsPlanReq):
+    try:
+        return atlasops.plan_move(_vid(req.src), req.paths,
+                                  dest_vid=_vid(req.dest) if req.dest else "",
+                                  new_vault=req.new_vault)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/imageatlas/api/ops/apply")
+def api_ops_apply(req: OpsActReq):
+    try:
+        return atlasops.apply_plan(req.plan_id)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/imageatlas/api/ops/undo")
+def api_ops_undo(req: OpsActReq):
+    try:
+        return atlasops.undo_plan(req.plan_id)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 @router.get("/imageatlas/api/status")
@@ -113,26 +212,26 @@ def viewer_status():
 
 
 @router.get("/imageatlas/api/note")
-def viewer_note(path: str = ""):
-    text = imageatlas.note_text(path)
+def viewer_note(path: str = "", vault: str = ""):
+    text = imageatlas.note_text(path, _vid(vault))
     if text is None:
         raise HTTPException(404, "not found")
     return {"content": text}
 
 
 @router.get("/imageatlas/api/config/{row}")
-def viewer_config_get(row: str):
+def viewer_config_get(row: str, vault: str = ""):
     if len(row) > 64 or not row.replace("-", "").replace("_", "").replace(".", "").isalnum():
         raise HTTPException(400, "bad row")
-    return {"content": imageatlas.viewer_config_get(row)}
+    return {"content": imageatlas.viewer_config_get(row, _vid(vault))}
 
 
 @router.put("/imageatlas/api/config/{row}")
-def viewer_config_put(row: str, req: ConfigPutReq):
+def viewer_config_put(row: str, req: ConfigPutReq, vault: str = ""):
     if len(row) > 64 or not row.replace("-", "").replace("_", "").replace(".", "").isalnum():
         raise HTTPException(400, "bad row")
     try:
-        imageatlas.viewer_config_put(row, req.content)
+        imageatlas.viewer_config_put(row, req.content, _vid(vault))
     except PermissionError as e:
         raise HTTPException(403, str(e))
     except RuntimeError as e:

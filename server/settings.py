@@ -77,6 +77,9 @@ DEFAULTS = {
     "atlas_anchor_org": "",              # pinned anchor-org cluster in the Contact Atlas
     "atlas_max_nodes": 200,              # atlas node cap (most-active contacts)
     "atlas_min_edge_weight": 0.15,       # edges below this fused weight are dropped
+    "atlas_vaults": [],                  # extra Image Atlas vaults: [{id, name, root}]
+                                         # (the primary is always vault_root; see
+                                         # imageatlas.vaults / atlasops.create rules)
     "companion_hub_url": "",             # URL the pairing QR points the phone at;
                                          # empty = auto-detect (tailnet, then LAN)
     "design_foundation_root": "~/workspace/design-foundation",  # design-system repo the studio edits; missing = dormant

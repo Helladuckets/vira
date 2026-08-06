@@ -17484,6 +17484,39 @@ addEventListener("message", (e) => {
   loadSubsViz().catch(() => {});
 });
 
+// The Image Atlas viewer (an iframe) posts note refs UP instead of opening
+// obsidian:// links, so a wikilink or "open note" clicked in the galaxy
+// lands in Vira — a note window (the peek-or-keep rule; openNoteWindow
+// already collapses to the panel on a phone), or Find with the term
+// prefilled when the vault cannot resolve the ref exactly. Non-primary
+// vaults are not in the Brain index, so their refs go to Find too rather
+// than a wrong note being passed off as the link.
+addEventListener("message", (e) => {
+  if (e.origin !== location.origin) return;
+  const d = e.data;
+  if (!d || d.type !== "atlas-open-note" || !d.ref) return;
+  const ref = String(d.ref);
+  if (d.vault && d.vault !== "primary") { atlasNoteToFind(ref); return; }
+  api("/api/vault/resolve?ref=" + encodeURIComponent(ref))
+    .then((hit) => {
+      openNoteWindow(hit.path, noteName(hit.path));
+      if (!hit.exact) toast("No note named " + ref + " — opened the closest match");
+    })
+    .catch(() => atlasNoteToFind(ref));
+});
+
+function atlasNoteToFind(q) {
+  openApp("find");
+  setTimeout(() => {
+    const inp = document.querySelector("#find-root .find-bar input");
+    if (inp) {
+      inp.value = q;
+      inp.dispatchEvent(new Event("input", { bubbles: true }));
+      inp.focus();
+    }
+  }, 80);
+}
+
 // ---------- deep links: the one hash-route table ----------
 // Every deep link the app answers, in one place. A string value is the app
 // id openApp routes (dock window on desktop, the view takes over on
