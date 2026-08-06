@@ -38,6 +38,10 @@ OPTIONAL = {
     "pillow_heif",
     "objc", "Vision", "Quartz", "Foundation", "AppKit", "CoreFoundation",
     "pyobjc", "onnxruntime", "sentencepiece", "safetensors",
+    # the image-atlas engine (~/workspace/chaska, local repo — deliberately
+    # unpinned until it has a public home; server/imageatlas.py is dormant
+    # with the reason named when it is absent, tests skip)
+    "chaska",
 }
 
 

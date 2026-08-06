@@ -351,6 +351,22 @@ DEFAULT_MODULES = [
      "keywords": ["evidence ledger", "case study", "build provenance",
                   "interview"],
      "updated": TODAY},
+    {"id": "image-atlas", "name": "Image Atlas", "layer": "surface",
+     "group": "know", "kind": "chaska adapter + WebGL viewer",
+     "what": "Every image in the vault as a navigable 3D galaxy: embedded "
+             "ON THIS MACHINE (SigLIP 2, shared with the media index — no "
+             "photo ever leaves), projected and clustered by the standalone "
+             "chaska engine into a sprite-cloud viewer with local text and "
+             "drop-an-image search in the same embedding space. The atlas "
+             "sidecar lives in the vault (<vault>/.chaska), so a CLI build "
+             "and Vira serve one artifact; builds run out of process.",
+     "links": [{"to": "vault-index", "how": "scans the same vault as"},
+               {"to": "media-index", "how": "shares the SigLIP instance with"}],
+     "endpoints": ["/api/imageatlas/status", "/api/imageatlas/build",
+                   "/imageatlas/"],
+     "keywords": ["image atlas", "galaxy", "chaska", "siglip", "photos",
+                  "embedding map"],
+     "updated": TODAY},
     {"id": "lesson-recurrence", "name": "Lesson recurrence", "layer": "engine",
      "group": "operate", "kind": "derived counter + grounded adjudication",
      "what": "Reads the corrections ledger (~/.claude/LESSONS.md) back: "
