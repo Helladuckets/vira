@@ -11662,6 +11662,7 @@ function viewLoad(id) {
   if (id === "work") workTabLoad(workTab);
   if (id === "evidence") loadEvidence().catch(() => {});
   if (id === "applications") loadApplications().catch(() => {});
+  if (id === "research") window.loadResearch?.().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "find") loadFindStatus().catch(() => {});
@@ -14244,6 +14245,14 @@ function appRow(r) {
     actions.appendChild(wbtn);
   }
 
+  if (r.research && r.research.slug) {
+    const research = el("button", "btn app-cbtn", "Research");
+    research.title = "Open the company claim graph, source provenance, and application bridge";
+    research.addEventListener("click", () =>
+      window.openResearch?.(r.research.slug));
+    actions.appendChild(research);
+  }
+
   const cbtn = el("button", "btn app-cbtn",
     "Notes" + (r.comments && r.comments.length ? ` (${r.comments.length})` : ""));
   cbtn.addEventListener("click", () => {
@@ -14569,6 +14578,8 @@ const WINDOWS = [
     icon: "M4 5h16M7.5 12h9M10.5 19h3" },
   { id: "applications", title: "Applications", w: 780,
     icon: "M4 8.5h16V19H4zM9.5 8.5V6.8a1.8 1.8 0 0 1 1.8-1.8h1.4a1.8 1.8 0 0 1 1.8 1.8v1.7M4 12.5h16M10.5 12.5v2.2h3v-2.2" },
+  { id: "research", title: "Research", w: 1180,
+    icon: "M4 5h6v6H4zM14 4h6v6h-6zM14 14h6v6h-6zM10 8h4M17 10v4M10 8v9h4" },
   { id: "find", title: "Find", w: 720,
     icon: "M10.5 4a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13zM15.2 15.2L20 20M7.5 10.5h6M10.5 7.5v6" },
   { id: "find-cloud", title: "Concept Cloud", w: 460, h: 560,
@@ -15864,16 +15875,19 @@ function buildWindow(spec, st, ci) {
 // inert, every other window still readable and clickable.
 const FIND_CLUSTER = ["find", "find-related", "find-cloud", "find-define"];
 
-// THE READER IS A CLUSTER MEMBER WHEN IT IS OPEN (owner, 2026-08-05): the
-// library and the search are one reading ecosystem, so an open Reader stays
-// lit and operable inside the Find workspace instead of receding with the
-// desk — and everything it opens inherits the treatment the way Find's own
-// spawns do (note/job windows already markSpawnedClear at spawn; peeks are
-// focus-mode surfaces, which outrank the workspace). They do NOT have to
-// open together: the Reader is listed only while open, and pressing it acts
-// like `standalone` — it keeps a live treatment without declaring one.
+// THE READER AND RESEARCH ARE CLUSTER MEMBERS WHEN OPEN (owner, 2026-08-05,
+// 2026-08-06): reading, research, and search are one knowledge ecosystem, so
+// an open Reader or Research window stays lit and operable inside the Find
+// workspace instead of receding with the desk. They do NOT have to open
+// together: each is listed only while open, and pressing either acts like
+// `standalone` — it keeps a live treatment without declaring one.
+const FIND_PASSIVE_MEMBERS = ["reader", "research"];
+
 function findClusterIds() {
-  return winState.reader?.open ? ["reader", ...FIND_CLUSTER] : FIND_CLUSTER;
+  return [
+    ...FIND_PASSIVE_MEMBERS.filter((id) => winState[id]?.open),
+    ...FIND_CLUSTER,
+  ];
 }
 
 // Whether the desk is currently stepped back for the cluster. It is a state
@@ -15906,10 +15920,10 @@ function syncFindWorkspace() {
   const lit = findWorkspaceLit
     && FIND_COMPANIONS.some((c) => !c.standalone && winState[c.id]?.open);
   document.body.classList.toggle("find-workspace", lit);
-  // The Reader is only a member while OPEN, so the class carries that test:
+  // Passive members only belong while OPEN, so the class carries that test:
   // a fixed forEach over member ids would never REMOVE the class from a
-  // reader that closed out of the set.
-  [...FIND_CLUSTER, "reader"].forEach((id) =>
+  // window that closed out of the set.
+  [...FIND_CLUSTER, ...FIND_PASSIVE_MEMBERS].forEach((id) =>
     winState[id]?.el.classList.toggle("find-member",
       lit && findClusterIds().includes(id)));
   dropSpawnedClear();
@@ -15930,9 +15944,9 @@ document.addEventListener("pointerdown", (e) => {
   // you have moved into the search workspace. Inside a live workspace it is
   // an ordinary member, so pressing it keeps the treatment rather than
   // dropping it, which is why this returns instead of leaving.
-  // The READER behaves the same way (owner, 2026-08-05): pressing into it
-  // keeps a live workspace without declaring one from a plain desk.
-  if (id === "reader" || findCompanion(id)?.standalone) return;
+  // READER and RESEARCH behave the same way: pressing into either keeps a
+  // live workspace without declaring one from a plain desk.
+  if (FIND_PASSIVE_MEMBERS.includes(id) || findCompanion(id)?.standalone) return;
   setFindWorkspaceLit(true);
 }, true);
 
@@ -18998,6 +19012,13 @@ function renderReaderHead() {
   sw.title = "Details — what this is, how it was derived, its instructions";
   sw.addEventListener("click", toggleReaderDefs);
   titleRow.appendChild(sw);
+  if (page?.research?.slug) {
+    const research = el("button", "fchip sm", "Open research graph");
+    research.title = "Claims, people, change over time, and source provenance";
+    research.addEventListener("click", () =>
+      window.openResearch?.(page.research.slug));
+    titleRow.appendChild(research);
+  }
   host.appendChild(titleRow);
 
   // ONE description, in the slot every tab already uses. The docs view grew a

@@ -44,6 +44,18 @@ class Base(unittest.TestCase):
 
 
 class UpdatePromptTest(Base):
+    def test_research_identity_round_trips_without_owning_graph_data(self):
+        readingroom.build(
+            "test-room", "Test Room", "One subject.",
+            [{"title": "A talk", "url": "https://example.com/a",
+              "research_graph": "anthropic",
+              "research_source_id": "src_123",
+              "research_event_id": "evt_456"}])
+        item = readingroom.load_room("test-room")["items"][0]
+        self.assertEqual(item["research_graph"], "anthropic")
+        self.assertEqual(item["research_source_id"], "src_123")
+        self.assertEqual(item["research_event_id"], "evt_456")
+
     def test_prompt_names_the_room_and_the_contract(self):
         self.build()
         p = readingroom.update_prompt("test-room")

@@ -57,6 +57,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                photos, pickfolder, plans, profilerefresh, radar, reconnect,
                textindex,
                receipts,
+               research,
                imageatlasroutes,
                resolver,
                roomvault,
@@ -1346,7 +1347,57 @@ def api_frontdoor_dismiss(module_id: str, req: DismissReq):
 def api_reading_pages():
     """Personal reading-room pages on disk, with what a Reader card needs:
     subtitle, item count, done count, built date (all best-effort)."""
-    return {"pages": reading.page_details()}
+    pages = reading.page_details()
+    try:
+        by_room = {row.get("room"): row for row in research.catalog()
+                   if row.get("status") == "ready" and row.get("room")}
+        for page in pages:
+            graph = by_room.get(page.get("name"))
+            if graph:
+                page["research"] = {
+                    "slug": graph["id"],
+                    "name": graph["name"],
+                    "company": graph["company"],
+                }
+    except Exception:  # noqa: BLE001 -- Reader remains useful without a graph
+        pass
+    return {"pages": pages}
+
+
+@app.get("/api/research")
+def api_research_catalog():
+    """Available canonical research graphs; no database body is loaded."""
+    return {"projects": research.catalog()}
+
+
+@app.get("/api/research/{graph_id}/claims/{claim_id}")
+def api_research_claim(graph_id: str, claim_id: str):
+    try:
+        detail = research.claim_detail(claim_id, graph_id=graph_id)
+    except research.ResearchGraphError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if detail is None:
+        raise HTTPException(404, "no such research claim")
+    return detail
+
+
+@app.get("/api/research/{graph_id}/sources/{source_id}")
+def api_research_source(graph_id: str, source_id: str):
+    try:
+        detail = research.source_detail(source_id, graph_id=graph_id)
+    except research.ResearchGraphError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if detail is None:
+        raise HTTPException(404, "no such research source")
+    return detail
+
+
+@app.get("/api/research/{graph_id}")
+def api_research_overview(graph_id: str):
+    try:
+        return research.overview(graph_id)
+    except research.ResearchGraphError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.get("/api/reading/rooms/{name}")

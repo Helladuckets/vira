@@ -289,6 +289,19 @@ class ComposeTest(ApplicationsBase):
         self.assertEqual(out["meta"]["universe"]["unanalyzed"], 2)
         self.assertTrue(all(not r["in_universe"] for r in out["roles"]))
 
+    def test_company_research_graph_is_joined_without_becoming_role_data(self):
+        graph = {"id": "example-labs", "name": "Example research",
+                 "company": "Example Labs", "status": "ready",
+                 "claim_count": 12}
+        with mock.patch("server.research.catalog", return_value=[graph]):
+            out = applications.compose()
+        role = next(row for row in out["roles"]
+                    if row["company"] == "Example Labs")
+        self.assertEqual("example-labs", role["research"]["slug"])
+        self.assertEqual(12, role["research"]["claim_count"])
+        self.assertEqual("example-labs",
+                         out["companies"]["Example Labs"]["research"]["slug"])
+
 
 class UniverseTest(ApplicationsBase):
     def setUp(self):
@@ -453,6 +466,26 @@ class PromptTest(ApplicationsBase):
         self.assertIn("prioritize the letter", p)
         body = json.loads(p.split("ROLE:\n", 1)[1].rsplit("\n\nOwner", 1)[0])
         self.assertEqual(body["title"], role["title"])
+
+    def test_apply_prompt_names_research_authority_boundary(self):
+        roles, _ = applications.load_roles()
+        context = {
+            "research": {"graph": {"database": "/tmp/public.sqlite"}},
+            "personal_bridge": {"path": "/tmp/bridge.json", "taxonomy": {
+                "items": [{"rank": 1, "id": "craft", "label": "Craft",
+                           "application_use": "Lead with artifacts.",
+                           "matt_overlap": {
+                               "facts_anchors": ["FACTS.md:1"],
+                               "permitted_language": ["builder"],
+                               "boundaries": ["Do not overclaim."]}}]}},
+        }
+        with mock.patch("server.research.application_context",
+                        return_value=context):
+            p = applications.apply_prompt(roles[0])
+        self.assertIn("EMPLOYER RESEARCH CONTEXT", p)
+        self.assertIn("describes Example Labs, not the owner", p)
+        self.assertIn("FACTS.md:1", p)
+        self.assertIn("Do not overclaim", p)
 
 
 class ApplyRouteTest(ApplicationsBase):

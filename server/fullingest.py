@@ -248,7 +248,15 @@ def raw_note(item, room_slug, author, published, description, body,
           f"published: {published}" if published else "published:",
           f"room_item_id: {item['id']}",
           f"room_slug: {room_slug}",
-          f"created: {today}",
+          f"created: {today}"]
+    # Research graphs provide durable identities that survive URL/title
+    # changes. They are optional because ordinary rooms know nothing about
+    # the graph; when present they let the vault source-summary, Reader, and
+    # provenance inspector resolve the same source and underlying event.
+    for field in ("research_source_id", "research_event_id"):
+        if item.get(field):
+            fm.append(f"{field}: {_yaml(item[field])}")
+    fm += [
           f"description: {_yaml(_oneline(description))}",
           "---", ""]
     b = []
@@ -312,6 +320,60 @@ def stage_item(item, room_slug, root, binary=""):
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(out)
     return "staged"
+
+
+def stage_items(items, room_slug, root=None, binary=None):
+    """Stage an explicit, validated selection rather than an entire room.
+
+    This is the bounded ingestion seam for audited deltas: callers select
+    the canonical roots, this function runs them through the Reader schema,
+    and only that cleaned list reaches :func:`stage_item`.  Distribution
+    pointers and bibliography records therefore cannot slip in merely
+    because they happen to share a room with a selected source.
+
+    ``root`` is injectable for a deliberate CLI or a test; omitting it uses
+    Vira's configured vault.  ``binary=None`` probes for yt-dlp while an
+    explicit empty string preserves the existing "not installed" result.
+    """
+    if _passive():
+        raise StageError("passive instance: staging writes the live vault. Refusing.")
+    if not readingroom.SLUG_RE.match((room_slug or "").strip()):
+        raise StageError(f"invalid room slug: {room_slug!r}")
+    try:
+        clean = readingroom.clean_items(items)
+    except readingroom.BuildError as exc:
+        raise StageError(f"invalid selection: {exc}") from exc
+    root = Path(root) if root is not None else vault.vault_root()
+    if not root.exists():
+        raise StageError(f"vault root does not exist: {root}")
+    if binary is None:
+        binary = ytdlp_path()
+
+    counts, failures, outcomes = {}, [], []
+    for it in clean:
+        state = stage_item(it, room_slug, root, binary)
+        key = state.split(":", 1)[0]
+        counts[key] = counts.get(key, 0) + 1
+        outcomes.append({
+            "id": it["id"],
+            "research_source_id": it.get("research_source_id", ""),
+            "title": it.get("title", ""),
+            "state": state,
+        })
+        if key == "failed":
+            failures.append({
+                "id": it["id"],
+                "research_source_id": it.get("research_source_id", ""),
+                "title": it.get("title", ""),
+                "why": state.split(":", 1)[1].strip(),
+            })
+    return {
+        "room": room_slug,
+        "selected": len(clean),
+        "counts": counts,
+        "outcomes": outcomes,
+        "failures": failures[:40],
+    }
 
 
 def stage(slug, limit=None):

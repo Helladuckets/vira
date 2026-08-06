@@ -637,6 +637,24 @@ def compose(company=None, view=None):
                       or "applications_remote_ok" in cfg,
     }
     state = get_state()
+    try:
+        from . import research
+        research_rows = research.catalog()
+    except Exception:  # noqa: BLE001 -- applications must work without graphs
+        research_rows = []
+
+    def graph_for(company_name):
+        wanted = str(company_name or "").strip().casefold()
+        if not wanted:
+            return None
+        exact = next((g for g in research_rows if wanted in {
+            str(g.get("id") or "").casefold(),
+            str(g.get("name") or "").casefold(),
+            str(g.get("company") or "").casefold(),
+        }), None)
+        return exact or next((g for g in research_rows if wanted in
+                              str(g.get("company") or "").casefold()), None)
+
     companies = {}
     out = []
     for r in roles:
@@ -648,6 +666,13 @@ def compose(company=None, view=None):
         row["status"] = st.get("status", "none")
         row["comments"] = st.get("comments", [])
         row["last_job"] = st.get("last_job")
+        graph = graph_for(r["company"])
+        if graph and graph.get("status") == "ready":
+            row["research"] = {
+                "slug": graph["id"],
+                "name": graph["name"],
+                "claim_count": graph.get("claim_count", 0),
+            }
         out.append(row)
         c = companies.setdefault(r["company"], {"roles": 0, "scored": 0})
         c["roles"] += 1
@@ -655,6 +680,13 @@ def compose(company=None, view=None):
             c["scored"] += 1
     for name, c in companies.items():
         c["connections"] = len(connections_for(name))
+        graph = graph_for(name)
+        if graph and graph.get("status") == "ready":
+            c["research"] = {
+                "slug": graph["id"],
+                "name": graph["name"],
+                "claim_count": graph.get("claim_count", 0),
+            }
     return {"roles": out, "companies": companies, "meta": meta}
 
 
@@ -730,6 +762,44 @@ def apply_prompt(role, note=""):
                   "the tension plainly in the fit brief before building."]
     if note:
         lines += ["", f"Owner note with this dispatch: {note}"]
+    try:
+        from . import research
+        context = research.application_context(role=role, claim_limit=8)
+    except Exception:  # noqa: BLE001 -- package dispatch is still usable
+        context = None
+    if context:
+        bridge = context.get("personal_bridge") or {}
+        taxonomy = bridge.get("taxonomy") or {}
+        bridge_items = []
+        for item in (taxonomy.get("items") or [])[:14]:
+            overlap = item.get("matt_overlap") or {}
+            bridge_items.append({
+                "rank": item.get("rank"),
+                "id": item.get("id"),
+                "label": item.get("label"),
+                "application_use": item.get("application_use"),
+                "facts_anchors": overlap.get("facts_anchors") or [],
+                "permitted_language": overlap.get("permitted_language") or [],
+                "boundaries": overlap.get("boundaries") or [],
+            })
+        graph = (context.get("research") or {}).get("graph") or {}
+        lines += [
+            "",
+            "EMPLOYER RESEARCH CONTEXT:",
+            f"- Public employer evidence describes {role.get('company') or 'the employer'}, not the owner. "
+            "Use it to understand the employer and to choose emphasis; every "
+            "statement about the owner still requires a FACTS.md anchor.",
+            "- The personal bridge is a local interpretation, not canonical "
+            "research evidence. Follow every listed boundary and re-check its "
+            "FACTS.md anchors before using permitted language.",
+            f"- Canonical public-language graph: {graph.get('database', '')}",
+            f"- Local application bridge: {bridge.get('path', '')}",
+            "- Open the Vira Research view for expandable claim phrasings, "
+            "speakers, events, repost relations, and root-source links.",
+            "",
+            "PRIORITIZED APPLICATION BRIDGE:",
+            json.dumps(bridge_items, indent=1, ensure_ascii=False),
+        ]
     lines += ["", "Close out exactly per the skill: tracker row `ready`, "
               "best-effort status mirror, open the package folder. Only the "
               "owner submits — never mark anything `applied`."]
