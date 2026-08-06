@@ -23,6 +23,12 @@ from PIL import Image
 
 from server import imageatlas
 
+try:
+    import chaska  # noqa: F401 — optional dependency; CI runs without it
+    HAVE_CHASKA = True
+except Exception:
+    HAVE_CHASKA = False
+
 
 DIMS = 16
 
@@ -64,6 +70,7 @@ def _make_vault(root: Path) -> None:
         encoding="utf-8")
 
 
+@unittest.skipUnless(HAVE_CHASKA, "chaska not installed (optional dependency)")
 class Base(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
