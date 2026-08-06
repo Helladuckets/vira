@@ -33,7 +33,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import jobshared, jsonstore, settings
+from . import jobcompare, jobshared, jsonstore, settings
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "applications.json"
 
@@ -270,6 +270,10 @@ def _norm(job, source, avail=None, rule=None):
         "url": job.get("url") or "",
         "apply_url": job.get("apply") or job.get("url") or "",
         "blurb": (job.get("blurb") or "")[:400],
+        # Kept on the server-side role record for comparison and application
+        # package work. compose() deliberately removes it from the catalog
+        # payload: thousands of full postings would make first paint enormous.
+        "jd": str(job.get("jd") or "")[:24000],
         "source": source["slug"],
         "comp_kind": job.get("comp") or "",
         "fresh": _fresh(job),
@@ -458,6 +462,7 @@ def load_universe():
                 "url": j.get("url") or cr.get("url") or "",
                 "apply_url": cr.get("apply_url") or j.get("url") or "",
                 "blurb": (j.get("blurb") or "")[:400],
+                "jd": str(j.get("jd") or cr.get("jd") or "")[:24000],
                 "source": "universe",
                 "in_universe": True,
                 # role files carry no first_seen; the corpus overlay does
@@ -666,6 +671,11 @@ def compose(company=None, view=None):
         row["status"] = st.get("status", "none")
         row["comments"] = st.get("comments", [])
         row["last_job"] = st.get("last_job")
+        # The list only needs the capability flag. Full descriptions stay
+        # server-side and travel only for the roles the owner compares.
+        row["has_description"] = jobcompare.description_available(
+            row.get("jd") or "")
+        row.pop("jd", None)
         graph = graph_for(r["company"])
         if graph and graph.get("status") == "ready":
             row["research"] = {
@@ -704,6 +714,23 @@ def find_role(uid):
         if r["uid"] == uid:
             return r
     return None
+
+
+def compare_roles(uids):
+    """Resolve catalog ids and return a deterministic description comparison."""
+    if not isinstance(uids, list):
+        raise ValueError("uids must be a list")
+    if not jobcompare.MIN_ROLES <= len(uids) <= jobcompare.MAX_ROLES:
+        raise ValueError(
+            f"choose between {jobcompare.MIN_ROLES} and "
+            f"{jobcompare.MAX_ROLES} roles")
+    roles = []
+    for uid in uids:
+        role = find_role(str(uid))
+        if role is None:
+            raise KeyError(str(uid))
+        roles.append(role)
+    return jobcompare.compare(roles)
 
 
 def apply_prompt(role, note=""):
