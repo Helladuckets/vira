@@ -117,14 +117,13 @@ class StatusTest(Base):
         # the real atlas() (unpatched) re-reads settings per access
         self.p1.stop()
         try:
-            imageatlas._active["key"] = None
+            imageatlas._active.clear()
             a = imageatlas.atlas()
             self.assertEqual(a.config.root, self.root.resolve())
             b = imageatlas.atlas()
             self.assertIs(a, b)          # same key -> cached
         finally:
-            imageatlas._active["key"] = None
-            imageatlas._active["atlas"] = None
+            imageatlas._active.clear()
             self.p1.start()
 
 
@@ -160,7 +159,7 @@ class BuildTest(Base):
                 imageatlas.start_build()
 
     def test_build_refused_when_dormant(self):
-        with mock.patch.object(imageatlas, "atlas", return_value=None):
+        with mock.patch.object(imageatlas, "atlas_for", return_value=None):
             with self.assertRaises(RuntimeError):
                 imageatlas.start_build()
 
@@ -229,7 +228,44 @@ class RouteTest(Base):
 
     def test_atlases_json_generated(self):
         r = self.client.get("/imageatlas/atlases.json")
-        self.assertEqual(r.json()["default"], "local")
+        j = r.json()
+        self.assertEqual(j["default"], "primary")
+        self.assertEqual(j["atlases"][0]["key"], "primary")
+        self.assertTrue(j["atlases"][0]["built"])
+
+    def test_vaults_route_shape(self):
+        r = self.client.get("/imageatlas/api/vaults")
+        j = r.json()
+        self.assertTrue(j["ops"])
+        self.assertEqual(j["vaults"][0]["id"], "primary")
+
+    def test_vault_data_route_contained(self):
+        r = self.client.get("/imageatlas/v/primary/meta.json")
+        self.assertEqual(r.status_code, 200)
+        r = self.client.get("/imageatlas/v/primary/%2e%2e/atlas.sqlite")
+        self.assertIn(r.status_code, (400, 404))
+        r = self.client.get("/imageatlas/v/nope/meta.json")
+        self.assertEqual(r.status_code, 404)
+
+    def test_ops_plan_route_validates(self):
+        r = self.client.post("/imageatlas/api/ops/plan",
+                             json={"src": "primary", "paths": [], "dest": "x"})
+        self.assertEqual(r.status_code, 400)
+
+    def test_ops_apply_passive_403(self):
+        from server import atlasops
+        with tempfile.TemporaryDirectory() as td:
+            with mock.patch.object(atlasops, "STORE", Path(td) / "ops.json"):
+                with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+                    r = self.client.post("/imageatlas/api/ops/apply",
+                                         json={"plan_id": "ap_x"})
+        self.assertEqual(r.status_code, 403)
+
+    def test_vault_create_passive_403(self):
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            r = self.client.post("/imageatlas/api/vaults/create",
+                                 json={"name": "Personal"})
+        self.assertEqual(r.status_code, 403)
 
     def test_traversal_refused(self):
         r = self.client.get("/imageatlas/data/%2e%2e/atlas.sqlite")
@@ -265,6 +301,70 @@ class RouteTest(Base):
         with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
             r = self.client.post("/api/imageatlas/build", json={})
         self.assertEqual(r.status_code, 403)
+
+
+class RegistryTest(unittest.TestCase):
+    """vaults()/register_vault need no chaska — pure settings + filesystem."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.primary = Path(self.tmp.name) / "main-vault"
+        (self.primary / "wiki").mkdir(parents=True)
+        self.extra = Path(self.tmp.name) / "personal"
+        (self.extra / "wiki").mkdir(parents=True)
+        self.cfg = {"vault_root": str(self.primary),
+                    "atlas_vaults": [{"id": "personal", "name": "Personal",
+                                      "root": str(self.extra)}]}
+        p = mock.patch.object(imageatlas.settings, "get",
+                              side_effect=lambda k: self.cfg.get(k, ""))
+        p.start(); self.addCleanup(p.stop)
+
+    def test_vaults_primary_first_and_registered(self):
+        vs = imageatlas.vaults()
+        self.assertEqual([v["id"] for v in vs], ["primary", "personal"])
+        self.assertTrue(vs[0]["primary"])
+        self.assertTrue(vs[1]["exists"])
+
+    def test_vanished_dir_reports_not_hides(self):
+        self.cfg["atlas_vaults"] = [{"id": "gone", "name": "Gone",
+                                     "root": str(Path(self.tmp.name) / "nope")}]
+        vs = imageatlas.vaults()
+        self.assertEqual(vs[1]["id"], "gone")
+        self.assertFalse(vs[1]["exists"])
+
+    def test_reserved_and_malformed_rows_dropped(self):
+        self.cfg["atlas_vaults"] = [
+            {"id": "local", "name": "Bad", "root": str(self.extra)},
+            {"id": "", "name": "x", "root": str(self.extra)},
+            "not-a-dict"]
+        self.assertEqual([v["id"] for v in imageatlas.vaults()], ["primary"])
+
+    def test_register_refusals(self):
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(PermissionError):
+                imageatlas.register_vault("X", "")
+        with self.assertRaises(ValueError):        # duplicate id
+            imageatlas.register_vault("Personal", str(self.extra))
+        with self.assertRaises(ValueError):        # inside the primary vault
+            imageatlas.register_vault("Nested", str(self.primary / "wiki"))
+        with self.assertRaises(ValueError):        # unusable name
+            imageatlas.register_vault("!!!", "")
+
+    def test_register_creates_and_writes_config(self):
+        writes = {}
+        fake_onboard = types.SimpleNamespace(
+            config_set=lambda **kw: writes.update(kw))
+        with mock.patch.dict(sys.modules, {"server.onboard": fake_onboard}):
+            import server
+            with mock.patch.object(server, "onboard", fake_onboard, create=True):
+                entry = imageatlas.register_vault(
+                    "My Files", str(Path(self.tmp.name) / "myfiles"), create=True)
+        self.assertEqual(entry["id"], "my-files")
+        self.assertTrue((Path(self.tmp.name) / "myfiles" / "wiki").is_dir())
+        self.assertTrue((Path(self.tmp.name) / "myfiles" / "raw").is_dir())
+        rows = writes["atlas_vaults"]
+        self.assertEqual(rows[-1]["id"], "my-files")
 
 
 if __name__ == "__main__":
