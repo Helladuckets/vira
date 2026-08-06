@@ -57,6 +57,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                photos, pickfolder, plans, profilerefresh, radar, reconnect,
                textindex,
                receipts,
+               imageatlasroutes,
                resolver,
                roomvault,
                routines,
@@ -3588,6 +3589,12 @@ app.include_router(skins.router)
 # The instrument behind the picker: references -> aspects -> gain -> knobs ->
 # manifest -> skin, with every stage exposed. Engine in genrestudio.py.
 app.include_router(genreroutes.router)
+
+# ---------- Image Atlas (the vault's images as a 3D galaxy) ----------------
+# chaska adapter: serves the bundled viewer + the vault-sidecar export under
+# /imageatlas/, answers query embeddings through localmodels' shared SigLIP.
+# Dormant (honest 404/503s) when chaska is absent or no vault is configured.
+app.include_router(imageatlasroutes.router)
 
 # ---------- Session walkthroughs (the build films, served in place) --------
 # <lab_root>/walkthroughs/ at /walkthroughs/ — the /design precedent. Served

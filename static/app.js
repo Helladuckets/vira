@@ -11680,6 +11680,7 @@ function viewLoad(id) {
     const f = $("#map-frame");             // load the atlas page on first open
     if (f && !f.getAttribute("src")) f.src = "/explainer/modules.html";
   }
+  if (id === "imageatlas") loadImageAtlas().catch(() => {});
   if (id === "design") {
     const f = $("#design-frame");          // load the studio on first open
     if (f && !f.getAttribute("src")) f.src = "/design/studio.html";
@@ -14594,6 +14595,8 @@ const WINDOWS = [
     icon: "M12 12m-2.4 0a2.4 2.4 0 1 0 4.8 0a2.4 2.4 0 1 0-4.8 0M5 5.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M19 6.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M5.5 18.5m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M18.5 18m-1.9 0a1.9 1.9 0 1 0 3.8 0a1.9 1.9 0 1 0-3.8 0M10.3 10.3L6.3 6.9M13.7 10.6L17.5 7.6M10.5 13.7L6.8 17.2M13.6 13.5L17 16.7" },
   { id: "map", title: "System Map", w: 1000,
     icon: "M9 4L4 6v14l5-2 6 2 5-2V4l-5 2-6-2zM9 4v14M15 6v14" },
+  { id: "imageatlas", title: "Image Atlas", w: 1100,
+    icon: "M12 12m-1.6 0a1.6 1.6 0 1 0 3.2 0a1.6 1.6 0 1 0-3.2 0M12 12m-5.2 0a5.2 5.2 0 1 0 10.4 0a5.2 5.2 0 1 0-10.4 0M12 12m-8.8 0a8.8 8.8 0 1 0 17.6 0a8.8 8.8 0 1 0-17.6 0M6.6 8.4l1.5 1.2M17.4 15.6l-1.5-1.2M15.9 6.9l-1.1 1.5M8.1 17.1l1.1-1.5" },
   { id: "subs", title: "Subscriptions", w: 660,
     icon: "M3 6.5h18v11H3zM3 10h18M6 14.5h5M15.5 14.5h2.5" },
   { id: "subsviz", title: "Morning Picker", w: 1040,
@@ -17333,6 +17336,84 @@ function confettiBurst(x, y) {
 // window, with Submit -> headless /subs-visuals-apply job ----------
 const SUBSVIZ_SRC = "/api/subs-visuals/files/picker.html";
 
+// ---------- Image Atlas (chaska) ----------
+// The viewer is its own document under /imageatlas/; this loader only
+// decides between it and the honest empty state — dormant reason, or a
+// build offer when the vault has never been built into an atlas.
+let iaPollStop = null;
+async function loadImageAtlas() {
+  const door = $("#imageatlas-door"), frame = $("#imageatlas-frame");
+  if (!door || !frame) return;
+  let st;
+  try {
+    st = await api("/api/imageatlas/status");
+  } catch (e) {
+    frame.style.display = "none";
+    door.textContent = "Image atlas status unavailable — " + e.message;
+    door.style.display = "";
+    return;
+  }
+  if (st.available && st.exported) {
+    door.style.display = "none";
+    frame.style.display = "";
+    if (!frame.getAttribute("src")) frame.src = "/imageatlas/";
+    if (st.building) iaWatchBuild();
+    return;
+  }
+  frame.style.display = "none";
+  frame.removeAttribute("src");
+  door.innerHTML = "";
+  if (!st.available) {
+    door.textContent = "Image atlas is dormant — " + (st.reason || "not configured");
+  } else {
+    const n = st.items || 0, emb = st.embedded || 0;
+    door.appendChild(el("div", "",
+      n ? `${n.toLocaleString()} images found in the vault — ${emb.toLocaleString()} embedded. `
+          + "No atlas built yet."
+        : "No images found in the configured vault yet."));
+    if (st.building) {
+      door.appendChild(el("div", "hint",
+        "Building now — " + ((st.build_log || []).slice(-1)[0] || "starting…")));
+      iaWatchBuild();
+    } else if (n) {
+      const b = el("button", "btn small", "Build the atlas");
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          await post("/api/imageatlas/build", {});
+          toast("Atlas build started — embedding runs on this machine only");
+          iaWatchBuild();
+        } catch (e) { toast(errText(e)); b.disabled = false; }
+      };
+      const bar = el("div", "");
+      bar.style.marginTop = "8px";
+      bar.appendChild(b);
+      door.appendChild(bar);
+    }
+  }
+  door.style.display = "";
+}
+
+function iaWatchBuild() {
+  if (iaPollStop) iaPollStop.stop();
+  iaPollStop = startPoll(async (h) => {
+    let st;
+    try { st = await api("/api/imageatlas/status"); } catch { return; }
+    const door = $("#imageatlas-door");
+    if (st.building) {
+      if (door && door.style.display !== "none") {
+        const tail = (st.build_log || []).slice(-1)[0] || "";
+        const line = door.querySelector(".hint") || door.appendChild(el("div", "hint", ""));
+        line.textContent = "Building — " + tail;
+      }
+      return;
+    }
+    h.stop();
+    iaPollStop = null;
+    loadImageAtlas().catch(() => {});
+  }, 3000);
+}
+
 async function loadSubsViz() {
   const meta = $("#subsviz-meta"), empty = $("#subsviz-empty"),
         frame = $("#subsviz-frame");
@@ -17416,6 +17497,8 @@ const HASH_ROUTES = {
   "journal": "journal",
   "atlas": "atlas",
   "network": "atlas",
+  "imageatlas": "imageatlas",
+  "galaxy": "imageatlas",
   "work": (rest) => {           // #work, #work/queue|dispatch|live|record
     const t = rest[0];
     if (["queue", "dispatch", "live", "record"].includes(t))

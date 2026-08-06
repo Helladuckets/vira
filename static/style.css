@@ -2846,6 +2846,10 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   #win-map .fwin-body { display: flex; flex-direction: column; overflow: hidden; }
   #win-map #view-map { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   #win-map .map-frame { flex: 1; height: auto; min-height: 260px; }
+  /* image atlas: same fill-the-window treatment */
+  #win-imageatlas .fwin-body { display: flex; flex-direction: column; overflow: hidden; }
+  #win-imageatlas #view-imageatlas { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #win-imageatlas .map-frame { flex: 1; height: auto; min-height: 260px; }
   .fwin .section-head h2 { display: none; }
   .fwin .section-head { margin: 0 0 8px; }
 
