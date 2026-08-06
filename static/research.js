@@ -255,6 +255,16 @@
     else if (built || authority) head.appendChild(el("div", "research-project-sub",
       [authority && `${words(authority)} evidence`, built && `built ${built}`]
         .filter(Boolean).join(" · ")));
+    const freshness = overviewRecord()?.freshness || {};
+    const coverage = overviewRecord()?.coverage || {};
+    if (freshness.status === "stale") {
+      head.appendChild(el("div", "research-health research-health-warn",
+        `${number(freshness.newer_source_count)} full source ${number(freshness.newer_source_count) === 1 ? "capture is" : "captures are"} newer than this graph build.`));
+    }
+    if (number(coverage.unmaterialized_claim_count)) {
+      head.appendChild(el("div", "research-health",
+        `${number(coverage.unmaterialized_claim_count)} defined ${number(coverage.unmaterialized_claim_count) === 1 ? "claim has" : "claims have"} no attached evidence yet.`));
+    }
     dom.nav.appendChild(head);
 
     const projectRows = projects();
@@ -333,6 +343,22 @@
     return claim.rollup || claim.counts || claim.stats || claim;
   }
 
+  function organizationRollup(claim) {
+    return claim.organization_rollup || {
+      distinct_speaker_count: first(claim.organization_distinct_speaker_count,
+        claim.distinct_speaker_count, claim.speaker_count),
+      distinct_event_count: first(claim.organization_distinct_event_count,
+        claim.distinct_event_count, claim.event_count),
+      utterance_count: first(claim.organization_utterance_count,
+        claim.utterance_count, claim.evidence_count),
+      appearance_count: first(claim.organization_appearance_count,
+        claim.appearance_count, claim.source_count),
+      contextual_utterance_count: first(claim.contextual_utterance_count,
+        claim.organization_contextual_utterance_count),
+      evidence_scope: claim.evidence_scope,
+    };
+  }
+
   function claimLabel(claim) {
     return str(claim.claim_label, claim.label, claim.title,
       claim.statement, claim.text, words(claimId(claim)));
@@ -355,7 +381,9 @@
     const top = el("div", "research-claim-top");
     const category = str(claim.category, claim.claim_group, claim.group);
     if (category) top.appendChild(el("span", "research-chip", words(category)));
-    const status = str(claim.evidence_status, claim.status, rollup.evidence_status);
+    const org = organizationRollup(claim);
+    const status = org.evidence_scope === "context_only" ? "context only"
+      : str(claim.evidence_status, claim.status, rollup.evidence_status);
     if (status) top.appendChild(el("span", "research-chip research-chip-status", words(status)));
     row.appendChild(top);
     row.appendChild(el("div", "research-claim-title", claimLabel(claim)));
@@ -363,14 +391,17 @@
     if (statement) row.appendChild(el("div", "research-claim-statement", statement));
 
     const foot = el("div", "research-claim-foot");
-    const speakers = number(rollup.distinct_speaker_count, rollup.speaker_count);
-    const events = number(rollup.distinct_event_count, rollup.event_count);
-    const evidence = number(rollup.utterance_count, rollup.evidence_count);
-    const appearances = number(rollup.appearance_count, rollup.source_count);
+    const speakers = number(org.distinct_speaker_count);
+    const events = number(org.distinct_event_count);
+    const evidence = number(org.utterance_count);
+    const appearances = number(org.appearance_count);
     if (speakers) foot.appendChild(el("span", null, `${speakers} ${speakers === 1 ? "speaker" : "speakers"}`));
     if (events) foot.appendChild(el("span", null, `${events} ${events === 1 ? "event" : "events"}`));
     if (evidence) foot.appendChild(el("span", null, `${evidence} utterances`));
     if (appearances > evidence) foot.appendChild(el("span", null, `${appearances} appearances`));
+    const contextual = number(org.contextual_utterance_count);
+    if (contextual) foot.appendChild(el("span", "research-context-count",
+      `${contextual} contextual`));
     row.appendChild(foot);
     return row;
   }
@@ -384,8 +415,11 @@
     head.appendChild(el("div", "research-kicker", kicker));
     head.appendChild(el("h2", "research-claims-title", projectTitle(project)));
     const rows = filteredClaims();
+    const coverage = overviewRecord()?.coverage || {};
+    const defined = number(coverage.defined_claim_count);
+    const total = projectClaims().length;
     head.appendChild(el("div", "research-claims-summary",
-      `${rows.length} of ${projectClaims().length} claims`));
+      `${rows.length} of ${total} evidenced claims${defined > total ? ` · ${defined} defined` : ""}`));
     dom.middle.appendChild(head);
 
     const listNode = el("div", "research-claim-list");
@@ -507,10 +541,12 @@
     const quote = str(item.canonical_text, item.text, item.quote, item.excerpt);
     if (quote) card.appendChild(el("blockquote", "research-quote", quote));
     const speaker = str(item.speaker_name, item.attributed_to, item.speaker);
-    const eventTitle = str(item.event_title, item.event?.title, item.venue);
-    const date = str(item.event_date, item.date, item.publication_date);
-    const locator = str(item.locator, item.timestamp, item.timestamp_seconds);
-    const meta = [speaker, eventTitle, date, locator && `at ${locator}`].filter(Boolean);
+    const eventTitle = str(item.event_title, item.event?.event_title,
+      item.event?.title, item.venue);
+    const date = str(item.event_date, item.event?.event_date,
+      item.date, item.publication_date);
+    const locator = evidenceLocator(item);
+    const meta = [speaker, eventTitle, date, locator].filter(Boolean);
     if (meta.length) card.appendChild(el("div", "research-evidence-meta", meta.join(" · ")));
 
     const appearances = list(item.appearances);
@@ -519,14 +555,48 @@
     const source = item.source || appearances.find((appearance) => appearance.is_canonical)
       || appearances[0] || item;
     const sid = sourceId(source);
-    const sourceTitle = str(source.title, source.source_title, item.source_title, "Open source");
+    const sourceTitle = str(source.title, source.source_title,
+      item.source?.title, item.source_title, eventTitle, "Open source");
     if (sid) card.appendChild(button("research-source-button", sourceTitle, () =>
       openSource(sid).catch(() => {})));
     else {
       const url = str(source.source_url, source.url, item.source_url);
       if (url) card.appendChild(externalLink(url, sourceTitle));
     }
+    const actions = el("div", "research-evidence-actions");
+    const originalUrl = str(item.timestamped_original_url,
+      item.original_url, item.source_url, source.source_url, source.original_url,
+      source.canonical_url, source.url);
+    if (originalUrl) actions.appendChild(externalLink(originalUrl,
+      evidenceLocator(item) ? `Open original ${evidenceLocator(item)}` : "Open original"));
+    const transcript = item.full_transcript
+      || list(item.vault_links).find((note) =>
+        ["source_material", "raw_capture"].includes(note.kind));
+    const transcriptPath = str(transcript?.path, transcript?.local_pointer);
+    if (transcriptPath) actions.appendChild(button("research-source-button",
+      "Full transcript", () => openNoteWindow(transcriptPath,
+        str(transcript?.title, sourceTitle))));
+    if (actions.childElementCount) card.appendChild(actions);
     return card;
+  }
+
+  function evidenceLocator(item) {
+    const rawTimestamp = first(item.timestamp_seconds, item.timestamp);
+    const seconds = Number(rawTimestamp);
+    if (Number.isFinite(seconds)) {
+      const whole = Math.max(0, Math.floor(seconds));
+      const h = Math.floor(whole / 3600);
+      const m = Math.floor((whole % 3600) / 60);
+      const s = whole % 60;
+      const clock = h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+        : `${m}:${String(s).padStart(2, "0")}`;
+      return `at ${clock}`;
+    }
+    const locator = str(item.locator,
+      typeof rawTimestamp === "string" ? rawTimestamp : "");
+    const clock = locator.match(/\b(?:\d{1,2}:)?\d{1,2}:\d{2}\b/);
+    if (clock) return `at ${clock[0]}`;
+    return /^(?:at\s+)?(?:transcript|video)$/i.test(locator) ? "" : locator;
   }
 
   function externalLink(url, label) {
@@ -655,7 +725,10 @@
     const status = str(claim.evidence_status, claim.status);
     if (category || status) body.appendChild(chipRow([words(category), words(status)]));
 
-    const rollup = claimRollup(detail.rollup || claim);
+    const rollup = organizationRollup({
+      ...claimRollup(detail.rollup || claim),
+      organization_rollup: detail.organization_rollup,
+    });
     const metrics = el("div", "research-metrics");
     metrics.appendChild(metric("speakers", number(rollup.distinct_speaker_count, rollup.speaker_count),
       "Distinct verified named speakers"));
@@ -667,16 +740,41 @@
       "Source appearances, including distribution copies"));
     body.appendChild(metrics);
 
-    const evidence = detailSection("Evidence", true);
+    const evidence = detailSection("Anthropic evidence", true);
     const items = evidenceItems(detail);
-    items.forEach((item) => evidence.body.appendChild(evidenceCard(item)));
-    if (!items.length) evidence.body.appendChild(el("div", "research-empty-copy", "No utterance evidence is attached yet."));
+    const organizationItems = items.filter((item) => item.evidence_scope !== "context");
+    const contextualItems = items.filter((item) => item.evidence_scope === "context");
+    organizationItems.forEach((item) => evidence.body.appendChild(evidenceCard(item)));
+    if (!organizationItems.length) evidence.body.appendChild(el("div", "research-empty-copy",
+      "No Anthropic speaker or first-party evidence is attached to this claim yet."));
     body.appendChild(evidence.details);
+
+    if (contextualItems.length) {
+      const context = detailSection(`Contextual material (${contextualItems.length})`, false);
+      context.body.appendChild(el("div", "research-empty-copy research-context-note",
+        "Preserved for comparison, but excluded from Anthropic recurrence counts."));
+      contextualItems.forEach((item) => context.body.appendChild(evidenceCard(item)));
+      body.appendChild(context.details);
+    }
 
     const provenance = detailSection("Provenance", false);
     const rows = provenanceRows(detail);
     if (rows.length) provenance.body.appendChild(provenanceTable(rows));
     const sources = list(detail.sources || claim.sources);
+    list(detail.events).forEach((event) => {
+      const source = list(event.sources).find((item) => item.is_canonical)
+        || list(event.sources)[0];
+      const sid = sourceId(source);
+      const title = str(event.event_title, event.title, "Event");
+      const row = button("research-link-row", "", sid ? () => openSource(sid).catch(() => {}) : null);
+      const copy = el("span", "research-link-copy");
+      copy.appendChild(el("span", "research-link-title", title));
+      const context = [event.event_date, event.venue, source?.title].filter(Boolean).join(" · ");
+      if (context) copy.appendChild(el("span", "research-link-sub", context));
+      row.appendChild(copy);
+      row.appendChild(el("span", "research-link-action", sid ? "Open source" : "Event"));
+      provenance.body.appendChild(row);
+    });
     sources.forEach((source) => {
       const sid = sourceId(source);
       const title = str(source.title, source.source_title, source.url, sid);

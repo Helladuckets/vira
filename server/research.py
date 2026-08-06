@@ -19,10 +19,11 @@ import json
 import re
 import sqlite3
 from contextlib import closing
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from . import applications, readingroom, roomvault, settings
+from . import applications, fullingest, readingroom, roomvault, settings
 
 
 class ResearchGraphError(RuntimeError):
@@ -36,6 +37,29 @@ _SPEC_KEYS = {
 _TRACKING_KEYS = {
     "fbclid", "gclid", "mc_cid", "mc_eid", "ref", "source",
 }
+_ORGANIZATION_VOICE_SCOPES = {
+    "company_first_party",
+    "anthropic_person_direct",
+}
+_RESEARCH_QUESTION_WORDS = {
+    "anthropic", "claim", "claims", "employee", "employees", "evidence",
+    "interview", "interviews", "podcast", "podcasts", "quote", "quotes",
+    "speaker", "speakers", "source", "sources", "transcript", "transcripts",
+}
+_CLAIM_QUERY_STOPWORDS = _RESEARCH_QUESTION_WORDS | {
+    "a", "about", "all", "also", "an", "and", "are", "as", "at", "be",
+    "by", "defined", "defines", "did", "do", "does", "else", "explain",
+    "explained", "find", "for", "from", "has", "have", "how", "i", "in",
+    "is", "it", "me", "of", "on", "or", "said", "say", "show", "that",
+    "the", "their", "them", "this", "to", "was", "what", "where", "who",
+    "with", "would", "you",
+}
+_EXPLANATION_MARKERS = re.compile(
+    r"\b(?:because|means?|matters?|important|value|valuable|skill|principle|"
+    r"approach|reason|therefore|so that|in other words|if you|lets? you|"
+    r"allows? you|helps? you|figure out|deduce|optimizing for)\b",
+    re.I,
+)
 
 
 def _read_json(path, default=None):
@@ -257,6 +281,227 @@ def _count(con, table):
         return 0
 
 
+def _claim_taxonomy(graph):
+    """The graph builder's definition set, when it lives beside the DB.
+
+    Definitions without evidence are intentionally absent from the canonical
+    claims table.  Counting both answers a different question from merely
+    counting materialized claims and prevents a partial build looking final.
+    """
+    manifest = graph.get("manifest_path")
+    if not manifest:
+        return []
+    payload = _read_json(manifest.parent.parent / "claim_taxonomy.json", {})
+    rows = payload.get("claims", payload if isinstance(payload, list) else [])
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _iso_mtime(path):
+    try:
+        stamp = Path(path).stat().st_mtime
+    except OSError:
+        return ""
+    return datetime.fromtimestamp(stamp, timezone.utc).isoformat()
+
+
+def _freshness(graph):
+    """Name source material that arrived after the graph database build.
+
+    Reading-room raw captures are inputs to this graph's builder.  They can
+    land hours after a one-shot graph build; without this comparison Vira
+    confidently serves stale recurrence counts until somebody remembers to
+    rebuild by hand.
+    """
+    database = graph.get("database_path")
+    try:
+        built_mtime = database.stat().st_mtime
+    except (AttributeError, OSError):
+        return {"status": "unknown", "newer_source_count": 0,
+                "newer_sources": []}
+    root = Path(str(settings.get("vault_root") or "")).expanduser()
+    room = readingroom.load_room(graph.get("room"))
+    newer_by_path = {}
+    if root.is_dir() and room:
+        for item in room.get("items", []):
+            try:
+                path = fullingest.raw_path(root, item)
+                stamp = path.stat().st_mtime
+            except (KeyError, OSError, TypeError, ValueError):
+                continue
+            if stamp <= built_mtime:
+                continue
+            rel = path.relative_to(root).as_posix()
+            row = newer_by_path.setdefault(rel, {
+                "item_id": item.get("id"),
+                "item_ids": [],
+                "title": item.get("title"),
+                "path": rel,
+                "updated": datetime.fromtimestamp(
+                    stamp, timezone.utc).isoformat(),
+            })
+            if item.get("id") and item.get("id") not in row["item_ids"]:
+                row["item_ids"].append(item["id"])
+    newer = list(newer_by_path.values())
+    newer.sort(key=lambda row: row.get("updated", ""), reverse=True)
+    return {
+        "status": "stale" if newer else "current",
+        "database_updated": _iso_mtime(database),
+        "newer_source_count": len(newer),
+        # Count every input, but bound the diagnostic sample sent to browsers.
+        "newer_sources": newer[:20],
+        "newer_sources_returned": min(len(newer), 20),
+        "newer_sources_truncated": len(newer) > 20,
+    }
+
+
+def _organization_edge(item):
+    if bool(item.get("speaker_verified")):
+        return True
+    source = item.get("source") or {}
+    return str(source.get("voice_scope") or "") in _ORGANIZATION_VOICE_SCOPES
+
+
+def _scope_rollup(evidence):
+    organization = [row for row in evidence if row.get("evidence_scope") ==
+                    "organization"]
+    contextual = [row for row in evidence if row.get("evidence_scope") ==
+                  "context"]
+    speakers = {
+        str(row.get("speaker_person_id") or row.get("speaker_name") or "")
+        for row in organization if row.get("speaker_verified") and
+        (row.get("speaker_person_id") or row.get("speaker_name"))
+    }
+    events = {row.get("event_id") for row in organization if row.get("event_id")}
+    appearances = {
+        appearance.get("appearance_id")
+        for row in organization for appearance in row.get("appearances", [])
+        if appearance.get("appearance_id")
+    }
+    return {
+        "distinct_speaker_count": len(speakers),
+        "distinct_event_count": len(events),
+        "utterance_count": len({row.get("utterance_id") for row in organization
+                                if row.get("utterance_id")}),
+        "appearance_count": len(appearances),
+        "contextual_utterance_count": len({
+            row.get("utterance_id") for row in contextual if row.get("utterance_id")
+        }),
+        "evidence_scope": ("organization" if organization else
+                           "context_only" if contextual else "none"),
+    }
+
+
+def _enrich_evidence(con, tables, evidence):
+    """Attach the event and real source records claim edges point at."""
+    event_cache = {}
+    source_cache = {}
+
+    def source(source_id):
+        if not source_id or "sources" not in tables:
+            return None
+        if source_id not in source_cache:
+            source_cache[source_id] = _row(
+                con, "SELECT * FROM sources WHERE source_id = ?", (source_id,)
+            )
+        return copy.deepcopy(source_cache[source_id])
+
+    for item in evidence:
+        event_id = item.get("event_id")
+        if event_id and "events" in tables:
+            if event_id not in event_cache:
+                event_cache[event_id] = _row(
+                    con, "SELECT * FROM events WHERE event_id = ?", (event_id,)
+                )
+            event = copy.deepcopy(event_cache[event_id])
+        else:
+            event = None
+        item["event"] = event
+        if event:
+            for key in ("event_title", "event_date", "venue", "publisher"):
+                if event.get(key) and not item.get(key):
+                    item[key] = event[key]
+
+        event_sources = []
+        if event_id and {"event_sources", "sources"} <= tables:
+            links = _rows(
+                con,
+                "SELECT * FROM event_sources WHERE event_id = ? "
+                "ORDER BY is_canonical DESC, source_id",
+                (event_id,),
+            )
+            for link in links:
+                record = source(link.get("source_id"))
+                if not record:
+                    continue
+                record.update({
+                    key: value for key, value in link.items()
+                    if key not in record and value not in (None, "")
+                })
+                event_sources.append(record)
+        item["sources"] = event_sources
+        canonical_id = (event or {}).get("canonical_source_id")
+        canonical = source(canonical_id)
+        if canonical is None:
+            canonical = next((row for row in event_sources if row.get("is_canonical")),
+                             event_sources[0] if event_sources else None)
+        item["source"] = canonical
+        if event:
+            provenance_sources = [canonical] + event_sources
+            provenance_sources = [row for row in provenance_sources if row]
+            if not event.get("event_date"):
+                event["event_date"] = next((
+                    str(row.get("publication_date")) for row in provenance_sources
+                    if row.get("publication_date")
+                ), "Date not published")
+                event["event_date_status"] = "source_fallback" if (
+                    event["event_date"] != "Date not published"
+                ) else "unknown"
+            if not event.get("venue"):
+                event["venue"] = next((
+                    str(row.get(key)) for row in provenance_sources
+                    for key in ("venue", "publisher", "title") if row.get(key)
+                ), "Venue not published")
+                event["venue_status"] = "source_fallback" if (
+                    event["venue"] != "Venue not published"
+                ) else "unknown"
+            for key in ("event_date", "venue", "publisher"):
+                if event.get(key) and not item.get(key):
+                    item[key] = event[key]
+
+        for appearance in item.get("appearances", []):
+            appearance["source"] = source(appearance.get("source_id"))
+        item["evidence_scope"] = (
+            "organization" if _organization_edge(item) else "context"
+        )
+    return evidence
+
+
+def _overview_scope(con, tables, claims):
+    """Add organization-only counts without rewriting canonical rollups."""
+    if "claim_utterances" not in tables:
+        return claims
+    edges = _rows(con, "SELECT * FROM claim_utterances ORDER BY claim_id")
+    by_claim = {}
+    for edge in edges:
+        if "utterance_appearances" in tables:
+            edge["appearances"] = _rows(
+                con,
+                "SELECT appearance_id FROM utterance_appearances "
+                "WHERE utterance_id = ?",
+                (edge.get("utterance_id"),),
+            )
+        by_claim.setdefault(edge.get("claim_id"), []).append(edge)
+    for claim_id, rows in by_claim.items():
+        _enrich_evidence(con, tables, rows)
+    for claim in claims:
+        scope = _scope_rollup(by_claim.get(claim.get("claim_id"), []))
+        claim["organization_rollup"] = copy.deepcopy(scope)
+        claim.update({f"organization_{key}": value for key, value in scope.items()
+                      if key.endswith("_count")})
+        claim["evidence_scope"] = scope["evidence_scope"]
+    return claims
+
+
 def overview(graph_id=None, claim_limit=200):
     """Summarize a graph from canonical rows, plus named build metadata."""
     graph = _graph(graph_id)
@@ -278,6 +523,11 @@ def overview(graph_id=None, claim_limit=200):
                 "claim_id LIMIT ?",
                 (max(0, int(claim_limit)),),
             )
+        claims = _overview_scope(con, tables, claims)
+        materialized_claim_ids = {
+            row.get("claim_id") for row in
+            (_rows(con, "SELECT claim_id FROM claims") if "claims" in tables else [])
+        }
         latest = None
         if "sources" in tables:
             latest = _row(
@@ -287,6 +537,13 @@ def overview(graph_id=None, claim_limit=200):
                 "ORDER BY publication_date DESC LIMIT 1",
             )
     manifest = graph["manifest"]
+    definitions = _claim_taxonomy(graph)
+    materialized_ids = materialized_claim_ids
+    defined_ids = {
+        str(row.get("claim_id") or row.get("id") or "") for row in definitions
+        if row.get("claim_id") or row.get("id")
+    }
+    freshness = _freshness(graph)
     public = _public_graph(graph)
     compact_counts = {
         "sources": counts.get("sources", 0),
@@ -321,6 +578,19 @@ def overview(graph_id=None, claim_limit=200):
             "analysis_scopes": manifest.get("analysis_scopes"),
             "limitations": manifest.get("limitations"),
         },
+        "coverage": {
+            "materialized_claim_count": counts.get("claims", 0),
+            "defined_claim_count": len(defined_ids),
+            "unmaterialized_claim_count": len(defined_ids - materialized_ids),
+            "unmaterialized_claim_ids": sorted(defined_ids - materialized_ids),
+            "organization_supported_claim_count": sum(
+                row.get("evidence_scope") == "organization" for row in claims
+            ),
+            "context_only_claim_count": sum(
+                row.get("evidence_scope") == "context_only" for row in claims
+            ),
+        },
+        "freshness": freshness,
     }
 
 
@@ -368,14 +638,69 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
                         "ORDER BY source_id, appearance_id",
                         (item.get("utterance_id"),),
                     )
+        evidence = _enrich_evidence(con, tables, evidence)
+    events = []
+    sources = []
+    seen_events = set()
+    seen_sources = set()
+    for item in evidence:
+        event = item.get("event")
+        if event and event.get("event_id") not in seen_events:
+            seen_events.add(event.get("event_id"))
+            event = copy.deepcopy(event)
+            event["sources"] = copy.deepcopy(item.get("sources", []))
+            events.append(event)
+        for source in item.get("sources", []):
+            if source.get("source_id") in seen_sources:
+                continue
+            seen_sources.add(source.get("source_id"))
+            sources.append(copy.deepcopy(source))
     vault_notes = _claim_vault_notes(graph, claim)
+    source_notes_by_id = {}
+    for source in sources:
+        notes = _source_vault_notes(graph, source)
+        source_notes_by_id[source.get("source_id")] = notes
+        vault_notes.extend(notes)
+    vault_notes = _dedupe_notes(vault_notes)
+    for item in evidence:
+        item_notes = []
+        source_links = []
+        for source in item.get("sources", []):
+            item_notes.extend(source_notes_by_id.get(source.get("source_id"), []))
+            original = (source.get("original_url") or
+                        source.get("canonical_url") or "")
+            source_links.append({
+                "source_id": source.get("source_id"),
+                "title": source.get("title"),
+                "url": original,
+                "research_path": (f"/api/research/{graph['id']}/sources/"
+                                  f"{source.get('source_id')}")
+                                  if source.get("source_id") else "",
+            })
+        item_notes = _dedupe_notes(item_notes)
+        item["vault_links"] = item_notes
+        item["source_links"] = source_links
+        transcript = next((note for note in item_notes
+                           if note.get("kind") in {"source_material", "raw_capture"}),
+                          item_notes[0] if item_notes else None)
+        item["full_transcript"] = copy.deepcopy(transcript) if transcript else None
+        canonical = item.get("source") or {}
+        original = (item.get("source_url") or canonical.get("original_url") or
+                    canonical.get("canonical_url") or "")
+        item["original_url"] = original
+        item["timestamped_original_url"] = _timestamped_url(
+            original, item.get("timestamp_seconds")
+        )
     application_bridges = _claim_application_bridges(graph, claim)
     return {
         "graph": _public_graph(graph),
         "authority": "database",
         "claim": claim,
         "rollup": rollup,
+        "organization_rollup": _scope_rollup(evidence),
         "evidence": evidence,
+        "events": events,
+        "sources": sources,
         "vault_notes": vault_notes,
         "application_bridges": application_bridges,
         "evidence_total": total,
@@ -391,9 +716,308 @@ def _claim_vault_notes(graph, claim):
         return []
     label = _slug(claim.get("claim_label") or claim.get("claim_id"))[:96]
     rel = Path("wiki") / f"{graph['id']}-claim-{label}.md"
-    return ([{"path": rel.as_posix(), "title": claim.get("claim_label"),
+    return ([{"path": rel.as_posix(),
+              "title": f"Claim synthesis: {claim.get('claim_label')}",
+              "context": "Generated claim page; source transcripts follow.",
+              "kind": "claim_projection",
               "authority": "linked_projection"}]
             if (root / rel).is_file() else [])
+
+
+def _vault_path(root, pointer):
+    if not pointer:
+        return ""
+    try:
+        path = Path(str(pointer)).expanduser().resolve()
+        rel = path.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return ""
+    return rel.as_posix() if path.is_file() else ""
+
+
+def _source_vault_notes(graph, source, room_matches=None):
+    """Link a source directly to its summary or full raw material."""
+    root = Path(str(settings.get("vault_root") or "")).expanduser()
+    if not source:
+        return []
+    out = []
+    direct = (_vault_path(root, source.get("local_pointer"))
+              if root.is_dir() else "")
+    if direct:
+        out.append({
+            "path": direct,
+            "title": f"Full source: {source.get('title') or Path(direct).stem}",
+            "context": "Full local capture or transcript",
+            "kind": "source_material",
+            "source_id": source.get("source_id"),
+            "authority": "linked_projection",
+        })
+    if room_matches is None:
+        urls = {_normalize_url(source.get(key)) for key in
+                ("original_url", "canonical_url") if source.get(key)}
+        room_matches = _room_matches({url for url in urls if url}, graph["room"])
+    for match in room_matches:
+        projection = match.get("vault", {})
+        path = str(projection.get("note") or "")
+        kind = str(projection.get("kind") or "")
+        if not path:
+            item = match.get("item") or {}
+            try:
+                raw = fullingest.raw_path(root, item)
+            except (KeyError, TypeError, ValueError):
+                raw = None
+            path = _vault_path(root, raw) if raw and root.is_dir() else ""
+            kind = "raw_capture" if path else kind
+        if not path:
+            continue
+        item = match.get("item") or {}
+        out.append({
+            "path": path,
+            "title": f"Full source: {item.get('title') or source.get('title')}",
+            "context": ("Full transcript or capture" if kind == "raw_capture"
+                        else f"Source summary from {match.get('room', {}).get('title') or graph['room']}"),
+            "kind": kind or "source_projection",
+            "source_id": source.get("source_id"),
+            "authority": "linked_projection",
+        })
+    return _dedupe_notes(out)
+
+
+def _dedupe_notes(notes):
+    out = []
+    seen = set()
+    for note in notes:
+        path = str((note or {}).get("path") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append(note)
+    return out
+
+
+def _timestamped_url(url, seconds):
+    """Attach a time locator when the original host has a stable convention."""
+    if not url or seconds is None:
+        return str(url or "")
+    try:
+        parts = urlsplit(str(url))
+        host = (parts.hostname or "").lower()
+        if host not in {"youtube.com", "www.youtube.com", "youtu.be"}:
+            return str(url)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query["t"] = f"{max(0, int(float(seconds)))}s"
+        return urlunsplit((parts.scheme or "https", parts.netloc, parts.path,
+                           urlencode(query), parts.fragment))
+    except (TypeError, ValueError):
+        return str(url)
+
+
+def _evidence_classification(item):
+    """Separate an explanation of a claim from a passing phrase match."""
+    text = str(item.get("canonical_text") or "").strip()
+    words = re.findall(r"\b[\w'’-]+\b", text)
+    if item.get("mapping_method") == "manual_verified_seed":
+        return "substantive", "manually audited claim evidence"
+    if len(words) >= 10 and _EXPLANATION_MARKERS.search(text):
+        return "substantive", "the passage explains the idea or its consequence"
+    if len(words) >= 20:
+        return "substantive", "the passage develops the matched idea in context"
+    return "incidental", "the phrase appears without a developed explanation"
+
+
+def _claim_query_tokens(value):
+    return {
+        token for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if len(token) > 1 and token not in _CLAIM_QUERY_STOPWORDS
+    }
+
+
+def _claim_query_score(question, claim):
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(question or "").lower()).strip()
+    patterns = [part.strip() for part in str(claim.get("patterns") or "").split("|")
+                if part.strip()]
+    exact = max((len(pattern.split()) for pattern in patterns
+                 if re.sub(r"[^a-z0-9]+", " ", pattern.lower()).strip() in normalized),
+                default=0)
+    query_tokens = _claim_query_tokens(question)
+    claim_tokens = _claim_query_tokens(" ".join(str(claim.get(key) or "") for key in
+                                       ("claim_label", "description", "patterns")))
+    overlap = len(query_tokens & claim_tokens)
+    return exact * 100 + overlap * 10 - len(claim_tokens - query_tokens) * 0.01
+
+
+def _research_intent(question, graph):
+    low = str(question or "").lower()
+    company_terms = {
+        str(graph.get("id") or "").replace("-", " ").lower(),
+        str(graph.get("name") or "").lower(),
+        str(graph.get("company") or "").lower(),
+    }
+    tokens = set(re.findall(r"[a-z0-9]+", low))
+    return (any(term and term in low for term in company_terms)
+            or bool(tokens & _RESEARCH_QUESTION_WORDS)
+            or "where else" in low or "who else" in low)
+
+
+def may_answer(question):
+    """Cheap gate for ordinary chat before any graph discovery or DB work."""
+    low = str(question or "").lower()
+    tokens = set(re.findall(r"[a-z0-9]+", low))
+    return (bool(tokens & _RESEARCH_QUESTION_WORDS)
+            or "where else" in low or "who else" in low)
+
+
+def _group_evidence(rows):
+    grouped = {}
+    for item in rows:
+        speaker = str(item.get("speaker_name") or "Anthropic")
+        speaker_id = str(item.get("speaker_person_id") or speaker)
+        group = grouped.setdefault(speaker_id, {
+            "speaker": speaker, "speaker_person_id": speaker_id, "events": [],
+        })
+        event = item.get("event") or {}
+        event_id = str(event.get("event_id") or item.get("event_id") or "")
+        event_group = next((row for row in group["events"]
+                            if row["event"].get("event_id") == event_id), None)
+        if event_group is None:
+            event_group = {"event": copy.deepcopy(event), "evidence": []}
+            group["events"].append(event_group)
+        event_group["evidence"].append(item)
+    return sorted(grouped.values(), key=lambda row: row["speaker"].casefold())
+
+
+def _clock(seconds, locator=""):
+    if seconds is None:
+        return str(locator or "")
+    whole = max(0, int(float(seconds)))
+    hours, remainder = divmod(whole, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return (f"{hours}:{minutes:02d}:{secs:02d}" if hours
+            else f"{minutes}:{secs:02d}")
+
+
+def _research_markdown(graph, detail, substantive, incidental, contextual):
+    claim = detail["claim"]
+    rollup = _scope_rollup(substantive + incidental)
+    lines = [
+        f"The canonical {graph['company']} research graph maps this to "
+        f"**{claim.get('claim_label')}**.",
+        "",
+        (f"It contains {rollup['distinct_speaker_count']} verified speakers "
+         f"across {rollup['distinct_event_count']} independent events. "
+         "Explanations are shown before incidental phrase matches."),
+        "",
+        "### Substantive definitions and explanations",
+    ]
+    if not substantive:
+        lines.append("No developed explanations are attached yet.")
+    for group in _group_evidence(substantive):
+        for event_group in group["events"]:
+            event = event_group["event"]
+            context = " · ".join(filter(None, [
+                str(event.get("event_date") or ""), str(event.get("venue") or ""),
+            ]))
+            lines.extend(["", f"**{group['speaker']} — {event.get('event_title') or 'Untitled event'}**"
+                          + (f" ({context})" if context else "")])
+            for item in event_group["evidence"]:
+                lines.append(f"> {item.get('canonical_text')}")
+                links = []
+                original = item.get("timestamped_original_url") or item.get("original_url")
+                if original:
+                    links.append(f"[Original at {_clock(item.get('timestamp_seconds'), item.get('locator'))}]({original})")
+                transcript = item.get("full_transcript") or {}
+                if transcript.get("path"):
+                    links.append(f"Full transcript [[{transcript['path']}]]")
+                for link in item.get("vault_links") or []:
+                    if link.get("path") and link.get("path") != transcript.get("path"):
+                        links.append(f"Vault [[{link['path']}]]")
+                if links:
+                    lines.append(" · ".join(links))
+    if incidental:
+        lines.extend(["", f"### Incidental mentions ({len(incidental)})", ""])
+        lines.append("These contain the phrase but do not develop the idea.")
+        for item in incidental:
+            event = item.get("event") or {}
+            lines.append(f"- {item.get('speaker_name') or 'Anthropic'} — "
+                         f"{event.get('event_title') or 'Untitled event'}: "
+                         f"“{item.get('canonical_text')}”")
+    if contextual:
+        lines.extend(["", f"### Non-{graph['company']} context ({len(contextual)})", ""])
+        lines.append("Kept separate from the organization evidence above.")
+    return "\n".join(lines)
+
+
+def answer_question(question, graph_id=None):
+    """Answer a claim question from the canonical graph for ordinary Find chat.
+
+    Returns ``None`` when the question does not confidently target this graph,
+    allowing Find to continue through its normal vault-grounded answer path.
+    """
+    if graph_id is None:
+        graphs = _graphs()
+        low = str(question or "").casefold()
+        matches = [candidate for candidate in graphs if any(
+            str(candidate.get(key) or "").casefold() in low
+            for key in ("id", "name", "company")
+            if candidate.get(key)
+        )]
+        if len(matches) == 1:
+            graph = matches[0]
+        elif len(graphs) == 1:
+            graph = graphs[0]
+        else:
+            return None
+        if graph.get("error"):
+            raise ResearchGraphError(f"{graph['id']}: {graph['error']}")
+    else:
+        graph = _graph(graph_id)
+    if not _research_intent(question, graph):
+        return None
+    summary = overview(graph["id"])
+    candidates = summary.get("claims") or []
+    ranked = sorted(((_claim_query_score(question, claim), claim)
+                     for claim in candidates), key=lambda row: row[0], reverse=True)
+    if not ranked or ranked[0][0] < 10:
+        return None
+    detail = claim_detail(ranked[0][1]["claim_id"], graph["id"], limit=200)
+    if not detail:
+        return None
+    organization, contextual = [], []
+    for item in detail.get("evidence") or []:
+        kind, reason = _evidence_classification(item)
+        item["evidence_kind"] = kind
+        item["classification_reason"] = reason
+        (organization if item.get("evidence_scope") == "organization"
+         else contextual).append(item)
+    substantive = [item for item in organization
+                   if item["evidence_kind"] == "substantive"]
+    incidental = [item for item in organization
+                  if item["evidence_kind"] == "incidental"]
+    citations, hits = [], []
+    seen_paths = set()
+    for item in substantive + incidental:
+        transcript = item.get("full_transcript") or {}
+        path = transcript.get("path")
+        if not path or path in seen_paths:
+            continue
+        seen_paths.add(path)
+        title = transcript.get("title") or Path(path).stem
+        citations.append({"ref": path, "path": path, "title": title})
+        hits.append({"path": path, "title": title,
+                     "heading": (item.get("event") or {}).get("event_title", ""),
+                     "text": item.get("canonical_text", "")})
+    return {
+        "authority": "canonical_research_graph",
+        "graph": _public_graph(graph),
+        "claim": detail["claim"],
+        "answer": _research_markdown(graph, detail, substantive, incidental,
+                                     contextual),
+        "substantive": _group_evidence(substantive),
+        "incidental": _group_evidence(incidental),
+        "context": _group_evidence(contextual),
+        "citations": citations,
+        "hits": hits,
+    }
 
 
 def _claim_application_bridges(graph, claim):
@@ -539,6 +1163,7 @@ def source_detail(source_id, graph_id=None, limit=100):
             (source_id, source_id, cap),
         ) if "source_relations" in tables else [])
     room_matches = _room_matches(urls, graph["room"])
+    vault_notes = _source_vault_notes(graph, source, room_matches)
     return {
         "graph": _public_graph(graph),
         # Display aliases; canonical/projections below preserve provenance.
@@ -548,11 +1173,7 @@ def source_detail(source_id, graph_id=None, limit=100):
         "appearances": appearances,
         "claims": claims,
         "relations": relations,
-        "vault_notes": [{
-            "path": match["vault"]["note"],
-            "title": Path(match["vault"]["note"]).stem.replace("-", " "),
-            "authority": "linked_projection",
-        } for match in room_matches if match.get("vault", {}).get("note")],
+        "vault_notes": vault_notes,
         "canonical": {
             "authority": "database",
             "source": source,

@@ -239,8 +239,23 @@ def ask(question, session_id=None):
         session = _public(session)
         expected_turns = len(session.get("turns") or [])
 
-    hits = vault.search(question, limit=10)
-    answer = _answer_question(question, session.get("turns") or [], hits)
+    research_result = None
+    try:
+        from . import research
+        if research.may_answer(question):
+            research_result = research.answer_question(question)
+    except Exception:  # a dormant graph must never break ordinary vault chat
+        research_result = None
+    if research_result:
+        hits = research_result.get("hits") or []
+        answer = {
+            "answer": research_result.get("answer") or "",
+            "citations": research_result.get("citations") or [],
+            "hits": hits,
+        }
+    else:
+        hits = vault.search(question, limit=10)
+        answer = _answer_question(question, session.get("turns") or [], hits)
     answer_text = str(answer.get("answer") or "")
 
     concepts, followups, clusters = [], [], []
@@ -260,6 +275,11 @@ def ask(question, session_id=None):
         "hits": answer.get("hits") or [],
         "created": _now(),
     }
+    if research_result:
+        turn["research"] = {
+            key: value for key, value in research_result.items()
+            if key not in {"answer", "hits", "citations"}
+        }
     session["turns"] = (session.get("turns") or []) + [turn]
     session["turns"] = session["turns"][-MAX_TURNS:]
     session["concepts"] = _merge_concepts(session.get("concepts") or [], concepts)
