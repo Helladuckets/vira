@@ -739,6 +739,20 @@ def api_applications(company: str | None = None, view: str | None = None):
     return applications.compose(company, view)
 
 
+class AppCompareReq(BaseModel):
+    uids: list[str]
+
+
+@app.post("/api/applications/compare")
+def api_applications_compare(req: AppCompareReq):
+    try:
+        return applications.compare_roles(req.uids)
+    except KeyError as e:
+        raise HTTPException(404, f"unknown role: {e.args[0]}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 class AppStateReq(BaseModel):
     starred: bool | None = None
     status: str | None = None

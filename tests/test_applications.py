@@ -34,7 +34,11 @@ TEARDOWN = {
          "fit": 88, "bucket": "Domain moat", "reason": "platform + domain",
          "url": "https://job-boards.greenhouse.io/examplelabs/jobs/1234567",
          "apply": "https://job-boards.greenhouse.io/examplelabs/jobs/1234567",
-         "blurb": "Build the platform."},
+         "blurb": "Build the platform.",
+         "jd": ("About the role. Advise customers and build the platform. "
+                "Responsibilities. Design scalable architectures, deploy "
+                "customer systems, and develop evaluation frameworks for "
+                "safe and reliable production use.")},
     ],
 }
 
@@ -151,6 +155,9 @@ class ApplicationsBase(unittest.TestCase):
             "title": "Ops Coordinator", "team": "Ops",
             "function": "Operations", "comp": "ote",
             "locations": ["Remote - US"], "fit_old": 41,
+            "jd": ("About the role. Advise customers and build the platform. "
+                   "Responsibilities. Design scalable architectures, ship "
+                   "reusable prototypes, and support safe production use."),
             "url": "https://job-boards.greenhouse.io/examplelabs/jobs/777"}))
         (self.universe / "v2-raw-scores.json").write_text(json.dumps([
             {"uid": "g-examplelabs-12345", "_fulluid": "g-examplelabs-1234567",
@@ -216,6 +223,7 @@ class IngestTest(ApplicationsBase):
         arch = next(r for r in roles if r["uid"] == "g-examplelabs-1234567")
         self.assertEqual(arch["fit"], 88)          # teardown record won
         self.assertEqual(arch["source"], "example-teardown")
+        self.assertIn("Advise customers", arch["jd"])
         ops = next(r for r in roles if r["company"] == "OtherCo")
         self.assertIsNone(ops["fit"])
         srcs = {s["slug"]: s for s in meta["sources"]}
@@ -269,7 +277,10 @@ class ComposeTest(ApplicationsBase):
         out = applications.compose(view="all")
         self.assertEqual(out["roles"][0]["uid"], "g-examplelabs-1234567")
         self.assertTrue(out["roles"][0]["starred"])
+        self.assertTrue(out["roles"][0]["has_description"])
+        self.assertNotIn("jd", out["roles"][0])   # full text is compare-only
         self.assertIsNone(out["roles"][-1]["fit"])   # unscored sorts last
+        self.assertFalse(out["roles"][-1]["has_description"])
         comp = out["companies"]["Example Labs"]
         self.assertEqual(comp["roles"], 1)
         self.assertEqual(comp["connections"], 2)
@@ -516,6 +527,20 @@ class ApplyRouteTest(ApplicationsBase):
         self.main.api_applications_apply_prompt(
             "g-examplelabs-1234567", self.main.AppPromptReq())
         self.assertEqual(applications.get_state(), {})
+
+    def test_compare_route_resolves_full_descriptions(self):
+        out = self.main.api_applications_compare(self.main.AppCompareReq(
+            uids=["g-examplelabs-1234567", "g-examplelabs-777"]))
+        self.assertEqual(len(out["roles"]), 2)
+        self.assertEqual(len(out["pairs"]), 1)
+        self.assertIn("shared_pct", out["overall"])
+
+    def test_compare_route_rejects_unknown_role(self):
+        from fastapi import HTTPException
+        with self.assertRaises(HTTPException) as ctx:
+            self.main.api_applications_compare(self.main.AppCompareReq(
+                uids=["g-examplelabs-1234567", "missing"]))
+        self.assertEqual(ctx.exception.status_code, 404)
 
     def test_apply_passes_note_and_model_to_launch(self):
         calls = {}

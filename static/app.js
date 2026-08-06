@@ -13735,6 +13735,9 @@ DESKTOP_MQ.addEventListener("change", () => location.reload());
 let appsData = null;
 let appsShown = 200;
 const APPS_PAGE = 200;
+let appsCompareMode = false;
+const appsCompareSelected = new Set();
+const APPS_COMPARE_MAX = 6;
 // `avail` defaults to "live": a posting that has come down is marked and
 // filtered out, never deleted — the analysis stacked on it is the
 // expensive part. The count line always states how many are being held
@@ -13786,8 +13789,14 @@ async function loadApplications() {
   const host = $("#app-list");
   if (!appsData && host) host.innerHTML = "<p class='hint'>Loading roles…</p>";
   appsData = await api("/api/applications");
+  const live = new Set(appsData.roles.filter((r) => r.has_description)
+    .map((r) => r.uid));
+  [...appsCompareSelected].forEach((uid) => {
+    if (!live.has(uid)) appsCompareSelected.delete(uid);
+  });
   buildAppsCompanySelect();
   buildAppsLocSelect();
+  paintAppsCompareBar();
   renderApplications();
   loadBoardsStrip().catch(() => {});
   appsCheckStale().catch(() => {});
@@ -14198,6 +14207,45 @@ function openJobDescription(r) {
   loadJobDescription();
 }
 
+function paintAppsCompareBar() {
+  const toggle = $("#app-compare-toggle");
+  const bar = $("#app-compare-bar");
+  if (!toggle || !bar) return;
+  toggle.classList.toggle("on", appsCompareMode);
+  toggle.setAttribute("aria-pressed", appsCompareMode ? "true" : "false");
+  toggle.textContent = appsCompareMode ? "Stop comparing" : "Compare jobs";
+  bar.style.display = appsCompareMode ? "" : "none";
+  const n = appsCompareSelected.size;
+  const count = $("#app-compare-count");
+  if (count) count.textContent = n
+    ? `${n} selected${n < 2 ? " · choose at least one more" : ""}`
+    : "Choose 2–6 roles with descriptions";
+  const go = $("#app-compare-go");
+  if (go) {
+    go.disabled = n < 2;
+    go.textContent = n >= 2 ? `Compare ${n} jobs` : "Compare";
+  }
+  const clear = $("#app-compare-clear");
+  if (clear) clear.style.display = n ? "" : "none";
+}
+
+function toggleAppCompare(r) {
+  if (!r.has_description) {
+    toast("That posting has no saved description to compare");
+    return;
+  }
+  if (appsCompareSelected.has(r.uid)) appsCompareSelected.delete(r.uid);
+  else {
+    if (appsCompareSelected.size >= APPS_COMPARE_MAX) {
+      toast(`Compare up to ${APPS_COMPARE_MAX} jobs at once`);
+      return;
+    }
+    appsCompareSelected.add(r.uid);
+  }
+  paintAppsCompareBar();
+  renderApplications();
+}
+
 function renderApplications() {
   const host = $("#app-list");
   if (!host || !appsData) return;
@@ -14268,6 +14316,23 @@ function appRow(r) {
   const row = el("div", "app-row" + (r.cut ? " cutlane" : "")
                  + (r.availability === "gone" ? " gone" : ""));
   row.dataset.uid = r.uid;
+
+  if (appsCompareMode) {
+    const chosen = appsCompareSelected.has(r.uid);
+    const compare = el("button", "app-compare-pick" + (chosen ? " on" : ""),
+      chosen ? "Selected" : "Compare");
+    compare.type = "button";
+    compare.disabled = !r.has_description;
+    compare.title = r.has_description
+      ? (chosen ? "Remove from comparison" : "Add to comparison")
+      : "No full description is saved for this posting";
+    compare.setAttribute("aria-label", r.has_description
+      ? `${chosen ? "Remove" : "Add"} ${r.title} ${chosen ? "from" : "to"} comparison`
+      : `${r.title}: no saved description to compare`);
+    compare.setAttribute("aria-pressed", chosen ? "true" : "false");
+    compare.addEventListener("click", () => toggleAppCompare(r));
+    row.appendChild(compare);
+  }
 
   const star = el("button", "app-star" + (r.starred ? " on" : ""));
   star.title = r.starred ? "Unstar" : "Star";
@@ -14479,6 +14544,203 @@ async function copyText(text) {
   ta.remove();
   if (!ok) throw new Error("clipboard unavailable");
 }
+
+const appCompareSheet = bindSheet("#app-compare-sheet", "#app-compare-close");
+
+function appCompareRoleLabel(role) {
+  return role.company ? `${role.title} · ${role.company}` : role.title;
+}
+
+function appCompareSection(host, title, hint = "") {
+  const section = el("section", "app-cmp-section");
+  const head = el("div", "app-cmp-section-head");
+  head.appendChild(el("h4", null, title));
+  if (hint) head.appendChild(el("span", "hint", hint));
+  section.appendChild(head);
+  host.appendChild(section);
+  return section;
+}
+
+function renderAppCompare(data) {
+  const host = $("#app-compare-result");
+  host.innerHTML = "";
+  const roles = data.roles || [];
+  $("#app-compare-sub").textContent = roles.map(appCompareRoleLabel).join(" / ");
+
+  const hero = el("div", "app-cmp-hero");
+  const score = el("div", "app-cmp-score");
+  score.appendChild(el("strong", null, `${data.overall.shared_pct}%`));
+  score.appendChild(el("span", null, "shared language"));
+  hero.appendChild(score);
+  const measure = el("div", "app-cmp-measure");
+  const bar = el("div", "app-cmp-bar");
+  const shared = el("span", "shared");
+  shared.style.width = `${data.overall.shared_pct}%`;
+  const different = el("span", "different");
+  different.style.width = `${data.overall.different_pct}%`;
+  bar.appendChild(shared); bar.appendChild(different);
+  measure.appendChild(bar);
+  measure.appendChild(el("div", "app-cmp-legend",
+    `${data.overall.shared_pct}% shared · ${data.overall.different_pct}% role-specific`));
+  hero.appendChild(measure);
+  host.appendChild(hero);
+
+  if (roles.length > 2) {
+    const sec = appCompareSection(host, "Pairwise similarity",
+      "The average above can hide a close pair inside a broader set.");
+    const scroll = el("div", "app-cmp-table-scroll");
+    const table = el("table", "app-cmp-table pairwise");
+    const thead = el("thead");
+    const hr = el("tr");
+    hr.appendChild(el("th"));
+    roles.forEach((role, i) => hr.appendChild(el("th", null, `${i + 1}`)));
+    thead.appendChild(hr); table.appendChild(thead);
+    const byPair = new Map();
+    (data.pairs || []).forEach((pair) => {
+      byPair.set(`${pair.left}|${pair.right}`, pair.shared_pct);
+      byPair.set(`${pair.right}|${pair.left}`, pair.shared_pct);
+    });
+    const tbody = el("tbody");
+    roles.forEach((left, i) => {
+      const tr = el("tr");
+      const label = el("th", null, `${i + 1}. ${appCompareRoleLabel(left)}`);
+      label.title = appCompareRoleLabel(left);
+      tr.appendChild(label);
+      roles.forEach((right) => {
+        const value = left.uid === right.uid ? "—"
+          : `${byPair.get(`${left.uid}|${right.uid}`)}%`;
+        tr.appendChild(el("td", null, value));
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); scroll.appendChild(table); sec.appendChild(scroll);
+  }
+
+  const specifics = data.specifics || [];
+  if (specifics.length) {
+    const sec = appCompareSection(host, "Specific differences",
+      "Explicit requirements and role facts are shown verbatim; missing values read “Not specified.”");
+    const scroll = el("div", "app-cmp-table-scroll");
+    const table = el("table", "app-cmp-table specifics");
+    const thead = el("thead");
+    const hr = el("tr");
+    hr.appendChild(el("th", null, "Requirement"));
+    roles.forEach((role, i) => {
+      const th = el("th", null, `${i + 1}`);
+      th.title = appCompareRoleLabel(role);
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+    const tbody = el("tbody");
+    specifics.forEach((specific) => {
+      const tr = el("tr", "app-cmp-specific");
+      tr.appendChild(el("th", null, specific.label));
+      roles.forEach((role) => {
+        const td = el("td");
+        const values = (specific.values || {})[role.uid] || [];
+        if (values.length) values.forEach((value) =>
+          td.appendChild(el("div", "app-cmp-specific-value", value)));
+        else td.appendChild(el("span", "app-cmp-not-specified", "Not specified"));
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); scroll.appendChild(table); sec.appendChild(scroll);
+  }
+
+  const themes = data.themes || [];
+  if (themes.length) {
+    const sec = appCompareSection(host, "Responsibility patterns",
+      "Filled cells show where each theme appears in the description.");
+    const scroll = el("div", "app-cmp-table-scroll");
+    const table = el("table", "app-cmp-table themes");
+    const thead = el("thead");
+    const hr = el("tr");
+    hr.appendChild(el("th", null, "Theme"));
+    roles.forEach((role, i) => {
+      const th = el("th", null, `${i + 1}`);
+      th.title = appCompareRoleLabel(role);
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+    const tbody = el("tbody");
+    themes.forEach((theme) => {
+      const tr = el("tr", "app-cmp-theme " + theme.kind);
+      const name = el("th");
+      name.appendChild(el("span", null, theme.name));
+      name.appendChild(el("small", null,
+        theme.kind === "shared" ? "shared" : `${theme.count} of ${roles.length}`));
+      tr.appendChild(name);
+      roles.forEach((role) => {
+        const on = theme.present.includes(role.uid);
+        const td = el("td", on ? "on" : "");
+        td.textContent = on ? "yes" : "—";
+        if (on && theme.examples[role.uid]) td.title = theme.examples[role.uid];
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); scroll.appendChild(table); sec.appendChild(scroll);
+  }
+
+  if ((data.common || []).length) {
+    const sec = appCompareSection(host, "Common ground",
+      "Responsibilities expressed across every selected role.");
+    const list = el("ul", "app-cmp-list common");
+    data.common.forEach((text) => list.appendChild(el("li", null, text)));
+    sec.appendChild(list);
+  }
+
+  const uniqueSec = appCompareSection(host, "What changes by role",
+    "The clearest least-overlapping responsibility language in each posting.");
+  const uniqueGrid = el("div", "app-cmp-unique-grid");
+  roles.forEach((role, i) => {
+    const card = el("article", "app-cmp-unique");
+    card.appendChild(el("div", "app-cmp-role-num", `Role ${i + 1}`));
+    card.appendChild(el("h5", null, appCompareRoleLabel(role)));
+    const items = (data.unique || {})[role.uid] || [];
+    if (items.length) {
+      const list = el("ul", "app-cmp-list");
+      items.forEach((text) => list.appendChild(el("li", null, text)));
+      card.appendChild(list);
+    } else {
+      card.appendChild(el("p", "hint", "No strongly distinct responsibility language found."));
+    }
+    uniqueGrid.appendChild(card);
+  });
+  uniqueSec.appendChild(uniqueGrid);
+  host.appendChild(el("p", "hint app-cmp-method", data.method || ""));
+}
+
+async function runAppCompare() {
+  if (appsCompareSelected.size < 2) return;
+  const host = $("#app-compare-result");
+  host.innerHTML = "";
+  host.appendChild(el("div", "spin", "Comparing role descriptions…"));
+  $("#app-compare-sub").textContent =
+    `${appsCompareSelected.size} selected roles`;
+  appCompareSheet.open();
+  try {
+    const data = await post("/api/applications/compare",
+                            { uids: [...appsCompareSelected] });
+    renderAppCompare(data);
+  } catch (e) {
+    host.innerHTML = "";
+    host.appendChild(el("div", "empty left", "Comparison unavailable: " + e.message));
+  }
+}
+
+$("#app-compare-toggle")?.addEventListener("click", () => {
+  appsCompareMode = !appsCompareMode;
+  paintAppsCompareBar();
+  renderApplications();
+});
+$("#app-compare-clear")?.addEventListener("click", () => {
+  appsCompareSelected.clear();
+  paintAppsCompareBar();
+  renderApplications();
+});
+$("#app-compare-go")?.addEventListener("click", runAppCompare);
 
 let appRunCtx = null;
 function appApply(r) {
