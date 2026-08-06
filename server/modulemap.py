@@ -72,6 +72,14 @@ DEFAULT_MODULES = [
              "session retros. The raw material the Brain answers from.",
      "links": [], "keywords": ["vault", "obsidian", "tc-il"],
      "updated": TODAY},
+    {"id": "research-graphs", "name": "Company research graphs",
+     "layer": "source", "group": "know", "kind": "read-only SQLite",
+     "what": "Normalized public-source graphs kept with the owner's local "
+             "research: canonical sources, underlying events, deduplicated "
+             "utterances, semantic claims, and repost provenance.",
+     "links": [{"to": "vault-src", "how": "projects public claim notes into"}],
+     "keywords": ["research", "claim graph", "source provenance", "reposts"],
+     "updated": TODAY},
     {"id": "retros-src", "name": "Session retros", "layer": "source",
      "group": "operate", "kind": "markdown (~/TC-IL/Sessions)",
      "what": "One retrospective per Vira working session; each 'Shipped' "
@@ -601,6 +609,18 @@ DEFAULT_MODULES = [
                {"to": "front-doors", "how": "is set up by"}],
      "endpoints": ["/api/applications", "/api/applications/{uid}/apply"],
      "keywords": ["applications", "jobs", "roles", "apply", "self-record"],
+     "updated": TODAY},
+    {"id": "research-win", "name": "Research", "layer": "surface",
+     "group": "know", "kind": "dock window",
+     "what": "A three-column company-intelligence view: generalized claims "
+             "first, every underlying phrasing and event one level down, "
+             "and root/repost/vault/application context in the inspector.",
+     "links": [{"to": "research-graphs", "how": "reads claims and provenance from"},
+               {"to": "vault-src", "how": "opens linked source notes in"},
+               {"to": "applications-win", "how": "supplies company evidence to"},
+               {"to": "reader-win", "how": "joins source reading state with"}],
+     "endpoints": ["/api/research", "/api/research/{slug}"],
+     "keywords": ["research", "claims", "sources", "provenance", "company"],
      "updated": TODAY},
     {"id": "reader-win", "name": "Reader", "layer": "surface",
      "group": "know", "kind": "dock window",

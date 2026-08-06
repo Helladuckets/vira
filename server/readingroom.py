@@ -133,6 +133,15 @@ def clean_item(raw, index):
     it["note"] = _text(raw.get("note"), f"{where}.note")
     it["why"] = _text(raw.get("why"), f"{where}.why")
     it["vault"] = _text(raw.get("vault"), f"{where}.vault", cap=300)
+    # Optional stable joins into a company research graph. They do not make
+    # the room own graph data; they only preserve identity when a source URL
+    # later redirects or changes presentation.
+    it["research_graph"] = _text(raw.get("research_graph"),
+                                  f"{where}.research_graph", cap=80)
+    it["research_source_id"] = _text(raw.get("research_source_id"),
+                                      f"{where}.research_source_id", cap=80)
+    it["research_event_id"] = _text(raw.get("research_event_id"),
+                                     f"{where}.research_event_id", cap=80)
     it["pay"] = bool(raw.get("pay"))
     it["id"] = item_id(it)
     return it

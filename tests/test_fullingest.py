@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest import mock
 
 from server import fullingest, readingroom, roomvault, vault
+from scripts import stage_tcil_selection
 
 
 def item(**kw):
@@ -179,6 +180,18 @@ class StageItemTests(Base):
         self.assertIn('author:\n  - "[[Chan]]"', raw)
         self.assertIn("published: 2025-01-02", raw)
 
+    def test_research_ids_are_preserved_in_raw_frontmatter(self):
+        it = item(url="https://example.com/research",
+                  research_source_id="src_123",
+                  research_event_id="evt_456")
+        with mock.patch.object(fullingest, "fetch_article",
+                               return_value=("T", "x" * 500)):
+            self.assertEqual(
+                fullingest.stage_item(it, "anthropic", self.vault), "staged")
+        raw = fullingest.raw_path(self.vault, it).read_text(encoding="utf-8")
+        self.assertIn('research_source_id: "src_123"', raw)
+        self.assertIn('research_event_id: "evt_456"', raw)
+
     def test_web_too_thin_is_a_named_failure(self):
         it = item(url="https://example.com/thin")
         with mock.patch.object(fullingest, "fetch_article",
@@ -224,6 +237,69 @@ class StageSweepTests(Base):
         self.assertEqual(res["counts"].get("staged"), 1)
         self.assertEqual(res["counts"].get("failed"), 1)
         self.assertEqual(res["failures"][0]["title"], "B")
+
+
+class StageSelectionTests(Base):
+    def test_stages_only_explicit_clean_selection(self):
+        selected = [item(title="A", research_source_id="src-a",
+                         research_event_id="evt-a", private_owner_note="never"),
+                    item(title="B", url="https://e.com/b",
+                         research_source_id="src-b", research_event_id="evt-b")]
+        seen = []
+        with mock.patch.object(fullingest, "stage_item",
+                               side_effect=lambda it, slug, root, binary:
+                               seen.append(it) or "staged"):
+            res = fullingest.stage_items(
+                selected, "anthropic-universe", self.vault, binary="")
+        self.assertEqual(res["selected"], 2)
+        self.assertEqual(res["counts"], {"staged": 2})
+        self.assertEqual([row["state"] for row in res["outcomes"]],
+                         ["staged", "staged"])
+        self.assertEqual([it["research_source_id"] for it in seen],
+                         ["src-a", "src-b"])
+        self.assertNotIn("private_owner_note", seen[0])
+
+    def test_passive_refuses_selection(self):
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(fullingest.StageError):
+                fullingest.stage_items([item()], "anthropic-universe", self.vault)
+
+
+class SelectionManifestTests(unittest.TestCase):
+    @staticmethod
+    def row(source_id="src-a", event_id="evt-a", **extra):
+        row = {"source_id": source_id, "event_id": event_id,
+               "title": "Public source", "url": "https://example.com/a",
+               "publication_date": "2026-08-06", "priority": "high_signal",
+               "claim_count": 2}
+        row.update(extra)
+        return row
+
+    def manifest(self, selected=None, pointers=None, bibliography=None):
+        selected = selected if selected is not None else [self.row()]
+        return {"counts": {"by_action": {"ingest_full": len(selected)}},
+                "ingest_full": selected,
+                "pointer_only_distribution": pointers or [],
+                "bibliography_only": bibliography or []}
+
+    def test_projects_public_whitelist_and_graph_ids(self):
+        manifest = self.manifest([self.row(personal_relevance="secret",
+                                                application_use="secret")])
+        items = stage_tcil_selection.selection(manifest, 1)
+        self.assertEqual(items[0]["research_source_id"], "src-a")
+        self.assertEqual(items[0]["research_event_id"], "evt-a")
+        self.assertNotIn("personal_relevance", items[0])
+        self.assertNotIn("application_use", items[0])
+
+    def test_excluded_action_overlap_is_rejected(self):
+        manifest = self.manifest(
+            [self.row()], pointers=[{"source_id": "src-a"}])
+        with self.assertRaises(stage_tcil_selection.SelectionError):
+            stage_tcil_selection.selection(manifest, 1)
+
+    def test_expected_count_is_a_hard_gate(self):
+        with self.assertRaises(stage_tcil_selection.SelectionError):
+            stage_tcil_selection.selection(self.manifest(), 31)
 
 
 class SummariesIndexTests(Base):
