@@ -41,6 +41,20 @@ _ORGANIZATION_VOICE_SCOPES = {
     "company_first_party",
     "anthropic_person_direct",
 }
+_DISTRIBUTION_RELATIONS = {
+    "clip", "distribution", "excerpt", "excerpt_or_compilation",
+    "full_repost", "mirror", "partial_repost", "related_manifestation",
+    "repost", "secondary_coverage", "syndication",
+}
+_SENSITIVE_QUERY_KEYS = {
+    "email", "email_address", "first_name", "firstname", "fname",
+    "full_name", "fullname", "last_name", "lastname", "lname", "name",
+}
+_LOCAL_PATH_TEXT = re.compile(
+    r"(?<![A-Za-z0-9.])(?:file://)?/(?:Users|home)/[^/\s\"'<>]+(?:/[^\s\"'<>]*)*"
+    r"|\b[A-Za-z]:\\Users\\[^\\\s\"'<>]+(?:\\[^\s\"'<>]*)*",
+    re.I,
+)
 _RESEARCH_QUESTION_WORDS = {
     "anthropic", "claim", "claims", "employee", "employees", "evidence",
     "interview", "interviews", "podcast", "podcasts", "quote", "quotes",
@@ -187,14 +201,16 @@ def _graphs():
 def _public_graph(graph):
     manifest = graph["manifest"]
     counts = manifest.get("tables", {})
+    database = graph.get("database_path")
+    manifest_path = graph.get("manifest_path")
     return {
         "id": graph["id"],
         "name": graph["name"],
         "company": graph["company"],
         "status": "error" if graph["error"] else "ready",
         "error": graph["error"],
-        "database": str(graph["database_path"] or ""),
-        "manifest": str(graph["manifest_path"] or ""),
+        "database": database.name if database else "",
+        "manifest": manifest_path.name if manifest_path else "",
         "room": graph["room"],
         "built": manifest.get("built"),
         "manifest_counts": counts,
@@ -476,6 +492,19 @@ def _enrich_evidence(con, tables, evidence):
     return evidence
 
 
+def _evidence_sources(item):
+    """Canonical source first, followed by unique distribution appearances."""
+    out = []
+    seen = set()
+    for source in [item.get("source"), *(item.get("sources") or [])]:
+        source_id = (source or {}).get("source_id")
+        if not source_id or source_id in seen:
+            continue
+        seen.add(source_id)
+        out.append(source)
+    return out
+
+
 def _overview_scope(con, tables, claims):
     """Add organization-only counts without rewriting canonical rollups."""
     if "claim_utterances" not in tables:
@@ -639,6 +668,14 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
                         (item.get("utterance_id"),),
                     )
         evidence = _enrich_evidence(con, tables, evidence)
+        source_captures = {}
+        if "captures" in tables:
+            source_ids = {source.get("source_id") for item in evidence
+                          for source in _evidence_sources(item)}
+            for source_id in source_ids:
+                source_captures[source_id] = _rows(
+                    con, "SELECT * FROM captures WHERE source_id = ?", (source_id,)
+                )
     events = []
     sources = []
     seen_events = set()
@@ -648,9 +685,9 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
         if event and event.get("event_id") not in seen_events:
             seen_events.add(event.get("event_id"))
             event = copy.deepcopy(event)
-            event["sources"] = copy.deepcopy(item.get("sources", []))
+            event["sources"] = copy.deepcopy(_evidence_sources(item))
             events.append(event)
-        for source in item.get("sources", []):
+        for source in _evidence_sources(item):
             if source.get("source_id") in seen_sources:
                 continue
             seen_sources.add(source.get("source_id"))
@@ -658,17 +695,19 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
     vault_notes = _claim_vault_notes(graph, claim)
     source_notes_by_id = {}
     for source in sources:
-        notes = _source_vault_notes(graph, source)
+        notes = _source_vault_notes(
+            graph, source,
+            captures=source_captures.get(source.get("source_id"), []),
+        )
         source_notes_by_id[source.get("source_id")] = notes
         vault_notes.extend(notes)
     vault_notes = _dedupe_notes(vault_notes)
     for item in evidence:
         item_notes = []
         source_links = []
-        for source in item.get("sources", []):
+        for source in _evidence_sources(item):
             item_notes.extend(source_notes_by_id.get(source.get("source_id"), []))
-            original = (source.get("original_url") or
-                        source.get("canonical_url") or "")
+            original = _outbound_url(source)
             source_links.append({
                 "source_id": source.get("source_id"),
                 "title": source.get("title"),
@@ -680,19 +719,18 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
         item_notes = _dedupe_notes(item_notes)
         item["vault_links"] = item_notes
         item["source_links"] = source_links
-        transcript = next((note for note in item_notes
-                           if note.get("kind") in {"source_material", "raw_capture"}),
-                          item_notes[0] if item_notes else None)
-        item["full_transcript"] = copy.deepcopy(transcript) if transcript else None
+        item["full_transcript"] = _transcript_note(item_notes)
         canonical = item.get("source") or {}
-        original = (item.get("source_url") or canonical.get("original_url") or
-                    canonical.get("canonical_url") or "")
+        # The utterance edge can point at a distribution copy.  The event's
+        # canonical source is the recording/page the UI means by source.
+        original = (_outbound_url(canonical) if canonical.get("source_id") else
+                    _sanitize_outbound_url(item.get("source_url")))
         item["original_url"] = original
         item["timestamped_original_url"] = _timestamped_url(
             original, item.get("timestamp_seconds")
         )
     application_bridges = _claim_application_bridges(graph, claim)
-    return {
+    return _sanitize_public_payload({
         "graph": _public_graph(graph),
         "authority": "database",
         "claim": claim,
@@ -706,7 +744,7 @@ def claim_detail(claim_id_or_label, graph_id=None, limit=50):
         "evidence_total": total,
         "evidence_returned": len(evidence),
         "truncated": total > len(evidence),
-    }
+    })
 
 
 def _claim_vault_notes(graph, claim):
@@ -728,30 +766,39 @@ def _vault_path(root, pointer):
     if not pointer:
         return ""
     try:
-        path = Path(str(pointer)).expanduser().resolve()
+        path = Path(str(pointer)).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        path = path.resolve()
         rel = path.relative_to(root.resolve())
     except (OSError, ValueError):
         return ""
     return rel.as_posix() if path.is_file() else ""
 
 
-def _source_vault_notes(graph, source, room_matches=None):
+def _source_vault_notes(graph, source, room_matches=None, captures=None):
     """Link a source directly to its summary or full raw material."""
     root = Path(str(settings.get("vault_root") or "")).expanduser()
     if not source:
         return []
     out = []
-    direct = (_vault_path(root, source.get("local_pointer"))
-              if root.is_dir() else "")
-    if direct:
-        out.append({
-            "path": direct,
-            "title": f"Full source: {source.get('title') or Path(direct).stem}",
-            "context": "Full local capture or transcript",
-            "kind": "source_material",
-            "source_id": source.get("source_id"),
-            "authority": "linked_projection",
-        })
+    if root.is_dir():
+        pointers = [source.get("local_pointer")]
+        pointers.extend((capture or {}).get("local_pointer")
+                        for capture in (captures or []))
+        for pointer in pointers:
+            direct = _vault_path(root, pointer)
+            if not direct:
+                continue
+            out.append({
+                "path": direct,
+                "title": f"Full source: {source.get('title') or Path(direct).stem}",
+                "context": "Full local capture or transcript",
+                "kind": "source_material",
+                "action_label": _source_material_label(source),
+                "source_id": source.get("source_id"),
+                "authority": "linked_projection",
+            })
     if room_matches is None:
         urls = {_normalize_url(source.get(key)) for key in
                 ("original_url", "canonical_url") if source.get(key)}
@@ -777,10 +824,26 @@ def _source_vault_notes(graph, source, room_matches=None):
             "context": ("Full transcript or capture" if kind == "raw_capture"
                         else f"Source summary from {match.get('room', {}).get('title') or graph['room']}"),
             "kind": kind or "source_projection",
+            "action_label": _source_material_label(source),
             "source_id": source.get("source_id"),
             "authority": "linked_projection",
         })
     return _dedupe_notes(out)
+
+
+def _source_material_label(source):
+    kind = " ".join(str(source.get(key) or "").lower() for key in
+                    ("source_type", "source_family"))
+    return ("Full transcript" if any(token in kind for token in
+            ("audio", "conversation", "interview", "lecture", "podcast",
+             "talk", "video", "webinar")) else "Full source")
+
+
+def _transcript_note(notes):
+    """One explicit full-source action, distinct from summaries and claims."""
+    return next((copy.deepcopy(note) for note in notes
+                 if note.get("kind") in {"source_material", "raw_capture"}),
+                None)
 
 
 def _dedupe_notes(notes):
@@ -1065,6 +1128,57 @@ def _normalize_url(url):
     return urlunsplit(("", host + port, path, urlencode(query), ""))
 
 
+def _sanitize_outbound_url(url):
+    """Return a browser-safe URL without tracking or obvious identity fields."""
+    if not url:
+        return ""
+    try:
+        parts = urlsplit(str(url).strip())
+    except ValueError:
+        return ""
+    if parts.scheme.lower() not in {"http", "https"} or not parts.netloc:
+        return ""
+    query = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        lowered = key.lower()
+        normalized = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+        if (lowered.startswith("utm_") or lowered in _TRACKING_KEYS or
+                normalized in _SENSITIVE_QUERY_KEYS or "email" in normalized or
+                "@" in value):
+            continue
+        query.append((key, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path,
+                       urlencode(query), parts.fragment))
+
+
+def _outbound_url(source):
+    """Prefer the graph's clean canonical URL over archival/original variants."""
+    for key in ("canonical_url", "original_url", "source_url", "url"):
+        safe = _sanitize_outbound_url((source or {}).get(key))
+        if safe:
+            return safe
+    return ""
+
+
+def _sanitize_public_payload(value):
+    """Copy an API payload while redacting unsafe URLs and local paths."""
+    if isinstance(value, list):
+        return [_sanitize_public_payload(item) for item in value]
+    if not isinstance(value, dict):
+        return (_LOCAL_PATH_TEXT.sub("[local path]", value)
+                if isinstance(value, str) else value)
+    out = {}
+    for key, item in value.items():
+        if key == "local_pointer":
+            out[key] = ""
+        elif (isinstance(item, str) and
+              (key == "url" or key.endswith("_url"))):
+            out[key] = _sanitize_outbound_url(item)
+        else:
+            out[key] = _sanitize_public_payload(item)
+    return out
+
+
 def _source_urls(con, source):
     urls = {
         _normalize_url(source.get(key))
@@ -1162,9 +1276,104 @@ def source_detail(source_id, graph_id=None, limit=100):
             "LIMIT ?",
             (source_id, source_id, cap),
         ) if "source_relations" in tables else [])
+        canonical_sources = []
+        for event in events:
+            canonical_id = event.get("canonical_source_id")
+            if not canonical_id and "event_sources" in tables:
+                canonical_link = _row(
+                    con,
+                    "SELECT source_id FROM event_sources WHERE event_id = ? "
+                    "AND is_canonical = 1 ORDER BY source_id LIMIT 1",
+                    (event.get("event_id"),),
+                )
+                canonical_id = (canonical_link or {}).get("source_id")
+            canonical = (_row(con, "SELECT * FROM sources WHERE source_id = ?",
+                              (canonical_id,)) if canonical_id else None)
+            if canonical and not any(
+                    row.get("source_id") == canonical.get("source_id")
+                    for row in canonical_sources):
+                canonical_sources.append(canonical)
+        canonical_captures = {}
+        if "captures" in tables:
+            for canonical in canonical_sources:
+                canonical_id = canonical.get("source_id")
+                canonical_captures[canonical_id] = _rows(
+                    con, "SELECT * FROM captures WHERE source_id = ?",
+                    (canonical_id,),
+                )
+        for relation in relations:
+            left = str(relation.get("source_id") or "")
+            right = str(relation.get("related_source_id") or "")
+            if left == source_id and right != source_id:
+                other_id, direction = right, "outgoing"
+            elif right == source_id and left != source_id:
+                other_id, direction = left, "incoming"
+            else:
+                other_id, direction = "", "self"
+            relation["direction"] = direction
+            relation["other_source_id"] = other_id
+            relation["other_source"] = (_row(
+                con, "SELECT * FROM sources WHERE source_id = ?", (other_id,)
+            ) if other_id else None)
+            if (other_id and "captures" in tables and
+                    other_id not in canonical_captures):
+                canonical_captures[other_id] = _rows(
+                    con, "SELECT * FROM captures WHERE source_id = ?", (other_id,)
+                )
     room_matches = _room_matches(urls, graph["room"])
-    vault_notes = _source_vault_notes(graph, source, room_matches)
-    return {
+    vault_notes = _source_vault_notes(
+        graph, source, room_matches, captures=captures
+    )
+    canonical_source = next((row for row in canonical_sources
+                             if row.get("source_id") == source_id), None)
+    root_source = next((row for row in canonical_sources
+                        if row.get("source_id") != source_id), None)
+    if not canonical_source and not root_source:
+        for relation in relations:
+            relation_type = str(relation.get("relation_type") or
+                                relation.get("relationship") or "").lower()
+            if relation_type not in _DISTRIBUTION_RELATIONS:
+                continue
+            if relation.get("direction") == "outgoing":
+                root_source = relation.get("other_source")
+                break
+            if relation.get("direction") == "incoming":
+                canonical_source = source
+                break
+    source_role = ("distribution" if root_source else
+                   "canonical" if canonical_source else "unresolved")
+    local_material = _transcript_note(vault_notes)
+    canonical_material = None
+    if root_source:
+        root_id = root_source.get("source_id")
+        root_notes = _source_vault_notes(
+            graph, root_source,
+            captures=canonical_captures.get(root_id, []),
+        )
+        canonical_material = _transcript_note(root_notes)
+    # A distribution record may have its own capture or Reader projection,
+    # but that must never mask the canonical recording/page's full material.
+    transcript = canonical_material or local_material
+    transcript_source_id = ((root_source or {}).get("source_id")
+                            if canonical_material else
+                            source_id if local_material else "")
+    for relation in relations:
+        relation_type = str(relation.get("relation_type") or
+                            relation.get("relationship") or "").lower()
+        target_role = "related"
+        if relation_type in _DISTRIBUTION_RELATIONS:
+            if (relation.get("direction") == "outgoing" and root_source and
+                    relation.get("other_source_id") == root_source.get("source_id")):
+                target_role = "canonical"
+            elif (relation.get("direction") == "incoming" and
+                  source_role == "canonical"):
+                target_role = "distribution"
+        relation["target_role"] = target_role
+        relation["navigation_label"] = {
+            "canonical": "View canonical source",
+            "distribution": "View distribution copy",
+        }.get(target_role, "View related source")
+    return _sanitize_public_payload({
         "graph": _public_graph(graph),
         # Display aliases; canonical/projections below preserve provenance.
         "source": source,
@@ -1174,9 +1383,16 @@ def source_detail(source_id, graph_id=None, limit=100):
         "claims": claims,
         "relations": relations,
         "vault_notes": vault_notes,
+        "transcript": transcript,
+        "transcript_source_id": transcript_source_id,
+        "external_url": _outbound_url(source),
+        "source_role": source_role,
+        "root_source": root_source,
         "canonical": {
             "authority": "database",
             "source": source,
+            "source_role": source_role,
+            "root_source": root_source,
             "captures": captures,
             "events": events,
             "appearances": appearances,
@@ -1187,7 +1403,7 @@ def source_detail(source_id, graph_id=None, limit=100):
             "authority": "linked_projection",
             "reading_rooms": room_matches,
         },
-    }
+    })
 
 
 def room_annotation(room_slug, item_id=None, source_id=None, graph_id=None):
