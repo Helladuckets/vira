@@ -15,12 +15,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               StreamingResponse)
+                               Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import (actions, admission, agentbackend, aihealth, applecontacts,
-               applications,
+               applicationmap, applications,
                atlas,
                backup, brainchat, brief,
                briefstate, changelog,
@@ -759,6 +759,12 @@ class AppStateReq(BaseModel):
     comment: str | None = None
 
 
+class AppMapNoteReq(BaseModel):
+    concept_key: str
+    lane: str
+    text: str = ""
+
+
 @app.post("/api/applications/{uid}/state")
 def api_applications_state(uid: str, req: AppStateReq):
     try:
@@ -777,6 +783,51 @@ def api_applications_description(uid: str, refresh: bool = False):
     if role is None:
         raise HTTPException(404, "unknown role")
     return jobdesc.describe(role, refresh=refresh)
+
+
+@app.get("/api/applications/{uid}/evidence-map")
+def api_applications_evidence_map(uid: str):
+    """Role concepts joined to the current package and canonical self.
+
+    The derived map never promotes a rendering or planning note into a claim
+    source; the adjacent note endpoint owns the only map-specific write.
+    """
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    return applicationmap.build(role)
+
+
+@app.post("/api/applications/{uid}/evidence-map/note")
+def api_applications_evidence_map_note(uid: str, req: AppMapNoteReq):
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    try:
+        applicationmap.save_note(role, req.concept_key, req.lane, req.text)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return applicationmap.build(role)
+
+
+@app.get("/api/applications/{uid}/evidence-map/export")
+def api_applications_evidence_map_export(uid: str):
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    return applicationmap.export_markdown(role)
+
+
+@app.get("/api/applications/{uid}/evidence-map/export.md")
+def api_applications_evidence_map_download(uid: str):
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    out = applicationmap.export_markdown(role)
+    return Response(
+        out["text"], media_type="text/markdown; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{out["filename"]}"'})
 
 
 class AppApplyReq(BaseModel):

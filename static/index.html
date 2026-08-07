@@ -838,6 +838,39 @@
   </div>
 </div>
 
+<!-- APPLICATION EVIDENCE MAP (job concepts joined to the current package,
+     approved interview stories, and the canonical self record) -->
+<div id="app-map-sheet" class="sheet">
+  <div class="sheet-card app-map-card">
+    <div class="sheet-head">
+      <div class="run-kind">Applications</div>
+      <h3 id="app-map-title">Application evidence map</h3>
+      <p class="hint" id="app-map-sub"></p>
+    </div>
+    <div class="app-map-toolbar">
+      <div id="app-map-coverage" class="app-map-coverage"></div>
+      <div id="app-map-filters" class="app-map-filters" aria-label="Map lanes">
+        <button class="fchip sm on" data-lane="resume" aria-pressed="true">Resume</button>
+        <button class="fchip sm on" data-lane="cover" aria-pressed="true">Cover letter</button>
+        <button class="fchip sm on" data-lane="narrative" aria-pressed="true">Narratives</button>
+        <button class="fchip sm on" data-lane="self" aria-pressed="true">The self</button>
+      </div>
+    </div>
+    <div id="app-map-scroll" class="app-map-scroll">
+      <div id="app-map-board" class="app-map-board"></div>
+    </div>
+    <div id="app-map-detail" class="app-map-detail" aria-live="polite">
+      Hover a card to trace its connections. Click to keep them lit.
+    </div>
+    <p id="app-map-method" class="hint app-map-method"></p>
+    <div class="row-end">
+      <button class="btn" id="app-map-copy">Copy action brief</button>
+      <button class="btn" id="app-map-download">Download .md</button>
+      <button class="btn" id="app-map-close">Close</button>
+    </div>
+  </div>
+</div>
+
 <!-- APPLY SHEET (dispatch the application-package agent for a role) -->
 <div id="app-run-sheet" class="sheet">
   <div class="sheet-card">
