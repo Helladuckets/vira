@@ -735,16 +735,17 @@ def compare_roles(uids):
 
 def apply_prompt(role, note=""):
     """The prompt an Apply dispatch hands the agent session. cwd is the
-    self-record; on Claude its CLAUDE.md (claim gate, confidentiality)
-    auto-loads, but the load-bearing rules are EMBEDDED in the prompt text
-    below so they survive every backend — a codex/gemini session loads no
-    CLAUDE.md, and before 2026-07-31 such a run received none of the claim
-    gate or the confidentiality walls (the jobboards.score_prompt pattern,
-    applied here). Universe roles ride with their adjudicated dossier read
-    (tier, lane, why_fit, lead_with, caveat) — the package build starts
-    from that, not from scratch."""
+    self-record; on Claude its CLAUDE.md auto-loads, but the load-bearing
+    source ladder, claim gate, and confidentiality rules are EMBEDDED in the
+    prompt text so they survive every backend. Universe roles ride with their
+    adjudicated dossier read (tier, lane, why_fit, lead_with, caveat) — the
+    package build starts from that, then selects evidence from the whole career
+    rather than the smallest already-rendered subset."""
     record = self_record()
     facts = record / "FACTS.md"
+    history = record / "08-deliverables" / "MASTER_HISTORY.md"
+    freshness = record / "08-deliverables" / "check_freshness.py"
+    inventory = record / "INVENTORY.md"
     lines = [
         "Run the application-package skill "
         f"(read {SKILL_MD} and follow it end to end) for this role. "
@@ -752,18 +753,34 @@ def apply_prompt(role, note=""):
         "",
         "GROUND RULES — these bind regardless of what else your harness "
         "loaded:",
-        f"- {facts} is the ONLY claim source and wins every conflict "
-        "(authority order: FACTS.md, then self.json, then nothing else). "
-        "Read it before writing any claim about the owner's background, "
-        "and never emit anything from its DO-NOT-USE register.",
-        "- A claim you cannot anchor to a FACTS.md row gets REMOVED from "
-        "the artifact, not flagged. A rendering (an existing resume, bio, "
-        "or deck) is never a source — older PDFs in this record predate "
-        "corrections and are not claim-safe.",
-        f"- Nothing from {record / '07-sentinel'} or "
-        f"{record / '13-personal'} may appear in any outward artifact — "
-        "no quotes, no paraphrases, no figures. Grounding context at "
-        "most. Internal deal figures never appear anywhere.",
+        f"- Read {history} FRESH before selecting evidence. It is the "
+        "comprehensive human-readable career record and provenance index. "
+        f"Use {inventory} to find recent source additions. Run `python3 "
+        f"{freshness}` at intake and reconcile any named stale source before "
+        "drafting.",
+        f"- Read {facts} FRESH as the final outward wording gate. It wins "
+        "every conflict and controls the DO-NOT-USE register. self.json is a "
+        "distillation that follows the ledger; an existing resume, bio, deck, "
+        "fit brief, or cached summary is never a source.",
+        "- A useful claim missing from FACTS.md triggers evidence review and "
+        "active adjudication, not silent deletion. Follow the Master History "
+        "endnote to the source. If the evidence supports an unambiguous "
+        "sanitized form, add it to FACTS.md before use; otherwise keep it out "
+        "of outward artifacts and record it as NEEDS ADJUDICATION in the "
+        "package evidence map.",
+        f"- {record / '07-sentinel'} is admissible PRIVATE evidence for "
+        "reconstructing role, craft, authorship, sequence, tools, and scope. "
+        "Use it internally to adjudicate sanitized language; never expose the "
+        "private dossier, proprietary fund/tenant/vendor/strategy/rendering "
+        "detail, confidential employment mechanics, or non-public deal "
+        "figures. Nothing from "
+        f"{record / '13-personal'} becomes a career claim; the SSN quarantine "
+        "is absolute.",
+        "- Before drafting, create an internal evidence map covering current "
+        "systems, VP Operations, VP Acquisitions, AVP, Analyst, and pre-"
+        "Sentinel foundations. CONSIDERED, NOT SELECTED is valid; silence is "
+        "not. Preserve distinct roles and never make the four personally led "
+        "VP deals stand in for the entire career.",
         f"- The full rulebook is {record / 'CLAUDE.md'} — read it first "
         "if your harness did not load it for you.",
         "",
