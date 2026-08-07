@@ -94,6 +94,8 @@
   "_self_record": "The folder holding FACTS.md (the claim gate every application is checked against), your resume, and every generated package. Written by the Applications front door; set it by hand only if you already keep a record somewhere. Empty = <crm_root>/self.",
   "applications_universe": "",
   "_applications_universe": "Where the scored candidate universe lives (candidate-universe/role/*.json plus *-raw-scores.json). Written by the front door. Empty = <self_record>/analysis.",
+  "applications_packages_root": "",
+  "_applications_packages_root": "Folder holding one generated package per application (resume, cover letter, and interview materials). Empty = ~/Documents/CV/15-applications when that folder exists, otherwise <self_record>/15-applications.",
   "applications_locations": [],
   "_applications_locations": "Place names you will work in, e.g. [\"New York\", \"NYC\"]. EMPTY MEANS UNFILTERED - every role stays eligible. Eligibility gates the phone ping and the default view, never what gets fetched.",
   "applications_remote_ok": true,

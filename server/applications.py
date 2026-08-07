@@ -101,6 +101,7 @@ def sources():
     return srcs
 
 STATUSES = ("none", "applied", "interviewing", "offer", "closed", "skipped")
+MAP_NOTE_LANES = ("resume", "cover", "narrative")
 
 _lock = threading.Lock()
 _cache = {"key": None, "roles": None}
@@ -528,6 +529,62 @@ def update_state(uid, starred=None, status=None, comment=None,
         row["updated"] = _now()
         _save_state(s)
         return row
+
+
+def _map_notes_from_row(row):
+    raw = row.get("evidence_map", {}).get("notes", {})
+    if not isinstance(raw, dict):
+        return []
+    out = []
+    for concept_key, lanes in raw.items():
+        if not isinstance(lanes, dict):
+            continue
+        for lane, note in lanes.items():
+            if lane not in MAP_NOTE_LANES or not isinstance(note, dict):
+                continue
+            text = str(note.get("text") or "").strip()
+            if text:
+                out.append({"concept_key": concept_key, "lane": lane,
+                            "text": text, "when": note.get("when") or ""})
+    return out
+
+
+def map_notes(uid):
+    """Application-specific drafting notes keyed to a stable requirement.
+
+    These live with the role's other owner state.  They are planning
+    annotations, never additions to the self-record or proof of a claim.
+    """
+    with _lock:
+        row = _load_state()["roles"].get(uid, {})
+        return _map_notes_from_row(row)
+
+
+def update_map_note(uid, concept_key, lane, text):
+    """Upsert one lane note; empty text removes it."""
+    concept_key = str(concept_key or "").strip()
+    if not re.fullmatch(r"[a-f0-9]{16}", concept_key):
+        raise ValueError("invalid requirement key")
+    if lane not in MAP_NOTE_LANES:
+        raise ValueError(f"lane must be one of {MAP_NOTE_LANES}")
+    text = str(text or "").strip()
+    if len(text) > 4000:
+        raise ValueError("planning note must be 4000 characters or fewer")
+    with _lock:
+        s = _load_state()
+        row = s["roles"].setdefault(uid, {})
+        evidence_map = row.setdefault("evidence_map", {})
+        notes = evidence_map.setdefault("notes", {})
+        lanes = notes.setdefault(concept_key, {})
+        if text:
+            lanes[lane] = {"text": text, "when": _now()}
+        else:
+            lanes.pop(lane, None)
+            if not lanes:
+                notes.pop(concept_key, None)
+        row["updated"] = _now()
+        _save_state(s)
+        return _map_notes_from_row(row)
 
 
 # ------------------------------------------------------------ connections

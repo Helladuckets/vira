@@ -14459,6 +14459,11 @@ function appRow(r) {
   });
   actions.appendChild(cbtn);
 
+  const map = el("button", "btn app-cbtn app-map-btn", "Map");
+  map.title = "Trace this role against the resume, cover letter, talking points, and canonical self";
+  map.addEventListener("click", () => openAppMap(r));
+  actions.appendChild(map);
+
   const apply = el("button", "btn primary app-apply",
                    r.last_job ? "Re-apply" : "Apply");
   apply.addEventListener("click", () => appApply(r));
@@ -14741,6 +14746,390 @@ $("#app-compare-clear")?.addEventListener("click", () => {
   renderApplications();
 });
 $("#app-compare-go")?.addEventListener("click", runAppCompare);
+
+// ---------- application evidence map ----------
+// A graph over stores that already own their material: the catalog role, the
+// current application package, approved Evidence Ledger stories, and
+// FACTS.md/self.json. The only writes are application-scoped planning notes;
+// they never become claim evidence or mutate the canonical self.
+const appMapSheet = bindSheet("#app-map-sheet", "#app-map-close");
+let appMapData = null;
+let appMapPinned = "";
+const appMapLanes = new Set(["resume", "cover", "narrative", "self"]);
+
+function appMapAllNodes() {
+  return (appMapData?.columns || []).flatMap((column) => column.nodes || []);
+}
+
+function appMapNode(id) {
+  return appMapAllNodes().find((node) => node.id === id) || null;
+}
+
+function appMapVisibleEdges() {
+  return (appMapData?.edges || []).filter((edge) => appMapLanes.has(edge.lane));
+}
+
+function appMapConceptFor(node) {
+  if (!node) return null;
+  if (node.lane === "job") return node;
+  if (node.concept_key)
+    return appMapAllNodes().find((n) => n.lane === "job" &&
+      n.concept_key === node.concept_key) || null;
+  return null;
+}
+
+function appMapPlanningNote(concept, lane) {
+  if (!concept) return null;
+  return appMapAllNodes().find((n) => n.planning && n.lane === lane &&
+    n.concept_key === concept.concept_key) || null;
+}
+
+async function appMapSaveNote(concept, lane, text) {
+  const uid = appMapData?.role?.uid;
+  if (!uid || !concept?.concept_key) throw new Error("requirement is unavailable");
+  const data = await post(
+    `/api/applications/${encodeURIComponent(uid)}/evidence-map/note`,
+    { concept_key: concept.concept_key, lane, text });
+  renderAppMap(data);
+  appMapPinned = concept.id;
+  requestAnimationFrame(() => appMapActivate(appMapPinned));
+}
+
+function appMapEditNote(concept, lane, x, y) {
+  const existing = appMapPlanningNote(concept, lane);
+  const labels = { resume: "resume action", cover: "cover-letter angle",
+                   narrative: "talking point" };
+  ctxCompose(x, y, {
+    title: `${existing ? "Edit" : "Add"} ${labels[lane]}`,
+    placeholder: "What should change or what grounded evidence should be found?",
+    initial: existing?.text || "",
+    note: "Planning note only. It remains a gap until source material supports it.",
+    submit: existing ? "Save" : "Add",
+    onSubmit: (text) => appMapSaveNote(concept, lane, text),
+  });
+}
+
+function appMapClearNote(concept, lane, x, y) {
+  const labels = { resume: "resume action", cover: "cover-letter angle",
+                   narrative: "talking point" };
+  confirmPopup({
+    x, y, title: `Remove ${labels[lane]}?`,
+    body: ["This removes only the application planning note.",
+           "The job description and source artifacts are unchanged."],
+    cta: "Remove", danger: true,
+    onConfirm: () => appMapSaveNote(concept, lane, "").catch((e) =>
+      toast("Remove failed: " + e.message)),
+  });
+}
+
+function appMapGapMenu(concept, x, y) {
+  const choices = [
+    ["resume", "Resume action"],
+    ["cover", "Cover-letter angle"],
+    ["narrative", "Talking point"],
+  ];
+  const items = [
+    { head: "Plan this gap", sub: concept.text },
+    ...choices.map(([lane, label]) => ({
+      label: `${appMapPlanningNote(concept, lane) ? "Edit" : "Add"} ${label.toLowerCase()}`,
+      run: () => appMapEditNote(concept, lane, x, y),
+    })),
+  ];
+  choices.forEach(([lane, label]) => {
+    if (appMapPlanningNote(concept, lane)) items.push({
+      label: `Remove ${label.toLowerCase()}`,
+      run: () => appMapClearNote(concept, lane, x, y),
+    });
+  });
+  showContextMenu(x, y, items);
+}
+
+function appMapDetail(node, edges) {
+  const detail = $("#app-map-detail");
+  detail.innerHTML = "";
+  if (!node) {
+    detail.textContent = "Hover a card to trace its connections. Click to keep them lit.";
+    return;
+  }
+  const head = el("div", "app-map-detail-head");
+  head.appendChild(el("strong", null, node.heading || node.source || "Evidence"));
+  const meta = [node.source, node.kind, node.detail].filter(Boolean).join(" · ");
+  if (meta) head.appendChild(el("span", "hint", meta));
+  detail.appendChild(head);
+  detail.appendChild(el("p", null, node.text));
+  const concept = appMapConceptFor(node);
+  if (concept && (concept.coverage?.outward || 0) < 18) {
+    const gap = el("div", "app-map-gap-detail");
+    gap.appendChild(el("strong", null, "Unfilled evidence slot"));
+    gap.appendChild(el("span", "hint", " Plan an edit here; the line stays a gap until the source material supports it."));
+    const actions = el("div", "app-map-gap-actions");
+    [["resume", "Resume action"], ["cover", "Cover angle"],
+     ["narrative", "Talking point"]].forEach(([lane, label]) => {
+      const existing = appMapPlanningNote(concept, lane);
+      const button = el("button", "fchip sm", `${existing ? "Edit" : "Add"} ${label}`);
+      button.addEventListener("click", (event) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        appMapEditNote(concept, lane, rect.left, rect.bottom + 5);
+      });
+      actions.appendChild(button);
+    });
+    gap.appendChild(actions);
+    detail.appendChild(gap);
+  }
+  if (edges.length) {
+    const links = el("div", "app-map-detail-links");
+    edges.sort((a, b) => b.score - a.score).slice(0, 8).forEach((edge) => {
+      const other = appMapNode(edge.from === node.id ? edge.to : edge.from);
+      if (!other) return;
+      const chip = el("button", "fchip sm app-map-jump",
+        `${edge.score} · ${other.heading || other.source || other.lane}`);
+      chip.title = other.text;
+      chip.addEventListener("click", () => {
+        appMapPinned = other.id;
+        appMapActivate(other.id);
+        document.querySelector(`[data-map-node="${CSS.escape(other.id)}"]`)
+          ?.scrollIntoView({ behavior: REDUCED_MOTION ? "auto" : "smooth",
+                            block: "center", inline: "center" });
+      });
+      links.appendChild(chip);
+    });
+    detail.appendChild(links);
+  }
+}
+
+function appMapActivate(id = "") {
+  const edges = appMapVisibleEdges();
+  const activeEdges = id
+    ? edges.filter((edge) => edge.from === id || edge.to === id) : [];
+  const connected = new Set([id]);
+  activeEdges.forEach((edge) => {
+    connected.add(edge.from); connected.add(edge.to);
+  });
+  document.querySelectorAll("#app-map-board [data-map-node]").forEach((node) => {
+    const nodeId = node.dataset.mapNode;
+    node.classList.toggle("map-lit", !!id && connected.has(nodeId));
+    node.classList.toggle("map-dim", !!id && !connected.has(nodeId));
+    node.classList.toggle("map-pinned", appMapPinned === nodeId);
+  });
+  document.querySelectorAll("#app-map-board .app-map-edge").forEach((path) => {
+    const lit = !!id && (path.dataset.from === id || path.dataset.to === id);
+    path.classList.toggle("map-lit", lit);
+    path.classList.toggle("map-dim", !!id && !lit);
+  });
+  appMapDetail(id ? appMapNode(id) : null, activeEdges);
+}
+
+function drawAppMapEdges() {
+  const board = $("#app-map-board");
+  const svg = board?.querySelector(".app-map-lines");
+  if (!board || !svg || !appMapData) return;
+  const br = board.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${Math.max(1, br.width)} ${Math.max(1, br.height)}`);
+  svg.setAttribute("width", br.width);
+  svg.setAttribute("height", br.height);
+  svg.innerHTML = "";
+  const ns = "http://www.w3.org/2000/svg";
+  appMapVisibleEdges().forEach((edge) => {
+    const from = board.querySelector(`[data-map-node="${CSS.escape(edge.from)}"]`);
+    const to = board.querySelector(`[data-map-node="${CSS.escape(edge.to)}"]`);
+    if (!from || !to) return;
+    const a = from.getBoundingClientRect();
+    const b = to.getBoundingClientRect();
+    const x1 = a.right - br.left;
+    const y1 = a.top + a.height / 2 - br.top;
+    const x2 = b.left - br.left;
+    const y2 = b.top + b.height / 2 - br.top;
+    const bend = Math.max(28, (x2 - x1) * .42);
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d", `M${x1},${y1} C${x1 + bend},${y1} ${x2 - bend},${y2} ${x2},${y2}`);
+    path.setAttribute("class", `app-map-edge ${edge.strength} lane-${edge.lane}`);
+    path.dataset.from = edge.from;
+    path.dataset.to = edge.to;
+    const title = document.createElementNS(ns, "title");
+    title.textContent = `${edge.score} shared-language signal` +
+      (edge.signals?.length ? ` · ${edge.signals.join(", ")}` : "");
+    path.appendChild(title);
+    svg.appendChild(path);
+  });
+  appMapActivate(appMapPinned);
+}
+
+function appMapCard(node, column) {
+  const card = el("button", `app-map-node lane-${column.id}`);
+  card.type = "button";
+  card.dataset.mapNode = node.id;
+  card.title = node.text;
+  const top = el("div", "app-map-node-top");
+  if (node.heading) top.appendChild(el("span", "app-map-node-head", node.heading));
+  if (column.id === "job") {
+    const outward = node.coverage?.outward || 0;
+    const grounded = node.coverage?.grounded || 0;
+    const planned = node.coverage?.planned || 0;
+    const state = outward >= 18 ? "covered" : planned ? "planned" : "gap";
+    const badge = el("span", `app-map-state ${state}`,
+      outward >= 18 ? "covered" : planned ? "gap · planned" : "gap");
+    badge.title = `${outward} outward coverage · ${grounded} self grounding · ${planned} planning notes`;
+    top.appendChild(badge);
+  } else if (node.connections) {
+    top.appendChild(el("span", "app-map-count", String(node.connections)));
+  }
+  card.appendChild(top);
+  card.appendChild(el("span", "app-map-node-text", node.text));
+  if (column.id === "job" && (node.coverage?.outward || 0) < 18) {
+    card.classList.add("is-gap");
+    if (node.coverage?.planned) card.classList.add("has-plan");
+    card.appendChild(el("span", "app-map-gap-slot",
+      node.coverage?.planned
+        ? "Planning note added · source evidence still missing"
+        : "Empty evidence slot · right-click or open to add"));
+  }
+  if (node.planning) card.classList.add("is-planning");
+  if (node.source && column.id !== "job")
+    card.appendChild(el("span", "app-map-node-source", node.source));
+  card.addEventListener("mouseenter", () => {
+    if (!appMapPinned) appMapActivate(node.id);
+  });
+  card.addEventListener("mouseleave", () => {
+    if (!appMapPinned) appMapActivate("");
+  });
+  card.addEventListener("focus", () => {
+    if (!appMapPinned) appMapActivate(node.id);
+  });
+  card.addEventListener("blur", () => {
+    if (!appMapPinned) appMapActivate("");
+  });
+  card.addEventListener("click", (event) => {
+    event.stopPropagation();
+    appMapPinned = appMapPinned === node.id ? "" : node.id;
+    appMapActivate(appMapPinned);
+  });
+  if ((column.id === "job" && (node.coverage?.outward || 0) < 18) || node.planning) {
+    card.addEventListener("contextmenu", (event) => {
+      event.preventDefault(); event.stopPropagation();
+      const concept = appMapConceptFor(node);
+      if (concept) appMapGapMenu(concept, event.clientX, event.clientY);
+    });
+  }
+  return card;
+}
+
+function renderAppMap(data) {
+  appMapData = data;
+  appMapPinned = "";
+  const board = $("#app-map-board");
+  board.innerHTML = "";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "app-map-lines");
+  svg.setAttribute("aria-hidden", "true");
+  board.appendChild(svg);
+  (data.columns || []).forEach((column) => {
+    const lane = el("section", `app-map-column lane-${column.id}`);
+    lane.dataset.mapLane = column.id;
+    if (column.id !== "job" && !appMapLanes.has(column.id))
+      lane.classList.add("lane-muted");
+    const head = el("div", "app-map-column-head");
+    head.appendChild(el("h4", null, column.title));
+    head.appendChild(el("p", "hint", column.subtitle || ""));
+    lane.appendChild(head);
+    const list = el("div", "app-map-node-list");
+    if (column.nodes?.length) {
+      let lastSection = null;
+      column.nodes.forEach((node) => {
+        const section = node.heading || "Job description";
+        if (column.id === "job" && section !== lastSection) {
+          list.appendChild(el("div", "app-map-section-label", section));
+          lastSection = section;
+        }
+        list.appendChild(appMapCard(node, column));
+      });
+    }
+    else list.appendChild(el("div", "empty left app-map-empty",
+      column.id === "job" ? "No role concepts are available."
+        : "No connected material found in this source."));
+    lane.appendChild(list);
+    board.appendChild(lane);
+  });
+  board.onclick = (event) => {
+    if (event.target === board || event.target.closest(".app-map-column-head")) {
+      appMapPinned = ""; appMapActivate("");
+    }
+  };
+
+  const coverage = data.coverage || {};
+  const pct = coverage.concepts
+    ? Math.round(100 * coverage.covered / coverage.concepts) : 0;
+  $("#app-map-coverage").innerHTML = "";
+  const score = el("strong", null, `${coverage.covered || 0}/${coverage.concepts || 0}`);
+  $("#app-map-coverage").appendChild(score);
+  $("#app-map-coverage").appendChild(el("span", null,
+    ` lines covered · ${pct}% · ${coverage.grounded || 0} grounded · ${coverage.planned || 0} gaps planned`));
+  $("#app-map-method").textContent = data.method || "";
+  const pkg = data.package || {};
+  $("#app-map-sub").textContent = pkg.available
+    ? `${data.role.company} · ${pkg.folder} · ${pkg.version}`
+    : `${data.role.company} · no application package resolved yet`;
+  requestAnimationFrame(() => requestAnimationFrame(drawAppMapEdges));
+}
+
+async function appMapExport() {
+  const uid = appMapData?.role?.uid;
+  if (!uid) throw new Error("map is not loaded");
+  return api(`/api/applications/${encodeURIComponent(uid)}/evidence-map/export`);
+}
+
+$("#app-map-copy")?.addEventListener("click", async () => {
+  try {
+    const out = await appMapExport();
+    await copyText(out.text);
+    toast("Action brief copied");
+  } catch (e) { toast("Copy failed: " + e.message); }
+});
+
+$("#app-map-download")?.addEventListener("click", async () => {
+  try {
+    const uid = appMapData?.role?.uid;
+    if (!uid) throw new Error("map is not loaded");
+    const link = document.createElement("a");
+    link.href = `/api/applications/${encodeURIComponent(uid)}/evidence-map/export.md`;
+    link.download = "";
+    document.body.appendChild(link); link.click(); link.remove();
+    toast("Action brief downloaded");
+  } catch (e) { toast("Download failed: " + e.message); }
+});
+
+async function openAppMap(r) {
+  appMapSheet.open();
+  $("#app-map-title").textContent = `${r.title} — evidence map`;
+  $("#app-map-sub").textContent = r.company || "";
+  $("#app-map-method").textContent = "";
+  $("#app-map-coverage").textContent = "";
+  $("#app-map-board").innerHTML = "";
+  $("#app-map-board").appendChild(el("div", "spin", "Joining the role, package, stories, and self…"));
+  try {
+    const data = await api(`/api/applications/${encodeURIComponent(r.uid)}/evidence-map`);
+    renderAppMap(data);
+  } catch (e) {
+    $("#app-map-board").innerHTML = "";
+    $("#app-map-board").appendChild(el("div", "empty left",
+      "Evidence map unavailable: " + e.message));
+  }
+}
+
+$("#app-map-filters")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-lane]");
+  if (!button) return;
+  const lane = button.dataset.lane;
+  if (appMapLanes.has(lane)) appMapLanes.delete(lane); else appMapLanes.add(lane);
+  button.classList.toggle("on", appMapLanes.has(lane));
+  button.setAttribute("aria-pressed", appMapLanes.has(lane) ? "true" : "false");
+  document.querySelector(`#app-map-board [data-map-lane="${CSS.escape(lane)}"]`)
+    ?.classList.toggle("lane-muted", !appMapLanes.has(lane));
+  drawAppMapEdges();
+});
+window.addEventListener("resize", () => {
+  if ($("#app-map-sheet")?.classList.contains("open"))
+    requestAnimationFrame(drawAppMapEdges);
+});
 
 let appRunCtx = null;
 function appApply(r) {
@@ -15201,6 +15590,7 @@ function ctxCompose(x, y, opts) {
   const ta = el("textarea", "hook-input");
   ta.rows = 3;
   ta.placeholder = opts.placeholder || "";
+  ta.value = opts.initial || "";
   pop.appendChild(ta);
   if (opts.note) pop.appendChild(el("div", "ctx-note", opts.note));
   const row = el("div", "row-end");

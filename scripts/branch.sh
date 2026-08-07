@@ -6,6 +6,7 @@
 #   branch.sh start <slug>     new branch claude/<slug> + worktree .worktrees/<slug>
 #   branch.sh adopt [slug]     provision a worktree this script didn't create
 #   branch.sh serve <slug>     test instance: cloned data, passive, local + tailnet
+#   branch.sh serve <slug> --local   loopback only; never bridge to tailnet
 #   branch.sh serve <slug> --fresh   re-clone data before serving
 #   branch.sh serve <slug> --fixture synthetic-data preview (safe to share)
 #   branch.sh stop <slug>      stop the test instance
@@ -378,7 +379,8 @@ windows on desktop and internal tabs on mobile.' > "$stage/test-vault/Sessions/F
 
 cmd_serve() {
   slug_check "$1"
-  local fresh=${2:-} dir port pid
+  local mode=${2:-} dir port pid local_only=0
+  [[ "$mode" == "--local" ]] && local_only=1
   dir=$(wt_dir "$1")
   [[ -d "$dir" ]] || { echo "error: no worktree at $dir (run start first)" >&2; exit 1; }
   [[ "$dir" == "$LIVE" ]] && { echo "error: refusing to serve the live tree" >&2; exit 1; }
@@ -386,10 +388,10 @@ cmd_serve() {
   pid=$(instance_pid "$dir")
   [[ -n "$pid" ]] && { echo "already running (pid $pid, port $(instance_port "$dir"))"; exit 0; }
 
-  if [[ "$fresh" == "--fixture" ]]; then
+  if [[ "$mode" == "--fixture" ]]; then
     echo "building synthetic fixture snapshot..."
     fixture_data "$dir" || exit 1
-  elif [[ "$fresh" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
+  elif [[ "$mode" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
     echo "cloning data snapshot (APFS copy-on-write)..."
     clone_data "$LIVE/data" "$dir/data" || exit 1
   fi
@@ -414,15 +416,22 @@ cmd_serve() {
   done
   curl -sf -o /dev/null "http://127.0.0.1:$port/" || {
     echo "error: no response on :$port — see $dir/.test-instance.log" >&2; exit 1; }
-  tailnet_serve "$port" || {
-    stop_test_process "$dir" >/dev/null
-    echo "error: Tailscale could not expose :$port to the tailnet" >&2
-    exit 1
-  }
+  if [[ "$local_only" -eq 0 ]]; then
+    tailnet_serve "$port" || {
+      stop_test_process "$dir" >/dev/null
+      echo "error: Tailscale could not expose :$port to the tailnet" >&2
+      exit 1
+    }
+  fi
   echo ""
   # Health checks stay numeric and local. Human links use localhost on this
   # Mac (Browser allows it) and MagicDNS everywhere else.
-  print_instance_urls "$port"
+  if [[ "$local_only" -eq 1 ]]; then
+    echo "test instance up:  http://localhost:$port  (passive, LOCAL ONLY)"
+    echo "local stage:       http://localhost:$port/stage.html"
+  else
+    print_instance_urls "$port"
+  fi
   echo "log: $dir/.test-instance.log    stop: scripts/branch.sh stop $1"
 }
 
