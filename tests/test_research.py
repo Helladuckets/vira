@@ -7,7 +7,9 @@ the repository.
 
 import hashlib
 import json
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -341,6 +343,273 @@ class ResearchGraphTests(unittest.TestCase):
         self.assertEqual("wiki/source-summary.md",
                          result["vault_notes"][0]["path"])
 
+    def test_capture_pointer_is_a_first_class_transcript_everywhere(self):
+        vault = self.root / "vault"
+        transcript = vault / "raw" / "source.md"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("Complete source transcript.", encoding="utf-8")
+        con = sqlite3.connect(self.database)
+        con.execute("UPDATE captures SET local_pointer = ? WHERE capture_id = ?",
+                    (str(transcript), "cap-1"))
+        con.commit()
+        con.close()
+
+        with mock.patch.object(research.settings, "get", side_effect=lambda key: (
+                str(vault) if key == "vault_root" else None)):
+            claim = research.claim_detail("claim-1")
+            source = research.source_detail("src-1")
+
+        expected = "raw/source.md"
+        self.assertEqual(expected,
+                         claim["evidence"][0]["full_transcript"]["path"])
+        self.assertEqual("source_material",
+                         claim["evidence"][0]["full_transcript"]["kind"])
+        self.assertEqual(expected, source["transcript"]["path"])
+
+    def test_event_canonical_source_survives_without_a_duplicate_event_link(self):
+        vault = self.root / "vault"
+        transcript = vault / "raw" / "source.md"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("Complete source transcript.", encoding="utf-8")
+        con = sqlite3.connect(self.database)
+        con.execute("ALTER TABLE events ADD COLUMN canonical_source_id TEXT")
+        con.execute("UPDATE events SET canonical_source_id = 'src-1'")
+        con.execute("DELETE FROM event_sources")
+        con.execute("UPDATE captures SET local_pointer = ? WHERE capture_id = ?",
+                    (str(transcript), "cap-1"))
+        con.commit()
+        con.close()
+
+        with mock.patch.object(research.settings, "get", side_effect=lambda key: (
+                str(vault) if key == "vault_root" else None)):
+            result = research.claim_detail("claim-1")
+
+        self.assertEqual(["src-1"], [row["source_id"]
+                                     for row in result["sources"]])
+        self.assertEqual("raw/source.md",
+                         result["evidence"][0]["full_transcript"]["path"])
+
+    def test_clean_canonical_url_outranks_distribution_and_original_variants(self):
+        con = sqlite3.connect(self.database)
+        con.execute("UPDATE claim_utterances SET source_url = ?",
+                    ("https://distribution.example/repost",))
+        con.execute("UPDATE sources SET original_url = ? WHERE source_id = ?",
+                    ("https://www.example.test/talk?email=person%40example.test"
+                     "&first_name=Pat&utm_source=feed", "src-1"))
+        con.commit()
+        con.close()
+
+        claim = research.claim_detail("claim-1")
+        item = claim["evidence"][0]
+        source = research.source_detail("src-1")
+        self.assertEqual("https://example.test/talk", item["original_url"])
+        self.assertEqual("https://example.test/talk",
+                         item["source_links"][0]["url"])
+        self.assertEqual("https://example.test/talk", source["external_url"])
+        self.assertNotIn("person%40example.test", json.dumps((claim, source)))
+
+    def test_outbound_url_sanitizes_fallback_and_rejects_active_schemes(self):
+        safe = research._outbound_url({
+            "original_url": ("https://example.test/watch?v=7&email=person%40example.test"
+                             "&utm_campaign=private"),
+        })
+        self.assertEqual("https://example.test/watch?v=7", safe)
+        self.assertEqual("", research._outbound_url({
+            "original_url": "javascript:alert(1)",
+        }))
+
+    def test_public_payloads_do_not_expose_absolute_machine_paths(self):
+        vault = self.root / "vault"
+        transcript = vault / "raw" / "source.md"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("Complete transcript.", encoding="utf-8")
+        mac_home_path = "/" + "Users" + "/synthetic/Private/file.md"
+        con = sqlite3.connect(self.database)
+        con.execute("UPDATE captures SET local_pointer = ? WHERE capture_id = ?",
+                    (str(transcript), "cap-1"))
+        con.execute(
+            "UPDATE utterance_appearances SET text = ? WHERE appearance_id = ?",
+            ("Ordinary words and https://substack.com/home/post stay intact beside "
+             + mac_home_path + " and C:\\Users\\Synthetic\\Secret\\file.md",
+             "app-1"),
+        )
+        con.commit()
+        con.close()
+
+        with mock.patch.object(research.settings, "get", side_effect=lambda key: (
+                str(vault) if key == "vault_root" else None)):
+            payloads = [
+                research.catalog(),
+                research.claim_detail("claim-1"),
+                research.source_detail("src-1"),
+            ]
+
+        serialized = json.dumps(payloads)
+        self.assertNotIn(str(self.root), serialized)
+        self.assertNotIn(mac_home_path, serialized)
+        self.assertNotIn("C:\\\\Users\\\\Synthetic", serialized)
+        self.assertIn("Ordinary words and", serialized)
+        self.assertIn("https://substack.com/home/post", serialized)
+        self.assertIn("[local path]", serialized)
+        source = payloads[2]
+        self.assertEqual("", source["captures"][0]["local_pointer"])
+        self.assertEqual("raw/source.md", source["transcript"]["path"])
+        self.assertFalse(Path(payloads[0][0]["database"]).is_absolute())
+        self.assertFalse(Path(payloads[0][0]["manifest"]).is_absolute())
+
+    def test_material_action_distinguishes_transcripts_from_documents(self):
+        self.assertEqual("Full transcript", research._source_material_label(
+            {"source_type": "podcast interview"}))
+        self.assertEqual("Full source", research._source_material_label(
+            {"source_type": "official web copy"}))
+
+    def test_relations_name_the_other_source_and_never_point_to_self(self):
+        con = sqlite3.connect(self.database)
+        con.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            ("src-repost", "Distribution copy", "2026-05-04",
+             "https://distribution.example/repost",
+             "https://distribution.example/repost"),
+        )
+        con.execute(
+            "INSERT INTO event_sources VALUES (?, ?, ?, ?, ?, ?)",
+            ("evt-1", "src-repost", "distribution", "full_repost", .99, 0),
+        )
+        con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                    ("src-repost", "src-1", "full_repost"))
+        con.commit()
+        con.close()
+
+        root = research.source_detail("src-1")
+        relation = root["relations"][0]
+        self.assertEqual("src-repost", relation["other_source_id"])
+        self.assertEqual("Distribution copy", relation["other_source"]["title"])
+        self.assertNotEqual("src-1", relation["other_source_id"])
+        self.assertEqual("incoming", relation["direction"])
+        self.assertEqual("distribution", relation["target_role"])
+        self.assertEqual("View distribution copy", relation["navigation_label"])
+        self.assertEqual("canonical", root["source_role"])
+
+        repost = research.source_detail("src-repost")
+        relation = repost["relations"][0]
+        self.assertEqual("src-1", relation["other_source_id"])
+        self.assertEqual("outgoing", relation["direction"])
+        self.assertEqual("canonical", relation["target_role"])
+        self.assertEqual("View canonical source", relation["navigation_label"])
+        self.assertEqual("distribution", repost["source_role"])
+        self.assertEqual("src-1", repost["root_source"]["source_id"])
+
+    def test_malformed_self_relation_exposes_no_navigation_target(self):
+        con = sqlite3.connect(self.database)
+        con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                    ("src-1", "src-1", "duplicate"))
+        con.commit()
+        con.close()
+
+        relation = research.source_detail("src-1")["relations"][0]
+        self.assertEqual("self", relation["direction"])
+        self.assertEqual("", relation["other_source_id"])
+        self.assertIsNone(relation["other_source"])
+
+    def test_distribution_record_offers_the_canonical_transcript_directly(self):
+        vault = self.root / "vault"
+        transcript = vault / "raw" / "canonical.md"
+        repost_capture = vault / "wiki" / "repost.md"
+        transcript.parent.mkdir(parents=True)
+        repost_capture.parent.mkdir(parents=True)
+        transcript.write_text("Canonical transcript.", encoding="utf-8")
+        repost_capture.write_text("Distribution summary.", encoding="utf-8")
+        con = sqlite3.connect(self.database)
+        con.execute("UPDATE captures SET local_pointer = ? WHERE capture_id = ?",
+                    (str(transcript), "cap-1"))
+        con.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            ("src-repost", "Distribution copy", "2026-05-04",
+             "https://distribution.example/repost",
+             "https://distribution.example/repost"),
+        )
+        con.execute(
+            "INSERT INTO event_sources VALUES (?, ?, ?, ?, ?, ?)",
+            ("evt-1", "src-repost", "distribution", "full_repost", .99, 0),
+        )
+        con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                    ("src-repost", "src-1", "full_repost"))
+        con.execute("INSERT INTO captures VALUES (?, ?, ?)",
+                    ("cap-repost", "src-repost", str(repost_capture)))
+        con.commit()
+        con.close()
+
+        with mock.patch.object(research.settings, "get", side_effect=lambda key: (
+                str(vault) if key == "vault_root" else None)):
+            result = research.source_detail("src-repost")
+
+        self.assertEqual("raw/canonical.md", result["transcript"]["path"])
+        self.assertEqual("src-1", result["transcript_source_id"])
+        self.assertIn("wiki/repost.md",
+                      [note["path"] for note in result["vault_notes"]])
+
+    def test_distribution_relation_can_supply_root_when_event_link_is_absent(self):
+        vault = self.root / "vault"
+        transcript = vault / "raw" / "canonical.md"
+        transcript.parent.mkdir(parents=True)
+        transcript.write_text("Canonical transcript.", encoding="utf-8")
+        con = sqlite3.connect(self.database)
+        con.execute("UPDATE captures SET local_pointer = ? WHERE capture_id = ?",
+                    (str(transcript), "cap-1"))
+        con.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            ("src-repost", "Distribution copy", "2026-05-04",
+             "https://distribution.example/repost",
+             "https://distribution.example/repost"),
+        )
+        con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                    ("src-repost", "src-1", "full_repost"))
+        con.commit()
+        con.close()
+
+        with mock.patch.object(research.settings, "get", side_effect=lambda key: (
+                str(vault) if key == "vault_root" else None)):
+            result = research.source_detail("src-repost")
+        self.assertEqual("distribution", result["source_role"])
+        self.assertEqual("src-1", result["root_source"]["source_id"])
+        self.assertEqual("raw/canonical.md", result["transcript"]["path"])
+
+    def test_every_distribution_relation_type_supplies_a_relation_only_root(self):
+        con = sqlite3.connect(self.database)
+        con.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            ("src-repost", "Distribution copy", "2026-05-04",
+             "https://distribution.example/repost",
+             "https://distribution.example/repost"),
+        )
+        con.commit()
+        for relation_type in sorted(research._DISTRIBUTION_RELATIONS):
+            with self.subTest(relation_type=relation_type):
+                con.execute("DELETE FROM source_relations")
+                con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                            ("src-repost", "src-1", relation_type))
+                con.commit()
+                result = research.source_detail("src-repost")
+                self.assertEqual("distribution", result["source_role"])
+                self.assertEqual("src-1", result["root_source"]["source_id"])
+        con.close()
+
+    def test_non_distribution_relation_uses_neutral_navigation(self):
+        con = sqlite3.connect(self.database)
+        con.execute(
+            "INSERT INTO sources VALUES (?, ?, ?, ?, ?)",
+            ("src-related", "Related analysis", "2026-05-05",
+             "https://analysis.example/item", "https://analysis.example/item"),
+        )
+        con.execute("INSERT INTO source_relations VALUES (?, ?, ?)",
+                    ("src-1", "src-related", "discusses_same_topic"))
+        con.commit()
+        con.close()
+
+        relation = research.source_detail("src-1")["relations"][0]
+        self.assertEqual("related", relation["target_role"])
+        self.assertEqual("View related source", relation["navigation_label"])
+
     def test_room_annotation_maps_tracking_variant_without_writing(self):
         result = research.room_annotation("example-labs", item_id="item-1")
         self.assertEqual("linked_projection", result["room_projection"]["authority"])
@@ -367,6 +636,52 @@ class ResearchGraphTests(unittest.TestCase):
         research.room_annotation("example-labs", source_id="src-1")
         after = hashlib.sha256(self.database.read_bytes()).hexdigest()
         self.assertEqual(before, after)
+
+
+class ResearchFrontendContractTests(unittest.TestCase):
+    """The source inspector's generic renderer must stay honest and readable."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).resolve().parents[1]
+        cls.script = (root / "static" / "research.js").read_text(encoding="utf-8")
+        cls.style = (root / "static" / "research.css").read_text(encoding="utf-8")
+
+    def test_source_actions_distinguish_record_external_and_transcript(self):
+        self.assertIn('"View source record"', self.script)
+        self.assertIn('"Open canonical source"', self.script)
+        self.assertIn("transcript?.action_label", self.script)
+        self.assertIn('"Full canonical "', self.script)
+        self.assertNotIn('"Open root source"', self.script)
+        self.assertNotIn('`Open original ${', self.script)
+
+    def test_relation_navigation_rejects_the_current_source(self):
+        self.assertIn("relation.other_source_id", self.script)
+        self.assertIn("candidate && candidate !== currentSourceId", self.script)
+        self.assertIn('"View related source"', self.script)
+
+    def test_executable_frontend_behavior_harness(self):
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("Node.js is unavailable")
+        root = Path(__file__).resolve().parents[1]
+        result = subprocess.run(
+            [node, str(root / "tests" / "research_frontend_harness.js")],
+            cwd=root, capture_output=True, text=True, encoding="utf-8",
+            timeout=15, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr or result.stdout)
+
+    def test_untimed_evidence_is_full_width(self):
+        self.assertIn('"research-segment-full"', self.script)
+        self.assertIn(".research-segment-full {", self.style)
+        self.assertIn(".research-segment-full .research-segment-text", self.style)
+        self.assertIn("grid-column: 1 / -1", self.style)
+
+    def test_non_time_locator_has_its_own_full_width_row(self):
+        self.assertIn("function segmentHeading(segment)", self.script)
+        self.assertIn('"research-segment-locator"', self.script)
+        self.assertIn(".research-segment-locator {", self.style)
 
 
 if __name__ == "__main__":

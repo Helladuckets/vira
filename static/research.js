@@ -39,6 +39,55 @@
   const projectSlug = (project) => str(project?.slug, project?.id, project?.key);
   const projectTitle = (project) => str(project?.title, project?.name,
     project?.company, projectSlug(project), "Research");
+  const unsafeQueryKeys = new Set([
+    "email", "email_address", "fbclid", "first_name", "firstname", "fname",
+    "full_name", "fullname", "gclid", "last_name", "lastname", "lname",
+    "mc_cid", "mc_eid", "name", "ref", "source",
+  ]);
+
+  function safeExternalUrl(...values) {
+    for (const value of values) {
+      if (!value) continue;
+      try {
+        const url = new URL(String(value));
+        if (!["http:", "https:"].includes(url.protocol)) continue;
+        [...url.searchParams.keys()].forEach((key) => {
+          const normalized = key.toLowerCase().replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "");
+          const queryValues = url.searchParams.getAll(key);
+          if (normalized.startsWith("utm_") || unsafeQueryKeys.has(normalized)
+              || normalized.includes("email")
+              || queryValues.some((item) => item.includes("@"))) {
+            url.searchParams.delete(key);
+          }
+        });
+        return url.href;
+      } catch (_) { /* Try the next source field. */ }
+    }
+    return "";
+  }
+
+  function evidenceSourceUrl(item, source) {
+    const canonical = safeExternalUrl(source?.canonical_url, source?.original_url);
+    if (canonical) {
+      const seconds = Number(first(item?.timestamp_seconds, item?.timestamp_start));
+      try {
+        const url = new URL(canonical);
+        if (Number.isFinite(seconds)
+            && ["youtube.com", "www.youtube.com", "youtu.be"].includes(url.hostname)) {
+          url.searchParams.set("t", `${Math.max(0, Math.floor(seconds))}s`);
+        }
+        return url.href;
+      } catch (_) { return canonical; }
+    }
+    return safeExternalUrl(item?.timestamped_original_url, item?.original_url,
+      item?.source_url, source?.source_url, source?.url);
+  }
+
+  function sourceExternalUrl(detail, source) {
+    return safeExternalUrl(detail?.external_url, source?.canonical_url,
+      source?.original_url, source?.source_url, source?.url);
+  }
 
   function button(cls, label, run) {
     const node = el("button", cls, label);
@@ -443,11 +492,22 @@
     const head = el("div", "research-inspector-head");
     const lead = el("div", "research-inspector-lead");
     lead.appendChild(el("div", "research-kicker", kicker));
-    lead.appendChild(el("div", "research-inspector-title", title));
+    const heading = el("h2", "research-inspector-title", title);
+    heading.tabIndex = -1;
+    lead.appendChild(heading);
     head.appendChild(lead);
     if (back) head.appendChild(button("research-back", "Back", back));
     else head.appendChild(button("research-back research-mobile-close", "Claims", closeInspector));
     return head;
+  }
+
+  function focusInspectorHeading(inspector = dom.inspector) {
+    if (!inspector) return false;
+    inspector.scrollTop = 0;
+    const heading = inspector.querySelector?.(".research-inspector-title");
+    if (!heading) return false;
+    heading.focus?.({ preventScroll: true });
+    return true;
   }
 
   function renderInspectorEmpty(copy) {
@@ -494,7 +554,7 @@
       if (generation !== S.generation) return;
       S.claim = detail;
       renderClaimInspector();
-      if (!opts.quiet) dom.inspector.focus?.({ preventScroll: true });
+      if (!opts.quiet) focusInspectorHeading();
     } catch (error) {
       if (generation !== S.generation) return;
       renderInspectorError("Claim unavailable", error);
@@ -557,24 +617,29 @@
     const sid = sourceId(source);
     const sourceTitle = str(source.title, source.source_title,
       item.source?.title, item.source_title, eventTitle, "Open source");
-    if (sid) card.appendChild(button("research-source-button", sourceTitle, () =>
-      openSource(sid).catch(() => {})));
+    if (sid) {
+      const inspect = button("research-source-button", "View source record", () =>
+        openSource(sid).catch(() => {}));
+      inspect.title = sourceTitle;
+      card.appendChild(inspect);
+    }
     else {
       const url = str(source.source_url, source.url, item.source_url);
       if (url) card.appendChild(externalLink(url, sourceTitle));
     }
     const actions = el("div", "research-evidence-actions");
-    const originalUrl = str(item.timestamped_original_url,
-      item.original_url, item.source_url, source.source_url, source.original_url,
-      source.canonical_url, source.url);
+    const originalUrl = evidenceSourceUrl(item, source);
+    const actionLocator = evidenceLocator(item);
+    const timedAction = /^at\s+(?:\d{1,2}:)?\d{1,2}:\d{2}$/i.test(actionLocator)
+      ? actionLocator : "";
     if (originalUrl) actions.appendChild(externalLink(originalUrl,
-      evidenceLocator(item) ? `Open original ${evidenceLocator(item)}` : "Open original"));
+      timedAction ? `Open source ${timedAction}` : "Open source"));
     const transcript = item.full_transcript
       || list(item.vault_links).find((note) =>
         ["source_material", "raw_capture"].includes(note.kind));
     const transcriptPath = str(transcript?.path, transcript?.local_pointer);
     if (transcriptPath) actions.appendChild(button("research-source-button",
-      "Full transcript", () => openNoteWindow(transcriptPath,
+      str(transcript?.action_label, "Full source"), () => openNoteWindow(transcriptPath,
         str(transcript?.title, sourceTitle))));
     if (actions.childElementCount) card.appendChild(actions);
     return card;
@@ -600,8 +665,11 @@
   }
 
   function externalLink(url, label) {
-    const link = el("a", "research-source-link", label || "Open source");
-    link.href = url;
+    const safeUrl = safeExternalUrl(url);
+    const link = el(safeUrl ? "a" : "span", "research-source-link",
+      label || "Open source");
+    if (!safeUrl) return link;
+    link.href = safeUrl;
     link.target = "_blank";
     link.rel = "noopener";
     return link;
@@ -812,6 +880,7 @@
       if (generation !== S.generation) return;
       S.source = detail;
       renderSourceInspector();
+      focusInspectorHeading();
     } catch (error) {
       if (generation !== S.generation) return;
       renderInspectorError("Source unavailable", error);
@@ -827,7 +896,7 @@
       sourceId(source), "Source");
   }
 
-  function sourceMeta(source) {
+  function sourceMeta(source, detail = {}) {
     const rows = [];
     const add = (label, value) => { if (value !== undefined && value !== null && value !== "") rows.push([label, value]); };
     add("Publisher", first(source.publisher, source.venue));
@@ -838,30 +907,86 @@
     add("Verification", first(source.verification_status, source.status));
     add("Confidence", source.confidence);
     add("Event", first(source.event_title, source.event?.title));
+    add("Graph role", detail.source_role);
     return rows;
+  }
+
+  function relationNavigation(relation, currentSourceId = S.sourceId) {
+    const left = str(relation.source_id);
+    const right = str(relation.related_source_id);
+    const candidate = str(relation.other_source_id,
+      left === currentSourceId && right !== currentSourceId ? right : "",
+      right === currentSourceId && left !== currentSourceId ? left : "");
+    return {
+      id: candidate && candidate !== currentSourceId ? candidate : "",
+      label: str(relation.navigation_label, "View related source"),
+    };
   }
 
   function relationRow(relation) {
     const row = el("div", "research-relation-row");
     const kind = words(str(relation.relation_type, relation.relationship, relation.type));
     row.appendChild(el("div", "research-relation-kind", kind || "related source"));
-    const title = str(relation.related_title, relation.title, relation.related_source_title,
+    const other = relation.other_source || {};
+    const title = str(other.title, relation.related_title, relation.title,
+      relation.related_source_title, relation.other_source_id,
       relation.related_source_id, relation.source_id);
     if (title) row.appendChild(el("div", "research-link-title", title));
+    const otherContext = [other.publisher, other.venue, other.publication_date]
+      .filter((value, index, values) => value && values.indexOf(value) === index)
+      .join(" · ");
+    if (otherContext) row.appendChild(el("div", "research-link-sub", otherContext));
     const rationale = str(relation.rationale, relation.description, relation.note);
     if (rationale) row.appendChild(el("div", "research-link-sub", rationale));
-    const id = str(relation.related_source_id,
-      relation.source_id !== S.sourceId ? relation.source_id : "");
-    if (id) row.appendChild(button("research-source-button", "Inspect source", () =>
-      openSource(id).catch(() => {})));
+    const navigation = relationNavigation(relation);
+    if (navigation.id) row.appendChild(button(
+      "research-source-button", navigation.label, () =>
+      openSource(navigation.id).catch(() => {})));
     return row;
   }
 
+  function segmentTime(segment) {
+    const numeric = first(segment.timestamp_seconds, segment.timestamp_start);
+    if (numeric !== undefined && numeric !== null && numeric !== "") {
+      const seconds = Number(numeric);
+      if (Number.isFinite(seconds)) {
+        const whole = Math.max(0, Math.floor(seconds));
+        const h = Math.floor(whole / 3600);
+        const m = Math.floor((whole % 3600) / 60);
+        const s = whole % 60;
+        return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`
+          : `${m}:${String(s).padStart(2, "0")}`;
+      }
+    }
+    const raw = str(segment.timestamp, segment.timestamp_start, segment.locator);
+    const clock = raw.match(/^(?:(?:at|repost|distribution|video|transcript|source)\s+)?((?:\d{1,2}:)?\d{1,2}:\d{2})$/i);
+    return clock ? clock[1] : "";
+  }
+
+  function segmentHeading(segment) {
+    const locator = str(segment.locator);
+    if (/^(?:repost|distribution|video|transcript|source)\s+(?:\d{1,2}:)?\d{1,2}:\d{2}$/i
+        .test(locator)) return "";
+    return locator && !/^(?:at\s+)?(?:\d{1,2}:)?\d{1,2}:\d{2}$/i.test(locator)
+      ? locator : "";
+  }
+
+  function segmentPresentation(segment) {
+    const stamp = segmentTime(segment);
+    return {
+      stamp,
+      heading: segmentHeading(segment),
+      className: stamp ? "research-segment-timed" : "research-segment-full",
+    };
+  }
+
   function segmentRow(segment) {
-    const row = el("div", "research-segment-row");
-    const stamp = str(segment.locator, segment.timestamp,
-      segment.timestamp_start, segment.timestamp_seconds);
-    if (stamp) row.appendChild(el("div", "research-segment-time", stamp));
+    const presentation = segmentPresentation(segment);
+    const row = el("div", "research-segment-row " + presentation.className);
+    if (presentation.heading) row.appendChild(el(
+      "div", "research-segment-locator", presentation.heading));
+    if (presentation.stamp) row.appendChild(el(
+      "div", "research-segment-time", presentation.stamp));
     row.appendChild(el("div", "research-segment-text",
       str(segment.text, segment.excerpt, segment.canonical_text,
         segment.capture_title, segment.title, segment.event_title,
@@ -878,15 +1003,37 @@
       S.sourceId = "";
       S.source = null;
       renderClaimInspector();
+      focusInspectorHeading();
     }));
     const body = el("div", "research-inspector-body");
 
-    const url = str(source.canonical_url, source.original_url,
-      source.source_url, source.url);
-    if (url) body.appendChild(externalLink(url, "Open root source"));
+    const url = sourceExternalUrl(detail, source);
+    const sourceActions = el("div", "research-source-actions");
+    if (url) sourceActions.appendChild(externalLink(url,
+      detail.source_role === "canonical" ? "Open canonical source" :
+      detail.source_role === "distribution" ? "Open this distribution copy" :
+      "Open external source"));
+    const transcript = detail.transcript
+      || vaultItems(detail).find((note) =>
+        ["source_material", "raw_capture"].includes(note.kind));
+    const transcriptPath = str(transcript?.path, transcript?.local_pointer);
+    const materialLabel = str(transcript?.action_label, "Full source");
+    const inheritedMaterialLabel = materialLabel.replace(/^Full\s+/i,
+      "Full canonical ");
+    if (transcriptPath) sourceActions.appendChild(button(
+      "research-source-button research-transcript-button",
+      detail.transcript_source_id && detail.transcript_source_id !== S.sourceId
+        ? inheritedMaterialLabel : materialLabel, () =>
+        openNoteWindow(transcriptPath, str(transcript?.title, sourceTitle(source)))));
+    const rootSource = detail.root_source || detail.canonical?.root_source;
+    const rootId = sourceId(rootSource);
+    if (rootId && rootId !== S.sourceId) sourceActions.appendChild(button(
+      "research-source-button", "View canonical source record", () =>
+        openSource(rootId).catch(() => {})));
+    if (sourceActions.childElementCount) body.appendChild(sourceActions);
     const description = str(source.description, source.summary, source.notes);
     if (description) body.appendChild(el("div", "research-inspector-statement", description));
-    const meta = sourceMeta(source);
+    const meta = sourceMeta(source, detail);
     if (meta.length) body.appendChild(provenanceTable(meta));
 
     const canonical = detail.canonical || {};
@@ -920,7 +1067,7 @@
     }
     body.appendChild(relations.details);
 
-    const vault = detailSection("Vault", false);
+    const vault = detailSection("Local material", false);
     const notes = vaultItems(detail);
     notes.forEach((note) => vault.body.appendChild(vaultRow(note)));
     if (!notes.length) vault.body.appendChild(el("div", "research-empty-copy", "No vault capture is linked to this source."));
@@ -953,4 +1100,12 @@
 
   window.loadResearch = loadResearch;
   window.openResearch = openResearch;
+  if (window.__VIRA_TEST__) window.__VIRA_RESEARCH_TESTS__ = {
+    evidenceSourceUrl,
+    focusInspectorHeading,
+    relationNavigation,
+    safeExternalUrl,
+    segmentPresentation,
+    sourceExternalUrl,
+  };
 })();
