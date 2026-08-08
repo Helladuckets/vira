@@ -24,7 +24,7 @@ from xml.etree import ElementTree as ET
 from . import evidence, jobcompare, jobdesc, settings
 
 MAX_ARTIFACT_NODES = 44
-MAX_SELF_NODES = 56
+MAX_SELF_NODES = 72
 MAX_TEXT = 520
 
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?", re.I)
@@ -448,6 +448,21 @@ def _self_nodes():
                    not n["heading"].casefold().startswith("facts —") and
                    not any(skip in n["heading"].casefold()
                            for skip in SKIP_SELF_HEADINGS))
+    # Master History is the comprehensive selection context. It follows the
+    # FACTS nodes in this list so equally relevant FACTS language wins a tie;
+    # anything selected from Master History still needs the claim-gate check
+    # before it can move into an outward artifact.
+    history = root / "08-deliverables" / "MASTER_HISTORY.md"
+    if history.is_file():
+        try:
+            candidates = _markdown_units(
+                history.read_text(encoding="utf-8"), "self",
+                "MASTER_HISTORY.md")
+        except OSError:
+            candidates = []
+        for node in candidates:
+            node["detail"] = "selection context; outward wording requires FACTS.md"
+        out.extend(candidates)
     distilled = root / "self.json"
     try:
         data = json.loads(distilled.read_text(encoding="utf-8"))
@@ -461,14 +476,9 @@ def _self_nodes():
     return out
 
 
-def _story_nodes(package):
+def _approved_story_nodes():
+    """Approved Evidence Ledger stories, without generated package prose."""
     nodes = []
-    for root_globs, version_names in (
-            (("interview-prep.docx",), ("interview-prep.md",)),
-            (("answers.docx",), ("answers.txt",))):
-        found, _path = _read_artifact(package, "narrative", root_globs,
-                                      version_names)
-        nodes.extend(found)
     try:
         cases = [c for c in evidence.list_cases()
                  if c.get("status") == "approved"]
@@ -481,6 +491,83 @@ def _story_nodes(package):
                            "Evidence Ledger", "approved story", len(nodes),
                            ", ".join(case.get("skills") or [])))
     return nodes
+
+
+def _story_nodes(package):
+    nodes = []
+    for root_globs, version_names in (
+            (("interview-prep.docx",), ("interview-prep.md",)),
+            (("answers.docx",), ("answers.txt",))):
+        found, _path = _read_artifact(package, "narrative", root_globs,
+                                      version_names)
+        nodes.extend(found)
+    nodes.extend(_approved_story_nodes())
+    return nodes
+
+
+def prompt_plan(role):
+    """Compact pre-draft plan shared by Map and the Apply dispatch.
+
+    The plan deliberately excludes the current resume, cover letter, and
+    generated interview prose: those are outputs to revise, never claim
+    sources. Candidate anchors come only from the full career/self record and
+    approved Evidence Ledger stories. Similarity proposes where to inspect;
+    it never declares a requirement satisfied.
+    """
+    package = find_package(role)
+    concepts = _job_concepts(role, package)
+    anchors = _self_nodes() + _approved_story_nodes()
+    from . import applications
+    notes = applications.map_notes(role.get("uid") or "")
+    notes_by_key = {}
+    for note in notes:
+        notes_by_key.setdefault(note["concept_key"], []).append({
+            "lane": note["lane"], "text": note["text"]})
+
+    requirements = []
+    for concept in concepts:
+        ranked = []
+        for anchor in anchors:
+            score, signals = similarity(concept["text"], anchor["text"])
+            if score >= 10:
+                ranked.append((score, anchor, signals))
+        candidates = []
+        has_positive_candidate = False
+        for score, anchor, signals in sorted(
+                ranked, key=lambda item: item[0], reverse=True)[:3]:
+            negative = bool(re.search(
+                r"\b(?:did not|does not|do not|never|no experience|not worked|"
+                r"cannot|can't|without)\b", anchor["text"], re.I))
+            if score >= 18 and not negative:
+                has_positive_candidate = True
+            candidates.append({
+                "source": anchor["source"],
+                "heading": anchor["heading"],
+                "text": _clean(anchor["text"], 280),
+                "signal": score,
+                "shared_language": signals,
+                "interpretation": ("boundary or negative evidence; do not use "
+                                   "as support" if negative else
+                                   "candidate bridge to inspect"),
+                "authority": ("outward-ready only in this adjudicated form"
+                              if anchor["source"] == "FACTS.md" else
+                              "selection context; verify permitted wording in FACTS.md"),
+            })
+        requirements.append({
+            "key": concept["concept_key"],
+            "section": concept["heading"] or "Job description",
+            "requirement": concept["text"],
+            "candidate_anchors": candidates,
+            "owner_notes": notes_by_key.get(concept["concept_key"], []),
+            "starting_status": ("candidate evidence to adjudicate"
+                                if has_positive_candidate else "gap"),
+        })
+    return {
+        "method": ("Candidate anchors are shared-language discovery hints, "
+                   "not proof of fit. Final classification must be DIRECT, "
+                   "TRANSFERABLE ANALOGUE, NEEDS ADJUDICATION, or GAP."),
+        "requirements": requirements,
+    }
 
 
 def _stem(token):
@@ -642,7 +729,7 @@ def build(role):
          "Interview prep, answers, and approved Evidence Ledger stories",
          "nodes": lanes["narrative"]},
         {"id": "self", "title": "The self", "subtitle":
-         "FACTS.md first; self.json is a subordinate distillation",
+         "Master History selection context; FACTS.md claim gate; self.json subordinate",
          "nodes": lanes["self"]},
     ]
     return {

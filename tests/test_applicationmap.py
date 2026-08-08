@@ -80,6 +80,7 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
             encoding="utf-8")
 
         self.self_record.mkdir()
+        (self.self_record / "08-deliverables").mkdir()
         (self.self_record / "FACTS.md").write_text(
             """# FACTS — adjudicated ledger
 
@@ -96,6 +97,14 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
             "identity": {"canonical": "Builder-operator who turns ambiguity into working systems."},
             "do_not_use": ["Unapproved synthetic claim"],
         }), encoding="utf-8")
+        (self.self_record / "08-deliverables" / "MASTER_HISTORY.md").write_text(
+            """# Master History
+
+## Career chronology
+
+- Directed a portfolio-wide coordination program across technical workstreams.
+- Explored regional expansion but did not work in Japanese.
+""", encoding="utf-8")
         self.role = {
             "uid": "g-examplelabs-321", "company": "Example Labs",
             "title": "Launch Program Lead",
@@ -167,6 +176,7 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
         self.assertNotIn("Unreviewed", narrative)  # approved ledger stories only
         self_text = " ".join(n["text"] for n in columns["self"]["nodes"])
         self.assertIn("Builder-operator", self_text)
+        self.assertIn("portfolio-wide coordination", self_text)
         self.assertNotIn("Synthetic secret", self_text)
         self.assertNotIn("Unapproved synthetic claim", self_text)
 
@@ -248,6 +258,25 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
         manual = next(e for e in after["edges"] if e.get("planning"))
         self.assertEqual(manual["signals"], ["owner note"])
 
+    def test_prompt_plan_covers_every_requirement_and_keeps_gaps_honest(self):
+        before = applicationmap.build(self.role)
+        concepts = before["columns"][0]["nodes"]
+        japanese = next(n for n in concepts if n["text"] == "Speak Japanese.")
+        applicationmap.save_note(
+            self.role, japanese["concept_key"], "narrative",
+            "Look for a truthful cross-cultural analogue; keep the language gap explicit.")
+        plan = applicationmap.prompt_plan(self.role)
+        self.assertEqual(len(plan["requirements"]), len(concepts))
+        self.assertEqual(
+            {r["key"] for r in plan["requirements"]},
+            {c["concept_key"] for c in concepts})
+        item = next(r for r in plan["requirements"]
+                    if r["requirement"] == "Speak Japanese.")
+        self.assertEqual(item["starting_status"], "gap")
+        self.assertIn("language gap explicit", item["owner_notes"][0]["text"])
+        self.assertIn("not proof of fit", plan["method"])
+
+
     def test_map_export_contains_every_requirement_and_actions(self):
         out = applicationmap.export_markdown(self.role)
         self.assertTrue(out["filename"].endswith("-evidence-brief.md"))
@@ -290,6 +319,30 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
             self.assertEqual(response.body, b"# Brief\n")
             self.assertEqual(response.headers["content-disposition"],
                              'attachment; filename="brief.md"')
+
+
+class ApplicationMapUiContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        repo = Path(__file__).resolve().parents[1]
+        cls.html = (repo / "static" / "index.html").read_text(encoding="utf-8")
+        cls.app = (repo / "static" / "app.js").read_text(encoding="utf-8")
+        cls.style = (repo / "static" / "style.css").read_text(encoding="utf-8")
+
+    def test_workspace_controls_are_wired(self):
+        for control in ("app-map-zoom-out", "app-map-zoom-in", "app-map-fit",
+                        "app-map-overview", "app-map-compact",
+                        "app-map-detail-toggle", "app-map-detail-size",
+                        "app-map-maximize"):
+            self.assertIn(f'id="{control}"', self.html)
+            self.assertIn(f'$("#{control}")', self.app)
+        self.assertIn('head.addEventListener("dblclick"', self.app)
+        self.assertIn("makeResizable(card", self.app)
+
+    def test_overview_preserves_full_requirement_text(self):
+        self.assertIn(".app-map-card.map-overview .app-map-node-text", self.style)
+        self.assertIn("overflow: visible", self.style)
+        self.assertIn("grid-template-columns: repeat(auto-fit", self.style)
 
 
 if __name__ == "__main__":

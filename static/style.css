@@ -4715,9 +4715,9 @@ a.rm-name:hover { color: var(--accent); }
    canonical self. The wide board intentionally scrolls on a phone; squeezing
    five evidence lanes into 402px would erase the relationship being shown. */
 .app-map-card {
-  width: min(96vw, 1540px); max-width: 1540px;
-  height: min(92vh, 980px); max-height: 980px;
-  display: flex; flex-direction: column;
+  width: min(96vw, 1540px); max-width: calc(100vw - 24px);
+  height: min(92vh, 980px); max-height: calc(100vh - 68px);
+  display: flex; flex-direction: column; overflow: hidden;
 }
 .app-map-card .sheet-head { flex: none; }
 .app-map-toolbar {
@@ -4731,6 +4731,9 @@ a.rm-name:hover { color: var(--accent); }
 .app-map-coverage strong {
   color: var(--text-head); font: 22px var(--mono); font-weight: 400;
 }
+.app-map-viewtools { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.app-map-viewtools .fchip.on { color: var(--accent-bright); border-color: var(--accent-line); }
+.app-map-zoom-label { min-width: 48px; font-variant-numeric: tabular-nums; }
 .app-map-filters { display: flex; gap: 5px; flex-wrap: wrap; }
 .app-map-filters .fchip:not(.on) { opacity: .42; }
 .app-map-scroll {
@@ -4749,6 +4752,7 @@ a.rm-name:hover { color: var(--accent); }
 }
 .app-map-column { position: relative; z-index: 1; min-width: 0; }
 .app-map-column.lane-muted { opacity: .32; }
+.app-map-column.lane-hidden { display: none; }
 .app-map-column-head {
   min-height: 54px; margin-bottom: 9px; padding-bottom: 7px;
   border-bottom: 1px solid var(--line);
@@ -4840,6 +4844,11 @@ a.rm-name:hover { color: var(--accent); }
   border: 1px solid var(--line); background: var(--bg-card);
   font-size: 11px; line-height: 1.4;
 }
+.app-map-detail.is-hidden { display: none; }
+.app-map-detail.is-expanded {
+  min-height: 170px; max-height: min(38vh, 410px); resize: vertical;
+  font-size: 12.5px; line-height: 1.5;
+}
 .app-map-detail-head {
   display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
   margin-bottom: 3px;
@@ -4856,6 +4865,54 @@ a.rm-name:hover { color: var(--accent); }
 .app-map-method { flex: none; margin-top: 5px; font-size: 9.5px; }
 .app-map-empty { font-size: 10px; }
 
+/* Compact keeps every requirement readable while spending less height on
+   repeated chrome. The sticky section label already names a job group, so a
+   compact card does not repeat that heading a second time. */
+.app-map-card.map-compact .app-map-board { gap: 26px; padding: 11px; }
+.app-map-card.map-compact .app-map-column-head {
+  min-height: 38px; margin-bottom: 5px; padding-bottom: 4px;
+}
+.app-map-card.map-compact .app-map-column-head p { display: none; }
+.app-map-card.map-compact .app-map-node-list { gap: 4px; }
+.app-map-card.map-compact .app-map-node { padding: 5px 7px; }
+.app-map-card.map-compact .lane-job .app-map-node-head { display: none; }
+.app-map-card.map-compact .app-map-node-top { min-height: 10px; margin-bottom: 2px; }
+.app-map-card.map-compact .app-map-node-text {
+  font-size: 10px; line-height: 1.28; -webkit-line-clamp: 3;
+}
+.app-map-card.map-compact .app-map-gap-slot {
+  margin-top: 3px; padding: 2px 4px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.app-map-card.map-compact .app-map-section-label { padding: 3px 6px; }
+
+/* Requirements overview is the legible alternative to shrinking a 35-card
+   role into illegibility: evidence lanes step out, cards flow into as many
+   wide columns as the window permits, and every requirement keeps full text. */
+.app-map-card.map-overview .app-map-board {
+  min-width: 0 !important; display: block; padding: 10px;
+}
+.app-map-card.map-overview .app-map-column.lane-job { display: block; }
+.app-map-card.map-overview .app-map-column-head { min-height: 34px; }
+.app-map-card.map-overview .app-map-node-list {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  gap: 5px 8px;
+}
+.app-map-card.map-overview .app-map-section-label { grid-column: 1 / -1; }
+.app-map-card.map-overview .app-map-node-text {
+  display: block; overflow: visible; -webkit-line-clamp: unset;
+}
+.app-map-card.map-overview .app-map-lines { display: none; }
+
+@media (min-width: 1100px) {
+  .app-map-card { min-width: 720px; min-height: 460px; }
+  .app-map-card.map-maximized {
+    position: fixed !important; left: 12px !important; top: 48px !important;
+    width: calc(100vw - 24px) !important; height: calc(100vh - 64px) !important;
+    max-width: none; max-height: none; z-index: 1800 !important;
+  }
+}
+
 @media (max-width: 720px) {
   .app-map-card {
     width: 100%; height: calc(100vh - 18px); height: calc(100dvh - 18px);
@@ -4864,7 +4921,11 @@ a.rm-name:hover { color: var(--accent); }
   .app-map-board { min-width: 1280px; gap: 38px; padding: 14px; }
   .app-map-toolbar { align-items: flex-start; }
   .app-map-coverage { flex-basis: 100%; }
+  .app-map-viewtools { order: 2; }
+  .app-map-filters { order: 3; }
+  .app-map-viewtools #app-map-maximize { display: none; }
   .app-map-detail { max-height: 110px; }
+  .app-map-card.map-overview .app-map-node-list { grid-template-columns: 1fr; }
 }
 
 /* ---------- Setup window (first-run onboarding) ---------- */

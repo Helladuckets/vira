@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from server import applications, jobboards
+from server import applicationmap, applications, jobboards
 
 
 def fresh_seen():
@@ -106,6 +106,17 @@ class ApplicationsBase(unittest.TestCase):
         ]
         self.universe = root / "analysis"          # empty by default
         (self.universe / "candidate-universe" / "role").mkdir(parents=True)
+        self.self_record = root / "self"
+        (self.self_record / "08-deliverables").mkdir(parents=True)
+        (self.self_record / "FACTS.md").write_text(
+            "## Approved\n\n- Built safe production systems and reusable platforms.\n",
+            encoding="utf-8")
+        (self.self_record / "08-deliverables" / "MASTER_HISTORY.md").write_text(
+            "## Career chronology\n\n- Led cross-functional platform programs through ambiguity.\n",
+            encoding="utf-8")
+        (self.self_record / "self.json").write_text("{}", encoding="utf-8")
+        self.packages = root / "packages"
+        self.packages.mkdir()
         patches = [
             mock.patch.object(applications, "sources",
                               lambda: self.sources),
@@ -115,6 +126,10 @@ class ApplicationsBase(unittest.TestCase):
                               lambda: self.universe),
             mock.patch.object(applications, "STORE",
                               root / "applications.json"),
+            mock.patch.object(applications, "self_record",
+                              lambda: self.self_record),
+            mock.patch.object(applicationmap, "packages_root",
+                              lambda: self.packages),
             # Availability is read from the boards state, and boards_dir()
             # checks CONFIG before it falls back to the universe — so
             # without this the suite reads the running instance's own
@@ -507,6 +522,19 @@ class PromptTest(ApplicationsBase):
         self.assertIn("describes Example Labs, not the owner", p)
         self.assertIn("FACTS.md:1", p)
         self.assertIn("Do not overclaim", p)
+
+    def test_apply_prompt_embeds_the_shared_requirement_plan(self):
+        roles, _ = applications.load_roles()
+        p = applications.apply_prompt(roles[0])
+        self.assertIn("APPLICATION EVIDENCE PLAN", p)
+        self.assertIn("same framework as Vira's interactive Map", p)
+        self.assertIn("TRANSFERABLE ANALOGUE", p)
+        self.assertIn("NEEDS ADJUDICATION", p)
+        self.assertIn("or GAP", p)
+        self.assertIn("Design scalable architectures", p)
+        self.assertIn("selected resume treatment", p)
+        self.assertIn("cover-letter angle", p)
+        self.assertIn("interview narrative/talking point", p)
 
 
 class ApplyRouteTest(ApplicationsBase):
