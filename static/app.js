@@ -2907,6 +2907,14 @@ function openFindQuery(q, opts = {}) {
   else findPendingQuery = { q, opts };
 }
 
+// A selected passage handed to Chat should arrive as a draft, not silently
+// spend a model call. The owner can add the question around it, then send.
+async function openFindChatDraft(q) {
+  openApp("find");
+  await showFindChat();
+  findChatFill(q);
+}
+
 // "If you search for it and find it, link it up" — the owner's ask, kept as
 // ONE gesture. Searching the vault and then attaching what you found are the
 // same act, so the picker IS the search result: no trip through Find, no
@@ -3096,9 +3104,9 @@ function initFindView() {
     input.value = q || "";
     if (opts.tab && FIND_TABS.some(([k]) => k === opts.tab)) tab = opts.tab;
     renderTabs();
-    // a plain search, never an ask: this is a lookup handed over from
-    // somewhere else, and spending a model call on it was not asked for
-    run(false);
+    // Most hand-offs are plain lookups. A caller must opt into the model-backed
+    // Ask path explicitly; the touch selection palette is one such caller.
+    run(opts.ask === true);
     input.focus();
   };
   renderTabs();
@@ -15757,9 +15765,10 @@ function placeCtxPop(node, x, y) {
 // onContext(x, y) fires on a right-click of the row — used to open a secondary
 // menu (e.g. right-click a layout entry to edit it) without dismissing on the
 // left-click path.
-function showContextMenu(x, y, items) {
+function showContextMenu(x, y, items, cls = "") {
   closeCtxPops();
   const menu = el("div", "ctx-menu");
+  if (cls) menu.classList.add(cls);
   items.filter(Boolean).forEach((it) => {
     if (it.sep) { menu.appendChild(el("div", "ctx-sep")); return; }
     if (it.head) {
@@ -16037,6 +16046,100 @@ function isDesktopOpenSpace(target) {
     && !target.closest(".fwin, .panel, .sheet, .dock, .topbar, .launchpad");
 }
 
+// ==================== Mobile selected-text actions ====================
+// iOS does not let a web app add actions to its native selection callout.
+// Keep the native selection gesture and handles, then place Vira's own compact
+// palette at the bottom of the phone. Android's long-press contextmenu event
+// routes through the same function, so the two mobile engines cannot drift.
+//
+// Inputs keep the browser menu: paste, spellcheck and autocorrect are more
+// important there, and window.getSelection() does not reliably describe a
+// form control's selected substring anyway.
+const TOUCH_SELECTION_EDITABLE =
+  "input, textarea, select, [contenteditable], .ctx-menu, .ctx-pop";
+let touchSelection = null;
+let touchSelectionTimer = 0;
+
+function selectedText() {
+  const sel = window.getSelection?.();
+  if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+  return String(sel).trim().replace(/\s+/g, " ");
+}
+
+function selectedTextTarget(fallback) {
+  const sel = window.getSelection?.();
+  if (sel && !sel.isCollapsed && sel.rangeCount) {
+    const common = sel.getRangeAt(0).commonAncestorContainer;
+    const node = common.nodeType === Node.ELEMENT_NODE
+      ? common : common.parentElement;
+    if (node instanceof Element) return node;
+  }
+  return fallback instanceof Element ? fallback : null;
+}
+
+function showTouchSelectionMenu(target, x, y) {
+  if (isDesktop || !(target instanceof Element)
+      || target.closest(TOUCH_SELECTION_EDITABLE)) return false;
+  const text = selectedText();
+  if (!text) return false;
+  const ctx = ctxDescribe(target);
+  // The selection is the context even when the common ancestor is a larger
+  // card whose own text would otherwise win ctxDescribe's fallback.
+  ctx.snippet = text.slice(0, 200);
+  const term = termFromSelection(text);
+  const items = [
+    { head: "Selected text", sub: text },
+    term && { label: "Define “" + term + "”", run: () => openDefine(term) },
+    { label: "Chat", hint: "vault", run: () => openFindChatDraft(text) },
+    { label: "Ask", hint: "Find", run: () => openFindQuery(text, { ask: true }) },
+    { label: "Search", hint: "Find", run: () => openFindQuery(text) },
+    { sep: true },
+    { label: "Tell Vira", run: () => ctxTellVira(x, y, ctx) },
+    { label: "New idea", run: () => ctxIdeaComposer(x, y, ctx) },
+    { label: "Copy", run: () => copyText(text).then(
+      () => toast("Copied"), () => alert("Copy failed")) },
+  ];
+  showContextMenu(x, y, items, "ctx-selection");
+  return true;
+}
+
+function scheduleTouchSelectionMenu(delay = 140) {
+  clearTimeout(touchSelectionTimer);
+  touchSelectionTimer = setTimeout(() => {
+    if (!touchSelection || performance.now() > touchSelection.until) return;
+    const target = selectedTextTarget(touchSelection.target);
+    if (!target) return;
+    let x = touchSelection.x, y = touchSelection.y;
+    const sel = window.getSelection?.();
+    if (sel && !sel.isCollapsed && sel.rangeCount) {
+      const r = sel.getRangeAt(0).getBoundingClientRect();
+      if (r.width || r.height) {
+        x = Math.max(8, Math.min(innerWidth - 8, r.left + r.width / 2));
+        y = Math.max(8, Math.min(innerHeight - 8, r.bottom + 8));
+      }
+    }
+    showTouchSelectionMenu(target, x, y);
+  }, delay);
+}
+
+// Track only a real primary touch. A mouse hold is not a long-press intent,
+// and a stylus retains its own platform behavior.
+document.addEventListener("pointerdown", (e) => {
+  if (isDesktop || e.pointerType !== "touch" || e.isPrimary === false) return;
+  const target = e.target instanceof Element ? e.target : null;
+  if (!target || target.closest(TOUCH_SELECTION_EDITABLE)) return;
+  touchSelection = {
+    target, x: e.clientX, y: e.clientY, until: performance.now() + 5000,
+  };
+}, true);
+
+// WebKit exposes the selected range through selectionchange but does not fire
+// the app's desktop contextmenu path. Waiting one beat lets its word boundary
+// and handles settle before the palette reads the range.
+document.addEventListener("selectionchange", () => {
+  if (!isDesktop && touchSelection) scheduleTouchSelectionMenu();
+});
+
 // ==================== The module story — "What is this?" ====================
 // Right-click a module (its chrome, empty space, or dock icon) and the menu
 // answers with the BUILD STORY: the registry's own description of what the
@@ -16227,6 +16330,14 @@ document.addEventListener("contextmenu", (e) => {
   if (!(t instanceof Element)) return;
   if (t.closest(".ctx-menu, .ctx-pop")) { e.preventDefault(); return; }
   if (t.closest("input, textarea, select, [contenteditable]")) return;
+  // Android emits contextmenu for its text-selection long press; iOS reaches
+  // the same palette through selectionchange above. Route both through the
+  // compact mobile action set instead of the much longer desktop menu.
+  if (!isDesktop && selectedText()) {
+    e.preventDefault();
+    showTouchSelectionMenu(selectedTextTarget(t), e.clientX, e.clientY);
+    return;
+  }
   e.preventDefault();
   const ctx = ctxDescribe(t);
   const items = [{
