@@ -762,7 +762,7 @@
 <!-- RUN SHEET -->
 <div id="run-sheet" class="sheet">
   <div class="sheet-card">
-    <div class="sheet-head">
+    <div class="sheet-head" title="Drag to move. Double-click to maximize or restore.">
       <div class="run-kind" id="run-kind"></div>
       <h3 id="run-name"></h3>
       <p class="hint" id="run-desc"></p>
@@ -849,6 +849,18 @@
     </div>
     <div class="app-map-toolbar">
       <div id="app-map-coverage" class="app-map-coverage"></div>
+      <div class="app-map-viewtools" aria-label="Map view controls">
+        <button class="fchip sm" id="app-map-zoom-out" aria-label="Zoom out">−</button>
+        <button class="fchip sm app-map-zoom-label" id="app-map-zoom-reset"
+                aria-label="Reset zoom">100%</button>
+        <button class="fchip sm" id="app-map-zoom-in" aria-label="Zoom in">+</button>
+        <button class="fchip sm" id="app-map-fit">Fit width</button>
+        <button class="fchip sm" id="app-map-overview" aria-pressed="false">Requirements</button>
+        <button class="fchip sm" id="app-map-compact" aria-pressed="false">Compact</button>
+        <button class="fchip sm on" id="app-map-detail-toggle" aria-pressed="true">Details</button>
+        <button class="fchip sm" id="app-map-detail-size" aria-pressed="false">Expand detail</button>
+        <button class="fchip sm" id="app-map-maximize" aria-pressed="false">Maximize</button>
+      </div>
       <div id="app-map-filters" class="app-map-filters" aria-label="Map lanes">
         <button class="fchip sm on" data-lane="resume" aria-pressed="true">Resume</button>
         <button class="fchip sm on" data-lane="cover" aria-pressed="true">Cover letter</button>

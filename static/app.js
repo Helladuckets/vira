@@ -14756,6 +14756,16 @@ const appMapSheet = bindSheet("#app-map-sheet", "#app-map-close");
 let appMapData = null;
 let appMapPinned = "";
 const appMapLanes = new Set(["resume", "cover", "narrative", "self"]);
+const APP_MAP_ZOOM_MIN = .35;
+const APP_MAP_ZOOM_MAX = 1.5;
+let appMapZoom = 1;
+let appMapCompact = false;
+let appMapOverview = false;
+let appMapDetailsVisible = true;
+let appMapDetailsExpanded = false;
+let appMapWorkspaceWired = false;
+let appMapMaxRestore = null;
+let appMapOverviewRestore = null;
 
 function appMapAllNodes() {
   return (appMapData?.columns || []).flatMap((column) => column.nodes || []);
@@ -14766,7 +14776,163 @@ function appMapNode(id) {
 }
 
 function appMapVisibleEdges() {
+  if (appMapOverview) return [];
   return (appMapData?.edges || []).filter((edge) => appMapLanes.has(edge.lane));
+}
+
+function appMapPaintControls() {
+  const card = $("#app-map-sheet .app-map-card");
+  $("#app-map-zoom-reset").textContent = `${Math.round(appMapZoom * 100)}%`;
+  [["#app-map-compact", appMapCompact],
+   ["#app-map-overview", appMapOverview],
+   ["#app-map-detail-toggle", appMapDetailsVisible],
+   ["#app-map-detail-size", appMapDetailsExpanded],
+   ["#app-map-maximize", !!card?.classList.contains("map-maximized")]]
+    .forEach(([sel, on]) => {
+      const button = $(sel);
+      button?.classList.toggle("on", on);
+      button?.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  $("#app-map-detail-toggle").textContent =
+    appMapDetailsVisible ? "Details" : "Show details";
+  $("#app-map-detail-size").textContent =
+    appMapDetailsExpanded ? "Normal detail" : "Expand detail";
+  $("#app-map-maximize").textContent =
+    card?.classList.contains("map-maximized") ? "Restore" : "Maximize";
+}
+
+function appMapRefreshLayout() {
+  const card = $("#app-map-sheet .app-map-card");
+  const board = $("#app-map-board");
+  const detail = $("#app-map-detail");
+  if (!card || !board || !detail) return;
+  card.classList.toggle("map-compact", appMapCompact);
+  card.classList.toggle("map-overview", appMapOverview);
+  detail.classList.toggle("is-hidden", !appMapDetailsVisible);
+  detail.classList.toggle("is-expanded",
+    appMapDetailsVisible && appMapDetailsExpanded);
+  let visible = 1; // the job description is always present
+  board.querySelectorAll("[data-map-lane]").forEach((column) => {
+    const lane = column.dataset.mapLane;
+    const hidden = lane !== "job" && (appMapOverview || !appMapLanes.has(lane));
+    column.classList.toggle("lane-hidden", hidden);
+    column.classList.remove("lane-muted");
+    if (!hidden && lane !== "job") visible += 1;
+  });
+  if (!appMapOverview) {
+    const cardWidth = appMapCompact ? 300 : 270;
+    const gap = appMapCompact ? 26 : 50;
+    board.style.gridTemplateColumns =
+      `repeat(${visible}, minmax(${cardWidth}px, 1fr))`;
+    board.style.minWidth = `${visible * cardWidth + (visible - 1) * gap + 36}px`;
+  } else {
+    board.style.gridTemplateColumns = "";
+    board.style.minWidth = "";
+  }
+  appMapPaintControls();
+  requestAnimationFrame(drawAppMapEdges);
+}
+
+function appMapSetZoom(value) {
+  appMapZoom = Math.round(Math.min(APP_MAP_ZOOM_MAX,
+    Math.max(APP_MAP_ZOOM_MIN, Number(value) || 1)) * 20) / 20;
+  const board = $("#app-map-board");
+  if (board) board.style.zoom = appMapZoom;
+  appMapPaintControls();
+  requestAnimationFrame(() => requestAnimationFrame(drawAppMapEdges));
+}
+
+function appMapFitWidth() {
+  const board = $("#app-map-board");
+  const scroll = $("#app-map-scroll");
+  if (!board || !scroll) return;
+  board.style.zoom = 1;
+  requestAnimationFrame(() => {
+    const width = Math.max(1, board.scrollWidth);
+    appMapSetZoom((scroll.clientWidth - 6) / width);
+  });
+}
+
+function appMapToggleOverview() {
+  if (!appMapOverview) {
+    appMapOverviewRestore = {
+      zoom: appMapZoom, compact: appMapCompact,
+      detailsVisible: appMapDetailsVisible,
+    };
+    appMapOverview = true;
+    appMapCompact = true;
+    appMapDetailsVisible = false;
+    appMapRefreshLayout();
+    // Requirements mode is for reading all source lines, not for making a
+    // technically complete but illegible thumbnail. Keep cards full-width
+    // and let them stack vertically; manual zoom remains available.
+    appMapSetZoom(Math.min(appMapOverviewRestore.zoom, 1));
+  } else {
+    appMapOverview = false;
+    appMapCompact = appMapOverviewRestore?.compact ?? false;
+    appMapDetailsVisible = appMapOverviewRestore?.detailsVisible ?? true;
+    const zoom = appMapOverviewRestore?.zoom ?? 1;
+    appMapOverviewRestore = null;
+    appMapRefreshLayout();
+    appMapSetZoom(zoom);
+  }
+}
+
+function appMapToggleMaximize() {
+  const card = $("#app-map-sheet .app-map-card");
+  if (!card || !isDesktop) return;
+  if (card.classList.contains("map-maximized")) {
+    card.classList.remove("map-maximized");
+    const saved = appMapMaxRestore;
+    appMapMaxRestore = null;
+    if (saved?.floating) card.classList.add("floating");
+    else card.classList.remove("floating");
+    for (const key of ["left", "top", "width", "height", "zIndex"])
+      card.style[key] = saved?.[key] || "";
+  } else {
+    appMapMaxRestore = {
+      floating: card.classList.contains("floating"),
+      left: card.style.left, top: card.style.top,
+      width: card.style.width, height: card.style.height,
+      zIndex: card.style.zIndex,
+    };
+    card.classList.add("floating", "map-maximized");
+    focusWin(card);
+  }
+  appMapPaintControls();
+  requestAnimationFrame(() => requestAnimationFrame(drawAppMapEdges));
+}
+
+function appMapWireWorkspace() {
+  if (appMapWorkspaceWired || !isDesktop) return;
+  const card = $("#app-map-sheet .app-map-card");
+  const head = card?.querySelector(".sheet-head");
+  if (!card || !head) return;
+  appMapWorkspaceWired = true;
+  // A resize grip must first lift a centered sheet into fixed positioning;
+  // otherwise left/top geometry is authored but flex centering still wins.
+  card.addEventListener("pointerdown", (event) => {
+    if (!event.target.closest(".rz")) return;
+    if (card.classList.contains("map-maximized")) appMapToggleMaximize();
+    if (card.classList.contains("floating")) return;
+    const rect = card.getBoundingClientRect();
+    card.style.left = rect.left + "px";
+    card.style.top = rect.top + "px";
+    card.style.width = rect.width + "px";
+    card.style.height = rect.height + "px";
+    card.classList.add("floating");
+  }, true);
+  // Maximized means the title bar is a restore target, not a drag target.
+  head.addEventListener("pointerdown", (event) => {
+    if (card.classList.contains("map-maximized") &&
+        !event.target.closest("button")) event.stopImmediatePropagation();
+  }, true);
+  head.addEventListener("dblclick", (event) => {
+    if (event.target.closest("button")) return;
+    event.preventDefault(); event.stopPropagation();
+    appMapToggleMaximize();
+  });
+  makeResizable(card, () => requestAnimationFrame(drawAppMapEdges), 720, 460);
 }
 
 function appMapConceptFor(node) {
@@ -14924,9 +15090,11 @@ function drawAppMapEdges() {
   const svg = board?.querySelector(".app-map-lines");
   if (!board || !svg || !appMapData) return;
   const br = board.getBoundingClientRect();
-  svg.setAttribute("viewBox", `0 0 ${Math.max(1, br.width)} ${Math.max(1, br.height)}`);
-  svg.setAttribute("width", br.width);
-  svg.setAttribute("height", br.height);
+  const width = Math.max(1, board.offsetWidth);
+  const height = Math.max(1, board.scrollHeight);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
   svg.innerHTML = "";
   const ns = "http://www.w3.org/2000/svg";
   appMapVisibleEdges().forEach((edge) => {
@@ -14935,10 +15103,10 @@ function drawAppMapEdges() {
     if (!from || !to) return;
     const a = from.getBoundingClientRect();
     const b = to.getBoundingClientRect();
-    const x1 = a.right - br.left;
-    const y1 = a.top + a.height / 2 - br.top;
-    const x2 = b.left - br.left;
-    const y2 = b.top + b.height / 2 - br.top;
+    const x1 = (a.right - br.left) / appMapZoom;
+    const y1 = (a.top + a.height / 2 - br.top) / appMapZoom;
+    const x2 = (b.left - br.left) / appMapZoom;
+    const y2 = (b.top + b.height / 2 - br.top) / appMapZoom;
     const bend = Math.max(28, (x2 - x1) * .42);
     const path = document.createElementNS(ns, "path");
     path.setAttribute("d", `M${x1},${y1} C${x1 + bend},${y1} ${x2 - bend},${y2} ${x2},${y2}`);
@@ -15016,6 +15184,12 @@ function appMapCard(node, column) {
 function renderAppMap(data) {
   appMapData = data;
   appMapPinned = "";
+  // Start with useful lanes only. An absent package no longer reserves three
+  // empty columns between the requirements and the canonical self.
+  appMapLanes.clear();
+  (data.columns || []).forEach((column) => {
+    if (column.id !== "job" && column.nodes?.length) appMapLanes.add(column.id);
+  });
   const board = $("#app-map-board");
   board.innerHTML = "";
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -15026,7 +15200,7 @@ function renderAppMap(data) {
     const lane = el("section", `app-map-column lane-${column.id}`);
     lane.dataset.mapLane = column.id;
     if (column.id !== "job" && !appMapLanes.has(column.id))
-      lane.classList.add("lane-muted");
+      lane.classList.add("lane-hidden");
     const head = el("div", "app-map-column-head");
     head.appendChild(el("h4", null, column.title));
     head.appendChild(el("p", "hint", column.subtitle || ""));
@@ -15068,7 +15242,12 @@ function renderAppMap(data) {
   $("#app-map-sub").textContent = pkg.available
     ? `${data.role.company} · ${pkg.folder} · ${pkg.version}`
     : `${data.role.company} · no application package resolved yet`;
-  requestAnimationFrame(() => requestAnimationFrame(drawAppMapEdges));
+  document.querySelectorAll("#app-map-filters [data-lane]").forEach((button) => {
+    const on = appMapLanes.has(button.dataset.lane);
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+  });
+  appMapRefreshLayout();
 }
 
 async function appMapExport() {
@@ -15098,7 +15277,17 @@ $("#app-map-download")?.addEventListener("click", async () => {
 });
 
 async function openAppMap(r) {
+  const card = $("#app-map-sheet .app-map-card");
+  card?.classList.remove("map-maximized", "map-overview", "map-compact");
+  appMapMaxRestore = null;
+  appMapOverviewRestore = null;
+  appMapOverview = false;
+  appMapCompact = false;
+  appMapDetailsVisible = true;
+  appMapDetailsExpanded = false;
+  appMapZoom = 1;
   appMapSheet.open();
+  appMapWireWorkspace();
   $("#app-map-title").textContent = `${r.title} — evidence map`;
   $("#app-map-sub").textContent = r.company || "";
   $("#app-map-method").textContent = "";
@@ -15122,10 +15311,25 @@ $("#app-map-filters")?.addEventListener("click", (event) => {
   if (appMapLanes.has(lane)) appMapLanes.delete(lane); else appMapLanes.add(lane);
   button.classList.toggle("on", appMapLanes.has(lane));
   button.setAttribute("aria-pressed", appMapLanes.has(lane) ? "true" : "false");
-  document.querySelector(`#app-map-board [data-map-lane="${CSS.escape(lane)}"]`)
-    ?.classList.toggle("lane-muted", !appMapLanes.has(lane));
-  drawAppMapEdges();
+  appMapRefreshLayout();
 });
+$("#app-map-zoom-out")?.addEventListener("click", () => appMapSetZoom(appMapZoom - .1));
+$("#app-map-zoom-in")?.addEventListener("click", () => appMapSetZoom(appMapZoom + .1));
+$("#app-map-zoom-reset")?.addEventListener("click", () => appMapSetZoom(1));
+$("#app-map-fit")?.addEventListener("click", appMapFitWidth);
+$("#app-map-overview")?.addEventListener("click", appMapToggleOverview);
+$("#app-map-compact")?.addEventListener("click", () => {
+  appMapCompact = !appMapCompact; appMapRefreshLayout();
+});
+$("#app-map-detail-toggle")?.addEventListener("click", () => {
+  appMapDetailsVisible = !appMapDetailsVisible; appMapRefreshLayout();
+});
+$("#app-map-detail-size")?.addEventListener("click", () => {
+  appMapDetailsVisible = true;
+  appMapDetailsExpanded = !appMapDetailsExpanded;
+  appMapRefreshLayout();
+});
+$("#app-map-maximize")?.addEventListener("click", appMapToggleMaximize);
 window.addEventListener("resize", () => {
   if ($("#app-map-sheet")?.classList.contains("open"))
     requestAnimationFrame(drawAppMapEdges);
