@@ -184,8 +184,70 @@ class BackupCoverageTests(unittest.TestCase):
                      "routines.json", "circuit-runs.json",
                      "brief-journal.json", "atlas-groups.json",
                      "jobs-log.json", "applications.json",
-                     "mail-accounts.json", "circuits.json"):
+                     "mail-accounts.json", "circuits.json",
+                     # 2026-08-10 data-audit additions
+                     "brain-chat.json", "plans.json", "contact-cards.json",
+                     "ui-state.json", "modules.json", "orphan-work.json",
+                     "doc-index.json", "pii-patterns.txt"):
             self.assertIn(name, backup.FILES)
+
+    def test_sole_copy_directories_all_covered(self):
+        for rel in ("whatsapp/session", "blog/posts", "reading/rooms",
+                    "genres", "idea-images", "walkthrough-anon"):
+            self.assertIn(rel, backup.DIRS)
+
+
+class BackupDirSnapshotTests(unittest.TestCase):
+    """The directory half of the rotation: dated tree copies, same-day
+    idempotency, crash-debris sweep, and the 14-deep retention window."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.data, self.dest = root / "data", root / "dst"
+        (self.data / "whatsapp" / "session").mkdir(parents=True)
+        (self.data / "whatsapp" / "session" / "creds.json").write_text(
+            "{}", encoding="utf-8")
+        self.patches = [mock.patch.object(backup, "DATA", self.data),
+                        mock.patch.object(backup, "DEST", self.dest)]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self.patches:
+            p.stop()
+        self.tmp.cleanup()
+
+    def snaps(self):
+        return sorted(p for p in self.dest.glob("whatsapp-session-*")
+                      if p.is_dir())
+
+    def test_dated_copy_once_per_day_and_missing_dirs_skipped(self):
+        backup.snapshot()
+        backup.snapshot()  # second same-day run must not duplicate or fail
+        s = self.snaps()
+        self.assertEqual(len(s), 1)
+        self.assertEqual((s[0] / "creds.json").read_text(encoding="utf-8"),
+                         "{}")
+        # blog/posts etc. don't exist in this fixture — skipped, not created
+        self.assertEqual(list(self.dest.glob("blog-posts-*")), [])
+
+    def test_crash_debris_is_swept_not_snapshotted(self):
+        debris = self.dest / "whatsapp-session-2026-01-01.tmp"
+        debris.mkdir(parents=True)
+        (debris / "partial.json").write_text("x", encoding="utf-8")
+        backup.snapshot()
+        self.assertFalse(debris.exists())
+        self.assertEqual(len(self.snaps()), 1)
+
+    def test_retention_keeps_the_newest_and_todays_snapshot(self):
+        for i in range(1, 21):
+            d = self.dest / f"whatsapp-session-2020-01-{i:02d}"
+            d.mkdir(parents=True)
+        backup.snapshot()
+        s = self.snaps()
+        self.assertEqual(len(s), backup.KEEP)
+        self.assertNotIn("2020-01", s[-1].name)  # today's survives the prune
 
 
 class SdkEnvTests(unittest.TestCase):
