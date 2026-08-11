@@ -7,9 +7,10 @@ the point of this module: callers should never accidentally present a room
 annotation or a personal fit note as source evidence.
 
 Graphs may be configured with ``research_graphs`` or discovered beneath the
-self-record at ``*/corpus/data/manifest.json``.  This module deliberately has
-no write path and opens every database in SQLite ``mode=ro`` with
-``query_only`` enabled.
+self-record at ``*/corpus/data/manifest.json`` and one level deeper
+(``*/*/corpus/data/manifest.json``) -- a corpus filed under a layer such as
+``pipelines/`` is the same corpus.  This module deliberately has no write path
+and opens every database in SQLite ``mode=ro`` with ``query_only`` enabled.
 """
 
 from __future__ import annotations
@@ -29,6 +30,17 @@ from . import applications, fullingest, readingroom, roomvault, settings
 class ResearchGraphError(RuntimeError):
     """A graph is configured or present but cannot be read."""
 
+
+# Where an unconfigured graph is looked for, relative to the self-record.  Two
+# depths, not a walk: a corpus sits either at the record's top level or inside
+# one named layer (``pipelines/anthropic-corpus/corpus/...``).  An rglob over a
+# record holding decades of evidence and rendering archives would be the wrong
+# cost for a lookup this shallow.
+DISCOVERY_GLOBS = (
+    "*/corpus/data/manifest.json",
+    "*/*/corpus/data/manifest.json",
+)
+_CORPUS_SUFFIX = re.compile(r"[-_ ]corpus$", re.I)
 
 _SPEC_KEYS = {
     "id", "name", "company", "manifest", "database", "path", "room",
@@ -88,6 +100,19 @@ def _slug(value):
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-") or "research"
 
 
+def _subject_name(name):
+    """The subject a corpus directory is ABOUT, from its directory name.
+
+    A directory holding a ``corpus/`` subtree is conventionally named
+    ``<subject>-corpus``, so that suffix names the layer, not the subject -- and
+    it must not reach the graph id, the displayed company, or the reading-room
+    slug the graph links itself to.  An explicit ``id`` in config always wins
+    over this inference; stripping is skipped when it would leave nothing.
+    """
+    trimmed = _CORPUS_SUFFIX.sub("", str(name or "")).strip()
+    return trimmed or name
+
+
 def _path_spec(raw, graph_id=None):
     """Normalize one permissive config/discovery entry."""
     spec = dict(raw) if isinstance(raw, dict) else {"path": raw}
@@ -119,6 +144,14 @@ def _path_spec(raw, graph_id=None):
         database = Path(str(database)).expanduser()
         if not database.is_absolute() and manifest_path:
             database = manifest_path.parent / database
+        elif manifest_path and not database.is_file():
+            # A manifest records the absolute path the build wrote to, and the
+            # manifest is BUILD METADATA while the database is canonical.  Move
+            # the corpus directory and that recorded path is stale, so fall back
+            # to the same filename beside the manifest -- they travel together.
+            beside = manifest_path.parent / database.name
+            if beside.is_file():
+                database = beside
     elif manifest_path:
         databases = sorted(
             p for pattern in ("*.sqlite", "*.sqlite3", "*.db")
@@ -127,7 +160,8 @@ def _path_spec(raw, graph_id=None):
         database = databases[0] if len(databases) == 1 else None
 
     subject = manifest_path.parent.parent.parent if manifest_path else None
-    inferred = subject.name if subject else (database.stem if database else "research")
+    inferred = (_subject_name(subject.name) if subject
+                else (database.stem if database else "research"))
     gid = _slug(spec.get("id") or inferred)
     corpus = manifest_path.parent.parent if manifest_path else None
     taxonomy = spec.get("taxonomy")
@@ -182,9 +216,11 @@ def _graphs():
         entries = _configured_specs(raw.get("research_graphs"))
     else:
         try:
-            entries = [(None, path) for path in sorted(
-                applications.self_record().glob("*/corpus/data/manifest.json")
-            )]
+            record = applications.self_record()
+            found = set()
+            for pattern in DISCOVERY_GLOBS:
+                found.update(record.glob(pattern))
+            entries = [(None, path) for path in sorted(found)]
         except OSError:
             entries = []
     out = []

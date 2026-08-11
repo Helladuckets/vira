@@ -684,5 +684,84 @@ class ResearchFrontendContractTests(unittest.TestCase):
         self.assertIn(".research-segment-locator {", self.style)
 
 
+class RestructuredRecordTests(unittest.TestCase):
+    """A corpus filed one layer deeper, with a manifest naming its old home.
+
+    The 2026-08-10 self-record restructure moved ``14-anthropic/`` under
+    ``pipelines/``.  Discovery globbed one level, the manifest's absolute
+    ``database`` path pointed at the vanished directory, and the graph id (and
+    with it the reading-room join) was read off the renamed folder -- three
+    independent breaks that all surfaced as "no research projects".
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.self_record = self.root / "self"
+        self.subject = self.self_record / "pipelines" / "example-labs-corpus"
+        self.data = self.subject / "corpus" / "data"
+        self.data.mkdir(parents=True)
+        self.database = self.data / "research.sqlite"
+        con = sqlite3.connect(self.database)
+        con.executescript(SCHEMA)
+        con.commit()
+        con.close()
+
+        self.manifest = self.data / "manifest.json"
+        self.manifest.write_text(json.dumps({
+            "built": "2026-06-01T00:00:00Z",
+            # The absolute path the build wrote, under the pre-restructure name.
+            "database": str(self.self_record / "14-example-labs" / "corpus" /
+                            "data" / "research.sqlite"),
+            "tables": {"sources": 3, "claims": 2},
+        }), encoding="utf-8")
+
+        self.rooms = self.root / "rooms"
+        self.rooms.mkdir()
+        (self.rooms / "example-labs-universe.json").write_text(json.dumps({
+            "slug": "example-labs-universe",
+            "title": "Example Labs room",
+            "items": [],
+        }), encoding="utf-8")
+
+        mock.patch.object(research.applications, "self_record",
+                          return_value=self.self_record).start()
+        mock.patch.object(research.settings, "raw", return_value={}).start()
+        mock.patch.object(readingroom, "ROOMS_DIR", self.rooms).start()
+
+    def tearDown(self):
+        mock.patch.stopall()
+        self.tmp.cleanup()
+
+    def test_a_corpus_one_layer_deeper_is_still_discovered(self):
+        rows = research.catalog()
+        self.assertEqual(1, len(rows), "the deeper glob never matched")
+        self.assertEqual("ready", rows[0]["status"])
+        self.assertEqual("", rows[0]["error"])
+
+    def test_a_stale_absolute_database_path_falls_back_beside_the_manifest(self):
+        row = research.catalog()[0]
+        self.assertEqual("research.sqlite", row["database"])
+
+    def test_the_corpus_suffix_names_the_layer_not_the_subject(self):
+        row = research.catalog()[0]
+        self.assertEqual("example-labs", row["id"])
+        self.assertEqual("Example Labs", row["company"])
+
+    def test_the_reading_room_join_survives_the_move(self):
+        self.assertEqual("example-labs-universe", research.catalog()[0]["room"])
+
+    def test_a_database_that_exists_nowhere_still_reports_missing(self):
+        self.database.unlink()
+        row = research.catalog()[0]
+        self.assertEqual("error", row["status"])
+        self.assertIn("database", row["error"])
+
+    def test_stripping_never_leaves_an_empty_subject(self):
+        self.assertEqual("corpus", research._subject_name("corpus"))
+        self.assertEqual("example", research._subject_name("example_corpus"))
+        self.assertEqual("example-labs", research._subject_name("example-labs"))
+
+
 if __name__ == "__main__":
     unittest.main()
