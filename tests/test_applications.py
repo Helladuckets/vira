@@ -107,14 +107,14 @@ class ApplicationsBase(unittest.TestCase):
         self.universe = root / "analysis"          # empty by default
         (self.universe / "candidate-universe" / "role").mkdir(parents=True)
         self.self_record = root / "self"
-        (self.self_record / "08-deliverables").mkdir(parents=True)
-        (self.self_record / "FACTS.md").write_text(
+        (self.self_record / "canon").mkdir(parents=True)
+        (self.self_record / "canon" / "FACTS.md").write_text(
             "## Approved\n\n- Built safe production systems and reusable platforms.\n",
             encoding="utf-8")
-        (self.self_record / "08-deliverables" / "MASTER_HISTORY.md").write_text(
+        (self.self_record / "canon" / "MASTER_HISTORY.md").write_text(
             "## Career chronology\n\n- Led cross-functional platform programs through ambiguity.\n",
             encoding="utf-8")
-        (self.self_record / "self.json").write_text("{}", encoding="utf-8")
+        (self.self_record / "canon" / "self.json").write_text("{}", encoding="utf-8")
         self.packages = root / "packages"
         self.packages.mkdir()
         patches = [
@@ -480,8 +480,8 @@ class PromptTest(ApplicationsBase):
         self.assertIn("INVENTORY.md", p)
         self.assertIn("FACTS.md", p)
         self.assertIn("DO-NOT-USE", p)
-        self.assertIn("07-sentinel", p)
-        self.assertIn("13-personal", p)
+        self.assertIn("evidence/sentinel", p)
+        self.assertIn("evidence/personal", p)
         self.assertIn("admissible PRIVATE evidence", p)
         self.assertIn("active adjudication", p)
         self.assertIn("evidence map", p)
@@ -490,7 +490,7 @@ class PromptTest(ApplicationsBase):
         self.assertIn("Draft only", p)
         self.assertIn("never a source", p)
         self.assertNotIn("is the ONLY claim source", p)
-        self.assertNotIn("Nothing from " + str(applications.self_record() / "07-sentinel"), p)
+        self.assertNotIn("Nothing from " + str(applications.self_record() / "evidence" / "sentinel"), p)
 
     def test_apply_prompt_shape(self):
         roles, _ = applications.load_roles()

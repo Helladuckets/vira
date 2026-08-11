@@ -924,7 +924,7 @@ def score_prompt(limit=40):
     # What this install actually has to honor.
     ruling = sorted(udir.glob("*owner-adjudication*.md"))
     prior = sorted(udir.glob("*-raw-scores.json"))
-    facts = applications.self_record() / "FACTS.md"
+    facts = applications.self_record() / "canon" / "FACTS.md"
     out_file = udir / f"{jobshared.now_iso()[:10]}-raw-scores.json"
 
     step = 1

@@ -94,11 +94,11 @@ def packages_root() -> Path:
     override = settings.raw().get("applications_packages_root")
     if override:
         return Path(str(override)).expanduser()
-    cloud = Path.home() / "Documents" / "CV" / "15-applications"
-    if cloud.is_dir():
-        return cloud
-    from . import applications
-    return applications.self_record() / "15-applications"
+    # The self-record's CLAUDE.md places application packages OUTSIDE the
+    # record ("do not recreate an applications folder here"), so this is the
+    # only home. It is returned even when absent so the caller creates it in
+    # the right place rather than seeding a forbidden in-record fallback.
+    return Path.home() / "Documents" / "CV" / "15-applications"
 
 
 def _clean(value, cap=MAX_TEXT):
@@ -437,7 +437,7 @@ def _self_nodes():
     from . import applications
     root = applications.self_record()
     out = []
-    facts = root / "FACTS.md"
+    facts = root / "canon" / "FACTS.md"
     if facts.is_file():
         try:
             candidates = _markdown_units(facts.read_text(encoding="utf-8"),
@@ -452,7 +452,7 @@ def _self_nodes():
     # FACTS nodes in this list so equally relevant FACTS language wins a tie;
     # anything selected from Master History still needs the claim-gate check
     # before it can move into an outward artifact.
-    history = root / "08-deliverables" / "MASTER_HISTORY.md"
+    history = root / "canon" / "MASTER_HISTORY.md"
     if history.is_file():
         try:
             candidates = _markdown_units(
@@ -463,7 +463,7 @@ def _self_nodes():
         for node in candidates:
             node["detail"] = "selection context; outward wording requires FACTS.md"
         out.extend(candidates)
-    distilled = root / "self.json"
+    distilled = root / "canon" / "self.json"
     try:
         data = json.loads(distilled.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

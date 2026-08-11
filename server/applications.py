@@ -50,7 +50,7 @@ def connections_csv() -> Path:
     override = settings.raw().get("applications_connections_csv")
     if override:
         return Path(str(override)).expanduser()
-    return (self_record() / "00-current" /
+    return (self_record() / "evidence" / "linkedin" /
             "linkedin-archive-2026-07-15-complete" / "Connections.csv")
 
 
@@ -799,9 +799,9 @@ def apply_prompt(role, note=""):
     package build starts from that, then selects evidence from the whole career
     rather than the smallest already-rendered subset."""
     record = self_record()
-    facts = record / "FACTS.md"
-    history = record / "08-deliverables" / "MASTER_HISTORY.md"
-    freshness = record / "08-deliverables" / "check_freshness.py"
+    facts = record / "canon" / "FACTS.md"
+    history = record / "canon" / "MASTER_HISTORY.md"
+    freshness = record / "renderings" / "check_freshness.py"
     inventory = record / "INVENTORY.md"
     lines = [
         "Run the application-package skill "
@@ -825,13 +825,13 @@ def apply_prompt(role, note=""):
         "sanitized form, add it to FACTS.md before use; otherwise keep it out "
         "of outward artifacts and record it as NEEDS ADJUDICATION in the "
         "package evidence map.",
-        f"- {record / '07-sentinel'} is admissible PRIVATE evidence for "
+        f"- {record / 'evidence' / 'sentinel'} is admissible PRIVATE evidence for "
         "reconstructing role, craft, authorship, sequence, tools, and scope. "
         "Use it internally to adjudicate sanitized language; never expose the "
         "private dossier, proprietary fund/tenant/vendor/strategy/rendering "
         "detail, confidential employment mechanics, or non-public deal "
         "figures. Nothing from "
-        f"{record / '13-personal'} becomes a career claim; the SSN quarantine "
+        f"{record / 'evidence' / 'personal'} becomes a career claim; the SSN quarantine "
         "is absolute.",
         "- Before drafting, create an internal evidence map covering current "
         "systems, VP Operations, VP Acquisitions, AVP, Analyst, and pre-"

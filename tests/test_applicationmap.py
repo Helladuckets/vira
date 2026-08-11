@@ -80,8 +80,8 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
             encoding="utf-8")
 
         self.self_record.mkdir()
-        (self.self_record / "08-deliverables").mkdir()
-        (self.self_record / "FACTS.md").write_text(
+        (self.self_record / "canon").mkdir()
+        (self.self_record / "canon" / "FACTS.md").write_text(
             """# FACTS — adjudicated ledger
 
 ## Approved work
@@ -93,11 +93,11 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
 
 - Synthetic secret that must never surface.
 """, encoding="utf-8")
-        (self.self_record / "self.json").write_text(json.dumps({
+        (self.self_record / "canon" / "self.json").write_text(json.dumps({
             "identity": {"canonical": "Builder-operator who turns ambiguity into working systems."},
             "do_not_use": ["Unapproved synthetic claim"],
         }), encoding="utf-8")
-        (self.self_record / "08-deliverables" / "MASTER_HISTORY.md").write_text(
+        (self.self_record / "canon" / "MASTER_HISTORY.md").write_text(
             """# Master History
 
 ## Career chronology
