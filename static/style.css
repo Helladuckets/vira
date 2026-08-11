@@ -3158,6 +3158,30 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
   border-radius: 2px; padding: 2px 8px; outline: none;
 }
 
+/* ---------- needs review: the picker's rows ---------- */
+/* A queued decision is a PARAGRAPH, not a name. The brief's row clamps its
+   title to one nowrap line at 46% — right for "Sarah Chen", wrong for a
+   lesson proposal, which is a full sentence the owner has to read before
+   approving it. Inside the picker the text takes the width and wraps; in
+   the brief the rows stay clamped, because there it is a teaser. */
+#view-review .brief-sec-head { flex-wrap: wrap; }
+/* the hint is a sentence here, not a label — it wraps onto its own line
+   instead of running off a 375px phone */
+#view-review .brief-hint { flex: 1 1 100%; white-space: normal; }
+#view-review .brief-row { align-items: flex-start; flex-wrap: wrap; }
+#view-review .brief-title {
+  flex: 1 1 100%; max-width: none; white-space: normal;
+}
+#view-review .brief-sub { flex: 1 1 100%; white-space: normal; }
+#view-review .brief-acts { opacity: 1; }
+/* A caveat that changes what a button does rides its own line, always
+   visible — the duplicated-proposal-id case (server/reviewqueue.py). */
+.brief-row.review-flagged { flex-wrap: wrap; }
+.review-note {
+  flex: 1 1 100%; margin-top: 4px; padding-left: 8px;
+  border-left: 2px solid var(--amber-line); white-space: normal;
+}
+
 .tellvira { margin: 12px 0 18px; }
 .tv-row { display: flex; gap: 8px; align-items: stretch; }
 .tv-input {

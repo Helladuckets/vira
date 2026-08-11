@@ -555,6 +555,21 @@ def _radar_top():
         return []
 
 
+def _review_section():
+    """Decisions waiting on the owner, aggregated across every registered
+    source (server/reviewqueue.py). None while nothing is waiting — the
+    brief stays quiet rather than printing an empty heading every morning.
+
+    This section is the whole reason the review queue exists: 113 lesson
+    proposals sat undecided for two weeks because no surface ever showed
+    them. A pending decision that is not in the brief is not pending."""
+    try:
+        from . import reviewqueue
+        return reviewqueue.summary()
+    except Exception:  # noqa: BLE001 — the brief never breaks on a section
+        return None
+
+
 def compose(feed_items=None):
     now = dt.datetime.now()
     return {
@@ -568,6 +583,7 @@ def compose(feed_items=None):
         "loops": _consolidate_loops(_open_loops(limit=None))[:LOOPS_CAP],
         "quiet": _not_dismissed(_going_quiet()),
         "radar": _radar_top(),
+        "review": _review_section(),
         "drafts": {k: _drafts_queued()[k] for k in ("items", "status")},
         "subs": _subs_section(),
         "triage": _triage_summary(),

@@ -77,6 +77,19 @@
     <div id="brief-body"></div>
   </section>
 
+  <!-- NEEDS REVIEW — the picker the brief's Needs review section links to.
+       One list of every decision waiting on the owner, from every source
+       registered in server/reviewqueue.py. -->
+  <section id="view-review" class="view">
+    <div class="section-head">
+      <h2>Needs Review</h2>
+      <button class="fchip sm" id="review-refresh" style="margin-left:auto">Refresh</button>
+    </div>
+    <div class="radar-sub"><span id="review-count">Waiting on you</span>
+      <span class="hint">oldest first — approve or drop, or open the source to read it</span></div>
+    <div id="review-body"></div>
+  </section>
+
   <!-- JOURNAL (the record of everything told to Vira, moved out of the brief) -->
   <section id="view-journal" class="view">
     <div class="section-head"><h2>Journal</h2>

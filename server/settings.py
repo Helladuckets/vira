@@ -102,6 +102,18 @@ DEFAULTS = {
     "lesson_promote_at": 3,              # distinct sessions before a tier-2 rule
                                          # proposes building its mechanism
     "lesson_candidates_per_rule": 12,    # rung-2 adjudication cost ceiling per rule
+    "lessons_script_path": "",           # the corrections-ledger CLI the review
+                                         # queue shells out to (it owns every
+                                         # ledger write); empty =
+                                         # ~/.claude/scripts/lessons.py
+    "review_inbox_dir": "",              # self-record capture inbox surfaced in
+                                         # the review queue; empty =
+                                         # <self_record>/inbox/notes
+    "review_facts_path": "",             # canon fact ledger read for open
+                                         # adjudication flags; empty =
+                                         # <self_record>/canon/FACTS.md
+    "review_history_path": "",           # canon history read for open questions;
+                                         # empty = <self_record>/canon/MASTER_HISTORY.md
 }
 
 
