@@ -258,7 +258,15 @@ def note_text(path, cap=None):
 # A wrong note presented as the right one is worse than an honest miss, so
 # exact match answers first and search is only ever a labelled fallback.
 
-_stem_cache = {"key": None, "map": None}
+_stem_cache = {"key": None, "map": None, "root": None, "at": 0.0}
+
+# The cache KEY is a filesystem walk, so computing it to decide whether to
+# rebuild cost as much as rebuilding — measured on the real vault, 1.4s of
+# rglob per call before assets were indexed and 5.3s after. `resolve_ref` is
+# called once per link and an index page carries thousands, so the walk is
+# gated behind a short clock: a burst of links pays for one walk, and an edit
+# is still picked up within a few seconds without any explicit invalidation.
+_STEM_TTL = 5.0
 
 # Never resolvable, because Obsidian does not resolve them either: dotfolders
 # (.git, .obsidian, .smart-env, and any agent worktree checked out INSIDE the
@@ -271,8 +279,10 @@ SKIP_DIRS = ("pending-user-deletion",)
 DIR_RANK = ("wiki", "", "Sessions", "Briefs", "retros", "brain-retros")
 
 
-def _visible_notes(root):
-    for p in root.rglob("*.md"):
+def _visible(root, pattern="*.md"):
+    for p in root.rglob(pattern):
+        if pattern != "*.md" and not p.is_file():
+            continue
         try:
             rel = p.relative_to(root)
         except ValueError:
@@ -284,6 +294,21 @@ def _visible_notes(root):
         yield rel, p
 
 
+def _visible_notes(root):
+    return _visible(root, "*.md")
+
+
+def _visible_assets(root):
+    """Every non-markdown file. `![[chart.png]]` is a wikilink too, and it was
+    never in the stem map — measured 2026-08-11, all 15,143 asset embeds in
+    the vault fell through to the search fallback, so an image ref answered
+    with an unrelated NOTE at `exact: False`. Assets resolve by FULL filename
+    (extension included), which is how Obsidian addresses them."""
+    for rel, p in _visible(root, "*"):
+        if rel.suffix.lower() != ".md":
+            yield rel, p
+
+
 def _rank(rel):
     top = rel.parts[0] if len(rel.parts) > 1 else ""
     try:
@@ -292,31 +317,81 @@ def _rank(rel):
         return (len(DIR_RANK), len(rel.parts), rel.as_posix())
 
 
+def _best(a, b):
+    """The better of two candidates for the same key, or None-safe passthrough.
+
+    Ranked comparison on (directory, depth) only. The third element of `_rank`
+    is a lexical path tie-break, which must NOT decide a case collision — with
+    it, a real `NASA.md` beside a real `nasa.md` resolves both refs to `NASA`
+    because uppercase sorts first. Equal rank falls through to the caller's
+    case-exact preference instead.
+    """
+    if a is None or b is None:
+        return a or b
+    return a if _rank(a)[:2] <= _rank(b)[:2] else b
+
+
 def _stem_map():
+    """{'exact': {stem: rel}, 'lower': {stem.lower(): rel}, 'assets': {...}}.
+
+    Two maps, not one. The single map this replaced wrote both `p.stem` and
+    `p.stem.lower()` with `setdefault` over rank-sorted notes, so a best-ranked
+    file claimed only its own casing and a worst-ranked file could still claim
+    the still-free case-exact key: `wiki/anthropic.md` took `anthropic`, then
+    `raw/Anthropic.md` took `Anthropic`. `resolve_ref` asked for the case-exact
+    key FIRST, so DIR_RANK was bypassed rather than outranked and 223 links
+    opened a 0-byte stub. Keeping the two keyspaces apart lets the lookup
+    compare ranks across them instead of racing them.
+    """
     root = Path(vault_root())
+    # Setting `key` to None is still the explicit invalidation, so a test or a
+    # caller that knows the vault changed can force a rebuild.
+    if (_stem_cache["key"] is not None
+            and _stem_cache["root"] == str(root)
+            and time.monotonic() - _stem_cache["at"] < _STEM_TTL):
+        return _stem_cache["map"]
     if not root.exists():
-        return {}
-    notes = sorted(_visible_notes(root), key=lambda t: _rank(t[0]))
-    key = (str(root), len(notes),
-           max((p.stat().st_mtime_ns for _, p in notes), default=0))
+        return {"exact": {}, "lower": {}, "assets": {}, "assets_lower": {}}
+    notes = list(_visible_notes(root))
+    assets = list(_visible_assets(root))
+    key = (str(root), len(notes), len(assets),
+           max((p.stat().st_mtime_ns for _, p in notes), default=0),
+           max((p.stat().st_mtime_ns for _, p in assets), default=0))
+    _stem_cache["root"], _stem_cache["at"] = str(root), time.monotonic()
     if _stem_cache["key"] == key:
         return _stem_cache["map"]
-    m = {}
-    for _, p in notes:
-        # Best-ranked writer wins, so resolution is stable and a duplicate
-        # stem elsewhere can never silently re-point existing links.
-        m.setdefault(p.stem, p)
-        m.setdefault(p.stem.lower(), p)
+    m = {"exact": {}, "lower": {}, "names": {}, "assets": {}, "assets_lower": {}}
+    for rel, _ in notes:
+        # Best-ranked writer wins per key, so resolution is stable and a
+        # duplicate stem elsewhere can never silently re-point existing links.
+        m["exact"][rel.stem] = _best(m["exact"].get(rel.stem), rel)
+        low = rel.stem.lower()
+        m["lower"][low] = _best(m["lower"].get(low), rel)
+        # Full filename, case-sensitive. An author who typed the extension
+        # said more than one who did not, and `_clean_ref` throws it away:
+        # `[[CLAUDE.md]]` (101 links, meaning the vault's spec file at the
+        # root) would otherwise rank-lose to `wiki/claude.md`, since the two
+        # are structurally identical to the `raw/Anthropic.md` shadowing this
+        # fix exists to kill. An exact filename hit is not a guess.
+        m["names"][rel.name] = _best(m["names"].get(rel.name), rel)
+    for rel, _ in assets:
+        m["assets"][rel.name] = _best(m["assets"].get(rel.name), rel)
+        low = rel.name.lower()
+        m["assets_lower"][low] = _best(m["assets_lower"].get(low), rel)
     _stem_cache["key"], _stem_cache["map"] = key, m
     return m
 
 
-def _clean_ref(ref):
-    """Strip the parts of a wikilink that are not the note identity."""
+def _clean_ref(ref, keep_ext=False):
+    """Strip the parts of a wikilink that are not the note identity.
+
+    `keep_ext` leaves a typed `.md` on, for the caller that wants to try the
+    filename verbatim before falling back to stem matching.
+    """
     r = (ref or "").strip()
     r = r.split("|", 1)[0].strip()          # [[note|Label]]
     r = re.split(r"[#^]", r, maxsplit=1)[0].strip()   # [[note#h]], [[note^b]]
-    if r.lower().endswith(".md"):
+    if not keep_ext and r.lower().endswith(".md"):
         r = r[:-3]
     return r.strip("/ ")
 
@@ -327,21 +402,42 @@ def resolve_ref(ref):
     `exact` False means this came from the search fallback and the caller
     should say so rather than present it as the linked note.
     """
+    raw_ref = _clean_ref(ref, keep_ext=True)
     r = _clean_ref(ref)
     if not r:
         return None
     root = Path(vault_root())
     m = _stem_map()
-    hit = m.get(r) or m.get(r.lower())
-    if hit is None and "/" in r:
-        cand = (root / r).with_suffix(".md")
-        if cand.exists():
-            hit = cand
-    if hit is not None:
-        try:
-            rel = hit.resolve().relative_to(root.resolve())
-        except ValueError:
-            return None                     # outside the vault: never serve
+    rel = None
+    if "/" not in raw_ref and raw_ref != r:
+        # An explicitly-typed `.md`, matched case-sensitively on the whole
+        # filename. Only an exact hit counts — anything looser is the guess
+        # the ranked path below is there to make.
+        rel = m["names"].get(raw_ref)
+    if rel is None and "/" in r:
+        # Path-qualified. Try the literal path BEFORE forcing `.md` onto it —
+        # `.with_suffix()` turns `wiki/assets/x.png` into `wiki/assets/x.md`,
+        # so every path-qualified asset embed missed and fell to search.
+        for cand in ((root / r), (root / r).with_suffix(".md")):
+            if not cand.is_file():
+                continue
+            try:                            # `..` must never escape the vault
+                rel = cand.resolve().relative_to(root.resolve())
+            except ValueError:
+                return None
+            break
+    if rel is None:
+        # Rank decides across the two keyspaces; case-exactness is only the
+        # tie-break, so a real `NASA.md`/`nasa.md` pair still resolves by case
+        # while a worst-ranked stub can no longer shadow the curated note.
+        exact, lower = m["exact"].get(r), m["lower"].get(r.lower())
+        if exact is not None and lower is not None:
+            rel = exact if _rank(exact)[:2] <= _rank(lower)[:2] else lower
+        else:
+            rel = exact if exact is not None else lower
+    if rel is None:
+        rel = m["assets"].get(r) or m["assets_lower"].get(r.lower())
+    if rel is not None:
         return {"path": rel.as_posix(), "exact": True}
     found = search(r, limit=1) or []
     if found:
@@ -350,14 +446,23 @@ def resolve_ref(ref):
 
 
 def known_stems():
-    """Every note stem, so a client can dim unresolved links without a
-    round-trip per link — an index page carries thousands."""
-    root = Path(vault_root())
-    if not root.exists():
+    """Every resolvable name, so a client can dim unresolved links without a
+    round-trip per link — an index page carries thousands.
+
+    Names only, never paths: the client strips any directory off a
+    path-qualified ref before checking, so `[[wiki/anthropic|Anthropic]]` is
+    tested as `anthropic`. Sending full paths instead would multiply the
+    payload for a set the client would still have to normalise.
+    """
+    if not Path(vault_root()).exists():
         return []
-    # Same filter as `_stem_map`, or the client would dim links the server
-    # resolves fine, and light up links it will refuse.
-    return sorted({p.stem for _, p in _visible_notes(root)})
+    # Read straight off the resolver's own index rather than re-walking, so
+    # this list cannot drift from what `resolve_ref` will actually accept —
+    # the client dims links with it, and a list that disagreed would dim
+    # links the server resolves fine and light up links it will refuse.
+    # Assets are in here for that reason too: `![[chart.png]]` resolves.
+    m = _stem_map()
+    return sorted(set(m["exact"]) | set(m["assets"]))
 
 
 def status():
