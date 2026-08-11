@@ -237,6 +237,30 @@ def _oneline(text, cap=300):
     return s[:cap]
 
 
+def _author_link(author):
+    """`[[wiki/x|Author]]` when the note exists, plain `[[Author]]` when it
+    does not.
+
+    A stem-only link does not name one file: 5,635 stems in this vault are
+    owned by more than one note, because a distilled `wiki/` page beside its
+    `raw/` source is the architecture, not a defect. Obsidian arbitrates by
+    the linking note's own folder and this app arbitrates by DIR_RANK, so the
+    same link opens different files in the two readers. This line wrote 188
+    of the 223 `[[Anthropic]]` links in the vault; `research.py` already
+    emitted paths, so the house knew better in one file and not the other.
+
+    An author with no note keeps the stem form on purpose — that is the
+    vault's seed-link convention, and there is no path to qualify it with.
+    """
+    from . import vault
+    hit = vault.resolve_ref(author)
+    if hit and hit.get("exact"):
+        path = hit["path"]
+        path = path[:-3] if path.lower().endswith(".md") else path
+        return f"[[{path}|{author}]]"
+    return f"[[{author}]]"
+
+
 def raw_note(item, room_slug, author, published, description, body,
              body_label):
     today = date.today().isoformat()
@@ -244,7 +268,8 @@ def raw_note(item, room_slug, author, published, description, body,
           f"title: {_yaml(item['title'])}",
           f"source: {_yaml(item.get('url', ''))}",
           "author:",
-          f"  - {_yaml(f'[[{author}]]')}" if author else f"  - {_yaml('unknown')}",
+          f"  - {_yaml(_author_link(author))}" if author
+          else f"  - {_yaml('unknown')}",
           f"published: {published}" if published else "published:",
           f"room_item_id: {item['id']}",
           f"room_slug: {room_slug}",

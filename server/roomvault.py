@@ -91,17 +91,25 @@ def _existing_stems(root):
 
 
 def _vault_ref(item, root):
-    """The existing note for an already-consumed item, as a slug — or ''
-    when the room names a note that is no longer on disk. A pointer that
-    does not resolve is worse than none: it reads as consumed and leads
-    nowhere."""
+    """The existing note for an already-consumed item, as a vault-relative
+    path without the extension — or '' when the room names a note that is no
+    longer on disk. A pointer that does not resolve is worse than none: it
+    reads as consumed and leads nowhere.
+
+    A path, not a bare slug: 5,635 stems in this vault are owned by more than
+    one note, and the two readers arbitrate a bare one differently.
+    """
     raw = (item.get("vault") or "").strip()
     if not raw:
         return ""
     stem = Path(raw).stem
     if not stem:
         return ""
-    return stem if (root / raw).exists() or (root / "wiki" / f"{stem}.md").exists() else ""
+    if (root / raw).exists():
+        return Path(raw).with_suffix("").as_posix()
+    if (root / "wiki" / f"{stem}.md").exists():
+        return f"wiki/{stem}"
+    return ""
 
 
 def _facts_line(it):
@@ -194,7 +202,9 @@ def hub_note(room, rows, stems=None):
             continue
         b += [f"### {prio} — {len(group)} items", ""]
         for it, tgt in sorted(group, key=lambda r: (r[0].get("date") or "")):
-            link = f"[[{tgt}]]" if tgt else it["title"]
+            # Aliased to the bare stem so the rendered catalog reads exactly
+            # as it did before refs carried their directory.
+            link = f"[[{tgt}|{tgt.rsplit('/', 1)[-1]}]]" if tgt else it["title"]
             facts = _facts_line(it)
             note = f" — {it['note']}" if it.get("note") else ""
             b += [f"- {link} · {facts}{note}"]
@@ -282,10 +292,14 @@ def ingest(slug, dry_run=False):
     rows, linked, pending = [], 0, 0
     for it in room["items"]:
         ref = _vault_ref(it, root)
-        if not ref and it["id"] in summaries:
-            ref = summaries[it["id"]].stem
-        if not ref and it["id"] in known:
-            ref = known[it["id"]].stem
+        for table in (summaries, known):
+            if ref or it["id"] not in table:
+                continue
+            p = table[it["id"]]
+            try:
+                ref = p.relative_to(root).with_suffix("").as_posix()
+            except ValueError:
+                ref = p.stem
         rows.append((it, ref))
         if ref:
             linked += 1

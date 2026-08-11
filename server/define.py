@@ -125,25 +125,42 @@ def _yaml_str(v):
 
 
 def _existing_stems(root):
-    """Every note filename in the vault. Obsidian resolves [[link]] by
-    FILENAME across directories, so a new slug must never shadow one."""
+    """Every note filename in the vault, mapped to its vault-relative path.
+
+    Obsidian resolves [[link]] by FILENAME across directories, so a new slug
+    must never shadow one — and for the same reason the value here is a path,
+    not just the file: 5,635 stems in this vault are owned by more than one
+    note, so writing a link by stem alone leaves the reader to arbitrate.
+    """
     stems = {}
+    root = Path(root)
     try:
-        for p in Path(root).rglob("*.md"):
-            stems.setdefault(p.stem, p)
+        for p in root.rglob("*.md"):
+            try:
+                stems.setdefault(p.stem, p.relative_to(root))
+            except ValueError:
+                continue
     except OSError:
         pass
     return stems
 
 
 def _link(term, stems):
-    """`[[slug|Term]]` when the note exists, plain text when it does not.
+    """`[[wiki/slug|Term]]` when the note exists, plain text when it does not.
 
     A wikilink that resolves nowhere reads as a page you have and leads to a
     blank — worse than plain text, which is honest about being a loose end.
+    The path is carried so the link names ONE file; a bare slug is arbitrated
+    differently by Obsidian (linking note's folder) than by this app
+    (DIR_RANK), which is the whole reason links are written qualified now.
     """
     s = slugify(term)
-    return f"[[{s}|{term}]]" if s in stems else term
+    hit = stems.get(s)
+    if hit is None:
+        return term
+    p = Path(hit).as_posix()
+    p = p[:-3] if p.lower().endswith(".md") else p
+    return f"[[{p}|{term}]]"
 
 
 def note_text(card, stems, created=None):
@@ -427,23 +444,28 @@ def _write_note(path, text):
     return True
 
 
-def _backlink(path, term, slug):
-    """Add `[[slug|term]]` to an existing term note's Related list.
+def _backlink(path, term, slug, ref=None):
+    """Add `[[wiki/slug|term]]` to an existing term note's Related list.
 
     This is the half that makes the graph grow in BOTH directions: writing
     "context engineering" should make the older "prompt engineering" note
     point at it, not just the other way round. Bounded on purpose — only
     term notes, only the Related section, never the body prose.
+
+    `ref` is the vault-relative path to link by; `slug` remains the bare stem
+    so the already-there check still recognises links written before links
+    were qualified, and stays idempotent across the change.
     """
+    ref = ref or slug
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
-    if f"[[{slug}" in text:
+    if f"[[{ref}" in text or f"[[{slug}]" in text or f"[[{slug}|" in text:
         return False
     if not re.search(r"\b" + re.escape(term) + r"\b", text, re.I):
         return False
-    line = f"- [[{slug}|{term}]]"
+    line = f"- [[{ref}|{term}]]"
     m = re.search(r"^##\s+" + re.escape(RELATED_LABEL) + r"\s*$", text, re.M)
     if m:
         insert = text.index("\n", m.end()) + 1
@@ -486,9 +508,13 @@ def save(card):
             path = wiki_dir() / f"{cand}.md"
         _write_note(path, note_text(card, stems))
         slug = path.stem
+        try:
+            ref = path.relative_to(root).with_suffix("").as_posix()
+        except ValueError:
+            ref = slug
         linked = 0
         for other_term, other_path in known.items():
-            if other_path != path and _backlink(other_path, term, slug):
+            if other_path != path and _backlink(other_path, term, slug, ref):
                 linked += 1
         def _record(st):
             terms = st.setdefault("terms", {})
