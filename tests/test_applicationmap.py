@@ -81,29 +81,27 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
 
         self.self_record.mkdir()
         (self.self_record / "canon").mkdir()
-        (self.self_record / "canon" / "FACTS.md").write_text(
-            """# FACTS — adjudicated ledger
-
-## Approved work
-
-- Built operating systems for cross-functional execution.
-- Working systems built and maintained daily.
-
-## Privacy quarantine
-
-- Synthetic secret that must never surface.
-""", encoding="utf-8")
         (self.self_record / "canon" / "self.json").write_text(json.dumps({
             "identity": {"canonical": "Builder-operator who turns ambiguity into working systems."},
             "do_not_use": ["Unapproved synthetic claim"],
         }), encoding="utf-8")
         (self.self_record / "canon" / "MASTER_HISTORY.md").write_text(
-            """# Master History
+            """# Master history
 
 ## Career chronology
 
 - Directed a portfolio-wide coordination program across technical workstreams.
 - Explored regional expansion but did not work in Japanese.
+
+## Confidentiality and privacy
+
+- Synthetic secret that must never surface.
+
+# Endnotes
+
+[^1]: Built operating systems for cross-functional execution.
+
+[^2]: Working systems built and maintained daily.
 """, encoding="utf-8")
         self.role = {
             "uid": "g-examplelabs-321", "company": "Example Labs",
@@ -286,7 +284,7 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
         self.assertIn("Health coverage.", out["text"])
         self.assertIn("- Status: Covered", out["text"])
         self.assertIn("- Status: Gap", out["text"])
-        self.assertIn("add FACTS-grounded evidence", out["text"])
+        self.assertIn("add gate-grounded evidence", out["text"])
         self.assertIn("Planning notes are drafting instructions", out["text"])
 
     def test_routes_resolve_the_catalog_role(self):

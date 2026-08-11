@@ -109,11 +109,10 @@ DEFAULTS = {
     "review_inbox_dir": "",              # self-record capture inbox surfaced in
                                          # the review queue; empty =
                                          # <self_record>/inbox/notes
-    "review_facts_path": "",             # canon fact ledger read for open
-                                         # adjudication flags; empty =
-                                         # <self_record>/canon/FACTS.md
-    "review_history_path": "",           # canon history read for open questions;
-                                         # empty = <self_record>/canon/MASTER_HISTORY.md
+    "review_history_path": "",           # canonical record read for open
+                                         # adjudication flags and questions;
+                                         # empty =
+                                         # <self_record>/canon/MASTER_HISTORY.md
 }
 
 

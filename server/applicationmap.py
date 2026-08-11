@@ -81,8 +81,14 @@ JOB_CONTENT_HEADINGS = (
 )
 SKIP_SELF_HEADINGS = (
     "private", "privacy", "public-materials constraints", "open reconciliation",
-    "references", "alternate identities", "do-not-use", "red herring",
+    "references", "alternate identities", "contact and identity",
+    "do-not-use", "red herring",
 )
+# Master History's endnotes are the claim gate; its body is selection
+# context. The two details below are the signal every downstream label reads.
+GATE_DETAIL = "permitted wording; the claim gate"
+CONTEXT_DETAIL = ("selection context; outward wording requires the governing "
+                  "endnote")
 SAFE_SELF_KEYS = (
     "identity", "positioning", "adjudicated_stories", "campaign_strategy",
     "employment", "education", "credentials", "resume_vehicle_decoder",
@@ -437,32 +443,31 @@ def _self_nodes():
     from . import applications
     root = applications.self_record()
     out = []
-    facts = root / "canon" / "FACTS.md"
-    if facts.is_file():
-        try:
-            candidates = _markdown_units(facts.read_text(encoding="utf-8"),
-                                         "self", "FACTS.md")
-        except OSError:
-            candidates = []
-        out.extend(n for n in candidates if
-                   not n["heading"].casefold().startswith("facts —") and
-                   not any(skip in n["heading"].casefold()
-                           for skip in SKIP_SELF_HEADINGS))
-    # Master History is the comprehensive selection context. It follows the
-    # FACTS nodes in this list so equally relevant FACTS language wins a tie;
-    # anything selected from Master History still needs the claim-gate check
-    # before it can move into an outward artifact.
+    # Master History is the single canonical record. Its endnotes are the
+    # claim gate: each carries the approved outward wording and the limits
+    # for the sentence it governs, so they are emitted first and equally
+    # relevant gate language wins a tie against narrative body text. Anything
+    # selected from the body still needs the governing endnote checked before
+    # it can move into an outward artifact. (Before 2026-08-11 the gate was a
+    # separate FACTS.md; the fold made the two one file.)
     history = root / "canon" / "MASTER_HISTORY.md"
     if history.is_file():
         try:
-            candidates = _markdown_units(
-                history.read_text(encoding="utf-8"), "self",
-                "MASTER_HISTORY.md")
+            text = history.read_text(encoding="utf-8")
         except OSError:
-            candidates = []
-        for node in candidates:
-            node["detail"] = "selection context; outward wording requires FACTS.md"
-        out.extend(candidates)
+            text = ""
+        split = text.find("\n# Endnotes")
+        body, endnotes = (text, "") if split < 0 else (text[:split],
+                                                       text[split:])
+        for chunk, detail in ((endnotes, GATE_DETAIL),
+                              (body, CONTEXT_DETAIL)):
+            candidates = _markdown_units(chunk, "self", "MASTER_HISTORY.md")
+            for node in candidates:
+                node["detail"] = detail
+            out.extend(n for n in candidates if
+                       not n["heading"].casefold().startswith("master history")
+                       and not any(skip in n["heading"].casefold()
+                                   for skip in SKIP_SELF_HEADINGS))
     distilled = root / "canon" / "self.json"
     try:
         data = json.loads(distilled.read_text(encoding="utf-8"))
@@ -550,8 +555,9 @@ def prompt_plan(role):
                                    "as support" if negative else
                                    "candidate bridge to inspect"),
                 "authority": ("outward-ready only in this adjudicated form"
-                              if anchor["source"] == "FACTS.md" else
-                              "selection context; verify permitted wording in FACTS.md"),
+                              if anchor.get("detail") == GATE_DETAIL else
+                              "selection context; verify the permitted "
+                              "wording in the governing endnote"),
             })
         requirements.append({
             "key": concept["concept_key"],
@@ -653,7 +659,8 @@ def _planning_nodes(role, concepts):
         node = _node(lane, note["text"], concept["heading"],
                      "Application map note", "planning note",
                      len(lanes[lane]),
-                     "Drafting instruction; verify against FACTS.md")
+                     "Drafting instruction; verify against the Master "
+                     "History claim gate")
         node["id"] = f"{lane}-plan-{note['concept_key']}"
         node["planning"] = True
         node["concept_key"] = note["concept_key"]
@@ -729,7 +736,8 @@ def build(role):
          "Interview prep, answers, and approved Evidence Ledger stories",
          "nodes": lanes["narrative"]},
         {"id": "self", "title": "The self", "subtitle":
-         "Master History selection context; FACTS.md claim gate; self.json subordinate",
+         "Master History body is selection context, its endnotes are the "
+         "claim gate; self.json subordinate",
          "nodes": lanes["self"]},
     ]
     return {
@@ -744,8 +752,9 @@ def build(role):
                      "gaps": [c["id"] for c in concepts
                               if c["coverage"]["outward"] < 18]},
         "method": ("Connections are deterministic shared-language signals, "
-                   "not a claim that a requirement is satisfied. FACTS.md "
-                   "remains the claim authority; renderings never become sources."),
+                   "not a claim that a requirement is satisfied. The "
+                   "Master History endnotes remain the claim authority; "
+                   "renderings never become sources."),
     }
 
 
@@ -777,8 +786,9 @@ def export_markdown(role):
         f"- {data['coverage']['grounded']} are grounded in the canonical self.",
         f"- {data['coverage']['planned']} gaps have owner planning notes.",
         "",
-        ("Planning notes are drafting instructions, not evidence. Verify every "
-         "claim against FACTS.md before using it."),
+        ("Planning notes are drafting instructions, not evidence. Verify "
+         "every claim against the Master History endnote that governs it "
+         "before using it."),
     ]
     job_nodes = data["columns"][0]["nodes"]
     current_heading = None
@@ -807,7 +817,8 @@ def export_markdown(role):
             note = nodes.get(edge["to"], {})
             lines.append(f"- Planning note — {edge['lane']}: {note.get('text', '')}")
         if not covered:
-            lines.append("- Action: add FACTS-grounded evidence or revise the outward package.")
+            lines.append("- Action: add gate-grounded evidence or revise "
+                         "the outward package.")
         lines.append("")
     return {
         "filename": f"{_slug(role.get('company'))}-{_slug(role.get('title'))}-evidence-brief.md",
