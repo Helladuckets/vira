@@ -480,8 +480,11 @@ class PromptTest(ApplicationsBase):
         self.assertIn("INVENTORY.md", p)
         self.assertIn("FACTS.md", p)
         self.assertIn("DO-NOT-USE", p)
-        self.assertIn("evidence/sentinel", p)
-        self.assertIn("evidence/personal", p)
+        # Built from Path like the prompt is, not as a literal with forward
+        # slashes: on Windows these render with backslashes and the literal
+        # form fails there while passing on macOS. CI runs both.
+        self.assertIn(str(applications.self_record() / "evidence" / "sentinel"), p)
+        self.assertIn(str(applications.self_record() / "evidence" / "personal"), p)
         self.assertIn("admissible PRIVATE evidence", p)
         self.assertIn("active adjudication", p)
         self.assertIn("evidence map", p)
