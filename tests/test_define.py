@@ -90,8 +90,8 @@ class NoteRoundTripTests(_DefineCase):
         self.assertIn("## Plain definition", text)
 
     def test_a_related_term_links_only_when_the_note_exists(self):
-        text = define.note_text(CARD, stems={"consensus": Path("x")})
-        self.assertIn("- [[consensus|consensus]]", text)
+        text = define.note_text(CARD, stems={"consensus": Path("wiki/consensus.md")})
+        self.assertIn("- [[wiki/consensus|consensus]]", text)
         self.assertIn("- Paxos", text)          # honest loose end, not a
         self.assertNotIn("[[Paxos", text)       # link that resolves nowhere
 
@@ -177,7 +177,7 @@ class BacklinkTests(_DefineCase):
                                 "value": "Choosing what the model sees."}]))
         older = self.note("prompt-engineering")
         self.assertIn("## Related", older)
-        self.assertIn("[[context-engineering|context engineering]]", older)
+        self.assertIn("[[wiki/context-engineering|context engineering]]", older)
 
     def test_it_does_not_link_a_note_that_never_mentions_the_term(self):
         self._seed("woodworking", "Cutting and joining timber.")
@@ -192,7 +192,7 @@ class BacklinkTests(_DefineCase):
                                     "label": "Plain definition",
                                     "value": "Choosing what the model sees."}]))
         self.assertEqual(self.note("prompt-engineering")
-                         .count("[[context-engineering"), 1)
+                         .count("[[wiki/context-engineering"), 1)
 
     def test_the_body_prose_is_never_rewritten(self):
         self._seed("prompt engineering", "See context engineering.")

@@ -28,7 +28,32 @@ class ResolveCase(unittest.TestCase):
                     "logs/2026-08-01-ingest.md",
                     ".claude/worktrees/stale/wiki/harness.md",
                     ".obsidian/plugins/notes.md",
-                    "pending-user-deletion/harness.md"):
+                    "pending-user-deletion/harness.md",
+                    # The shadowing pair: curated note vs a 0-byte raw stub
+                    # whose only difference is casing.
+                    "wiki/anthropic.md",
+                    "raw/Anthropic.md",
+                    # A genuine case-distinct pair, which must NOT be
+                    # collapsed by the fix for the pair above. They sit in
+                    # two DIFFERENT unranked directories on purpose: same
+                    # (dir_rank, depth), so rank genuinely ties and the
+                    # case-exact tie-break is the only thing deciding. Same
+                    # directory would not work — this vault lives on a
+                    # case-insensitive filesystem, where the two names are
+                    # one file.
+                    "courses/NASA.md",
+                    "raw/nasa.md",
+                    # Assets: a wikilink target too.
+                    "wiki/assets/gpu-economics/chart.png",
+                    "raw/assets/screenshot.PNG",
+                    # Root spec file vs the curated note about the product.
+                    # Structurally the same collision as Anthropic above, so
+                    # only the typed extension separates them.
+                    "CLAUDE.md",
+                    "wiki/claude.md",
+                    # A dot mid-filename. pathlib's with_suffix() reads
+                    # ".5 Sonnet for creativity" as the extension.
+                    "raw/reading-room/Claude 3.5 Sonnet for creativity.md"):
             p = self.root / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("# " + p.stem, encoding="utf-8")
@@ -74,6 +99,88 @@ class ExactTests(ResolveCase):
     def test_a_path_style_ref_resolves(self):
         self.assertEqual(self.resolve("Sessions/2026-08-01 vira")["path"],
                          "Sessions/2026-08-01 vira.md")
+
+
+class RankTests(ResolveCase):
+    """The case-exact shadowing bug, pinned.
+
+    Measured on the real vault 2026-08-11: 264 links resolved to a 0-byte
+    `raw/` stub because the old single stem map let a worst-ranked file claim
+    the still-free case-exact key, and the lookup asked for that key first.
+    DIR_RANK was bypassed, not outranked.
+    """
+
+    def test_a_worst_ranked_stub_cannot_shadow_the_curated_note(self):
+        self.assertEqual(self.resolve("Anthropic")["path"], "wiki/anthropic.md")
+
+    def test_the_lowercase_ref_resolves_the_same_way(self):
+        self.assertEqual(self.resolve("anthropic")["path"], "wiki/anthropic.md")
+
+    def test_a_typed_extension_pins_the_exact_file(self):
+        """101 real links write `[[CLAUDE.md]]` meaning the vault's spec file
+        at the root, in prose like "per [[CLAUDE.md]] catalog-page pattern".
+        Ranking alone sends those to `wiki/claude.md`, since root sorts after
+        `wiki/` — the typed extension is the only thing that distinguishes
+        this from the shadowing case, and it is an author's statement."""
+        self.assertEqual(self.resolve("CLAUDE.md")["path"], "CLAUDE.md")
+
+    def test_a_stem_without_the_extension_still_ranks(self):
+        self.assertEqual(self.resolve("CLAUDE")["path"], "wiki/claude.md")
+        self.assertEqual(self.resolve("claude")["path"], "wiki/claude.md")
+
+    def test_a_typed_extension_is_case_sensitive(self):
+        self.assertEqual(self.resolve("claude.md")["path"], "wiki/claude.md")
+
+    def test_a_real_case_distinct_pair_still_resolves_by_case(self):
+        """The reason rank comparison stops at (dir, depth): the lexical
+        tie-break would hand both refs to `NASA` because uppercase sorts
+        first."""
+        self.assertEqual(self.resolve("NASA")["path"], "courses/NASA.md")
+        self.assertEqual(self.resolve("nasa")["path"], "raw/nasa.md")
+
+
+class AssetTests(ResolveCase):
+    """`![[chart.png]]` is a wikilink. All 15,143 asset embeds in the real
+    vault fell through to the search fallback and answered with an unrelated
+    NOTE, because the stem map only ever indexed `.md`."""
+
+    def test_an_asset_resolves_by_filename(self):
+        self.assertEqual(self.resolve("chart.png"),
+                         {"path": "wiki/assets/gpu-economics/chart.png",
+                          "exact": True})
+
+    def test_an_asset_resolves_case_insensitively(self):
+        self.assertEqual(self.resolve("screenshot.png")["path"],
+                         "raw/assets/screenshot.PNG")
+
+    def test_a_path_qualified_asset_resolves(self):
+        """`.with_suffix('.md')` used to turn this into `chart.md` and miss,
+        which would have broken every embed a path migration rewrote."""
+        self.assertEqual(self.resolve("wiki/assets/gpu-economics/chart.png"),
+                         {"path": "wiki/assets/gpu-economics/chart.png",
+                          "exact": True})
+
+    def test_an_embed_size_pipe_is_not_read_as_an_alias(self):
+        self.assertEqual(self.resolve("chart.png|300")["path"],
+                         "wiki/assets/gpu-economics/chart.png")
+
+    def test_a_path_qualified_note_still_resolves_without_the_extension(self):
+        self.assertEqual(self.resolve("wiki/harness")["path"],
+                         "wiki/harness.md")
+
+    def test_a_dot_in_the_filename_does_not_truncate_the_path(self):
+        """`with_suffix(".md")` turned `Claude 3.5 Sonnet for creativity`
+        into `Claude 3.md`, so the note was unreachable by its own path.
+        34 targets in the real vault carry a dot mid-filename."""
+        for ref in ("raw/reading-room/Claude 3.5 Sonnet for creativity",
+                    "raw/reading-room/Claude 3.5 Sonnet for creativity.md"):
+            self.assertEqual(
+                self.resolve(ref)["path"],
+                "raw/reading-room/Claude 3.5 Sonnet for creativity.md", ref)
+
+    def test_a_traversal_ref_never_escapes_the_vault(self):
+        with mock.patch.object(vault, "search", return_value=[]):
+            self.assertIsNone(self.resolve("../../etc/passwd"))
 
 
 class ExclusionTests(ResolveCase):

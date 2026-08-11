@@ -12134,8 +12134,11 @@ async function markDeadLinks(host) {
   const stems = await knownStems();
   if (!stems.size) return;
   links.forEach((a) => {
+    // The directory comes off before the check. `stems` is names, not paths,
+    // so a path-qualified `[[wiki/anthropic|Anthropic]]` would otherwise miss
+    // every key and render as dead while the server resolves it fine.
     const ref = (a.dataset.ref || "").split("|")[0].split("#")[0]
-      .split("^")[0].replace(/\.md$/i, "").trim();
+      .split("^")[0].split("/").pop().replace(/\.md$/i, "").trim();
     if (ref && !stems.has(ref) && !stems.has(ref.toLowerCase()))
       a.classList.add("dead");
   });
@@ -14903,7 +14906,7 @@ $("#app-compare-go")?.addEventListener("click", runAppCompare);
 // ---------- application evidence map ----------
 // A graph over stores that already own their material: the catalog role, the
 // current application package, approved Evidence Ledger stories, and
-// FACTS.md/self.json. The only writes are application-scoped planning notes;
+// MASTER_HISTORY.md/self.json. The only writes are application-scoped planning notes;
 // they never become claim evidence or mutate the canonical self.
 const appMapSheet = bindSheet("#app-map-sheet", "#app-map-close");
 let appMapData = null;

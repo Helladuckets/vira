@@ -84,7 +84,7 @@ class IngestTests(Base):
                         vault="wiki/machines-of-loving-grace.md")])
         res = roomvault.ingest("demo")
         self.assertEqual(res["linked"], 1)
-        self.assertIn("[[machines-of-loving-grace]]",
+        self.assertIn("[[wiki/machines-of-loving-grace|machines-of-loving-grace]]",
                       self.note("wiki/demo-reading-room.md"))
 
     def test_a_synthesized_summary_links_before_reconcile(self):
@@ -93,7 +93,7 @@ class IngestTests(Base):
         self.room([it])
         res = roomvault.ingest("demo")
         self.assertEqual(res["linked"], 1)
-        self.assertIn("[[a-talk-summary]]",
+        self.assertIn("[[wiki/a-talk-summary|a-talk-summary]]",
                       self.note("wiki/demo-reading-room.md"))
 
     def test_a_legacy_pointer_still_links_until_retired(self):
@@ -102,7 +102,7 @@ class IngestTests(Base):
         self.room([it])
         res = roomvault.ingest("demo")
         self.assertEqual(res["linked"], 1)
-        self.assertIn("[[a-talk-pointer]]",
+        self.assertIn("[[wiki/rooms/a-talk-pointer|a-talk-pointer]]",
                       self.note("wiki/demo-reading-room.md"))
 
     def test_the_summary_outranks_the_legacy_pointer(self):
@@ -112,8 +112,8 @@ class IngestTests(Base):
         self.room([it])
         roomvault.ingest("demo")
         h = self.note("wiki/demo-reading-room.md")
-        self.assertIn("[[a-talk-summary]]", h)
-        self.assertNotIn("[[a-talk-pointer]]", h)
+        self.assertIn("[[wiki/a-talk-summary|a-talk-summary]]", h)
+        self.assertNotIn("[[wiki/rooms/a-talk-pointer|a-talk-pointer]]", h)
 
     def test_a_stale_vault_ref_reads_as_pending(self):
         # A link that does not resolve reads as consumed and leads nowhere.
