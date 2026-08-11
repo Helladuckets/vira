@@ -2291,6 +2291,12 @@ body.nd-drag { user-select: none; -webkit-user-select: none; }
 }
 
 .empty { color: var(--text-faint); font-size: 13.5px; padding: 18px 4px; text-align: center; }
+/* The note's own path, under an empty-note message: provenance, so it reads
+   quieter than the sentence above it and wraps rather than widening the row. */
+.note-empty-path {
+  margin-top: 6px; font-family: var(--mono); font-size: 11.5px;
+  opacity: .62; word-break: break-word;
+}
 
 /* ---------- media search (person-scoped + global) ---------- */
 .media-search { margin: 4px 0 10px; }

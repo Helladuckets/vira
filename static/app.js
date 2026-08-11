@@ -12054,7 +12054,24 @@ async function fillNote(host, path, spawn) {
   host.appendChild(el("div", "spin", "Loading note…"));
   try {
     const n = await api("/api/vault/note?path=" + encodeURIComponent(path));
-    host.innerHTML = mdToHtml(n.text);
+    const html = mdToHtml(n.text);
+    // AN EMPTY NOTE IS A STATE, AND IT SAYS SO. mdToHtml("") returns "", so a
+    // note that exists on disk holding nothing painted a black void — a window
+    // indistinguishable from a broken one, which is exactly how it was
+    // reported. This is not an edge case: Obsidian mints a 0-byte file the
+    // moment you follow a dead wikilink, and 20 notes in this vault are that.
+    // A whitespace-only note reduces to newlines here, so one trim covers
+    // both; a FRONTMATTER-ONLY note keeps its meta block, because this vault's
+    // graph edges live there and that is real content, not emptiness.
+    if (!html.trim()) {
+      host.innerHTML = "";
+      const box = el("div", "empty");
+      box.appendChild(el("div", "", "This note is empty."));
+      box.appendChild(el("div", "note-empty-path", path));
+      host.appendChild(box);
+      return;
+    }
+    host.innerHTML = html;
     host.querySelectorAll(".note-link").forEach((a) =>
       a.addEventListener("click", () => spawn(a.dataset.ref)));
     markDeadLinks(host);
