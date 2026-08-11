@@ -50,7 +50,10 @@ class ResolveCase(unittest.TestCase):
                     # Structurally the same collision as Anthropic above, so
                     # only the typed extension separates them.
                     "CLAUDE.md",
-                    "wiki/claude.md"):
+                    "wiki/claude.md",
+                    # A dot mid-filename. pathlib's with_suffix() reads
+                    # ".5 Sonnet for creativity" as the extension.
+                    "raw/reading-room/Claude 3.5 Sonnet for creativity.md"):
             p = self.root / rel
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("# " + p.stem, encoding="utf-8")
@@ -164,6 +167,16 @@ class AssetTests(ResolveCase):
     def test_a_path_qualified_note_still_resolves_without_the_extension(self):
         self.assertEqual(self.resolve("wiki/harness")["path"],
                          "wiki/harness.md")
+
+    def test_a_dot_in_the_filename_does_not_truncate_the_path(self):
+        """`with_suffix(".md")` turned `Claude 3.5 Sonnet for creativity`
+        into `Claude 3.md`, so the note was unreachable by its own path.
+        34 targets in the real vault carry a dot mid-filename."""
+        for ref in ("raw/reading-room/Claude 3.5 Sonnet for creativity",
+                    "raw/reading-room/Claude 3.5 Sonnet for creativity.md"):
+            self.assertEqual(
+                self.resolve(ref)["path"],
+                "raw/reading-room/Claude 3.5 Sonnet for creativity.md", ref)
 
     def test_a_traversal_ref_never_escapes_the_vault(self):
         with mock.patch.object(vault, "search", return_value=[]):

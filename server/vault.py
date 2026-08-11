@@ -418,7 +418,11 @@ def resolve_ref(ref):
         # Path-qualified. Try the literal path BEFORE forcing `.md` onto it —
         # `.with_suffix()` turns `wiki/assets/x.png` into `wiki/assets/x.md`,
         # so every path-qualified asset embed missed and fell to search.
-        for cand in ((root / r), (root / r).with_suffix(".md")):
+        # `.md` is APPENDED, never `with_suffix`: pathlib reads the last
+        # dotted run as the extension, so `Claude 3.5 Sonnet for sparking
+        # creativity` becomes `Claude 3.md` and the note is unreachable.
+        # 34 links in this vault have a dot mid-filename.
+        for cand in ((root / r), Path(str(root / r) + ".md")):
             if not cand.is_file():
                 continue
             try:                            # `..` must never escape the vault
