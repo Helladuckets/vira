@@ -19932,6 +19932,14 @@ function renderRdocGrid(list, groups) {
   if (rdgObs) rdgObs.disconnect();
   if (rdgVidObs) rdgVidObs.disconnect();
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  // THRESHOLD 0 — ANY pixel reveals. A ratio threshold is a trap for an
+  // element whose height is unbounded: a section is `opacity: 0` until it
+  // gets `rv`, and 12% of a section taller than ~8.3x the scrollport can
+  // NEVER be on screen at once, so it stayed invisible forever. Measured
+  // 2026-08-11 — the library flat-grouped is ONE section, and every kind
+  // combination including `plan` (71 tiles) rendered a correct count line
+  // above an empty page. Worse on a phone, where the port is shorter.
+  // If a reveal ever needs to fire later, use rootMargin — never a ratio.
   rdgObs = reduce ? null : new IntersectionObserver((ents) => {
     ents.forEach((en) => {
       if (!en.isIntersecting) return;
@@ -19940,7 +19948,7 @@ function renderRdocGrid(list, groups) {
       const n = en.target.querySelector(".rdg-count[data-n]");
       if (n && !n.dataset.ran) { n.dataset.ran = "1"; rdgCountUp(n); }
     });
-  }, { threshold: 0.12 });
+  }, { threshold: 0 });
   // Loops attach only while the tile is on screen — thirty films must never
   // stream at once — and detach again when it scrolls away.
   rdgVidObs = new IntersectionObserver((ents) => {
