@@ -240,8 +240,13 @@ def ask(question, k=10, hits=None):
     return _vault().ask(question, k=k, hits=hits)
 
 
-def note_text(path):
-    return _vault().note_text(path)
+def note_text(path, cap=None):
+    """Uncapped by default -- the Reader serves a note whole.
+
+    `cap` is for context-window callers and truncates HONESTLY (the
+    engine appends an in-band marker). See qocha's note_text docstring.
+    """
+    return _vault().note_text(path, cap=cap)
 
 
 # ------------------------------------------------------- wikilink resolution
