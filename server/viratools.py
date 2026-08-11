@@ -531,9 +531,15 @@ async def _t_vault_search(args):
 
 
 def _vault_note_text(path):
+    # A session reads notes into a context window, so this caller CAPS --
+    # but honestly: qocha appends an in-band marker naming the real length,
+    # because a model handed 41% of a transcript with no signal will
+    # summarize the fragment as if it were the whole note.
     from . import vault
+    from qocha.vault import NOTE_CAP
     try:
-        return f"[{path}]\n\n" + vault.note_text((path or "").strip())
+        return f"[{path}]\n\n" + vault.note_text(
+            (path or "").strip(), cap=NOTE_CAP)
     except (ValueError, OSError) as e:
         return f"error: {e}"
 
