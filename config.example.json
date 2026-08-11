@@ -91,7 +91,7 @@
   "lab_root": "",
   "_lab_root": "Local checkout dir holding careers-teardown explorer directories (each with a data.js) to ingest as STATIC role corpora. Optional: the Applications module's normal source is the live board poller, which its front door sets up for you. applications_sources (list of {slug, company, path}) overrides it.",
   "self_record": "",
-  "_self_record": "The folder holding FACTS.md (the claim gate every application is checked against), your resume, and every generated package. Written by the Applications front door; set it by hand only if you already keep a record somewhere. Empty = <crm_root>/self.",
+  "_self_record": "The folder holding canon/MASTER_HISTORY.md (the career record whose endnotes are the claim gate every application is checked against), your resume, and every generated package. Written by the Applications front door; set it by hand only if you already keep a record somewhere. Empty = <crm_root>/self.",
   "applications_universe": "",
   "_applications_universe": "Where the scored candidate universe lives (candidate-universe/role/*.json plus *-raw-scores.json). Written by the front door. Empty = <self_record>/analysis.",
   "applications_packages_root": "",

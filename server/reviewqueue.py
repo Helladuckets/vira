@@ -121,10 +121,6 @@ def inbox_notes_dir():
     return _path("review_inbox_dir", self_record() / "inbox" / "notes")
 
 
-def facts_path():
-    return _path("review_facts_path", self_record() / "canon" / "FACTS.md")
-
-
 def history_path():
     return _path("review_history_path",
                  self_record() / "canon" / "MASTER_HISTORY.md")
@@ -139,7 +135,6 @@ def roots():
         "lessons_decided": lessons_decided(),
         "local_decisions": DECISIONS,
         "inbox_notes": inbox_notes_dir(),
-        "facts": facts_path(),
         "history": history_path(),
     }
 
@@ -504,7 +499,9 @@ def _read_text(path):
 
 FLAG_SECTIONS = (
     # (file getter, heading needle, short label for the row)
-    (facts_path, "Open reconciliation flags", "FACTS.md"),
+    # Master History is the single canonical record as of 2026-08-11; the
+    # former FACTS.md ledger and its "Open reconciliation flags" section were
+    # folded into it, so open flags now have one home.
     (history_path, "Open questions and contradictions", "MASTER_HISTORY.md"),
 )
 

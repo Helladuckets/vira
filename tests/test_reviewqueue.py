@@ -29,24 +29,8 @@ PROPOSAL_B = "Say merged or not merged in one plain sentence, first line."
 PROPOSAL_C = "Reproduce a retrieval miss with a literal grep before ranking."
 PROPOSAL_D = "Never delete owner data without an explicit instruction."
 
-FACTS_DOC = """# FACTS
-
-## Some other section
-
-- Not a flag at all.
-
-## Open reconciliation flags (awaiting a ruling)
-
-- **Comp band ambiguity.** The posting says one thing and the dossier
-  another. Resolve at first contact.
-- **~~Old question~~ - RESOLVED (2026-08-10).** Already ruled on.
-- **Second live flag.** Still open.
-
-## Privacy quarantine
-
-- Nothing here should surface.
-"""
-
+# One canonical document since 2026-08-11: FACTS.md was folded into Master
+# History and deleted, so every open flag now lives under Part V.
 HISTORY_DOC = """# Part IV. Something
 
 - Not a flag.
@@ -55,11 +39,19 @@ HISTORY_DOC = """# Part IV. Something
 
 These issues remain visible.
 
+- **Comp band ambiguity.** The posting says one thing and the dossier
+  another. Resolve at first contact.
+- **~~Old question~~ - RESOLVED (2026-08-10).** Already ruled on.
+- **Second live flag.** Still open.
 - **Disposition reconciliation.** Two aggregates disagree.
 
 # Part VI. Provenance
 
 - Not a flag either.
+
+## Confidentiality and privacy
+
+- Nothing here should surface.
 """
 
 
@@ -328,15 +320,13 @@ class InboxSourceTests(_Case):
 class FlagSourceTests(_Case):
 
     def write_canon(self):
-        (self.record / "canon" / "FACTS.md").write_text(FACTS_DOC,
-                                                        encoding="utf-8")
         (self.record / "canon" / "MASTER_HISTORY.md").write_text(
             HISTORY_DOC, encoding="utf-8")
 
-    def test_missing_canon_files_are_an_empty_store(self):
+    def test_a_missing_canon_file_is_an_empty_store(self):
         self.assertEqual(self.by_source("flags"), [])
 
-    def test_open_flags_from_both_documents_are_surfaced(self):
+    def test_open_flags_are_surfaced_from_the_canonical_record(self):
         self.write_canon()
         rows = self.by_source("flags")
         self.assertEqual([r["title"] for r in rows],

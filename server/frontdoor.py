@@ -90,10 +90,17 @@ def _applications_state():
     cfg = settings.raw()
     wired = bool(cfg.get("applications_sources") or cfg.get("lab_root"))
     self_rec = cfg.get("self_record")
-    facts = None
+    # The canonical record is <self_record>/canon/MASTER_HISTORY.md — body is
+    # the career account, endnotes are the claim gate. The root-level fallback
+    # covers a record the front door has just onboarded but not yet organised
+    # into canon/. (Before 2026-08-11 this probed FACTS.md at the ROOT only,
+    # which an organised record never has: it reported "no self-record" for a
+    # complete one, and the failure mode was a silent skip.)
+    has_facts = False
     if self_rec:
-        facts = Path(str(self_rec)).expanduser() / "FACTS.md"
-    has_facts = bool(facts and facts.exists())
+        record = Path(str(self_rec)).expanduser()
+        has_facts = any((record / name).exists() for name in (
+            "canon/MASTER_HISTORY.md", "MASTER_HISTORY.md"))
     if wired and has_facts:
         detail = "Role sources wired, self-record ready."
     elif wired:
@@ -433,21 +440,24 @@ def _applications_prompt(answers):
         f"Create {record}, copy the resume into it, and write two more "
         "files there.",
         "",
-        "FACTS.md — the ground truth of what this person has actually "
-        "done. Every role: employer, title, dates, what they owned, team "
-        "size, systems, and any number the resume states. This file is a "
-        "CLAIM GATE: every future CV, cover letter, and form answer is "
-        "checked against it, and anything it does not support does not "
-        "get asserted. So where the resume is vague, where a number is "
-        "missing, where a date is ambiguous — WRITE THE GAP DOWN under a "
-        "'Gaps to fill' heading. Do not smooth over it and do not invent "
-        "a plausible number. A recorded gap is useful; a fabricated fact "
-        "is a liability in an interview.",
+        "MASTER_HISTORY.md — the ground truth of what this person has "
+        "actually done. Every role: employer, title, dates, what they "
+        "owned, team size, systems, and any number the resume states. "
+        "Write it as a readable account, and attach an ENDNOTE to each "
+        "material sentence naming the evidence, the approved outward "
+        "wording, and anything that may not be said. Those endnotes are "
+        "the CLAIM GATE: every future CV, cover letter, and form answer "
+        "is checked against them, and anything they do not support does "
+        "not get asserted. So where the resume is vague, where a number "
+        "is missing, where a date is ambiguous — WRITE THE GAP DOWN "
+        "under a 'Gaps to fill' heading. Do not smooth over it and do "
+        "not invent a plausible number. A recorded gap is useful; a "
+        "fabricated fact is a liability in an interview.",
         "",
         "CLAUDE.md — the standing rules for this folder, stated plainly: "
-        "FACTS.md governs every claim made about the owner; everything "
-        "produced here is a DRAFT; nothing is ever submitted on the "
-        "owner's behalf.",
+        "MASTER_HISTORY.md governs every claim made about the owner; "
+        "everything produced here is a DRAFT; nothing is ever submitted "
+        "on the owner's behalf.",
         "",
         "STEP 3 — WORK OUT THE BOARDS",
         "From what they are looking for, decide which companies' job "
@@ -479,7 +489,8 @@ def _applications_prompt(answers):
         "STEP 5 — REPORT",
         "Say what you built, how many boards are registered, what the "
         "first poll found, and — most importantly — list the gaps you "
-        "recorded in FACTS.md and ask them to fill the ones that matter. "
+        "recorded in MASTER_HISTORY.md and ask them to fill the ones "
+        "that matter. "
         "That list is the honest state of their record.",
     ]
     return "\n".join(lines), {"record_dir": record}
@@ -537,7 +548,7 @@ def configure_applications(payload):
     record = _s(payload.get("record_dir"))
     if not record:
         raise ConfigError("record_dir is required — the folder that holds "
-                          "FACTS.md and every application package")
+                          "MASTER_HISTORY.md and every application package")
     root = Path(record).expanduser()
     if not root.is_absolute():
         raise ConfigError(f"record_dir must be an absolute path (or ~/…), "

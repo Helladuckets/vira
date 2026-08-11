@@ -240,7 +240,8 @@ class FrontDoorStateTest(unittest.TestCase):
                                    return_value={"lab_root": "/x",
                                                  "self_record": str(rec)}):
                 self.assertFalse(frontdoor._applications_state()["ready"])
-            (rec / "FACTS.md").write_text("# facts")
+            (rec / "canon").mkdir()
+            (rec / "canon" / "MASTER_HISTORY.md").write_text("# master history")
             with mock.patch.object(frontdoor.settings, "raw",
                                    return_value={"self_record": str(rec)}):
                 st = frontdoor._applications_state()

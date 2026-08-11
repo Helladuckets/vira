@@ -799,8 +799,8 @@ def apply_prompt(role, note=""):
     package build starts from that, then selects evidence from the whole career
     rather than the smallest already-rendered subset."""
     record = self_record()
-    facts = record / "canon" / "FACTS.md"
     history = record / "canon" / "MASTER_HISTORY.md"
+    voice = record / "canon" / "VOICE.md"
     freshness = record / "renderings" / "check_freshness.py"
     inventory = record / "INVENTORY.md"
     lines = [
@@ -811,20 +811,25 @@ def apply_prompt(role, note=""):
         "GROUND RULES — these bind regardless of what else your harness "
         "loaded:",
         f"- Read {history} FRESH before selecting evidence. It is the "
-        "comprehensive human-readable career record and provenance index. "
+        "single canonical career record: the body is the comprehensive "
+        "human-readable account and provenance index, and ITS ENDNOTES ARE "
+        "THE CLAIM GATE. Every approved outward wording, citability rule, "
+        "INTERNAL boundary, and required qualifier sits in the endnote on "
+        "the sentence it governs. Read the governing endnote before using "
+        "any claim; it wins every conflict. self.json is a distillation that "
+        "follows it; an existing resume, bio, deck, fit brief, or cached "
+        "summary is never a source. "
         f"Use {inventory} to find recent source additions. Run `python3 "
         f"{freshness}` at intake and reconcile any named stale source before "
         "drafting.",
-        f"- Read {facts} FRESH as the final outward wording gate. It wins "
-        "every conflict and controls the DO-NOT-USE register. self.json is a "
-        "distillation that follows the ledger; an existing resume, bio, deck, "
-        "fit brief, or cached summary is never a source.",
-        "- A useful claim missing from FACTS.md triggers evidence review and "
-        "active adjudication, not silent deletion. Follow the Master History "
-        "endnote to the source. If the evidence supports an unambiguous "
-        "sanitized form, add it to FACTS.md before use; otherwise keep it out "
-        "of outward artifacts and record it as NEEDS ADJUDICATION in the "
-        "package evidence map.",
+        f"- Read {voice} for how the writing must SOUND and what SHAPE the "
+        "rendering takes. The claim gate still wins on any claim.",
+        "- A useful claim with no supporting endnote triggers evidence "
+        "review and active adjudication, not silent deletion. Follow the "
+        "nearest Master History endnote to the source. If the evidence "
+        "supports an unambiguous sanitized form, add the ruling to that "
+        "endnote before use; otherwise keep it out of outward artifacts and "
+        "record it as NEEDS ADJUDICATION in the package evidence map.",
         f"- {record / 'evidence' / 'sentinel'} is admissible PRIVATE evidence for "
         "reconstructing role, craft, authorship, sequence, tools, and scope. "
         "Use it internally to adjudicate sanitized language; never expose the "
@@ -884,8 +889,9 @@ def apply_prompt(role, note=""):
         "- Owner notes came from right-click edits in the Map and are drafting "
         "instructions. They are not evidence.",
         "- Write these same stable keys into evidence-map.md. For every key, "
-        "record the final classification, exact FACTS.md anchor or open "
-        "adjudication, selected resume treatment, cover-letter angle, and "
+        "record the final classification, exact Master History endnote "
+        "anchor or open adjudication, selected resume treatment, "
+        "cover-letter angle, and "
         "interview narrative/talking point. Use GAP where no truthful treatment "
         "exists; do not force every requirement into every artifact.",
         json.dumps(plan, indent=1, ensure_ascii=False),
@@ -916,10 +922,11 @@ def apply_prompt(role, note=""):
             "EMPLOYER RESEARCH CONTEXT:",
             f"- Public employer evidence describes {role.get('company') or 'the employer'}, not the owner. "
             "Use it to understand the employer and to choose emphasis; every "
-            "statement about the owner still requires a FACTS.md anchor.",
+            "statement about the owner still requires a Master History "
+            "endnote anchor.",
             "- The personal bridge is a local interpretation, not canonical "
-            "research evidence. Follow every listed boundary and re-check its "
-            "FACTS.md anchors before using permitted language.",
+            "research evidence. Follow every listed boundary and re-check "
+            "its claim-gate anchors before using permitted language.",
             f"- Canonical public-language graph: {graph.get('database', '')}",
             f"- Local application bridge: {bridge.get('path', '')}",
             "- Open the Vira Research view for expandable claim phrasings, "

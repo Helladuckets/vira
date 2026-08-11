@@ -108,12 +108,14 @@ class ApplicationsBase(unittest.TestCase):
         (self.universe / "candidate-universe" / "role").mkdir(parents=True)
         self.self_record = root / "self"
         (self.self_record / "canon").mkdir(parents=True)
-        (self.self_record / "canon" / "FACTS.md").write_text(
-            "## Approved\n\n- Built safe production systems and reusable platforms.\n",
-            encoding="utf-8")
         (self.self_record / "canon" / "MASTER_HISTORY.md").write_text(
-            "## Career chronology\n\n- Led cross-functional platform programs through ambiguity.\n",
+            "## Career chronology\n\n"
+            "- Led cross-functional platform programs through ambiguity.\n\n"
+            "# Endnotes\n\n"
+            "[^1]: Built safe production systems and reusable platforms.\n",
             encoding="utf-8")
+        (self.self_record / "canon" / "VOICE.md").write_text(
+            "# VOICE\n\n- Plain, concrete, verb-led.\n", encoding="utf-8")
         (self.self_record / "canon" / "self.json").write_text("{}", encoding="utf-8")
         self.packages = root / "packages"
         self.packages.mkdir()
@@ -478,8 +480,13 @@ class PromptTest(ApplicationsBase):
         self.assertIn("MASTER_HISTORY.md", p)
         self.assertIn("check_freshness.py", p)
         self.assertIn("INVENTORY.md", p)
-        self.assertIn("FACTS.md", p)
-        self.assertIn("DO-NOT-USE", p)
+        self.assertIn("VOICE.md", p)
+        # The gate moved into Master History's endnotes on 2026-08-11 when
+        # FACTS.md was folded in and deleted. The prompt must still carry a
+        # claim gate, and must not resurrect the deleted filename.
+        self.assertIn("ENDNOTES ARE", p)
+        self.assertIn("claim gate", p.lower())
+        self.assertNotIn("FACTS.md", p)
         # Built from Path like the prompt is, not as a literal with forward
         # slashes: on Windows these render with backslashes and the literal
         # form fails there while passing on macOS. CI runs both.
@@ -514,7 +521,7 @@ class PromptTest(ApplicationsBase):
                 "items": [{"rank": 1, "id": "craft", "label": "Craft",
                            "application_use": "Lead with artifacts.",
                            "matt_overlap": {
-                               "facts_anchors": ["FACTS.md:1"],
+                               "facts_anchors": ["MASTER_HISTORY.md#^18"],
                                "permitted_language": ["builder"],
                                "boundaries": ["Do not overclaim."]}}]}},
         }
@@ -523,7 +530,7 @@ class PromptTest(ApplicationsBase):
             p = applications.apply_prompt(roles[0])
         self.assertIn("EMPLOYER RESEARCH CONTEXT", p)
         self.assertIn("describes Example Labs, not the owner", p)
-        self.assertIn("FACTS.md:1", p)
+        self.assertIn("MASTER_HISTORY.md#^18", p)
         self.assertIn("Do not overclaim", p)
 
     def test_apply_prompt_embeds_the_shared_requirement_plan(self):
