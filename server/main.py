@@ -61,6 +61,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                research,
                imageatlasroutes,
                resolver,
+               reviewqueue,
                roomvault,
                routines,
                routinesrc,
@@ -1293,6 +1294,35 @@ def api_brief_narrative(force: bool = False):
     try:
         return brief.generate_narrative(watcher.snapshot(200), force=force)
     except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, str(e)[:400])
+
+
+@app.get("/api/review")
+def api_review():
+    """The needs-review picker's payload: every decision waiting on the
+    owner, from every registered source. Never 502s on one bad source —
+    reviewqueue.items() names the failure in `errors` and serves the rest."""
+    return reviewqueue.items()
+
+
+class ReviewActReq(BaseModel):
+    id: str
+    action: str            # "approve" | "drop"
+
+
+@app.post("/api/review/act")
+def api_review_act(req: ReviewActReq):
+    """Rule on one queued item. The lessons source shells out to lessons.py,
+    which owns LESSONS.md — Vira never writes that ledger itself."""
+    try:
+        return reviewqueue.act(req.id, req.action)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except FileNotFoundError as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:  # noqa: BLE001 — subprocess/store failure detail
         raise HTTPException(502, str(e)[:400])
 
 

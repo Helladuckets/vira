@@ -8913,6 +8913,110 @@ function goToTriage() {
   if (!triageMode) $("#triage-toggle").click();
 }
 
+// ---------- needs review: the picker the brief links to ----------
+// One list of every decision waiting on the owner (server/reviewqueue.py).
+// Built out of the brief's OWN row helpers rather than a new list widget:
+// this is the brief's section given room, and it has to work on the phone,
+// which is where the brief actually gets read. The queue exists because
+// 113 lesson proposals sat undecided for two weeks with no surface showing
+// them — so the entry point is in the brief, not only in the Launchpad.
+
+function openReview() { openApp("review"); }
+
+async function reviewAct(btn, row, it, action, after) {
+  const acts = row.querySelector(".brief-acts");
+  [...(acts?.querySelectorAll("button") || [])].forEach((b) => {
+    b.disabled = true;
+  });
+  try {
+    await post("/api/review/act", { id: it.id, action });
+    row.classList.add("gone");
+    setTimeout(() => row.remove(), 250);
+    toast(action === "approve" ? "Approved" : "Dropped");
+    if (after) after();
+  } catch (e) {
+    [...(acts?.querySelectorAll("button") || [])].forEach((b) => {
+      b.disabled = false;
+    });
+    toast(action + " failed: " + e.message);
+  }
+}
+
+// A row's actions come from the SERVER, never from a guess here: a
+// read-only source (the self-record inbox, the open canon flags) ships
+// `actions: []` and gets no buttons, because ruling on those is a canon
+// edit made with the document in view, not a tap in a brief.
+function reviewRow(sec, it, after) {
+  const actions = (it.actions || []).map((a) => ({
+    label: a,
+    cls: a === "approve" ? "" : "x",
+    title: (a === "approve"
+      ? "Approve — the source's own tool performs the write"
+      : "Drop — recorded as decided, never shown again")
+      + (it.note ? " (" + it.note + ")" : ""),
+    run: (btn, row) => reviewAct(btn, row, it, a, after),
+  }));
+  const row = briefRow(sec, {
+    time: it.age_days == null ? "" : briefDays(it.age_days),
+    title: it.title,
+    sub: it.why,
+    tag: it.ref || null,
+    actions,
+  });
+  // A caveat that changes what a button DOES is shown on the row, never
+  // hidden in a tooltip: today that is a proposal whose id is shared with
+  // other pending rows, where approve promotes this exact text rather than
+  // resolving the id.
+  if (it.note) {
+    const flag = el("div", "brief-empty review-note", it.note);
+    row.appendChild(flag);
+    row.classList.add("review-flagged");
+  }
+  return row;
+}
+
+async function loadReview() {
+  const body = $("#review-body");
+  if (!body) return;
+  try {
+    renderReview(await api("/api/review"));
+  } catch (e) {
+    body.innerHTML = "";
+    body.appendChild(el("div", "brief-empty",
+                        "Review queue unavailable: " + e.message));
+  }
+}
+
+function renderReview(q) {
+  const body = $("#review-body");
+  if (!body) return;
+  body.innerHTML = "";
+  const count = $("#review-count");
+  if (count) {
+    count.textContent = q.total
+      ? q.total + " waiting on you"
+      : "Nothing waiting on you";
+  }
+  (q.sources || []).forEach((s) => {
+    const rows = (q.items || []).filter((i) => i.source === s.key);
+    if (!rows.length) return;
+    const sec = briefSection(body, s.label, s.hint);
+    rows.forEach((it) => reviewRow(sec, it, () => loadReview().catch(() => {})));
+  });
+  // A source that failed to read says so instead of vanishing — an empty
+  // queue and an unreadable store must never look the same.
+  Object.entries(q.errors || {}).forEach(([key, msg]) => {
+    body.appendChild(el("div", "brief-empty", key + " unreadable: " + msg));
+  });
+  if (!q.total && !Object.keys(q.errors || {}).length) {
+    body.appendChild(el("div", "brief-empty",
+                        "Nothing is waiting on a decision."));
+  }
+}
+
+$("#review-refresh")?.addEventListener("click",
+                                       () => loadReview().catch(() => {}));
+
 function renderBrief(b) {
   const body = $("#brief-body");
   body.innerHTML = "";
@@ -8939,6 +9043,29 @@ function renderBrief(b) {
   });
   narWrap.appendChild(rewrite);
   body.appendChild(narWrap);
+
+  // Needs review leads the brief's sections. The whole defect it fixes is
+  // invisibility, so it sits above the calendar rather than below the
+  // triage count, and it is absent entirely when nothing is waiting.
+  if (b.review && b.review.total) {
+    const rv = briefSection(body, "Needs review",
+                            b.review.total + " waiting on your decision");
+    const open = el("button", "brief-act sweep", "open the picker…");
+    open.title = "Open Needs Review — every pending decision in one list";
+    open.addEventListener("click", openReview);
+    rv.querySelector(".brief-sec-head").appendChild(open);
+    (b.review.top || []).forEach((it) => reviewRow(rv, it, () => loadBrief()));
+    const rest = b.review.total - (b.review.top || []).length;
+    if (rest > 0) {
+      const more = briefRow(rv, {
+        title: rest + " more waiting",
+        sub: (b.review.sources || [])
+          .map((s) => s.count + " " + s.label.toLowerCase()).join(" · "),
+      });
+      more.classList.add("click");
+      more.addEventListener("click", openReview);
+    }
+  }
 
   if ((b.radar || []).length) {
     const rd = briefSection(body, "Who to talk to",
@@ -11672,6 +11799,7 @@ function viewLoad(id) {
   if (id === "applications") loadApplications().catch(() => {});
   if (id === "research") window.loadResearch?.().catch(() => {});
   if (id === "journal") loadJournal().catch(() => {});
+  if (id === "review") loadReview().catch(() => {});
   if (id === "subs") loadSubs().catch(() => {});
   if (id === "find") loadFindStatus().catch(() => {});
   if (id === "find-cloud" || id === "find-related") {
@@ -15567,6 +15695,8 @@ const WINDOWS = [
     icon: "M5 5h5v5H5zM14 4h5v5h-5zM14 15h5v5h-5zM10 7.5h2.5c1 0 1.5-.5 1.5-1M10 7.5h1.5c2.5 0 2.5 10 2.5 10" },
   { id: "brief", title: "Daily Brief", w: 520,
     icon: "M12 3v3M5.3 6.3l2.1 2.1M2.5 13.5h3M18.5 13.5h3M16.6 8.4l2.1-2.1M7.5 15.5a4.5 4.5 0 0 1 9 0M3.5 19h17" },
+  { id: "review", title: "Needs Review", w: 560,
+    icon: "M5 4h14v16H5zM8.5 9.5h7M8.5 13h7M9 16.5l1.5 1.5 3-3" },
   { id: "journal", title: "Journal", w: 520,
     icon: "M6 3h9l3 3v15H6zM15 3v3h3M9 11h6M9 14.5h4" },
   { id: "triage", title: "Triage", w: 440,
