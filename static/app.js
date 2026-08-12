@@ -15402,6 +15402,13 @@ function appRow(r) {
                    r.seniority, fmtComp(r),
                    r.equity ? "equity" : "", appSeen(r)].filter(Boolean);
   main.appendChild(el("div", "app-sub", subBits.join(" · ")));
+  if (r.workplace_label) {
+    const wl = el("div", "app-workplace");
+    wl.appendChild(el("b", "", "the posting says"));
+    wl.appendChild(document.createTextNode(" " + r.workplace_label));
+    wl.title = (r.workplace && r.workplace.quote) || "";
+    main.appendChild(wl);
+  }
   if (r.lane) main.appendChild(el("div", "app-lane", r.lane));
   else if (r.reason) main.appendChild(el("div", "app-reason", r.reason));
 

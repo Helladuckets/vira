@@ -4760,6 +4760,16 @@ a.rm-name:hover { color: var(--accent); }
   border-radius: 3px; padding: 1px 5px;
 }
 .app-lane { font-size: 11px; color: var(--steel); margin-top: 2px; }
+/* What the DESCRIPTION says about where the work happens. Its own line
+   rather than another item in the sub-line, because it routinely
+   disagrees with the location field printed just above it and the whole
+   point is that the disagreement stays visible. */
+.app-workplace { font-size: 11px; color: var(--steel); margin-top: 2px; }
+.app-workplace b {
+  font-weight: 600; color: var(--text-dim);
+  font-family: var(--mono); font-size: 10px;
+  letter-spacing: .04em; text-transform: uppercase;
+}
 .app-dossier {
   margin-top: 8px; border-left: 2px solid var(--accent-line);
   padding: 4px 0 4px 10px;

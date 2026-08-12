@@ -33,7 +33,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import jobcompare, jobshared, jsonstore, settings
+from . import jobcompare, jobshared, jsonstore, settings, workplace
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "applications.json"
 
@@ -193,27 +193,53 @@ PLACE_ALIASES = {
 }
 
 
-def places_for(locs):
+def _facet(part):
+    """One location fragment -> its canonical place name."""
+    seg = str(part).split(",")[0].strip()
+    key = re.sub(r"[^a-z ]", "", seg.lower())
+    key = re.sub(r"\s+", " ", key).strip()
+    return PLACE_ALIASES.get(key) or seg
+
+
+def places_for(locs, wp=None):
     """Location strings -> canonical place facets, deduped, order kept.
     Any part carrying the word 'remote' facets as Remote; the rest facet
-    by their leading city segment."""
+    by their leading city segment.
+
+    `wp` is the body's own workplace reading (server.workplace). Where
+    it BINDS -- the description names the offices and rules remote out
+    -- it decides the facets instead: the Remote facet is dropped and
+    the offices the body names are folded in. That is what stops a
+    posting tagged "US - Remote" whose body says "based in San
+    Francisco, CA, hybrid 3 days a week" from answering the Remote
+    filter, and what makes it answer the San Francisco one, which is
+    where the owner would actually look for it. The raw `locations`
+    strings are never touched -- the row shows both, so the
+    disagreement stays visible rather than being quietly resolved.
+    """
     from . import jobboards
+    bind = bool(wp and wp.get("binds"))
     out, seen = [], set()
+
+    def add(name):
+        if name and name.casefold() not in seen:
+            seen.add(name.casefold())
+            out.append(name)
+
+    if bind:
+        for p in wp.get("places") or []:
+            add(_facet(p))
     for loc in locs or []:
         for part in re.split(r"[|;]", str(loc)):
             part = part.strip()
             if not part:
                 continue
             if jobboards.REMOTE_RE.search(part):
-                name = "Remote"
+                if bind:
+                    continue      # the body says this is not remote work
+                add("Remote")
             else:
-                seg = part.split(",")[0].strip()
-                key = re.sub(r"[^a-z ]", "", seg.lower())
-                key = re.sub(r"\s+", " ", key).strip()
-                name = PLACE_ALIASES.get(key) or seg
-            if name.casefold() not in seen:
-                seen.add(name.casefold())
-                out.append(name)
+                add(_facet(part))
     return out
 
 
@@ -235,20 +261,36 @@ def _norm(job, source, avail=None, rule=None):
     """Normalize a teardown/frontier job record to the module's role shape.
     `rule` (jobboards.location_rule) lets eligibility be computed for
     corpus roles that never went through a board sweep — a stamped
-    `eligible` (the snapshot's) always wins over the computed one."""
+    `eligible` (the snapshot's) still wins over the computed one, except
+    that the body's own workplace reading can veto it (see below)."""
     company = source["company"] or job.get("company") or "?"
     salary_min = job.get("annualMin", job.get("salaryMin"))
     salary_max = job.get("annualMax", job.get("salaryMax"))
     uid = role_uid(job)
     state, when = _availability(uid, avail or {}, job.get("closed") or "")
     locs = job.get("locations") or []
+    # The body's reading, stamped by a board sweep where one has run and
+    # derived here otherwise, so a corpus role frozen before this
+    # existed is read the same way as one swept this morning.
+    wp = job.get("workplace")
+    if wp is None:
+        wp = workplace.read(job.get("jd") or "")
     if "eligible" in job and job.get("eligible") is not None:
         eligible = bool(job["eligible"])
     elif rule is not None:
         from . import jobboards
-        eligible = jobboards.eligible_location({"locations": locs}, rule)
+        eligible = jobboards.eligible_location(
+            {"locations": locs, "workplace": wp}, rule)
     else:
         eligible = None
+    # A stamp written before the body was ever read can say True where
+    # the description names one office in another city. The reading only
+    # ever NARROWS -- it can veto a stamp, never manufacture eligibility
+    # a stamp withheld -- so the sweep stays the authority on everything
+    # except the one thing it could not see.
+    if eligible and rule is not None \
+            and not workplace.allows(wp, rule["places"], locs):
+        eligible = False
     return {
         "uid": uid,
         "company": company,
@@ -256,10 +298,12 @@ def _norm(job, source, avail=None, rule=None):
         "team": job.get("team") or job.get("dept") or "",
         "family": job.get("family") or job.get("function") or "",
         "locations": locs,
-        "places": places_for(locs),
-        "remote": job.get("remote") or ("remote" if any(
-            "remote" in (l or "").lower() for l in locs)
-            else ""),
+        "places": places_for(locs, wp),
+        "workplace": wp,
+        "workplace_label": workplace.label(wp),
+        "remote": "" if (wp and wp.get("binds")) else (
+            job.get("remote") or ("remote" if any(
+                "remote" in (l or "").lower() for l in locs) else "")),
         "seniority": job.get("seniority") or "",
         "salaryMin": salary_min,
         "salaryMax": salary_max,
@@ -428,6 +472,9 @@ def load_universe():
                 if sc else ""
             av_state, av_when = _availability(uid, avail)
             locs = j.get("locations") or []
+            wp = j.get("workplace")
+            if wp is None:
+                wp = workplace.read(j.get("jd") or cr.get("jd") or "")
             out.append({
                 "uid": uid,
                 "company": j.get("company") or "?",
@@ -435,13 +482,16 @@ def load_universe():
                 "team": j.get("team") or j.get("dept") or "",
                 "family": j.get("function") or "",
                 "locations": locs,
-                "places": places_for(locs),
+                "places": places_for(locs, wp),
+                "workplace": wp,
+                "workplace_label": workplace.label(wp),
                 "eligible": jobboards.eligible_location(
-                    {"locations": locs}, rule),
+                    {"locations": locs, "workplace": wp}, rule),
                 "first_seen": j.get("first_seen")
                               or cr.get("first_seen") or "",
                 "baseline": bool(cr.get("baseline")),
-                "remote": j.get("remote") or "",
+                "remote": "" if (wp and wp.get("binds")) \
+                    else (j.get("remote") or ""),
                 "seniority": j.get("seniority") or "",
                 "salaryMin": j.get("salaryMin"),
                 "salaryMax": j.get("salaryMax"),
