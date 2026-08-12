@@ -200,6 +200,45 @@ launchd_pid() {
     awk '/^[[:space:]]*pid = /{print $3; exit}'
 }
 
+# Block until launchd no longer knows the label, up to ~4s. `bootout` returning
+# is NOT the job being gone: teardown is asynchronous, and until it finishes the
+# label is still occupied.
+launchd_wait_gone() {
+  local label=$1 _
+  for _ in $(seq 1 40); do
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
+# Load a plist under a label that may still be occupied by its predecessor.
+#
+# `serve` immediately after `stop` on the same slug used to die on
+# "Bootstrap failed: 5: Input/output error" (observed 2026-08-12): the old job
+# was still tearing down, `set -eu` turned launchd's EIO into an abort, and the
+# data snapshot had ALREADY been built — so the failure left a worktree holding
+# a fresh snapshot and nothing serving it, which reads like a data bug rather
+# than a scheduling one.
+#
+# Waiting for the label is necessary but not sufficient: launchd reports it gone
+# slightly before it will accept a replacement, so a bounded retry does the rest.
+# Every message goes to stderr — this runs inside `pid=$(start_test_process ...)`,
+# and anything on stdout would be captured as part of the pid.
+launchd_bootstrap() {
+  local label=$1 plist=$2 attempt output=""
+  for attempt in 1 2 3 4; do
+    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
+    launchd_wait_gone "$label" || true
+    output=$(launchctl bootstrap "gui/$(id -u)" "$plist" 2>&1) && return 0
+    [[ "$attempt" -eq 1 ]] &&
+      echo "  launchd still busy with $label — retrying" >&2
+    sleep 0.3
+  done
+  [[ -n "$output" ]] && echo "$output" >&2
+  return 1
+}
+
 start_test_process() {
   local slug=$1 dir=$2 port=$3 pid="" label plist
   if [[ "$(uname -s)" == "Darwin" ]] && command -v launchctl >/dev/null; then
@@ -235,8 +274,14 @@ payload = {
 with open(path, "wb") as handle:
     plistlib.dump(payload, handle)
 PY
-    launchctl bootout "gui/$(id -u)/$label" >/dev/null 2>&1 || true
-    launchctl bootstrap "gui/$(id -u)" "$plist"
+    launchd_bootstrap "$label" "$plist" || {
+      # The plist is written before the bootstrap, and stop_test_process
+      # returns early when there is no pidfile — so a plist left behind here
+      # is orphaned in ~/Library/LaunchAgents for good. It was never loaded.
+      rm -f "$plist"
+      echo "error: launchd refused to bootstrap $label" >&2
+      return 1
+    }
     for _ in $(seq 1 20); do
       pid=$(launchd_pid "$label")
       [[ -n "$pid" ]] && break

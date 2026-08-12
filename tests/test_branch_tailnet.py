@@ -62,6 +62,68 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         path.chmod(0o755)
         return path
 
+    def write_launchctl_stub(self, unload_ticks=0, bootstrap_failures=0):
+        """A launchctl that models the two ways a label stays occupied.
+
+        `unload_ticks` is how many `print` calls still find the label after a
+        `bootout` — launchd's teardown is asynchronous. `bootstrap_failures`
+        is how many loads are refused with EIO even once `print` reports the
+        label gone, which is the harder half: the observed 2026-08-12 failure
+        had launchd already denying knowledge of the label.
+        """
+        state = self.bindir / "launchd-state"
+        failures = self.bindir / "launchd-failures"
+        failures.write_text(f"{bootstrap_failures}\n", encoding="utf-8")
+        self.env["LAUNCHD_STATE"] = str(state)
+        self.env["LAUNCHD_FAILURES"] = str(failures)
+        self.env["LAUNCHD_UNLOAD_TICKS"] = str(unload_ticks)
+        return self.write_executable("launchctl", r"""#!/bin/sh
+state=$(cat "$LAUNCHD_STATE" 2>/dev/null || printf gone)
+case "$1" in
+  bootout)
+    printf 'unloading:%s\n' "$LAUNCHD_UNLOAD_TICKS" > "$LAUNCHD_STATE"
+    ;;
+  print)
+    case "$state" in
+      loaded)       printf '\tpid = 4242\n' ;;
+      unloading:0)  printf 'gone\n' > "$LAUNCHD_STATE"; exit 1 ;;
+      unloading:*)  ticks=${state#unloading:}
+                    printf 'unloading:%s\n' "$((ticks - 1))" \
+                      > "$LAUNCHD_STATE" ;;
+      *)            exit 1 ;;
+    esac
+    ;;
+  bootstrap)
+    left=$(cat "$LAUNCHD_FAILURES" 2>/dev/null || printf 0)
+    if [ "$left" -gt 0 ]; then
+      printf '%s\n' "$((left - 1))" > "$LAUNCHD_FAILURES"
+      echo "Bootstrap failed: 5: Input/output error" >&2
+      exit 5
+    fi
+    case "$state" in
+      unloading:*)
+        echo "Bootstrap failed: 5: Input/output error" >&2
+        exit 5 ;;
+    esac
+    printf 'loaded\n' > "$LAUNCHD_STATE"
+    ;;
+esac
+exit 0
+""")
+
+    def preview_worktree(self):
+        """uname + a fake live venv, enough for start_test_process."""
+        self.write_executable("uname", "#!/bin/sh\nprintf '%s\\n' Darwin\n")
+        home = self.bindir / "home"
+        preview = self.bindir / "preview"
+        preview.mkdir(exist_ok=True)
+        live = self.bindir / "live"
+        python = live / ".venv" / "bin" / "python"
+        python.parent.mkdir(parents=True, exist_ok=True)
+        python.write_text("unused by the launchctl stub\n", encoding="utf-8")
+        self.env["HOME"] = str(home)
+        return live, preview
+
     def test_fixture_snapshot_contains_only_neutral_test_notes(self):
         root = Path(self.tmp.name) / "preview"
         fake_live = Path(self.tmp.name) / "live"
@@ -178,31 +240,65 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.split(), ["8391", "8392", "8393"])
 
+    def start_preview(self, unload_ticks=0, bootstrap_failures=0):
+        self.write_launchctl_stub(unload_ticks, bootstrap_failures)
+        live, preview = self.preview_worktree()
+        return preview, run_shell(
+            f'LIVE="{live}"\nstart_test_process racy "{preview}" 8381',
+            self.env)
+
+    def test_preview_starts_while_the_old_job_is_still_unloading(self):
+        # `stop` returns before launchd has finished tearing the label down.
+        # Bootstrapping into that window is the EIO the old code died on.
+        preview, result = self.start_preview(unload_ticks=3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "4242")
+        self.assertTrue((preview / ".test-instance.json").exists())
+        # Waiting was enough here: nothing had to be retried.
+        self.assertNotIn("Bootstrap failed", result.stderr)
+        self.assertNotIn("retrying", result.stderr)
+        # And the window is real — bootstrapping without the wait still EIOs,
+        # so the assertions above are not passing vacuously.
+        immediate = run_shell(
+            "launchctl bootout gui/$(id -u)/racy\n"
+            "launchctl bootstrap gui/$(id -u) /dev/null", self.env)
+        self.assertEqual(immediate.returncode, 5)
+        self.assertIn("Input/output error", immediate.stderr)
+
+    def test_preview_retries_a_bootstrap_launchd_refuses(self):
+        # The harder half: launchd reports the label gone and still declines
+        # to load it. Waiting alone would not survive this.
+        preview, result = self.start_preview(bootstrap_failures=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "4242")
+        self.assertIn("retrying", result.stderr)
+        self.assertTrue((preview / ".test-instance.json").exists())
+
+    def test_preview_gives_up_loudly_when_launchd_never_accepts(self):
+        preview, result = self.start_preview(bootstrap_failures=99)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("launchd refused to bootstrap", result.stderr)
+        self.assertIn("Input/output error", result.stderr)
+        # Never a pidfile for an instance that was never loaded, and no plist
+        # stranded in ~/Library/LaunchAgents either — stop_test_process would
+        # never reach it, since it returns early without a pidfile.
+        self.assertFalse((preview / ".test-instance.json").exists())
+        self.assertFalse(
+            (Path(self.env["HOME"]) / "Library" / "LaunchAgents" /
+             "nyc.durham.vira.test.racy.plist").exists())
+
     def test_uvicorn_stays_loopback_only(self):
         source = BRANCH_SH.read_text(encoding="utf-8")
         self.assertIn('--host 127.0.0.1 --port "$port"', source)
         self.assertNotIn("--host 0.0.0.0 --port", source)
 
     def test_macos_preview_keep_awake_window_is_bounded(self):
-        self.write_executable(
-            "uname", "#!/bin/sh\nprintf '%s\\n' Darwin\n")
-        self.write_executable(
-            "launchctl",
-            "#!/bin/sh\n"
-            "if [ \"$1\" = print ]; then\n"
-            "  printf '\\tpid = 4242\\n'\n"
-            "fi\n",
-        )
-        home = self.bindir / "home"
-        preview = self.bindir / "preview"
-        preview.mkdir()
-        fake_live = self.bindir / "live"
+        self.write_launchctl_stub()
+        fake_live, preview = self.preview_worktree()
+        home = Path(self.env["HOME"])
         python = fake_live / ".venv" / "bin" / "python"
-        python.parent.mkdir(parents=True)
-        python.write_text("unused by the launchctl stub\n", encoding="utf-8")
 
         env = dict(self.env)
-        env["HOME"] = str(home)
         result = run_shell(
             f'LIVE="{fake_live}"\n'
             f'start_test_process bounded "{preview}" 8381',
