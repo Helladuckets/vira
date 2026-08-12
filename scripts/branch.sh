@@ -466,21 +466,47 @@ windows on desktop and internal tabs on mobile.' > "$stage/test-vault/Sessions/F
     'from server import vault; print(vault.scan_once())') >/dev/null
 }
 
+# EVERY flag is read, and an unknown one is refused.
+#
+# This used to be `local mode=${2:-}`, which read the SECOND ARGUMENT ONLY —
+# so `serve <slug> --fresh --local` silently dropped --local and bridged a
+# personal-data snapshot to the tailnet (2026-08-12, caught by checking
+# `tailscale serve status` rather than by the script saying anything). A
+# safety flag that can be ignored by position is not a safety flag, and an
+# unrecognized flag must never read as "off" — the whole point of --local is
+# that it is the answer to a question about exposure.
 cmd_serve() {
   slug_check "$1"
-  local mode=${2:-} dir port pid local_only=0
-  [[ "$mode" == "--local" ]] && local_only=1
-  dir=$(wt_dir "$1")
+  local slug=$1 dir port pid local_only=0 data_mode=""
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --local) local_only=1 ;;
+      --fresh|--fixture)
+        if [[ -n "$data_mode" && "$data_mode" != "$1" ]]; then
+          echo "error: --fresh and --fixture ask for different snapshots" >&2
+          exit 1
+        fi
+        data_mode=$1
+        ;;
+      *)
+        echo "error: unknown flag '$1' — serve takes --local, --fresh, --fixture" >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+  dir=$(wt_dir "$slug")
   [[ -d "$dir" ]] || { echo "error: no worktree at $dir (run start first)" >&2; exit 1; }
   [[ "$dir" == "$LIVE" ]] && { echo "error: refusing to serve the live tree" >&2; exit 1; }
   provision "$dir"          # a worktree from elsewhere may still lack the venv
   pid=$(instance_pid "$dir")
   [[ -n "$pid" ]] && { echo "already running (pid $pid, port $(instance_port "$dir"))"; exit 0; }
 
-  if [[ "$mode" == "--fixture" ]]; then
+  if [[ "$data_mode" == "--fixture" ]]; then
     echo "building synthetic fixture snapshot..."
     fixture_data "$dir" || exit 1
-  elif [[ "$mode" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
+  elif [[ "$data_mode" == "--fresh" || ! -f "$dir/data/.test-snapshot" ]]; then
     echo "cloning data snapshot (APFS copy-on-write)..."
     clone_data "$LIVE/data" "$dir/data" || exit 1
   fi
@@ -496,7 +522,7 @@ cmd_serve() {
   # Uvicorn stays loopback-only; Tailscale Serve is the authenticated bridge.
   # launchd keeps Mac previews alive after the agent terminal goes away and
   # restarts them on a crash. Other platforms retain the nohup fallback.
-  pid=$(start_test_process "$1" "$dir" "$port")
+  pid=$(start_test_process "$slug" "$dir" "$port")
 
   for i in $(seq 1 40); do
     curl -sf -o /dev/null "http://127.0.0.1:$port/" && break
@@ -521,7 +547,7 @@ cmd_serve() {
   else
     print_instance_urls "$port"
   fi
-  echo "log: $dir/.test-instance.log    stop: scripts/branch.sh stop $1"
+  echo "log: $dir/.test-instance.log    stop: scripts/branch.sh stop $slug"
 }
 
 cmd_stop() {
