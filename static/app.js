@@ -15084,18 +15084,32 @@ async function loadBoardsStrip() {
   // whenever any score predates the last change to the owner's record —
   // silence here would read as "all of this is current", which is the one
   // thing the count exists to stop.
-  if (s.scored_total)
-    line += ` · ${s.scored_total} scored`
-      + (s.scores_stale ? `, ${s.scores_stale} stale` : "")
-      + (s.scores_unstamped ? `, ${s.scores_unstamped} undated` : "");
-  $("#app-boards-line").textContent = line;
-  const bl = $("#app-boards-line");
-  if (bl) {
-    bl.title = s.canon_at
-      ? "A score is stale when it was written before your canon last "
-        + "changed (" + new Date(s.canon_at).toLocaleDateString() + ")."
+  //
+  // The canon's own date rides the line rather than only the tooltip: edit
+  // MASTER_HISTORY and EVERY earlier score goes stale at once, so a bare
+  // "1254 stale" reads as a fault when it is an expected consequence of
+  // something the owner did on purpose.
+  if (s.scored_total) {
+    const since = s.canon_at
+      ? new Date(s.canon_at).toLocaleDateString(undefined,
+          { month: "short", day: "numeric" })
       : "";
+    let note = "";
+    if (s.scores_stale && s.scores_stale === s.scored_total)
+      note = since ? `, all predating your ${since} canon` : ", all stale";
+    else if (s.scores_stale)
+      note = `, ${s.scores_stale} predating`
+        + (since ? ` your ${since} canon` : " the current canon");
+    if (s.scores_unstamped) note += `, ${s.scores_unstamped} undated`;
+    line += ` · ${s.scored_total} scored${note}`;
   }
+  const bl = $("#app-boards-line");
+  bl.textContent = line;
+  bl.title = s.canon_at
+    ? "A score is stale when it was written before your canon last changed "
+      + "(" + new Date(s.canon_at).toLocaleString() + "). Nothing is "
+      + "rescored automatically."
+    : "";
   const chip = $("#app-scoring");
   if (chip) {
     chip.style.display = scoringLive ? "" : "none";
