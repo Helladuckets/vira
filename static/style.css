@@ -4812,6 +4812,43 @@ a.rm-name:hover { color: var(--accent); }
 }
 .app-dossier-line { font-size: 11.5px; color: var(--text-dim); margin-bottom: 4px; }
 .app-dossier-line b { color: var(--text); font-weight: 600; }
+/* A why_fit has no cap in the legacy corpus — 454 entries run past 1,000
+   characters and the longest is 7,992, which renders as a wall inside a
+   row. Long ones clamp; new scores are capped at write instead. */
+.app-clamp {
+  display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4;
+  -webkit-box-orient: vertical; overflow: hidden;
+}
+.app-clamp.open { display: inline; overflow: visible; }
+.app-more {
+  font-size: 10.5px; font-family: var(--mono); letter-spacing: .04em;
+  color: var(--steel); background: none; border: 0; padding: 2px 0 0;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.app-more:hover { color: var(--accent); }
+/* Screening probability — the OTHER half of the two-score discipline.
+   Deliberately not styled like .fit-badge: a reachable role and a role
+   worth wanting are different questions, and two matching badges would
+   read as two opinions on one of them. */
+.screen-badge {
+  font-size: 10px; font-family: var(--mono); letter-spacing: .03em;
+  color: var(--text-faint); border: 1px dashed var(--line);
+  border-radius: 9px; padding: 1px 6px; flex: none;
+}
+/* How old the ANALYSIS is, which is a different axis from how old the
+   posting is. Quiet at rest; the stale tag is the only part that raises
+   its voice, because that is the only part asking for anything. */
+.app-scored {
+  font-size: 10.5px; font-family: var(--mono); color: var(--text-faint);
+  margin-top: 2px; display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap;
+}
+.app-scored.stale { color: var(--steel); }
+.app-stale-tag {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .5px;
+  text-transform: uppercase; color: var(--oxidized);
+  border: 1px solid var(--amber-line); border-radius: 3px; padding: 0 5px;
+}
 
 /* applications: owner adjudication (picks pinned, cut lane demoted) */
 .tier-badge.pick {

@@ -10,10 +10,8 @@ for the boards snapshot (comp/function/apply) — different consumers
 read each, so collapsing them is a behavior risk deferred to a
 daylight session.
 """
-import json
 import re
 from datetime import datetime, timezone
-from pathlib import Path
 
 
 def now_iso():
@@ -133,19 +131,17 @@ def cut_reason(comp_kind, title, adj):
 # ------------------------------------------------------------ score files
 
 def load_scores(udir):
-    """Every *-raw-scores.json under the universe dir (v2 + d6 + future
-    passes) as one {uid: entry} map, double-indexed by uid AND _fulluid
-    (some entries carry a truncated uid with the full board uuid in
-    _fulluid, so every keeper matches its role file). Files merge in
-    sorted-name order; later files win uid collisions. A corrupt file
-    is skipped, never fatal."""
-    scores = {}
-    for sf in sorted(Path(udir).glob("*-raw-scores.json")):
-        try:
-            for s in json.loads(sf.read_text(encoding="utf-8")):
-                for k in (s.get("uid"), s.get("_fulluid")):
-                    if k:
-                        scores[k] = s
-        except (OSError, json.JSONDecodeError, TypeError):
-            continue
-    return scores
+    """Every score this install holds, as one {uid: entry} map — the per-role
+    store first, the legacy `*-raw-scores.json` batch files only for uids it
+    does not carry.
+
+    THE MERGE MOVED, THE NAME DID NOT. This used to be the whole reader: it
+    globbed the batch files and merged them in sorted-filename order, later
+    file winning. That order is a trap for anything that re-scores a role
+    (digits sort before letters, so a freshly dated file loses to `v2-*` and
+    `swarm-*`), so precedence now lives in server/jobscores.py where it is
+    stated rather than inferred. Roughly a dozen callers say `load_scores`
+    and mean "every score" — they keep saying it.
+    """
+    from . import jobscores
+    return jobscores.load(udir)
