@@ -40,7 +40,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import jobshared, jsonstore, settings
+from . import jobshared, jsonstore, settings, workplace
 
 TIMEOUT = 30
 ATS_KINDS = tuple(jobshared.ATS_PREFIX) + ("manual",)
@@ -247,8 +247,6 @@ def fetch_ashby(board):
         for sec in j.get("secondaryLocations") or []:
             locs.append(sec.get("location") or "")
         locs = [x for x in locs if x]
-        if j.get("isRemote") and not any("remote" in x.lower() for x in locs):
-            locs.append("Remote")
         comp = j.get("compensation") or {}
         sal_min = sal_max = None
         for tier in comp.get("summaryComponents") or []:
@@ -263,7 +261,8 @@ def fetch_ashby(board):
             team=j.get("team") or "", locations=locs,
             salary_min=sal_min, salary_max=sal_max,
             url=j.get("jobUrl") or j.get("applyUrl"),
-            published=(j.get("publishedAt") or "")[:10], jd=jd))
+            published=(j.get("publishedAt") or "")[:10], jd=jd,
+            remote_flag=bool(j.get("isRemote"))))
     return out
 
 
@@ -275,9 +274,6 @@ def fetch_lever(board):
         cats = j.get("categories") or {}
         locs = list(cats.get("allLocations") or
                     ([cats.get("location")] if cats.get("location") else []))
-        if (j.get("workplaceType") or "").lower() == "remote" and \
-                not any("remote" in x.lower() for x in locs):
-            locs.append("Remote")
         rng = j.get("salaryRange") or {}
         ts = j.get("createdAt")
         published = (datetime.fromtimestamp(ts / 1000, timezone.utc)
@@ -291,7 +287,8 @@ def fetch_lever(board):
             title=j.get("text"), dept=cats.get("department") or "",
             team=cats.get("team") or "", locations=locs,
             salary_min=rng.get("min"), salary_max=rng.get("max"),
-            url=j.get("hostedUrl"), published=published, jd=jd))
+            url=j.get("hostedUrl"), published=published, jd=jd,
+            remote_flag=(j.get("workplaceType") or "").lower() == "remote"))
     return out
 
 
@@ -418,8 +415,29 @@ def _q(s):
 
 
 def _norm(board, uid, title, dept="", team="", locations=None,
-          salary_min=None, salary_max=None, url="", published="", jd=""):
+          salary_min=None, salary_max=None, url="", published="", jd="",
+          remote_flag=False):
+    """One role, in the module's shape.
+
+    `remote_flag` is the BOARD's remote checkbox (Ashby `isRemote`,
+    Lever `workplaceType`). It is an inference, not the employer's own
+    words, and it is wrong often enough to matter: on OpenAI's board 422
+    of 735 listed roles set it while their descriptions say the role is
+    based in one named office with a hybrid schedule. So the flag only
+    earns a "Remote" location when the body does not contradict it.
+
+    A location string the board actually PUBLISHED ("US - Remote") is
+    left exactly as written even when the body contradicts it -- those
+    are the employer's words and rewriting them would hide the
+    disagreement. `workplace` carries the body's reading alongside, and
+    eligibility reads that; the row shows both, so a posting whose two
+    halves disagree looks like what it is.
+    """
     locations = [str(x) for x in (locations or []) if x]
+    wp = workplace.read(jd)
+    if remote_flag and not any("remote" in x.lower() for x in locations) \
+            and not (wp and wp["binds"]):
+        locations.append("Remote")
     remote = "remote" if any("remote" in x.lower() for x in locations) else ""
     return {
         "uid": uid,
@@ -434,6 +452,7 @@ def _norm(board, uid, title, dept="", team="", locations=None,
         "currency": "USD" if salary_min else "",
         "comp": _comp_kind(jd, salary_min),
         "remote": remote,
+        "workplace": wp,
         "locations": locations,
         "url": url or "",
         "apply": url or "",
@@ -517,6 +536,18 @@ def eligible_location(rec, rule=None):
     if rule["places"] is None and rule["remote_ok"]:
         return True                       # nothing configured, nothing cut
     locs = rec.get("locations") or []
+
+    # THE BODY OUTRANKS THE LOCATION FIELD. A posting whose description
+    # says "based in San Francisco, CA -- hybrid, 3 days in the office"
+    # is not reachable from New York whatever its location field or its
+    # board's remote checkbox claims, and 179 snapshot roles read as
+    # eligible on exactly that mistake. The reading only ever narrows:
+    # it names offices, so it can refuse, but it never manufactures
+    # eligibility a location string did not already support.
+    wp = rec.get("workplace")
+    if wp and not workplace.allows(wp, rule["places"], locs):
+        return False
+
     if rule["places"] is not None:
         for loc in locs:
             if rule["places"].search(loc):
