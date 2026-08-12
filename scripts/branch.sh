@@ -146,6 +146,50 @@ tailnet_unserve() {
   "$binary" serve --yes --http="$port" off >/dev/null 2>&1 || true
 }
 
+# The ports that actually have a Serve handler right now, one per line.
+#
+# `serve --local` deliberately calls no tailnet_serve, so those instances have
+# no bridge — and `list` used to print a MagicDNS URL for every RUNNING
+# instance unconditionally, handing out a dead link for exactly the previews
+# whose whole point is that a personal-data snapshot was never bridged. The
+# only signal that cannot drift from what serve/stop did is the subsystem they
+# wrote to, so ask it. Verified against tailscale 1.98.8: an empty config
+# prints `{}`, and an --http handler appears as a numeric TCP key plus a
+# `host:port` Web key. Silent when Tailscale is absent or has no config.
+tailnet_served_ports() {
+  local binary
+  binary=$(tailscale_binary)
+  [[ -n "$binary" ]] || return 0
+  "$binary" serve status --json 2>/dev/null | python3 -c '
+import json, sys
+
+
+def walk(config, ports):
+    if not isinstance(config, dict):
+        return
+    for port in (config.get("TCP") or {}):
+        ports.add(str(port))
+    for section in ("Web", "AllowFunnel"):
+        for hostport in (config.get(section) or {}):
+            port = str(hostport).rpartition(":")[2]
+            if port.isdigit():
+                ports.add(port)
+    # `tailscale serve` WITHOUT --bg nests its config here for the life of the
+    # session. branch.sh always passes --bg, but a handler someone added by
+    # hand still answers, so it counts.
+    for nested in (config.get("Foreground") or {}).values():
+        walk(nested, ports)
+
+
+ports = set()
+try:
+    walk(json.load(sys.stdin), ports)
+except (OSError, ValueError):
+    pass
+print("\n".join(sorted(ports)))
+' 2>/dev/null || true
+}
+
 test_label() {
   echo "nyc.durham.vira.test.$1"
 }
@@ -442,8 +486,12 @@ cmd_stop() {
 }
 
 cmd_list() {
-  local br dir pid port ab tail
+  local br dir pid port ab tail served url
   tail=$(tailnet_host)
+  # Asked once, not per branch: one instance may be bridged while another,
+  # served --local, is not, so membership is tested port by port.
+  served=$(tailnet_served_ports)
+  served=" ${served//$'\n'/ } "
   echo "live: $LIVE (port 8377, launchd)"
   git -C "$LIVE" worktree list --porcelain | awk '/^worktree /{wt=$2} /^branch /{print wt, $2}' |
   while read -r dir br; do
@@ -451,14 +499,20 @@ cmd_list() {
     br=${br#refs/heads/}
     ab=$(git -C "$LIVE" rev-list --left-right --count "main...$br" 2>/dev/null | awk '{print "behind "$1" / ahead "$2}')
     pid=$(instance_pid "$dir"); port=$(instance_port "$dir")
-    if [[ -n "$pid" ]]; then
-      if [[ -n "$tail" ]]; then
-        echo "  $br  ->  $dir  [$ab]  RUNNING :$port  http://$tail:$port/"
-      else
-        echo "  $br  ->  $dir  [$ab]  RUNNING :$port"
-      fi
-    else
+    if [[ -z "$pid" ]]; then
       echo "  $br  ->  $dir  [$ab]"
+    elif [[ -z "$port" ]]; then
+      echo "  $br  ->  $dir  [$ab]  RUNNING"
+    else
+      # Print the address that answers: MagicDNS only where a Serve handler
+      # exists, otherwise localhost — never 127.0.0.1, which Claude Code's
+      # Browser pane blocks outright.
+      if [[ -n "$tail" && "$served" == *" $port "* ]]; then
+        url="http://$tail:$port/"
+      else
+        url="http://localhost:$port/"
+      fi
+      echo "  $br  ->  $dir  [$ab]  RUNNING :$port  $url"
     fi
   done
 }
