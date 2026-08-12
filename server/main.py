@@ -60,6 +60,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                receipts,
                research,
                imageatlasroutes,
+               resumeviewroutes,
                resolver,
                reviewqueue,
                roomvault,
@@ -3784,6 +3785,7 @@ app.include_router(genreroutes.router)
 # /imageatlas/, answers query embeddings through localmodels' shared SigLIP.
 # Dormant (honest 404/503s) when chaska is absent or no vault is configured.
 app.include_router(imageatlasroutes.router)
+app.include_router(resumeviewroutes.router)
 
 # ---------- Session walkthroughs (the build films, served in place) --------
 # <lab_root>/walkthroughs/ at /walkthroughs/ — the /design precedent. Served

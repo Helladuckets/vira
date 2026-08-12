@@ -868,6 +868,22 @@ def apply_prompt(role, note=""):
                   "the tension plainly in the fit brief before building."]
     if note:
         lines += ["", f"Owner note with this dispatch: {note}"]
+    # Feedback the owner left while READING the last draft (the resume
+    # viewport's "this application" lane, and the role's Notes pane). Without
+    # this the notes were stored and never read back, so the next version
+    # bump repeated whatever he had already objected to. They are reactions
+    # to a draft, not evidence — the claim gate still governs every sentence.
+    # Read the owner state DIRECTLY: find_role returns the catalog record and
+    # never merges it, so role.get("comments") is always empty here — only
+    # compose() attaches owner state, and that path serves the UI, not this.
+    owner = get_state().get(role.get("uid") or "", {})
+    comments = [c.get("text", "") for c in (owner.get("comments") or [])
+                if c.get("text")]
+    if comments:
+        lines += ["", "OWNER FEEDBACK ON EARLIER DRAFTS (newest last — these "
+                  "are drafting instructions about THIS application, never "
+                  "evidence for a claim):"]
+        lines += [f"- {c}" for c in comments[-12:]]
     # This is the same stable requirement keyspace and source-matching frame
     # the interactive Map renders. Map notes therefore become build inputs,
     # instead of annotations the package agent can never see.

@@ -12628,6 +12628,445 @@ async function openNote(path, title) {
   await fillNote(body, path, spawnNoteRef);
 }
 
+/* ==================== The resume viewport ====================
+   An application's resume or cover letter, rendered from the package's own
+   Word file so every line is addressable, with a margin rail of definitions
+   and defensibility notes beside it.
+
+   TERMS ARE THE DURABLE ANCHOR. A package is rebuilt at every version bump,
+   so a note pinned to a sentence dies exactly when the owner has done the
+   most work. A term survives a rewording, so a term bubble is keyed by the
+   term and lights up wherever it appears; a LINE note carries the wording it
+   was written against and says so when that wording is gone, rather than
+   silently re-anchoring to a sentence that now means something else. */
+
+let docState = { role: null, uid: "", kind: "resume", doc: null, ann: null };
+
+const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+const docBlockNodes = (id) =>
+  id ? $$(`#doc-page .doc-block[data-block="${CSS.escape(id)}"]`) : [];
+
+async function openResumeView(role, kind) {
+  const panel = $("#doc-panel");
+  docState.role = role;
+  docState.uid = role.uid;
+  docState.kind = kind || "resume";
+  panel.classList.add("open");
+  panel.dataset.uid = role.uid;
+  panel.dataset.dname = `${role.title || "Role"} — ${role.company || ""}`.trim();
+  enterFocus(panel, () => panel.classList.remove("open"));
+  $("#doc-title").textContent = role.title || "Document";
+  await docLoad();
+}
+
+async function docLoad() {
+  const page = $("#doc-page");
+  const rail = $("#doc-rail");
+  page.replaceChildren(el("div", "doc-busy", "Reading the package…"));
+  rail.replaceChildren();
+  $("#doc-kind").querySelectorAll("button").forEach((b) =>
+    b.classList.toggle("on", b.dataset.kind === docState.kind));
+  let doc;
+  try {
+    doc = await api(`/api/applications/${encodeURIComponent(docState.uid)}`
+                    + `/document?kind=${docState.kind}`);
+  } catch (e) {
+    page.replaceChildren(el("div", "doc-empty", errText(e)));
+    return;
+  }
+  docState.doc = doc;
+  docState.ann = doc.annotations;
+  const pdf = $("#doc-pdf");
+  if (doc.pdf) {
+    pdf.style.display = "";
+    pdf.href = `/api/applications/${encodeURIComponent(docState.uid)}`
+             + `/document/file?name=${encodeURIComponent(doc.pdf)}`;
+  } else pdf.style.display = "none";
+  renderDocPage();
+  renderDocRail();
+  renderDocTell();
+}
+
+function renderDocPage() {
+  const page = $("#doc-page");
+  const doc = docState.doc;
+  page.replaceChildren();
+  if (!doc.found) {
+    page.appendChild(el("div", "doc-empty", doc.reason || "Nothing to show."));
+    return;
+  }
+  const meta = el("div", "doc-meta");
+  meta.appendChild(el("span", "doc-file", doc.path));
+  if (doc.editable)
+    meta.appendChild(el("span", "doc-tag",
+      "the Word copy you edit"));
+  page.appendChild(meta);
+  const terms = (docState.ann?.terms || []).map((t) => t.term).filter(Boolean);
+  for (const b of doc.blocks) {
+    const node = el("div", "doc-block doc-" + b.type);
+    node.dataset.block = b.id;
+    node.appendChild(docPaintTerms(b.text, terms));
+    if ((docState.ann?.lines || []).some((l) => l.block_id === b.id && !l.stale))
+      node.classList.add("has-note");
+    if ((docState.ann?.claims || []).some((c) => c.block_id === b.id && !c.stale))
+      node.classList.add("has-claim");
+    page.appendChild(node);
+  }
+}
+
+/* Wrap every pinned term where it appears, so the document itself shows what
+   has been worked out. Built from text nodes, never innerHTML — resume text
+   is the owner's own prose but it still must not be able to inject markup. */
+function docPaintTerms(text, terms) {
+  const frag = document.createDocumentFragment();
+  const live = terms.filter((t) => t && t.length > 1);
+  if (!live.length) { frag.appendChild(document.createTextNode(text)); return frag; }
+  const pattern = live.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+                      .sort((a, b) => b.length - a.length).join("|");
+  let re;
+  try { re = new RegExp(`\\b(${pattern})\\b`, "gi"); }
+  catch { frag.appendChild(document.createTextNode(text)); return frag; }
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last)
+      frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const mark = el("mark", "doc-term", m[0]);
+    mark.dataset.termKey = docTermKey(m[0]);
+    frag.appendChild(mark);
+    last = m.index + m[0].length;
+    if (m[0].length === 0) re.lastIndex++;
+  }
+  if (last < text.length)
+    frag.appendChild(document.createTextNode(text.slice(last)));
+  return frag;
+}
+
+// Mirrors resumeview.term_key — the client must group the same way the store
+// does, or a bubble and its highlight would disagree about which term it is.
+const docTermKey = (t) =>
+  String(t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+
+function renderDocRail() {
+  const rail = $("#doc-rail");
+  const ann = docState.ann || { terms: [], claims: [], lines: [] };
+  rail.replaceChildren();
+  const head = el("div", "doc-rail-head");
+  head.appendChild(el("div", "doc-rail-title", "Your notes"));
+  const count = ann.terms.length + ann.claims.length + ann.lines.length;
+  head.appendChild(el("div", "doc-rail-sub", count
+    ? `${count} on this document`
+    : "Select a term and right-click to start."));
+  rail.appendChild(head);
+  for (const t of ann.terms) rail.appendChild(docTermBubble(t));
+  for (const c of ann.claims) rail.appendChild(docClaimBubble(c));
+  for (const l of ann.lines) rail.appendChild(docLineBubble(l));
+}
+
+function docTermBubble(t) {
+  const card = el("div", "doc-bub doc-bub-term");
+  const top = el("div", "doc-bub-top");
+  top.appendChild(el("div", "doc-bub-term-name", t.term));
+  const scope = el("span", "doc-bub-scope",
+    t.scope === "role" ? "this role" : t.scope === "global" ? "everywhere"
+                                     : "no note yet");
+  top.appendChild(scope);
+  card.appendChild(top);
+  if (t.note) card.appendChild(el("div", "doc-bub-body", t.note));
+  const acts = el("div", "doc-bub-acts");
+  const define = el("button", "linkish", "definition");
+  define.addEventListener("click", () => openDefine(t.term));
+  acts.appendChild(define);
+  const note = el("button", "linkish", t.note ? "edit note" : "add note");
+  note.addEventListener("click", () => docEditTerm(t));
+  acts.appendChild(note);
+  const drop = el("button", "linkish", "unpin");
+  drop.title = "Remove from this document. Your definition stays.";
+  drop.addEventListener("click", async () => {
+    docState.ann = await del(`/api/applications/${encodeURIComponent(docState.uid)}`
+                             + `/term/${encodeURIComponent(t.key)}`
+                             + `?kind=${docState.kind}`);
+    renderDocPage(); renderDocRail();
+  });
+  acts.appendChild(drop);
+  card.appendChild(acts);
+  docHoverLink(card, () => $$(`#doc-page mark[data-term-key="${CSS.escape(t.key)}"]`));
+  return card;
+}
+
+function docClaimBubble(c) {
+  const card = el("div", "doc-bub doc-bub-claim" + (c.stale ? " stale" : ""));
+  card.appendChild(el("div", "doc-bub-kicker", "Can you stand behind it"));
+  if (c.question) card.appendChild(el("div", "doc-bub-q", c.question));
+  card.appendChild(el("div", "doc-bub-body", c.answer));
+  for (const cite of c.citations || [])
+    card.appendChild(el("div", "doc-cite", cite));
+  if (c.stale)
+    card.appendChild(el("div", "doc-stale",
+      "Written against wording that is no longer in this draft: "
+      + `"${c.quote || ""}"`));
+  const acts = el("div", "doc-bub-acts");
+  const drop = el("button", "linkish", "remove");
+  drop.addEventListener("click", async () => {
+    docState.ann = await del(`/api/applications/${encodeURIComponent(docState.uid)}`
+                             + `/claim/${encodeURIComponent(c.block_id)}`
+                             + `?kind=${docState.kind}`);
+    renderDocPage(); renderDocRail();
+  });
+  acts.appendChild(drop);
+  card.appendChild(acts);
+  docHoverLink(card, () => docBlockNodes(c.block_id));
+  return card;
+}
+
+function docLineBubble(l) {
+  const card = el("div", "doc-bub doc-bub-line" + (l.stale ? " stale" : ""));
+  card.appendChild(el("div", "doc-bub-kicker", "Note"));
+  card.appendChild(el("div", "doc-bub-body", l.note));
+  if (l.stale)
+    card.appendChild(el("div", "doc-stale",
+      `Written against: "${l.quote || ""}" — that line has since changed.`));
+  const acts = el("div", "doc-bub-acts");
+  const edit = el("button", "linkish", "edit");
+  edit.addEventListener("click", () => docEditLine(l.block_id, l.note, l.quote));
+  acts.appendChild(edit);
+  card.appendChild(acts);
+  docHoverLink(card, () => docBlockNodes(l.block_id));
+  return card;
+}
+
+/* Hovering a bubble lights what it is about — the track-changes gesture. */
+function docHoverLink(card, nodes) {
+  const paint = (on) => nodes().forEach((n) => n.classList.toggle("lit", on));
+  card.addEventListener("mouseenter", () => paint(true));
+  card.addEventListener("mouseleave", () => paint(false));
+  card.addEventListener("click", (e) => {
+    if (e.target.closest("button, a")) return;
+    const first = nodes()[0];
+    if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+  });
+}
+
+/* Pin, then immediately offer the gloss — pinning a term and saying what you
+   can stand behind about it are one intention, so they are one gesture. */
+async function docPinTerm(term) {
+  try {
+    docState.ann = await post(
+      `/api/applications/${encodeURIComponent(docState.uid)}/term`,
+      { term, note: "", scope: "role", kind: docState.kind });
+  } catch (e) { toast(errText(e)); return; }
+  renderDocPage(); renderDocRail();
+  const key = docTermKey(term);
+  const pinned = (docState.ann.terms || []).find((t) => t.key === key);
+  if (pinned) docEditTerm(pinned);
+}
+
+function docEditTerm(t) {
+  const pop = el("div", "ctx-pop doc-pop");
+  pop.appendChild(el("div", "doc-pop-title", `What you can say about "${t.term}"`));
+  const box = el("textarea", "doc-pop-box");
+  box.value = t.note || "";
+  box.placeholder = "Why you can stand behind this word as you have used it.";
+  pop.appendChild(box);
+  const scope = el("div", "seg doc-pop-seg");
+  const mk = (val, label, title) => {
+    const b = el("button", "seg-btn" + (val === "global" ? " on" : ""), label);
+    b.dataset.scope = val; b.title = title;
+    b.addEventListener("click", () => {
+      scope.querySelectorAll("button").forEach((x) =>
+        x.classList.toggle("on", x === b));
+    });
+    return b;
+  };
+  scope.appendChild(mk("global", "Everywhere",
+    "Carries to every future resume — the default for this term."));
+  scope.appendChild(mk("role", "This role only",
+    "Overrides the general note for this application alone."));
+  pop.appendChild(scope);
+  const acts = el("div", "doc-pop-acts");
+  const save = el("button", "btn primary", "Save");
+  save.addEventListener("click", async () => {
+    const chosen = scope.querySelector("button.on")?.dataset.scope || "global";
+    try {
+      docState.ann = await post(
+        `/api/applications/${encodeURIComponent(docState.uid)}/term`,
+        { term: t.term, note: box.value, scope: chosen, kind: docState.kind });
+      pop.remove(); renderDocPage(); renderDocRail();
+    } catch (e) { toast(errText(e)); }
+  });
+  const cancel = el("button", "btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  acts.appendChild(cancel); acts.appendChild(save);
+  pop.appendChild(acts);
+  document.body.appendChild(pop);
+  centerPop(pop);
+  box.focus();
+}
+
+function docEditLine(blockId, note, quote) {
+  const block = docBlockNodes(blockId)[0];
+  const pop = el("div", "ctx-pop doc-pop");
+  pop.appendChild(el("div", "doc-pop-title", "Note on this line"));
+  if (block || quote)
+    pop.appendChild(el("div", "doc-pop-quote",
+                       block ? block.textContent : quote));
+  const box = el("textarea", "doc-pop-box");
+  box.value = note || "";
+  box.placeholder = "What you want to remember about this line.";
+  pop.appendChild(box);
+  const acts = el("div", "doc-pop-acts");
+  const save = el("button", "btn primary", "Save");
+  save.addEventListener("click", async () => {
+    try {
+      docState.ann = await post(
+        `/api/applications/${encodeURIComponent(docState.uid)}/line-note`,
+        { block_id: blockId, note: box.value, kind: docState.kind,
+          quote: block ? block.textContent : quote || "" });
+      pop.remove(); renderDocPage(); renderDocRail();
+    } catch (e) { toast(errText(e)); }
+  });
+  const cancel = el("button", "btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  acts.appendChild(cancel); acts.appendChild(save);
+  pop.appendChild(acts);
+  document.body.appendChild(pop);
+  centerPop(pop);
+  box.focus();
+}
+
+/* "Can I stand behind this?" — the answer comes from the owner's own career
+   record with its governing endnote cited, never from what a model assumes
+   someone with this title did. Banking it puts it on the rail. */
+async function docAskClaim(blockId) {
+  const block = docBlockNodes(blockId)[0];
+  const pop = el("div", "ctx-pop doc-pop doc-pop-wide");
+  pop.appendChild(el("div", "doc-pop-title", "Can you stand behind this?"));
+  if (block) pop.appendChild(el("div", "doc-pop-quote", block.textContent));
+  const box = el("textarea", "doc-pop-box");
+  box.placeholder = "Ask anything about this line, or leave blank for "
+                  + "\"what backs this up?\"";
+  pop.appendChild(box);
+  const out = el("div", "doc-pop-out");
+  pop.appendChild(out);
+  const acts = el("div", "doc-pop-acts");
+  const close = el("button", "btn", "Close");
+  close.addEventListener("click", () => pop.remove());
+  const ask = el("button", "btn primary", "Ask");
+  let answer = null;
+  ask.addEventListener("click", async () => {
+    ask.disabled = true;
+    out.replaceChildren(el("div", "doc-busy", "Checking your record…"));
+    try {
+      answer = await post(
+        `/api/applications/${encodeURIComponent(docState.uid)}/ask`,
+        { kind: docState.kind, block_id: blockId,
+          question: box.value.trim() || "What in my record backs this up?" });
+      out.replaceChildren();
+      const verdict = el("div", "doc-verdict" + (answer.supported ? " ok" : " thin"),
+        answer.supported ? "Supported by your record"
+                         : "Not established by your record");
+      out.appendChild(verdict);
+      out.appendChild(el("div", "doc-pop-answer", answer.answer));
+      for (const a of answer.anchors || []) {
+        const cite = el("div", "doc-anchor" + (a.gate ? " gate" : ""));
+        cite.appendChild(el("div", "doc-anchor-head",
+          (a.gate ? "CLAIM GATE — " : "") + (a.heading || a.source)));
+        cite.appendChild(el("div", "doc-anchor-body", a.text));
+        out.appendChild(cite);
+      }
+      keep.style.display = "";
+    } catch (e) {
+      out.replaceChildren(el("div", "doc-empty", errText(e)));
+    }
+    ask.disabled = false;
+  });
+  const keep = el("button", "btn", "Keep in the margin");
+  keep.style.display = "none";
+  keep.addEventListener("click", async () => {
+    try {
+      docState.ann = await post(
+        `/api/applications/${encodeURIComponent(docState.uid)}/claim`,
+        { block_id: blockId,
+          question: box.value.trim() || "What backs this up?",
+          answer: answer.answer, citations: answer.citations || [],
+          kind: docState.kind, quote: block ? block.textContent : "" });
+      pop.remove(); renderDocPage(); renderDocRail();
+    } catch (e) { toast(errText(e)); }
+  });
+  acts.appendChild(close); acts.appendChild(keep); acts.appendChild(ask);
+  pop.appendChild(acts);
+  document.body.appendChild(pop);
+  centerPop(pop);
+  box.focus();
+}
+
+/* Feedback routes by BLAST RADIUS, and the two answers go to genuinely
+   different places: a fact about this application lands in the role's own
+   state (and rides into the next package build), while a claim about the
+   career goes to the journal, because the career record is governed by the
+   claim gate and Vira does not author that. The labels say so. */
+function renderDocTell() {
+  const host = $("#doc-tell");
+  host.replaceChildren();
+  if (!docState.doc?.found) return;
+  host.appendChild(el("div", "doc-tell-title", "Tell Vira about this draft"));
+  const box = el("textarea", "doc-tell-box");
+  box.placeholder = "What is wrong, missing, or worth keeping.";
+  host.appendChild(box);
+  const seg = el("div", "seg doc-tell-seg");
+  const mk = (val, label, title) => {
+    const b = el("button", "seg-btn" + (val === "role" ? " on" : ""), label);
+    b.dataset.scope = val; b.title = title;
+    b.addEventListener("click", () =>
+      seg.querySelectorAll("button").forEach((x) =>
+        x.classList.toggle("on", x === b)));
+    return b;
+  };
+  seg.appendChild(mk("role", "This application",
+    "Saved to this role and read back into the next package build."));
+  seg.appendChild(mk("broader", "Broader than this role",
+    "Filed to the journal — a claim about your career goes through the claim gate."));
+  host.appendChild(seg);
+  const save = el("button", "btn primary doc-tell-save", "Save");
+  save.addEventListener("click", async () => {
+    const text = box.value.trim();
+    if (!text) return;
+    const scope = seg.querySelector("button.on")?.dataset.scope || "role";
+    save.disabled = true;
+    try {
+      const r = await post(
+        `/api/applications/${encodeURIComponent(docState.uid)}/feedback`,
+        { scope, text,
+          context: `Resume viewport — ${docState.doc.label} for `
+                 + `${docState.doc.title} at ${docState.doc.company}` });
+      box.value = "";
+      toast(r.detail || "Saved.");
+    } catch (e) { toast(errText(e)); }
+    save.disabled = false;
+  });
+  host.appendChild(save);
+}
+
+// Transient popups rest mid-screen at the desk (2026-07-31 ruling); phones
+// keep the bottom sheet the rest of the app uses.
+function centerPop(pop) {
+  if (!isDesktop) { pop.classList.add("doc-pop-sheet"); return; }
+  const r = pop.getBoundingClientRect();
+  pop.style.left = Math.max(12, (window.innerWidth - r.width) / 2) + "px";
+  pop.style.top = Math.max(12, (window.innerHeight - r.height) / 2) + "px";
+}
+
+function initResumeView() {
+  const panel = $("#doc-panel");
+  if (!panel) return;
+  $("#doc-back")?.addEventListener("click", () => exitFocus());
+  $("#doc-kind")?.addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-kind]");
+    if (!b || b.dataset.kind === docState.kind) return;
+    docState.kind = b.dataset.kind;
+    docLoad();
+  });
+}
+
 // ----- Plans: Plan-mode output saved to the vault, reopenable in-app -----
 // The Plans WINDOW retired into the Reader on 2026-07-27 — a saved plan is one
 // more thing to read, and plans.py was already the registry-of-pointers shape
@@ -15033,6 +15472,14 @@ function appRow(r) {
   map.addEventListener("click", () => openAppMap(r));
   actions.appendChild(map);
 
+  // Read the actual documents. Offered on every role: whether a package has
+  // been built is a fact the viewport reports honestly, and hiding the button
+  // would leave the owner guessing which roles have one.
+  const doc = el("button", "btn app-cbtn app-doc-btn", "Read");
+  doc.title = "Read the resume and cover letter, define terms, and note what you can stand behind";
+  doc.addEventListener("click", () => openResumeView(r));
+  actions.appendChild(doc);
+
   const apply = el("button", "btn primary app-apply",
                    r.last_job ? "Re-apply" : "Apply");
   apply.addEventListener("click", () => appApply(r));
@@ -16448,6 +16895,19 @@ function ctxDescribe(target) {
     ctx.component = ep.dataset.esubj ? "Email: " + ep.dataset.esubj : "Email";
     if (ep.dataset.pid)
       ctx.person = { pid: ep.dataset.pid, name: ep.dataset.pname };
+  } else if (target.closest("#doc-panel")) {
+    // The document is the subject, and the LINE under the cursor is the most
+    // specific thing in it — the same content-outranks-chrome ladder a
+    // profile hook uses. The selection (if any) is what the Define and pin
+    // rows act on, so it is carried as the target's text.
+    const dp = target.closest("#doc-panel");
+    ctx.component = dp.dataset.dname ? "Document: " + dp.dataset.dname
+                                     : "Document";
+    const block = target.closest(".doc-block");
+    if (block)
+      ctx.target = { menu: "this line", note: "Application document",
+                     text: sel || block.textContent.trim(),
+                     block: block.dataset.block };
   } else if (target.closest(".rm-item")?.dataset.itemId) {
     // A reading-room card is the most specific thing under the cursor and
     // it carries everything the menu needs: a source URL, a vault path, a
@@ -17213,6 +17673,25 @@ document.addEventListener("contextmenu", (e) => {
   if (term) items.unshift(
     { label: "Define “" + term + "”", run: () => openDefine(term) },
     { sep: true });
+  // Inside the resume viewport the line under the cursor carries its own
+  // actions, directly under Define — pinning a term is what puts it on the
+  // margin rail and lights it wherever it appears in the document.
+  if (ctx.target?.block) {
+    const blockId = ctx.target.block;
+    const rows = [];
+    if (term) rows.push({ label: "Pin “" + term + "” to this document",
+                          run: () => docPinTerm(term) });
+    rows.push({ label: "Can you stand behind this line?…",
+                run: () => docAskClaim(blockId) });
+    rows.push({ label: "Note on this line…",
+                run: () => docEditLine(blockId, "", "") });
+    rows.push({ sep: true });
+    // Directly AFTER the component head, never above it — the head is what
+    // names the document these rows act on, and splicing at 0 pushed it into
+    // the middle of the menu.
+    const head = items.findIndex((i) => i && i.head);
+    items.splice(head < 0 ? 0 : head + 1, 0, ...rows);
+  }
   showContextMenu(e.clientX, e.clientY, items);
 });
 
@@ -23044,7 +23523,7 @@ function initDesktop() {
   // the person and job panels behave like windows too:
   // drag + focus-raise + edge resize + content zoom
   ["#person-panel", "#group-panel", "#email-panel", "#job-panel",
-   "#jobdesc-panel", "#story-panel"].forEach((sel) => {
+   "#jobdesc-panel", "#story-panel", "#doc-panel"].forEach((sel) => {
     const panel = document.querySelector(sel);
     const head = panel.querySelector(".panel-head");
     makeDraggable(panel, head);
@@ -23194,6 +23673,7 @@ async function boot() {
     else openApp("launchpad");
   });
   initFindView();
+  initResumeView();
   window.initForge?.();
   initIdeas();
   routeHash();     // deep links (#subs-visuals, #atlas, #journal, …)
