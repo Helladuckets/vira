@@ -770,6 +770,31 @@
   <div class="panel-body note-body story-body" id="story-body"></div>
 </div>
 
+<!-- RESUME VIEWPORT (an application's resume or cover letter, rendered from
+     the package's own Word file, with the margin rail of definitions and
+     defensibility notes beside it. The PDF link is the pixel-true render;
+     this pane is the addressable one, which is what lets a term light up in
+     the text and a bubble anchor to it.) -->
+<div id="doc-panel" class="panel note-panel doc-panel">
+  <div class="panel-head">
+    <button class="icon-btn" id="doc-back">back</button>
+    <div class="panel-title" id="doc-title">Document</div>
+    <div class="seg doc-kind" id="doc-kind">
+      <button data-kind="resume" class="seg-btn on">Resume</button>
+      <button data-kind="cover" class="seg-btn">Cover letter</button>
+    </div>
+    <a class="icon-btn newtab" id="doc-pdf" target="_blank" rel="noopener"
+       title="Open the PDF render" style="margin-left:auto">pdf</a>
+  </div>
+  <div class="panel-body doc-body">
+    <div class="doc-main">
+      <div class="doc-page" id="doc-page"></div>
+      <div class="doc-tell" id="doc-tell"></div>
+    </div>
+    <div class="doc-rail" id="doc-rail"></div>
+  </div>
+</div>
+
 <!-- MEDIA VIEWER PANEL (a photo/video opens here as a focus window, over a
      blurred backdrop, the same way a profile does) -->
 <div id="viewer-panel" class="panel viewer-panel">
