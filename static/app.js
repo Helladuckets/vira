@@ -16640,17 +16640,12 @@ function selectedTextTarget(fallback) {
   return fallback instanceof Element ? fallback : null;
 }
 
-function showTouchSelectionMenu(target, x, y) {
-  if (isDesktop || !(target instanceof Element)
-      || target.closest(TOUCH_SELECTION_EDITABLE)) return false;
-  const text = selectedText();
-  if (!text) return false;
-  const ctx = ctxDescribe(target);
-  // The selection is the context even when the common ancestor is a larger
-  // card whose own text would otherwise win ctxDescribe's fallback.
-  ctx.snippet = text.slice(0, 200);
+// What a piece of selected text offers, wherever the selection was made. Held
+// in one place because two callers show it: the mobile long-press palette, and
+// the right-click menu inside a document frame (see wireFrameMenu).
+function selectionMenuItems(text, ctx, x, y) {
   const term = termFromSelection(text);
-  const items = [
+  return [
     { head: "Selected text", sub: text },
     term && { label: "Define “" + term + "”", run: () => openDefine(term) },
     { label: "Chat", hint: "vault", run: () => openFindChatDraft(text) },
@@ -16662,9 +16657,80 @@ function showTouchSelectionMenu(target, x, y) {
     { label: "Copy", run: () => copyText(text).then(
       () => toast("Copied"), () => alert("Copy failed")) },
   ];
-  showContextMenu(x, y, items, "ctx-selection");
+}
+
+function showTouchSelectionMenu(target, x, y) {
+  if (isDesktop || !(target instanceof Element)
+      || target.closest(TOUCH_SELECTION_EDITABLE)) return false;
+  const text = selectedText();
+  if (!text) return false;
+  const ctx = ctxDescribe(target);
+  // The selection is the context even when the common ancestor is a larger
+  // card whose own text would otherwise win ctxDescribe's fallback.
+  ctx.snippet = text.slice(0, 200);
+  showContextMenu(x, y, selectionMenuItems(text, ctx, x, y), "ctx-selection");
   return true;
 }
+
+// ---------- the menu inside a document frame ----------
+// The Reader and the viewer render documents in an iframe, and an iframe is a
+// separate document. The app's contextmenu listener is bound to THIS one, so a
+// right-click inside a dossier never reached it and fell through to the
+// browser's own menu; selectedText() reads this window's selection, so even a
+// forwarded event would have found nothing. Define — the one action you
+// actually want while reading — was therefore unavailable in the only place
+// long documents are read (owner, 2026-08-12).
+//
+// Only a SELECTION is intercepted. A right-click on nothing keeps the browser
+// menu, because inside a document that menu is still the useful one (open a
+// link in a new tab, save an image, go back), and replacing it with an app menu
+// about no text would be the worse trade.
+function frameSelectionText(frame) {
+  try {
+    const sel = frame.contentWindow?.getSelection?.();
+    if (!sel || sel.isCollapsed || !sel.rangeCount) return "";
+    return String(sel).trim().replace(/\s+/g, " ");
+  } catch {
+    return "";            // cross-origin: nothing readable, so no app menu
+  }
+}
+
+// Wired to the frame ELEMENT once, listening for load — every document that
+// frame goes on to show gets the handlers, including the next one after a src
+// change, without anything having to remember to call this again.
+function wireFrameMenu(frame) {
+  if (!frame || frame.dataset.ctxWired) return;
+  frame.dataset.ctxWired = "1";
+  frame.addEventListener("load", () => {
+    let doc = null;
+    try { doc = frame.contentDocument; } catch { return; }
+    if (!doc) return;
+    doc.addEventListener("contextmenu", (e) => {
+      if (e.shiftKey) return;             // same escape hatch as the app menu
+      const text = frameSelectionText(frame);
+      if (!text) return;                  // no selection: leave the browser's
+      e.preventDefault();
+      // The event's coordinates are relative to the frame's own viewport; the
+      // menu is placed in this document, so it needs the frame's offset.
+      const r = frame.getBoundingClientRect();
+      const x = r.left + e.clientX, y = r.top + e.clientY;
+      const ctx = ctxDescribe(frame);
+      ctx.snippet = text.slice(0, 200);
+      showContextMenu(x, y, selectionMenuItems(text, ctx, x, y), "ctx-selection");
+    });
+    // The menu dismisses on a pointerdown in THIS document. A click back inside
+    // the frame happens in another one, and the menu would otherwise sit there
+    // over a document the reader has moved on from.
+    doc.addEventListener("pointerdown", () => closeCtxPops(), true);
+  });
+}
+
+// The two frames that show DOCUMENTS: the viewer (every dossier, plan and
+// connected-folder file opened from the Reader) and the Reader's own stage.
+// The map, atlas, design and subscriptions frames are applications rather than
+// prose, and their own pages own their menus.
+wireFrameMenu($("#viewer-frame"));
+wireFrameMenu($("#reader-frame"));
 
 function scheduleTouchSelectionMenu(delay = 140) {
   clearTimeout(touchSelectionTimer);
