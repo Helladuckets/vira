@@ -4849,6 +4849,16 @@ a.rm-name:hover { color: var(--accent); }
   text-transform: uppercase; color: var(--oxidized);
   border: 1px solid var(--amber-line); border-radius: 3px; padding: 0 5px;
 }
+/* Sits ON the scored line, because that is where the owner learns the read
+   is old. Quiet at rest like .app-more — it is an offer beside a fact, not
+   a call to action competing with Apply. */
+.app-rescore {
+  font-size: 10.5px; font-family: var(--mono); letter-spacing: .04em;
+  color: var(--steel); background: none; border: 0; padding: 0;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+.app-rescore:hover { color: var(--accent); }
+.app-rescore:disabled { color: var(--text-faint); cursor: default; }
 
 /* applications: owner adjudication (picks pinned, cut lane demoted) */
 .tier-badge.pick {

@@ -179,6 +179,20 @@ class PollDiffAndNotify(unittest.TestCase):
             # than the machine it runs on.
             mock.patch.object(jobboards.settings, "raw",
                               return_value=NYC_CONFIG),
+            # The universe, pinned inside the fixture. maybe_auto_score's
+            # second phase (the stale-score drain) reaches the candidate
+            # universe and the owner's canon, and patching boards_dir does
+            # nothing about what a function READS — without these two the
+            # empty-backlog case built the real 962-role rescue queue off
+            # the owner's own self-record from inside a unit test.
+            # (patched on the applications module itself: jobboards imports
+            # it inside each function, so `jobboards.applications` is not an
+            # attribute to patch — and create=True there would invent a name
+            # nothing reads.)
+            mock.patch.object(applications, "universe_dir",
+                              return_value=self.dir),
+            mock.patch.object(applications, "load_universe",
+                              return_value=[]),
         ]
         for p in patches:
             p.start()
@@ -523,7 +537,7 @@ class AutoScore(PollDiffAndNotify):
                 mock.patch.object(jobboards, "_scored_uids",
                                   return_value=set()):
             r = jobboards.maybe_auto_score()
-        self.assertEqual(r["reason"], "nothing to score")
+        self.assertEqual(r["reason"], "nothing to score or rescore")
         self.assertNotIn("score", self._state())
 
     def test_dispatch_records_the_job_and_marks_it_machine(self):

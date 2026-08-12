@@ -43,6 +43,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                fixtures, groupchat, ideaimages, ideas, ideatags, imessage,
                jobboards,
                jobdesc,
+               jobrescore,
                jobfiles,
                joblog,
                journal,
@@ -785,6 +786,28 @@ def api_applications_description(uid: str, refresh: bool = False):
     if role is None:
         raise HTTPException(404, "unknown role")
     return jobdesc.describe(role, refresh=refresh)
+
+
+class AppRescoreReq(BaseModel):
+    mode: str = "current"
+
+
+@app.post("/api/applications/{uid}/rescore")
+def api_applications_rescore(uid: str, req: AppRescoreReq):
+    """Re-judge ONE role against the owner's record as it reads now.
+
+    `current` is one model pass over what Vira already holds; `refetch`
+    pulls the posting again first. The write goes through jobscores, which
+    is what stamps the provenance the staleness report reads.
+    """
+    try:
+        return jobrescore.rescore(uid, req.mode or "current")
+    except KeyError:
+        raise HTTPException(404, "unknown role")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except jobrescore.RescoreError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/applications/{uid}/evidence-map")

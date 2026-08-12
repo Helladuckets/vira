@@ -106,6 +106,8 @@
   "_boards_auto_score": "Score new eligible board roles automatically: after each sweep (and every few minutes between) the poller dispatches ONE scoring session at a time over the unscored backlog, batch-capped at 40 roles per session, gated on an AI actually being connected. false restores the manual Score-new button in the Applications boards strip.",
   "boards_score_model": "",
   "_boards_score_model": "Model for auto-dispatched scoring sessions. Empty = the session default (cli_model).",
+  "boards_auto_rescore": true,
+  "_boards_auto_rescore": "Once nothing is unscored, drain the STALE backlog the same way: roles whose analysis was written before your record last changed get re-judged, one session at a time behind the same guards, ordered tier-first then oldest so the roles you would act on come back first. This is real spend on a large backlog - false stops the drain and leaves the per-role Rescore button as the only path.",
   "pivot_keywords": [],
   "_pivot_keywords": "Extra words widening the Radar 'Reconnect — pivot' fingerprint (server/reconnect.py). The target companies and lanes are always derived live from the Applications universe; this only adds keywords the deterministic profile-overlap scan should also treat as pivot-relevant.",
   "whatsapp_bridge_port": 18377,

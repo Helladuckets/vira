@@ -922,10 +922,21 @@ def status():
         "unscored_eligible": unscored,
         "auto_score": auto_score_enabled(),
         "scoring": ({"job": sc.get("job"), "roles": sc.get("roles"),
-                     "at": sc.get("at"), "live": _score_job_live(sc)}
+                     "at": sc.get("at"), "live": _score_job_live(sc),
+                     "kind": sc.get("kind") or "board-score"}
                     if sc.get("job") else None),
         **_score_freshness(),
+        **_rescore_status(),
     }
+
+
+def _rescore_status():
+    """How much of the stale backlog is still queued, and whether the drain
+    is on. `jobrescore.status` is the one implementation — reported here so
+    the boards strip states the queue in the same sentence as the staleness
+    count it follows from."""
+    from . import jobrescore
+    return jobrescore.status()
 
 
 def _score_freshness():
@@ -949,8 +960,8 @@ def _scored_uids():
 
 # --------------------------------------------------------- score dispatch
 
-SCORE_SHAPE = ("uid, fit (0-100), tier, final_tier, lane, why_fit, "
-               "lead_with, caveat, comp_note, verdict")
+SCORE_SHAPE = ("uid, fit (0-100), screen (0-100), tier, final_tier, lane, "
+               "why_fit, lead_with, caveat, comp_note, verdict")
 
 
 def score_prompt(limit=40):
@@ -978,7 +989,6 @@ def score_prompt(limit=40):
     ruling = sorted(udir.glob("*owner-adjudication*.md"))
     prior = sorted(udir.glob("*-raw-scores.json"))
     facts = applications.self_record() / "canon" / "MASTER_HISTORY.md"
-    out_file = udir / f"{jobshared.now_iso()[:10]}-raw-scores.json"
 
     step = 1
 
@@ -1008,15 +1018,20 @@ def score_prompt(limit=40):
     lines.append(nxt(
         f"For each role write a role file at {udir}/candidate-universe/"
         "role/<uid>.json (uid, company, title, team, function, locations, "
-        "seniority, salaryMin, salaryMax, comp, url, tags, blurb) and "
-        f"append a score entry to {out_file} — a JSON array of objects: "
-        f"{SCORE_SHAPE}."))
+        "seniority, salaryMin, salaryMax, comp, url, tags, blurb)."))
+    lines.append(nxt(
+        "File every score with ONE call to mcp__vira__record_role_scores — "
+        f"scores_json is a JSON array of objects: {SCORE_SHAPE}. Do NOT "
+        "write or edit a score file by hand: the server validates each "
+        "entry and stamps when it was written and which canon it was "
+        "written against, and a score that supplied its own provenance "
+        "would defeat the staleness report those stamps feed. A refused "
+        "entry names its reason — fix and re-file only that one."))
     if prior:
-        names = ", ".join(p.name for p in prior)
         lines.append(nxt(
-            f"Do NOT modify the existing score files ({names}) or "
-            "owner-adjudication.json — they are prior passes and the "
-            "owner's own calls. Your entries go in the new file only."))
+            "Leave owner-adjudication.json and the older *-raw-scores.json "
+            "files alone — they are the owner's own calls and the record of "
+            "prior passes."))
     lines += ["", f"ROLES TO SCORE ({len(todo)}):"]
     for r in todo:
         lines.append(json.dumps(
@@ -1110,20 +1125,33 @@ def maybe_auto_score():
     if not routines._ai_ready():
         return {"ok": False, "reason": "no AI connected"}
     prompt, n = score_prompt()
+    kind = "board-score"
+    if not n:
+        # SECOND PHASE: nothing is unscored, so drain the stale backlog.
+        # Unscored roles come first on purpose — the owner cannot act on a
+        # role with no analysis at all, while a stale one at least says
+        # something. Both phases share ONE dispatch record, so the
+        # in-flight check and the 20-minute floor above cover them
+        # together; a second record would let two sessions run at once,
+        # which is exactly what that floor exists to prevent.
+        from . import jobrescore
+        if jobrescore.auto_rescore_enabled():
+            prompt, n = jobrescore.batch_prompt()
+            kind = "board-rescore"
     if not n:
         if sc:
             _record_score(None)     # done — clear the finished record
-        return {"ok": False, "reason": "nothing to score"}
+        return {"ok": False, "reason": "nothing to score or rescore"}
     try:
         from . import applications, session
         jid = session.sessions.launch(
             prompt, cwd=str(applications.self_record()),
             model=settings.raw().get("boards_score_model") or None,
-            meta={"kind": "board-score", "machine": True})
+            meta={"kind": kind, "machine": True})
     except ValueError as e:      # live-session cap — retry next tick
         return {"ok": False, "reason": str(e)[:160]}
-    _record_score({"job": jid, "at": _now(), "roles": n})
-    return {"ok": True, "job": jid, "roles": n}
+    _record_score({"job": jid, "at": _now(), "roles": n, "kind": kind})
+    return {"ok": True, "job": jid, "roles": n, "kind": kind}
 
 
 # ------------------------------------------------------------------ poller
