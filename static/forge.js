@@ -1758,85 +1758,23 @@
     }
   }
 
-  let runsTimer = null;
+  // The runs LIST lives in Work · Runs now, as one chronological stream
+  // over flows, stage sessions and unlanded work (app.js `loadRuns`) —
+  // ordering three sections by source put the newest run below two other
+  // lists. The Forge's own call sites (launching a Flow, opening the
+  // spatial view) drive that one loader rather than a second fetch and a
+  // second card shape. `setRuns` is how it feeds the spatial overlay back.
   async function loadForgeRuns() {
-    const host = q("#forge-runs");
-    if (!host) return;
-    if (runsTimer) { clearTimeout(runsTimer); runsTimer = null; }
+    if (typeof window.loadRuns === "function") return window.loadRuns();
     try {
       const data = await request("/api/circuits/runs?limit=24");
-      host.replaceChildren();
-      const runs = data.runs || [];
-      state.runs = runs;
-      renderSpatial();
-      if (!runs.length) {
-        host.appendChild(make("p", "hint", "No Flow runs yet. Launch one from Flows."));
-        return;
-      }
-      let active = false;
-      runs.forEach((run) => {
-        const card = make("article", `forge-run-card is-${run.status}`);
-        const head = make("header", "forge-run-head");
-        const identity = make("div");
-        identity.append(make("strong", "", run.circuit_name || run.circuit_id),
-          make("span", "", `${run.status} · ${new Date(run.started).toLocaleString()}`));
-        head.appendChild(identity);
-        if (run.status === "running") {
-          active = true;
-          const cancel = make("button", "fchip sm", "Cancel");
-          cancel.type = "button";
-          cancel.addEventListener("click", async () => {
-            await send(`/api/circuits/runs/${encodeURIComponent(run.id)}/cancel`, "POST", {});
-            loadForgeRuns();
-          });
-          head.appendChild(cancel);
-        }
-        card.append(head, make("p", "forge-run-input", run.input || ""));
-        const stages = make("div", "forge-run-stages");
-        (run.stages_def || []).forEach((definition) => {
-          const stage = (run.stages || {})[definition.id] || {};
-          const part = make("div", `forge-run-stage is-${stage.status || "pending"}`);
-          part.append(make("i"), make("strong", "", definition.name || definition.id),
-            make("span", "", stage.status || "pending"));
-          if (stage.job_id) {
-            part.classList.add("is-clickable");
-            part.addEventListener("click", () => window.openSession?.(stage.job_id));
-          }
-          if (stage.status === "waiting" && definition.mode === "approval") {
-            active = true;
-            const actions = make("div", "forge-run-approval");
-            const note = make("input"); note.placeholder = "Decision note (optional)";
-            const decide = async (approved) => {
-              await send(`/api/flows/runs/${encodeURIComponent(run.id)}/approval/${encodeURIComponent(definition.id)}`,
-                "POST", { approved, note: note.value });
-              loadForgeRuns();
-            };
-            const yes = make("button", "btn primary", "Approve"); yes.type = "button";
-            const no = make("button", "fchip sm", "Decline"); no.type = "button";
-            yes.addEventListener("click", () => decide(true));
-            no.addEventListener("click", () => decide(false));
-            actions.append(note, yes, no);
-            part.appendChild(actions);
-          }
-          stages.appendChild(part);
-        });
-        card.appendChild(stages);
-        if (run.result?.report?.text) {
-          const result = document.createElement("details");
-          result.className = "forge-run-result";
-          result.append(make("summary", "", `Result · ${run.result.report.name || run.result.report.stage}`),
-            make("pre", "", run.result.report.text));
-          card.appendChild(result);
-        }
-        if (run.error) card.appendChild(make("p", "forge-run-error", run.error));
-        host.appendChild(card);
-      });
-      if (active && (q("#work-live-pane")?.offsetParent || (state.view === "spatial" && q("#forge-spatial")?.offsetParent))) {
-        runsTimer = setTimeout(loadForgeRuns, 3000);
-      }
-    } catch (error) {
-      host.replaceChildren(make("p", "hint", `Flow runs unavailable: ${error.message}`));
-    }
+      setRuns(data.runs || []);
+    } catch (error) { /* the spatial view simply shows no run overlay */ }
+  }
+
+  function setRuns(runs) {
+    state.runs = runs || [];
+    renderSpatial();
   }
 
   function zoomAt(next, clientX, clientY) {
@@ -2104,7 +2042,6 @@
     q("#forge-zoom-in").addEventListener("click", () => state.view === "spatial" ? spatial?.zoom(1.12) : zoomAt(state.zoom * 1.12));
     q("#forge-zoom-out").addEventListener("click", () => state.view === "spatial" ? spatial?.zoom(.88) : zoomAt(state.zoom * .88));
     q("#forge-run-input").addEventListener("keydown", (event) => { if (event.key === "Enter") runFlow(false); });
-    q("#forge-runs-refresh")?.addEventListener("click", loadForgeRuns);
     bindViewport();
     bindLibraryDrag();
     bindLibraryResize();
@@ -2129,5 +2066,5 @@
   window.loadForgeRuns = loadForgeRuns;
   window.initForge = () => { bind(); };
   window.Forge = { state, load: loadForge, selectFlow, render: renderAll,
-    setLibrary: switchLibrary, openLibrary, openIdea };
+    setLibrary: switchLibrary, openLibrary, openIdea, setRuns };
 })();

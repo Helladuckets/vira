@@ -3583,31 +3583,138 @@ a.sub-name:hover { color: var(--accent); text-decoration: underline; }
 }
 .grp-thread { font-size: 11.5px; color: var(--text-dim); }
 .rec-sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; }
-/* Orphan-work sweeper rows (Work > Live, "Unlanded work"). Own class rather
-   than .card — there is no single "open" action for the row itself, only
-   the explicit buttons in .orphan-foot, so it must not inherit .card's
-   pointer cursor and imply a click target that does nothing. */
-.orphan-row {
-  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px 10px;
+/* ---- RUNS: one chronological stream (Work > Runs) ----
+   Flow runs, stage sessions and unlanded branches share ONE card shell, so
+   the list reads as one subject rather than three stacked sections ordered
+   by provenance. The only per-kind distinction is the quiet mono tag and
+   whatever body that kind hangs inside the shell. */
+.runs-bar { justify-content: flex-start; }
+/* The seg must be able to SHRINK and wrap internally — pinned at
+   flex: 0 0 auto its four buttons hold 360px and overhang a phone
+   column, which is the shrink-to-fit trap. */
+.runs-bar .seg.mini { margin: 0; flex: 1 1 240px; min-width: 0; }
+.runs-bar .idea-searchwrap { flex: 1 1 200px; }
+/* Day anchors WITHIN the chronology — never a lane above it. */
+.runs-day {
+  display: flex; align-items: center; gap: 8px;
+  margin: 14px 0 7px; font: 10px var(--mono);
+  text-transform: uppercase; letter-spacing: .18em; color: var(--text-faint);
+}
+.runs-day::after {
+  content: ""; flex: 1; height: 1px; background: var(--line);
+}
+.runs-list > .runs-day:first-child { margin-top: 2px; }
+/* No pointer cursor on the shell itself: only a SESSION card is
+   whole-card clickable (cardAction adds .card-actionable), and a flow or
+   unlanded card's targets are its own explicit controls. */
+.run-card {
+  position: relative;
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--bg-card); padding: 11px 13px; margin-bottom: 8px;
 }
-.orphan-row .link-main { flex: 1 1 220px; min-width: 0; }
+.run-card.is-running { border-left: 2px solid var(--accent); }
+.run-card.is-waiting { border-left: 2px solid var(--accent); }
+.run-card.is-done { border-left: 2px solid var(--green); }
+.run-card.is-error { border-left: 2px solid var(--red); }
+.run-card.is-unlanded { border-left: 2px solid var(--oxidized); }
+.run-head { display: flex; align-items: flex-start; gap: 10px; }
+.run-main { flex: 1 1 auto; min-width: 0; }
+.run-titlerow {
+  display: flex; align-items: baseline; gap: 8px; min-width: 0;
+}
+/* The flexible column, so a long branch or prompt never shoves the kind
+   tag off the card (the documented min-width:auto trap). */
+.run-title {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text-head);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.run-kind {
+  flex: none; font: 9px var(--mono); text-transform: uppercase;
+  letter-spacing: .1em; color: var(--text-faint);
+  border: 1px solid var(--line); border-radius: 2px; padding: 1px 5px;
+}
+.run-sub { margin-top: 3px; font-size: 12px; color: var(--text-dim); }
+.run-note {
+  margin-top: 7px; font-size: 12px; line-height: 1.45;
+  color: var(--text-dim); overflow-wrap: anywhere;
+}
+/* Evidence + outcome lines. Wrapping, never truncating an ancestor. */
+.run-ev {
+  margin-top: 3px; white-space: normal; overflow-wrap: anywhere;
+  font-size: 11.5px; color: var(--text-faint);
+}
+.run-foot {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  margin-top: 8px;
+}
+.run-stages { display: flex; align-items: stretch; gap: 5px;
+  margin-top: 8px; overflow-x: auto; }
+.run-stage {
+  position: relative; flex: none; min-width: 120px;
+  padding: 7px 9px 7px 17px; border: 1px solid var(--line);
+  border-radius: 2px; background: var(--bg-raised);
+}
+.run-stage > i {
+  position: absolute; top: 11px; left: 7px; width: 5px; height: 5px;
+  border-radius: 50%; background: var(--text-faint);
+}
+.run-stage.is-running > i { background: var(--accent);
+  box-shadow: 0 0 0 3px var(--sel-bg); }
+.run-stage.is-done > i { background: var(--green); }
+.run-stage.is-error > i { background: var(--red); }
+.run-stage.is-waiting { min-width: 260px; border-color: var(--accent-line); }
+.run-stage strong {
+  display: block; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 11px; font-weight: 500; color: var(--text);
+}
+.run-stage > span { font: 9px var(--mono); color: var(--text-faint); }
+.run-stage.is-clickable { cursor: pointer; }
+.run-approval {
+  display: grid; grid-template-columns: minmax(90px, 1fr) auto auto;
+  gap: 4px; margin-top: 7px;
+}
+.run-approval input {
+  min-width: 0; padding: 5px; font-size: 11px; color: var(--text);
+  border: 1px solid var(--line); background: var(--bg-window);
+}
+.run-result { margin-top: 8px; border-top: 1px solid var(--line); }
+.run-result summary { padding-top: 7px; font-size: 11px;
+  color: var(--text-dim); cursor: pointer; }
+.run-result pre {
+  max-height: 280px; margin-top: 7px; padding: 8px; overflow: auto;
+  background: var(--bg-stage); color: var(--text-dim);
+  font: 10px/1.5 var(--mono); white-space: pre-wrap;
+}
+.run-error { margin-top: 7px; font-size: 12px; color: var(--red);
+  overflow-wrap: anywhere; }
+/* The dismiss × sits in the corner rather than the flow — every kind's
+   body already owns the bottom edge. */
+.run-card > .idea-del { position: absolute; top: 7px; right: 8px; }
+.run-card.k-unlanded .run-titlerow { padding-right: 18px; }
+
+/* Orphan-work sweeper leftovers still used inside the shared shell. */
 .orphan-foot {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
-  flex: 1 0 100%; margin-top: 2px;
+  margin-top: 8px;
+}
+@media (max-width: 1099px) {
+  /* On touch a horizontal chip rail hides everything past the fold —
+     wrap instead. The widest single chip (is-waiting, 260px) still fits
+     a 402px column, so the rail's min-content stays under the phone. */
+  .run-stages { flex-wrap: wrap; overflow-x: visible; }
+  .run-stage { flex: 1 1 120px; }
+  /* The 16px mobile font floor makes the search box wide enough to strand
+     Refresh on a line of its own; give it the whole line and let the two
+     buttons pair up under it. */
+  .runs-bar .idea-searchwrap { flex: 1 0 100%; }
+  /* Actions never hide behind hover on a phone, so the title needs the
+     corner back only where the × actually sits. */
+  .run-title { white-space: normal; overflow: visible; }
 }
 .orphan-confirm-q {
   font-size: 12px; color: var(--text-dim); flex: 1 1 160px; min-width: 0;
 }
-.orphan-outcome { flex: 1 0 100%; white-space: normal; margin-top: 4px; }
-/* The evidence lines under an unlanded row: what was asked, the commit
-   subjects, the changed files. Wrapping, never truncating an ancestor —
-   the mobile-overflow rule. */
-.orphan-ev {
-  white-space: normal; overflow-wrap: anywhere;
-  font-size: 11.5px; color: var(--text-faint); margin-top: 2px;
-}
+.orphan-outcome { margin-top: 6px; }
 /* Vira's one-line read + recommended action. Toned by verdict; the
    matching action button wears .rec so the recommendation and the
    control agree at a glance. */

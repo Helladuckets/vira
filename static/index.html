@@ -323,20 +323,32 @@
       </div>
     </div>
 
+    <!-- RUNS — one chronological stream. Flow runs, stage sessions and
+         unlanded branches are three SOURCES of one subject (work this Vira
+         ran), and stacking them as three fixed sections ordered the list by
+         provenance: the newest thing that happened sat below two other
+         lists, and unlanded work — which is always recent — sat at the very
+         foot. See the RUNS block in app.js for the whole reasoning. -->
     <div id="work-live-pane" style="display:none">
-      <div class="work-subhead">
-        <span class="jobs-sub">Flow runs</span>
-        <button class="fchip sm" id="forge-runs-refresh" style="margin-left:auto">Refresh</button>
+      <div class="ideas-sortbar runs-bar">
+        <div class="seg mini" id="runs-filter">
+          <button data-run="all" class="seg-btn on">All</button>
+          <button data-run="unlanded" class="seg-btn">Unlanded</button>
+          <button data-run="flow" class="seg-btn">Flows</button>
+          <button data-run="session" class="seg-btn">Sessions</button>
+        </div>
+        <div class="idea-searchwrap">
+          <input id="runs-q" class="search" type="search"
+                 placeholder="Search runs — name, branch, status, what was asked"
+                 autocomplete="off" spellcheck="false">
+          <button id="runs-q-clear" class="idea-search-clear"
+                  title="Clear search" aria-label="Clear search">×</button>
+        </div>
+        <button class="fchip sm" id="runs-landall" hidden>Land all</button>
+        <button class="fchip sm" id="runs-refresh">Refresh</button>
       </div>
-      <div id="forge-runs" class="forge-runs"></div>
-      <div class="jobs-sub">Recent stage sessions</div>
-      <div id="jobs-list" class="list"></div>
-      <div class="work-subhead">
-        <span class="jobs-sub">Unlanded work</span>
-        <button class="fchip sm" id="orphan-landall" style="margin-left:auto">Land all</button>
-        <button class="fchip sm" id="orphan-refresh">Sweep now</button>
-      </div>
-      <div id="orphan-list" class="list"></div>
+      <div id="runs-count" class="idea-count"></div>
+      <div id="runs-list" class="runs-list"></div>
     </div>
 
     <div id="work-record-pane" style="display:none">
