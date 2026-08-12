@@ -868,6 +868,13 @@ def arm_if_stale(poller=None):
             "running": running, "fetched": fetched}
 
 
+def snapshot():
+    """The boards snapshot as read from disk — the public accessor for
+    modules that need to know which uids a board is currently serving
+    (jobscores.known_uids validates a proposed score against it)."""
+    return _read_json(_snapshot_path(), {})
+
+
 def state_mtime():
     """Mtime of the boards state, for cache keys in the catalog — without
     it a poll closing a role would not invalidate the universe cache and
@@ -917,7 +924,22 @@ def status():
         "scoring": ({"job": sc.get("job"), "roles": sc.get("roles"),
                      "at": sc.get("at"), "live": _score_job_live(sc)}
                     if sc.get("job") else None),
+        **_score_freshness(),
     }
+
+
+def _score_freshness():
+    """How much of the analysis was written against the CURRENT canon.
+
+    The owner's question that made this worth reporting: the canon and the
+    adjudication keep moving, so a score's age is not a curiosity — it is
+    whether the "why" on a role still reflects what he now says about
+    himself. Reported rather than acted on: nothing here rescores anything.
+    """
+    from . import applications, jobscores
+    st = jobscores.status(applications.universe_dir())
+    return {k: st[k] for k in ("canon_at", "scored_total", "scores_stale",
+                               "scores_current", "scores_unstamped")}
 
 
 def _scored_uids():

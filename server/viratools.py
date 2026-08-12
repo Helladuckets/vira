@@ -16,15 +16,17 @@ plane. This module closes that seam two ways:
   no localhost round-trip), so a session answers "do I have a doctor's
   appointment?" from the same code paths the Daily Brief renders.
 
-Read-only by construction, with TWO deliberate exceptions: propose_idea
-appends a status="proposed" item to the ideas backlog — a STAGING queue
-that the owner must approve before anything runs — and update_module_map
-replaces the system-map registry (data/modules.json) through a
-server-side validator that schema-checks the payload and refuses
-destructive replacements (the write path of the System-map refresh
-routine). Every other tool renders text from existing loaders. That
-containment is why the tools are auto-allowed in interactive sessions
-(no Approve/Deny round-trip) — see session.Session.auto_allow.
+Read-only by construction. The deliberate exceptions are enumerated ONCE,
+in WRITE_TOOLS at the foot of this file — a prose count here drifted to
+"TWO" while five had shipped, so the set is named where it is used and
+nowhere else. Every one of them follows the same discipline: the model
+PROPOSES a payload and a server-side validator schema-checks it and
+applies it, so a malformed proposal is refused with a message written for
+the model rather than landing on disk. propose_idea is the softest case
+(it only appends to a STAGING queue the owner must approve); every other
+tool renders text from existing loaders. That containment is why the
+tools are auto-allowed in interactive sessions (no Approve/Deny
+round-trip) — see session.Session.auto_allow.
 """
 import asyncio
 import datetime as dt
@@ -811,6 +813,60 @@ async def _t_configure_applications(args):
         _configure_applications_text, args.get("config_json")))
 
 
+def _record_role_scores_text(scores_json):
+    """The write path for job-role scores.
+
+    A BAD ENTRY LOSES ITSELF, NEVER THE BATCH. A scoring session deep-reads
+    up to forty postings before it files anything, so refusing the whole
+    array over one malformed tier would throw away the expensive part of the
+    run. Each entry is validated on its own; the reply names every refusal
+    with its reason so the session can fix those and re-file just them.
+    """
+    from . import jobscores
+    try:
+        rows = json.loads(scores_json or "")
+    except json.JSONDecodeError as e:
+        return (f"error: scores_json is not valid JSON ({e}). Pass a JSON "
+                "array of score objects.")
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list) or not rows:
+        return ("error: scores_json must be a non-empty JSON array of score "
+                "objects.")
+
+    try:
+        jobscores._refuse_if_passive()
+    except PermissionError as e:
+        return f"error: {e}."
+
+    known = jobscores.known_uids()
+    wrote, failed = [], []
+    for row in rows:
+        uid = str((row or {}).get("uid") or "?") if isinstance(row, dict) \
+            else "?"
+        try:
+            rec = jobscores.write(row, known=known or None)
+        except jobscores.ScoreError as e:
+            failed.append(f"{uid}: {e}")
+        except OSError as e:
+            failed.append(f"{uid}: could not be written ({e})")
+        else:
+            wrote.append(rec["uid"])
+
+    line = (f"recorded {len(wrote)} score(s): {', '.join(wrote[:12])}"
+            + (f" (+{len(wrote) - 12} more)" if len(wrote) > 12 else "")
+            if wrote else "recorded nothing")
+    if failed:
+        line += (f". {len(failed)} refused — fix and re-file only these: "
+                 + " | ".join(failed[:8]))
+    return line
+
+
+async def _t_record_role_scores(args):
+    return _txt(await asyncio.to_thread(
+        _record_role_scores_text, args.get("scores_json")))
+
+
 # ---------- the SDK server ----------
 
 # (name, description, input schema, handler). Schemas use the SDK's simple
@@ -913,6 +969,20 @@ TOOL_SPECS = [
      "data/config.json or the boards registry by hand. An EMPTY locations "
      "list means unfiltered; never guess a city.",
      {"config_json": str}, _t_configure_applications),
+    ("record_role_scores",
+     "File job-role scores into the candidate universe. Pass scores_json "
+     "as a JSON ARRAY of objects: uid (the role's board uid, required), "
+     "fit 0-100 (narrative resonance), screen 0-100 (screening "
+     "probability — the two-score discipline, kept separate), tier and "
+     "final_tier one of 1|2|3|pass|cut, lane, why_fit (required, under "
+     "1200 chars), lead_with, caveat, comp_note, verdict "
+     "confirm|demote|flag. The server validates each entry, stamps when it "
+     "was scored and against which canon, and writes one file per role — "
+     "NEVER write a *-raw-scores.json file yourself. Re-filing a uid "
+     "REPLACES its score and keeps the previous one recoverable, so this "
+     "is also how a rescore lands. A refused entry is named with its "
+     "reason and loses only itself.",
+     {"scores_json": str}, _t_record_role_scores),
     ("update_person_profile",
      "REPLACE a CRM person's dossier description with a refreshed one you "
      "researched. person is the person id (preferred) or an unambiguous "
@@ -956,6 +1026,7 @@ WRITE_TOOLS = {
     "mcp__vira__create_reading_room",
     "mcp__vira__add_reading_room_items",
     "mcp__vira__configure_applications",
+    "mcp__vira__record_role_scores",
     "mcp__vira__update_person_profile",
 }
 

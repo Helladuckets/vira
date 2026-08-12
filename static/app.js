@@ -15080,7 +15080,36 @@ async function loadBoardsStrip() {
   // flight, or the count still queued behind it.
   if (!scoringLive && s.auto_score !== false && s.unscored_eligible)
     line += ` · ${s.unscored_eligible} queued for auto-scoring`;
-  $("#app-boards-line").textContent = line;
+  // How much of the analysis still speaks for the CURRENT canon. Stated
+  // whenever any score predates the last change to the owner's record —
+  // silence here would read as "all of this is current", which is the one
+  // thing the count exists to stop.
+  //
+  // The canon's own date rides the line rather than only the tooltip: edit
+  // MASTER_HISTORY and EVERY earlier score goes stale at once, so a bare
+  // "1254 stale" reads as a fault when it is an expected consequence of
+  // something the owner did on purpose.
+  if (s.scored_total) {
+    const since = s.canon_at
+      ? new Date(s.canon_at).toLocaleDateString(undefined,
+          { month: "short", day: "numeric" })
+      : "";
+    let note = "";
+    if (s.scores_stale && s.scores_stale === s.scored_total)
+      note = since ? `, all predating your ${since} canon` : ", all stale";
+    else if (s.scores_stale)
+      note = `, ${s.scores_stale} predating`
+        + (since ? ` your ${since} canon` : " the current canon");
+    if (s.scores_unstamped) note += `, ${s.scores_unstamped} undated`;
+    line += ` · ${s.scored_total} scored${note}`;
+  }
+  const bl = $("#app-boards-line");
+  bl.textContent = line;
+  bl.title = s.canon_at
+    ? "A score is stale when it was written before your canon last changed "
+      + "(" + new Date(s.canon_at).toLocaleString() + "). Nothing is "
+      + "rescored automatically."
+    : "";
   const chip = $("#app-scoring");
   if (chip) {
     chip.style.display = scoringLive ? "" : "none";
@@ -15288,6 +15317,25 @@ function appSeen(r) {
   if (days === 0) return "listed today";
   if (days < 30) return `listed ${days}d ago`;
   return "listed " + d.toISOString().slice(0, 10);
+}
+
+// How old this role's ANALYSIS is — a different axis from how old the
+// posting is (appSeen above), and the one that matters when the owner's
+// canon keeps moving: a stale score means the "why" was written against a
+// record he has since changed. Reported, never acted on.
+// Past this many characters a dossier field clamps behind a more/less
+// toggle rather than filling the row.
+const DOSSIER_CLAMP = 600;
+
+function appScored(r) {
+  if (!r.scored_at) return "";
+  const d = new Date(r.scored_at);
+  if (isNaN(d)) return "";
+  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+  const when = days <= 0 ? "today"
+    : days < 30 ? days + "d ago"
+    : d.toISOString().slice(0, 10);
+  return "scored " + when;
 }
 
 function fmtComp(r) {
@@ -15612,6 +15660,16 @@ function appRow(r) {
     badge.title = "v1 auto-score (not deep-read in the repass)";
     title.appendChild(badge);
   }
+  if (r.screen != null) {
+    // The second half of the two-score discipline. It is deliberately NOT
+    // styled like fit: a high screening probability is not a good role, it
+    // is a reachable one, and one badge that looked like the other would
+    // read as a second opinion on the same question.
+    const s = el("span", "screen-badge", "screen " + r.screen);
+    s.title = "Screening probability — how likely this application is to "
+      + "clear the filter, scored separately from narrative fit";
+    title.appendChild(s);
+  }
   if (r.comp_kind === "ote")
     title.appendChild(el("span", "comp-chip", "OTE"));
   if (r.bucket) title.appendChild(el("span", "app-bucket", r.bucket));
@@ -15631,6 +15689,17 @@ function appRow(r) {
   }
   if (r.lane) main.appendChild(el("div", "app-lane", r.lane));
   else if (r.reason) main.appendChild(el("div", "app-reason", r.reason));
+  const scoredAge = appScored(r);
+  if (scoredAge) {
+    const line = el("div", "app-scored" + (r.score_stale ? " stale" : ""));
+    line.appendChild(document.createTextNode(scoredAge));
+    if (r.score_stale) {
+      line.appendChild(el("span", "app-stale-tag", "stale"));
+      line.title = "Written before your canon last changed — the read below "
+        + "may not reflect what your record now says.";
+    }
+    main.appendChild(line);
+  }
 
   const dossier = el("div", "app-dossier");
   dossier.style.display = "none";
@@ -15669,7 +15738,19 @@ function appRow(r) {
           if (!text) return;
           const line = el("div", "app-dossier-line");
           line.appendChild(el("b", null, label + ": "));
-          line.appendChild(el("span", null, text));
+          const span = el("span", null, text);
+          if (text.length > DOSSIER_CLAMP) {
+            span.className = "app-clamp";
+            const more = el("button", "app-more", "more");
+            more.addEventListener("click", () => {
+              more.textContent =
+                span.classList.toggle("open") ? "less" : "more";
+            });
+            line.appendChild(span);
+            line.appendChild(more);
+          } else {
+            line.appendChild(span);
+          }
           dossier.appendChild(line);
         });
       }

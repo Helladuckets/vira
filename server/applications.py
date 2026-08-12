@@ -436,6 +436,13 @@ def _universe_key(udir):
             parts.append((str(p), p.stat().st_mtime))
         except OSError:
             parts.append((str(p), None))
+    # The per-role score store is where a rescore lands, and a directory's
+    # own mtime does not move when a file inside it is rewritten in place —
+    # so the key folds in the newest mtime UNDER it. Without this a rescore
+    # writes correctly and the module keeps serving the old why_fit until
+    # some unrelated file happens to change (the jobboards.state_mtime seam).
+    from . import jobscores
+    parts.append(("scores", jobscores.dir_mtime(udir)))
     # corpus mtimes too: the universe joins apply URLs from the corpora
     return tuple(parts) + _sources_key(sources())
 
@@ -454,6 +461,10 @@ def load_universe():
     role_dir = udir / "candidate-universe" / "role"
     scores = jobshared.load_scores(udir)
     adj = _load_adjudication(udir)
+    from . import jobscores
+    # Computed ONCE per catalog load: canon_at stats two files, and asking
+    # it per role would stat them a thousand times to get one answer.
+    canon = jobscores.canon_at(udir)
     corpus = {r["uid"]: r for r in load_roles()[0]}
     from . import jobboards
     avail = jobboards.availability_map()
@@ -498,6 +509,13 @@ def load_universe():
                 "equity": bool(cr.get("equity")),
                 "comp_kind": j.get("comp") or "",       # base / ote / hourly
                 "fit": sc.get("fit") if sc else None,   # v2 repass score
+                # The OTHER half of the two-score discipline the scoring
+                # prompt has always mandated: narrative resonance (fit) and
+                # screening probability (screen), separately. 1,204 entries
+                # carried it and nothing read it until 2026-08-12.
+                "screen": sc.get("screen") if sc else None,
+                "scored_at": (sc.get("scored_at") or "") if sc else "",
+                "score_stale": bool(sc) and jobscores.is_stale(sc, canon),
                 "fit_old": j.get("fit_old"),            # v1 auto-score
                 "tier": tier,
                 "lane": sc.get("lane") or "",
