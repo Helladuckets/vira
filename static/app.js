@@ -19274,6 +19274,12 @@ function openReaderItem(it) {
   if (it.missing) { toast("That document is no longer where it was saved."); return; }
   if (it.locator_kind === "plan") { openPlan(it.ref || it.locator); return; }
   if (it.locator_kind === "vault") { openNote(it.locator, it.title); return; }
+  // A connected folder sits outside static/, so its documents have no URL of
+  // their own — the server serves them by entry id, re-checking containment.
+  if (it.locator_kind === "file") {
+    openViewer("/api/reading/file/" + encodeURIComponent(it.id));
+    return;
+  }
   openViewer(it.locator);
 }
 
@@ -19783,10 +19789,14 @@ function rdocGroupLabel(key) {
 
 // Newest first; a walkthrough leads its own date — the film is the thing
 // you actually want to look at. Shared by both views.
-function rdocSortNew(items) {
+// `strict` drops the films-first tiebreak. Inside a band that tiebreak is a
+// nicety; in the flat library it is the last place kind still reorders the
+// list after the owner asked for newest-first and nothing else.
+function rdocSortNew(items, strict = false) {
   return items.slice().sort((a, b) => {
     const d = String(b.created || "").localeCompare(String(a.created || ""));
     if (d) return d;
+    if (strict) return 0;
     return (a.kind === "walkthrough" ? -1 : 0)
       - (b.kind === "walkthrough" ? -1 : 0);
   });
@@ -19930,6 +19940,9 @@ function renderReaderDocs(opts = {}) {
 // actually on screen.
 
 const RDG_LINE_CAP = 14;
+// The flat library is one section rather than several, so it can afford more
+// rows before the "+ N more" than a single band inside a group can.
+const RDG_FLAT_CAP = 48;
 let rdgMore = new Set();   // line bands shown past the cap — session-only
 let rdgObs = null;         // reveal observer, rebuilt per render
 let rdgVidObs = null;      // film-loop attach/detach observer
@@ -20026,6 +20039,17 @@ function rdgSection(g) {
     g.key ? rdocGroupLabel(g.key) : "The library"));
   head.appendChild(el("div", "rdg-rule"));
   sec.appendChild(head);
+
+  // Flat means flat. "Nothing (flat, newest first)" turns the outer grouping
+  // off, and the per-kind bands below quietly put it back — session films,
+  // then plans and dossiers, then retros and briefs — so the library still
+  // read as grouped to anyone who had just asked for no grouping (owner,
+  // 2026-08-12). One stream, strict newest first, every kind mixed.
+  if (!rdocGroup) {
+    sec.appendChild(rdgStream(g.items));
+    rdgWatch(sec);
+    return sec;
+  }
 
   // The bands — the group grouped within itself, by kind. Band labels only
   // render when a section holds more than one band, so a pure-retro group
@@ -20141,6 +20165,29 @@ function rdgTile(it, i) {
 // Retros and briefs: CARDS too (owner's call, 2026-08-05 — a widescreen grid
 // view has no business collapsing to a single-column list), just denser than
 // the plan tiles. The named fold survives — never a silent cap.
+// The ungrouped library: one date-ordered stream, films rendered as films and
+// everything else as tiles, in a single grid so nothing is banded by kind.
+// Capped like the bands are, for the same reason — the cap is about how much
+// DOM one section drops at once, not about hiding a kind.
+function rdgStream(items) {
+  const grid = el("div", "rdg-stream");
+  const sorted = rdocSortNew(items, true);
+  const expanded = rdgMore.has("flat");
+  const show = expanded ? sorted : sorted.slice(0, RDG_FLAT_CAP);
+  show.forEach((it, i) => grid.appendChild(
+    it.kind === "walkthrough" ? rdgFilm(it, i) : rdgTile(it, i)));
+  if (!expanded && sorted.length > RDG_FLAT_CAP) {
+    const more = el("button", "rdg-more-tile",
+      "+ " + (sorted.length - RDG_FLAT_CAP) + " more");
+    more.addEventListener("click", () => {
+      rdgMore.add("flat");
+      renderReaderDocs();
+    });
+    grid.appendChild(more);
+  }
+  return grid;
+}
+
 function rdgMinorBand(items, bandKey) {
   const grid = el("div", "rdg-tiles rdg-minor");
   const sorted = rdocSortNew(items);

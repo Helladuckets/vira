@@ -1757,6 +1757,26 @@ def api_reading_list_item(item_id: str):
     return out
 
 
+@app.get("/api/reading/file/{item_id}")
+def api_reading_file(item_id: str):
+    """Serve a document that lives in a connected folder (locator_kind
+    `file`), which is the one source outside static/ with no URL of its own.
+
+    The path is never taken from the request. It comes from the entry, and
+    readinglist.source_path re-checks containment against the CURRENT
+    `reader_sources` on every call, so disconnecting a folder stops this route
+    serving out of it without any other cleanup."""
+    it = readinglist.get(item_id)
+    if not it or it.get("locator_kind") != "file":
+        raise HTTPException(404, "no such document")
+    p = readinglist.source_path(it)
+    if not p or not p.is_file():
+        raise HTTPException(404, "that document is no longer where it was saved")
+    kind = "text/html" if p.suffix.lower() in (".html", ".htm") else "text/plain"
+    return FileResponse(p, media_type=f"{kind}; charset=utf-8",
+                        headers={"X-Content-Type-Options": "nosniff"})
+
+
 @app.get("/api/reading/thumb/{item_id}")
 def api_reading_thumb(item_id: str):
     """A document's rendered face (server/docthumbs.py). The id is validated

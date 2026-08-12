@@ -5851,6 +5851,14 @@ textarea.fd-input { resize: vertical; line-height: 1.45; }
 .rdg-tiles.rdg-minor {
   grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
 }
+/* The ungrouped library: films and documents in ONE stream, so the column is
+   wide enough for a film's 16:10 frame and a tile sits happily in the same
+   cell. No bands, because the owner asked for none. */
+.rdg-stream {
+  display: grid; gap: 14px; padding: 2px 2px 8px;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  align-items: start;
+}
 /* An HTML document's rendered face, when the thumbnailer has one. */
 .rdg-tileframe {
   position: relative; margin: -12px -12px 9px; aspect-ratio: 16 / 10;

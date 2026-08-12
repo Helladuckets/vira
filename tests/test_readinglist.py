@@ -556,3 +556,87 @@ class WalkthroughResolutionTests(Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConnectedFolderTests(Base):
+    """Folders outside the checkout, connected through `reader_sources`.
+
+    The seam matters more than the feature. A connected folder is READ: its
+    documents are soft pointers like every other source, nothing is copied, and
+    containment is re-checked on every resolution so that removing a folder
+    from the config is by itself enough to stop the server reaching into it."""
+
+    def setUp(self):
+        super().setUp()
+        self.connected = Path(self.tmp.name) / "connected"
+        self.connected.mkdir()
+        self.sources = [{"path": str(self.connected), "kind": "dossier"}]
+
+    def _setting(self, key):
+        if key == "reader_sources":
+            return self.sources
+        return str(self.vault) if key == "vault_root" else ""
+
+    def html(self, name, title):
+        p = self.connected / name
+        p.write_text(
+            f"<html><head><title>{title}</title></head><body>x</body></html>",
+            encoding="utf-8")
+        return p
+
+    def test_a_connected_file_is_swept_in_under_its_own_title(self):
+        p = self.html("why-anthropic.html", "Why Anthropic")
+        readinglist.backfill()
+        rows = [r for r in readinglist.queue() if r["locator_kind"] == "file"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "Why Anthropic")
+        self.assertEqual(rows[0]["kind"], "dossier")
+        self.assertEqual(readinglist.source_path(rows[0]), p.resolve())
+
+    def test_a_bundle_directory_is_taken_by_its_index(self):
+        d = self.connected / "dossier-with-assets"
+        d.mkdir()
+        (d / "index.html").write_text("<html><body>no title</body></html>",
+                                      encoding="utf-8")
+        readinglist.backfill()
+        rows = [r for r in readinglist.queue() if r["locator_kind"] == "file"]
+        self.assertEqual([r["title"] for r in rows], ["dossier-with-assets"])
+
+    def test_nothing_configured_sweeps_nothing(self):
+        self.html("stray.html", "Stray")
+        self.sources = []
+        readinglist.backfill()
+        self.assertEqual(
+            [r for r in readinglist.queue() if r["locator_kind"] == "file"], [])
+
+    def test_disconnecting_the_folder_makes_its_documents_missing(self):
+        self.html("doc.html", "Doc")
+        readinglist.backfill()
+        row = [r for r in readinglist.queue() if r["locator_kind"] == "file"][0]
+        self.sources = []
+        self.assertIsNone(readinglist.source_path(row))
+        self.assertTrue(readinglist._missing(row))
+
+    def test_a_glob_may_not_reach_outside_the_folder(self):
+        outside = Path(self.tmp.name) / "outside"
+        outside.mkdir()
+        (outside / "secret.html").write_text("<html></html>", encoding="utf-8")
+        self.html("kept.html", "Kept")
+        self.sources = [{"path": str(self.connected), "glob": "../outside/*.html"}]
+        readinglist.backfill()
+        rows = [r for r in readinglist.queue() if r["locator_kind"] == "file"]
+        self.assertEqual([r["title"] for r in rows], ["Kept"])
+
+    def test_source_path_refuses_a_locator_outside_every_root(self):
+        outside = Path(self.tmp.name) / "outside.html"
+        outside.write_text("<html></html>", encoding="utf-8")
+        it = readinglist.register("Outside", "dossier", outside.as_posix(), "file")
+        self.assertIsNone(readinglist.source_path(it))
+
+    def test_a_malformed_row_is_skipped_rather_than_fatal(self):
+        self.html("good.html", "Good")
+        self.sources = ["not a dict", {"kind": "dossier"}, {"path": ""},
+                        {"path": str(self.connected)}]
+        readinglist.backfill()
+        rows = [r for r in readinglist.queue() if r["locator_kind"] == "file"]
+        self.assertEqual([r["title"] for r in rows], ["Good"])
