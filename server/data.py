@@ -238,7 +238,16 @@ def _backup_profile(path, pid):
     a bare collision suffix sorts '-1' BEFORE '.', so lexical and
     chronological order would disagree the moment two writes share a second.
     Never let a failed backup fail the write — the snapshot is insurance,
-    not the transaction."""
+    not the transaction.
+
+    The 2026-08-10 data audit flagged this path as never having produced
+    an artifact (no crm backups/profiles/ on disk). That is absence of
+    WRITES, not dead code: the last Vira profile write predates this
+    shipping (2026-07-28 vs 2026-08-04), and the path was re-verified
+    end-to-end against a temp CRM on 2026-08-10 — snapshot, sequence
+    suffix and dedup all behave. The directory appears on the first
+    profile write; the CRM-side p_*.prev.json twin likewise appears only
+    when synthesize_profiles rebuilds an EXISTING profile."""
     try:
         d = _backups()
         d.mkdir(parents=True, exist_ok=True)
