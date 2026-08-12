@@ -15103,18 +15103,29 @@ async function loadBoardsStrip() {
     if (s.scores_unstamped) note += `, ${s.scores_unstamped} undated`;
     line += ` · ${s.scored_total} scored${note}`;
   }
+  // The stale backlog drains behind the unscored one, so the queue is
+  // stated only while it is actually the thing being worked — with new
+  // roles still waiting, saying "962 queued for rescoring" would name a
+  // number nothing is currently spending against.
+  if (!scoringLive && s.auto_rescore !== false && s.rescore_queue
+      && !s.unscored_eligible)
+    line += ` · ${s.rescore_queue} queued for rescoring`;
   const bl = $("#app-boards-line");
   bl.textContent = line;
   bl.title = s.canon_at
     ? "A score is stale when it was written before your canon last changed "
-      + "(" + new Date(s.canon_at).toLocaleString() + "). Nothing is "
-      + "rescored automatically."
+      + "(" + new Date(s.canon_at).toLocaleString() + "). "
+      + (s.auto_rescore === false
+         ? "Automatic rescoring is off — use Rescore on a role."
+         : "The stale backlog is re-judged one session at a time, roles "
+           + "you would act on first.")
     : "";
   const chip = $("#app-scoring");
   if (chip) {
     chip.style.display = scoringLive ? "" : "none";
     if (scoringLive) {
-      chip.textContent = `Scoring ${s.scoring.roles} — watch`;
+      const verb = s.scoring.kind === "board-rescore" ? "Rescoring" : "Scoring";
+      chip.textContent = `${verb} ${s.scoring.roles} — watch`;
       chip.dataset.jid = s.scoring.job || "";
     }
   }
@@ -15336,6 +15347,48 @@ function appScored(r) {
     : days < 30 ? days + "d ago"
     : d.toISOString().slice(0, 10);
   return "scored " + when;
+}
+
+// Re-judge one role against the record as it reads now. Two depths behind
+// ONE control, the profile-refresh shape (server/jobrescore.py is that
+// module's sibling): the cheap pass re-reads what Vira already holds, and
+// the deeper one refetches the posting first because a posting's own text
+// can have changed since the sweep stored it.
+async function appRescore(r, mode, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = mode === "refetch" ? "refetching…" : "rescoring…";
+  try {
+    const out = await post(`/api/applications/${r.uid}/rescore`, { mode });
+    if (out.status !== "ok") { toast(out.note || "No rescore."); return; }
+    const was = out.was || {};
+    const now = out.score || {};
+    const moved = was.fit != null && was.fit !== now.fit
+      ? ` — fit ${was.fit} → ${now.fit}` : "";
+    toast(`Rescored${moved}.`);
+    await loadApplications();
+  } catch (e) {
+    toast("Rescore failed: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+function appRescoreBtn(r) {
+  const btn = el("button", "app-rescore", "rescore");
+  btn.title = "Re-judge this role against your record as it reads now";
+  btn.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    showContextMenu(ev.clientX, ev.clientY, [
+      { head: "Rescore this role" },
+      { label: "Rescore from what we have",
+        run: () => appRescore(r, "current", btn) },
+      { label: "Refetch the posting and rescore",
+        run: () => appRescore(r, "refetch", btn) },
+    ]);
+  });
+  return btn;
 }
 
 function fmtComp(r) {
@@ -15698,6 +15751,9 @@ function appRow(r) {
       line.title = "Written before your canon last changed — the read below "
         + "may not reflect what your record now says.";
     }
+    // The fix belongs where the owner LEARNS the read is old, not down in
+    // the action row: this line is the one that says so.
+    line.appendChild(appRescoreBtn(r));
     main.appendChild(line);
   }
 
@@ -17227,6 +17283,18 @@ function ctxDescribe(target) {
       ctx.component = "Reader: " + (rmRoom?.title || "room");
       ctx.target = { menu: "this item", note: "Reading item", text: it.title };
     }
+  } else if (target.closest(".app-row")?.dataset.uid) {
+    // A role row is the subject, not the Applications window around it —
+    // the same content-outranks-chrome rule a reading-room card follows.
+    const ar = target.closest(".app-row");
+    const role = (appsData?.roles || []).find((x) => x.uid === ar.dataset.uid);
+    if (role) {
+      ctx.role = role;
+      ctx.component = "Applications";
+      ctx.target = { menu: "this role", note: "Job role",
+                     text: [role.company, role.title].filter(Boolean)
+                       .join(" — ") };
+    }
   } else if (target.closest(".lw-rule")) {
     // a standing-rule row (RECORD > Rules) is the subject, not the window
     const rr = target.closest(".lw-rule");
@@ -17915,6 +17983,30 @@ document.addEventListener("contextmenu", (e) => {
       label: "Copy link",
       run: () => copyText(it.url).then(() => toast("Link copied"),
                                        () => alert("Copy failed")),
+    });
+    items.push({ sep: true });
+  }
+
+  // A job role: re-judge it against the record as it reads now. Offered
+  // only where a score exists to revise — rescoring nothing is the
+  // unscored pass's job, and a row that cannot act is worse than none.
+  if (ctx.role) {
+    const role = ctx.role;
+    if (role.scored_at) {
+      const btn = () => t.closest(".app-row")?.querySelector(".app-rescore");
+      items.push({
+        label: "Rescore from what we have",
+        hint: role.score_stale ? "stale" : "",
+        run: () => appRescore(role, "current", btn() || el("button")),
+      });
+      items.push({
+        label: "Refetch the posting and rescore",
+        run: () => appRescore(role, "refetch", btn() || el("button")),
+      });
+    }
+    if (role.url) items.push({
+      label: "Open the posting", hint: "new tab",
+      run: () => window.open(role.url, "_blank", "noopener"),
     });
     items.push({ sep: true });
   }
