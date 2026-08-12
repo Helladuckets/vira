@@ -3687,6 +3687,36 @@ a.sub-name:hover { color: var(--accent); text-decoration: underline; }
 }
 .run-error { margin-top: 7px; font-size: 12px; color: var(--red);
   overflow-wrap: anywhere; }
+/* The unlanded card's full-context disclosure. Its own scroll box, so a
+   200-commit branch cannot make the card taller than the list. */
+.run-ctx-body {
+  max-height: 420px; margin-top: 8px; padding-right: 4px; overflow-y: auto;
+  font-size: 12px; color: var(--text-dim);
+}
+.run-ctx-h {
+  margin: 10px 0 4px; font: 9px var(--mono); text-transform: uppercase;
+  letter-spacing: .12em; color: var(--text-faint);
+}
+.run-ctx-h:first-child { margin-top: 0; }
+.run-ctx-line { overflow-wrap: anywhere; }
+.run-ctx-meta { font-size: 11px; color: var(--text-faint); margin-top: 1px; }
+.run-ctx-sha { font: 10px var(--mono); color: var(--accent); }
+.run-ctx-commit {
+  padding: 5px 0; border-bottom: 1px solid var(--line);
+}
+.run-ctx-commit:last-child { border-bottom: 0; }
+.run-ctx-pre {
+  margin: 4px 0 0; padding: 7px 8px; max-height: 260px; overflow: auto;
+  background: var(--bg-stage); color: var(--text-dim);
+  font: 10px/1.55 var(--mono); white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.run-ctx-note { color: var(--oxidized); font-size: 11.5px; margin-bottom: 4px; }
+.run-ctx-sub { margin-top: 10px; border-top: 1px solid var(--line); }
+.run-ctx-sub summary {
+  padding-top: 8px; font-size: 11px; color: var(--text-dim); cursor: pointer;
+}
+.run-ctx-sub .fchip { margin-top: 6px; }
 /* The dismiss × sits in the corner rather than the flow — every kind's
    body already owns the bottom edge. */
 .run-card > .idea-del { position: absolute; top: 7px; right: 8px; }

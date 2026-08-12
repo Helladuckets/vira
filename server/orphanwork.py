@@ -173,19 +173,26 @@ def _job_for_branch(branch, ledger_by_branch):
             "prompt_head": " ".join((row.get("prompt") or "").split())[:280]}
 
 
-def _dirty_files(dirty_lines):
-    """Porcelain lines -> the changed paths, capped. The 3-char status
-    prefix is fixed-width ("XY "); a rename reads "old -> new" and the
-    NEW path is the one worth showing."""
+def _porcelain_path(line):
+    """One porcelain line -> the changed path. The 3-char status prefix is
+    fixed-width ("XY "); a rename reads "old -> new" and the NEW path is
+    the one worth showing."""
+    rel = (line or "")[3:].strip()
+    if " -> " in rel:
+        rel = rel.split(" -> ", 1)[1]
+    return rel.strip('"')
+
+
+def _dirty_files(dirty_lines, limit=12):
+    """Porcelain lines -> the changed paths, capped for the sweep payload.
+    `context()` passes a far larger limit — a row is a summary, a decision
+    is not."""
     files = []
-    for line in (dirty_lines or [])[:24]:
-        rel = line[3:].strip()
-        if " -> " in rel:
-            rel = rel.split(" -> ", 1)[1]
-        rel = rel.strip('"')
+    for line in (dirty_lines or [])[:max(limit * 2, 24)]:
+        rel = _porcelain_path(line)
         if rel:
             files.append(rel)
-    return files[:12]
+    return files[:limit]
 
 
 def _branch_commits(branch, ahead):
@@ -533,6 +540,82 @@ def resume_prompt(item):
     """The composed resume prompt — also servable read-only for a passive
     instance to copy into another session (the apply-prompt pattern)."""
     return RESUME_PROMPT.format(**_prompt_fields(item))
+
+
+# Row caps exist so the sweep payload stays small — every item is fetched
+# on every render. They are the WRONG caps for a decision: the row shows
+# 6 of 24 files and 8 commits truncated to 160 characters, which is a
+# summary, and the owner is being asked to land or destroy the work behind
+# it. `context()` is the unsummarized read, fetched only when he opens it.
+CONTEXT_LOG = 200           # unmerged commits, with bodies
+CONTEXT_STATUS = 400        # porcelain lines
+
+
+def context(item):
+    """Everything known about one unlanded item, uncapped-in-practice and
+    READ-ONLY: the originating job's full prompt, every unmerged commit,
+    every changed file, and the exact prompt a Resume would dispatch.
+
+    Nothing here launches, writes or sweeps — it is the review a decision
+    needs, and it is deliberately safe to open on a passive instance."""
+    wt = item.get("worktree") or ""
+    branch = item.get("branch") or ""
+    out = {"branch": branch, "worktree": wt, "kind": item.get("kind"),
+           "prompt": "", "job": item.get("job"),
+           "commits": [], "files": [], "status": "",
+           "resume_prompt": "", "notes": []}
+
+    job = item.get("job") or {}
+    if job.get("id"):
+        # prompt_head on the row is squeezed to 280 chars for the sweep;
+        # the ledger still holds what was actually asked.
+        row = next((r for r in joblog.list_records()
+                    if r.get("id") == job["id"]), None)
+        if row:
+            out["prompt"] = row.get("prompt") or ""
+    if not out["prompt"]:
+        out["prompt"] = job.get("prompt_head") or ""
+
+    if branch and item.get("ahead"):
+        lg = gitutil.git(ROOT, "log", "--format=%H%x00%s%x00%an%x00%ad%x00%b%x01",
+                         "--date=short", f"main..{branch}",
+                         "-n", str(CONTEXT_LOG), timeout=30)
+        if lg.returncode == 0:
+            for rec in (lg.stdout or "").split("\x01"):
+                parts = rec.strip("\n").split("\x00")
+                if len(parts) < 4 or not parts[0].strip():
+                    continue
+                out["commits"].append({
+                    "sha": parts[0].strip()[:12], "subject": parts[1],
+                    "author": parts[2], "date": parts[3],
+                    "body": (parts[4].strip() if len(parts) > 4 else ""),
+                })
+        else:
+            out["notes"].append("could not read the commit log")
+
+    if wt:
+        st = gitutil.git(Path(wt), "status", "--porcelain", timeout=30)
+        if st.returncode == 0:
+            lines = [l for l in (st.stdout or "").splitlines() if l.strip()]
+            # The cap is REPORTED, never silent — a decision made against a
+            # list that quietly stopped is the failure this view exists to
+            # end (the no-silent-caps rule).
+            if len(lines) > CONTEXT_STATUS:
+                out["notes"].append(
+                    f"{len(lines) - CONTEXT_STATUS} more changed paths not shown")
+            out["status"] = "\n".join(lines[:CONTEXT_STATUS])
+            out["files"] = _dirty_files(lines[:CONTEXT_STATUS], CONTEXT_STATUS)
+        else:
+            out["notes"].append("could not read the worktree status")
+        try:
+            out["resume_prompt"] = resume_prompt(item)
+        except Exception:
+            out["notes"].append("could not compose the resume prompt")
+    elif item.get("kind") != "unpushed":
+        out["notes"].append(
+            "no worktree on disk — Resume cannot run until one is recreated "
+            "with scripts/branch.sh")
+    return out
 
 
 def resume(item):

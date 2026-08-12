@@ -6882,6 +6882,93 @@ function orphanBits(it) {
   return bits.join(" · ") || "unlanded";
 }
 
+// The row's evidence lines are a SUMMARY — 6 of 24 files, commit subjects
+// truncated to 160 characters — and the decision under them is land,
+// resume or destroy. This is the unsummarized read, on the same
+// disclosure the flow Result uses (owner, 2026-08-12: "I'd love to be
+// able to review all of the available context before making a decision").
+//
+// Fetched on FIRST EXPAND, never with the sweep: the sweep runs on every
+// view open and this shells out to git per item. Read-only end to end, so
+// it opens on a passive instance exactly as it does on live.
+function orphanContext(it) {
+  const box = document.createElement("details");
+  box.className = "run-result run-ctx";
+  box.appendChild(el("summary", "", "Full context — the whole prompt, "
+    + "every commit, every changed file"));
+  const body = el("div", "run-ctx-body", "Reading the worktree…");
+  box.appendChild(body);
+  let loaded = false;
+  box.addEventListener("toggle", async () => {
+    if (!box.open || loaded) return;
+    loaded = true;
+    try {
+      fillOrphanContext(body,
+        await api("/api/orphanwork/context?key=" + encodeURIComponent(it.key)));
+    } catch (e) {
+      loaded = false;                       // a failed read may be retried
+      body.textContent = "Could not read the context: " + errText(e);
+    }
+  });
+  return box;
+}
+
+function fillOrphanContext(body, c) {
+  body.innerHTML = "";
+  const section = (title, node) => {
+    if (!node) return;
+    body.appendChild(el("div", "run-ctx-h", title));
+    body.appendChild(node);
+  };
+  // Anything the read could not see is stated, never left to look like an
+  // absence — the row is about to be acted on.
+  (c.notes || []).forEach((n) => body.appendChild(el("div", "run-ctx-note", n)));
+
+  if (c.job) {
+    section("The session that started this", el("div", "run-ctx-line",
+      [c.job.title, c.job.status && "ended " + c.job.status,
+       c.job.id && "job " + c.job.id].filter(Boolean).join(" · ")));
+  }
+  if (c.prompt) section("What it was asked", el("pre", "run-ctx-pre", c.prompt));
+  if (c.commits && c.commits.length) {
+    const list = el("div", "run-ctx-commits");
+    c.commits.forEach((cm) => {
+      const row = el("div", "run-ctx-commit");
+      const top = el("div", "run-ctx-line");
+      top.appendChild(el("code", "run-ctx-sha", cm.sha));
+      top.appendChild(document.createTextNode(" " + cm.subject));
+      row.appendChild(top);
+      row.appendChild(el("div", "run-ctx-meta",
+        [cm.author, cm.date].filter(Boolean).join(" · ")));
+      if (cm.body) row.appendChild(el("pre", "run-ctx-pre", cm.body));
+      list.appendChild(row);
+    });
+    section(`Unmerged commits (${c.commits.length})`, list);
+  }
+  if (c.status) {
+    section(`Uncommitted changes (${c.files.length})`,
+      el("pre", "run-ctx-pre", c.status));
+  }
+  if (c.resume_prompt) {
+    // What a Resume would actually SEND. Reviewing the decision means
+    // reading the instruction, not inferring it from a button label.
+    const inner = document.createElement("details");
+    inner.className = "run-ctx-sub";
+    inner.appendChild(el("summary", "", "The prompt a Resume would send"));
+    inner.appendChild(el("pre", "run-ctx-pre", c.resume_prompt));
+    const copy = el("button", "fchip sm", "Copy prompt");
+    copy.addEventListener("click", async () => {
+      await copyText(c.resume_prompt);
+      toast("Resume prompt copied");
+    });
+    inner.appendChild(copy);
+    body.appendChild(inner);
+  }
+  if (!body.childElementCount) {
+    body.appendChild(el("div", "run-ctx-note", "Nothing more on file."));
+  }
+}
+
 function orphanBody(card, it) {
   // The evidence the decision needs, on the row (owner, 2026-08-05: "I
   // just have to arbitrarily decide"): what was asked, what the commits
@@ -6908,6 +6995,8 @@ function orphanBody(card, it) {
       card.appendChild(r);
     }
 
+    card.appendChild(orphanContext(it));
+
     const foot = el("div", "run-foot orphan-foot");
     if (it.action && it.action.status === "running") {
       foot.appendChild(el("span", "hint",
@@ -6923,8 +7012,9 @@ function orphanBody(card, it) {
         : "Merge this branch into live main and push";
       land.addEventListener("click", () => armOrphanAction(foot, it, "land"));
       const resume = el("button", "fchip sm" + (rec === "resume" ? " rec" : ""), "Resume");
-      resume.title = "Work on it without landing — the session stops short of merge";
-      resume.addEventListener("click", () => orphanResume(it));
+      resume.title = "Dispatch an agent into this worktree to finish the work — "
+        + "it starts editing immediately and stops short of merge";
+      resume.addEventListener("click", () => armOrphanAction(foot, it, "resume"));
       const disc = el("button", "fchip sm" + (rec === "discard" ? " rec" : ""), "Discard");
       disc.addEventListener("click", () => armOrphanAction(foot, it, "discard"));
       foot.append(land, resume, disc);
@@ -7047,6 +7137,14 @@ function armOrphanAction(foot, it, name) {
     ? (it.dirty
       ? `Land ${it.branch}? A session finishes and commits it, then Vira merges + pushes.`
       : `Land ${it.branch}? Merges into live main and pushes.`)
+    // Resume DISPATCHES — one click used to drop an autonomous agent into
+    // the worktree with no confirm while Land and Discard were both gated
+    // (owner, 2026-08-12: "does it start taking actions or just open up
+    // the session window?"). It is the same class of act, so it takes the
+    // same gate, and the copy says what actually happens.
+    : name === "resume"
+    ? `Resume ${it.branch}? Dispatches an agent into the worktree — it starts `
+      + "editing immediately, runs the tests, and stops short of merge."
     : name === "merge"
     ? `Merge ${it.branch} into live main?`
     : it.dirty
@@ -7054,7 +7152,11 @@ function armOrphanAction(foot, it, name) {
       : `Discard ${it.branch}? This deletes the branch.`;
   foot.appendChild(el("span", "orphan-confirm-q", label));
   const yes = el("button", "fchip sm warn", "Confirm");
-  yes.addEventListener("click", () => runOrphanAction(foot, it, name));
+  yes.addEventListener("click", () => {
+    runsHold = false;
+    if (name === "resume") { orphanResume(it); return; }
+    runOrphanAction(foot, it, name);
+  });
   const no = el("button", "fchip sm", "Cancel");
   no.addEventListener("click", () => { runsHold = false; loadOrphans(); });
   foot.append(yes, no);

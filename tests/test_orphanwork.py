@@ -496,6 +496,28 @@ class RouteLayer(_RepoCase):
         self.assertIn("prompt", r.json())
         self.assertIn("cwd", r.json())
 
+    def test_context_route_works_passive_and_has_no_side_effects(self):
+        """The whole point is reviewing BEFORE deciding, and a passive
+        instance is where reviewing happens most — so unlike resume/land
+        this route must NOT 403 there."""
+        self.make_worktree("ctx-route", commits=1)
+        orphanwork.refresh()
+        key = self.client.get("/api/orphanwork").json()["items"][0]["key"]
+        os.environ["VIRA_PASSIVE"] = "1"
+        before = self.store.read_bytes()
+        with mock.patch("server.session.sessions.launch") as launch:
+            r = self.client.get("/api/orphanwork/context?key=" + key)
+        self.assertEqual(r.status_code, 200)
+        launch.assert_not_called()
+        self.assertEqual(self.store.read_bytes(), before)
+        body = r.json()
+        self.assertEqual(body["branch"], "claude/ctx-route")
+        self.assertEqual(len(body["commits"]), 1)
+
+    def test_context_404_on_unknown_key(self):
+        r = self.client.get("/api/orphanwork/context?key=nope")
+        self.assertEqual(r.status_code, 404)
+
     def test_resume_prompt_404_on_unknown_key(self):
         r = self.client.get("/api/orphanwork/resume-prompt",
                             params={"key": "nope"})
@@ -866,5 +888,87 @@ class Assessment(_RepoCase):
         self.assertFalse(orphanwork._assess_running)
 
 
+class FullContext(_RepoCase):
+    """The unsummarized read behind an unlanded row's decision. Read-only
+    by contract: it is what the owner opens BEFORE landing or discarding,
+    so it must never dispatch, write or sweep."""
+
+    def test_commits_carry_sha_author_date_and_body(self):
+        wt = self.make_worktree("ctx-a", commits=0)
+        (wt / "a.py").write_text("# a\n", encoding="utf-8")
+        _git("add", "-A", cwd=wt)
+        _git("commit", "-qm", "subject line\n\nthe body explains why",
+             cwd=wt)
+        it = orphanwork.sweep()[0]
+        c = orphanwork.context(it)
+        self.assertEqual(len(c["commits"]), 1)
+        cm = c["commits"][0]
+        self.assertEqual(cm["subject"], "subject line")
+        self.assertIn("the body explains why", cm["body"])
+        self.assertTrue(cm["sha"])
+        self.assertEqual(cm["author"], "T")
+        self.assertTrue(cm["date"])
+
+    def test_it_shows_more_files_than_the_row_does(self):
+        """The row caps at 12 files on purpose (the sweep payload is
+        fetched every render); the decision view must not inherit that
+        cap, or the owner lands work he was shown a twelfth of."""
+        wt = self.make_worktree("ctx-files")
+        for i in range(30):
+            (wt / f"f{i}.py").write_text(f"# {i}\n", encoding="utf-8")
+        it = orphanwork.sweep()[0]
+        self.assertEqual(len(it["files"]), 12)          # the row's summary
+        c = orphanwork.context(it)
+        self.assertEqual(len(c["files"]), 30)
+        self.assertEqual(len(c["status"].splitlines()), 30)
+
+    def test_the_full_prompt_beats_the_rows_squeezed_head(self):
+        long_prompt = "You are Vira's coding agent. " + ("detail " * 200)
+        wt = self.make_worktree("ctx-prompt", dirty=True)
+        row = {"id": "j1", "branch": "claude/ctx-prompt", "status": "done",
+               "prompt": long_prompt, "cwd": str(wt)}
+        with mock.patch("server.joblog.list_records", return_value=[row]), \
+             mock.patch("server.joblog.name", return_value="Ctx prompt"):
+            it = orphanwork.sweep()[0]
+            c = orphanwork.context(it)
+        self.assertEqual(len(it["job"]["prompt_head"]), 280)   # the row
+        self.assertEqual(c["prompt"], long_prompt)             # the read
+
+    def test_it_carries_the_prompt_a_resume_would_send(self):
+        self.make_worktree("ctx-resume", dirty=True)
+        it = orphanwork.sweep()[0]
+        c = orphanwork.context(it)
+        self.assertIn("claude/ctx-resume", c["resume_prompt"])
+        self.assertIn("do NOT merge", c["resume_prompt"].replace("Do NOT", "do NOT"))
+
+    def test_a_missing_worktree_is_named_not_silently_empty(self):
+        it = {"branch": "claude/gone", "worktree": "", "kind": "unmerged",
+              "ahead": 0, "job": None}
+        c = orphanwork.context(it)
+        self.assertTrue(any("no worktree" in n for n in c["notes"]))
+        self.assertEqual(c["resume_prompt"], "")
+
+    def test_the_status_cap_is_reported_never_silent(self):
+        wt = self.make_worktree("ctx-cap")
+        with mock.patch.object(orphanwork, "CONTEXT_STATUS", 3):
+            for i in range(9):
+                (wt / f"c{i}.py").write_text("# x\n", encoding="utf-8")
+            it = orphanwork.sweep()[0]
+            c = orphanwork.context(it)
+        self.assertEqual(len(c["files"]), 3)
+        self.assertTrue(any("6 more changed paths" in n for n in c["notes"]))
+
+    def test_reading_the_context_never_writes_or_dispatches(self):
+        self.make_worktree("ctx-pure", commits=1, dirty=True)
+        orphanwork.refresh()
+        before = self.store.read_bytes()
+        with mock.patch("server.session.sessions.launch") as launch:
+            it = orphanwork.compose()["items"][0]
+            orphanwork.context(it)
+        launch.assert_not_called()
+        self.assertEqual(self.store.read_bytes(), before)
+
+
 if __name__ == "__main__":
     unittest.main()
+
