@@ -51,11 +51,30 @@ DOCS_DIR = ROOT / "static" / "docs"
 # the reason the docstring on _sources() gives.
 WALKTHROUGH_DIR = None
 
+# Folders OUTSIDE the checkout that the owner has connected to the Reader.
+# Every other source below is a place Vira itself writes; this is the seam for
+# documents produced somewhere else entirely — another project's output, a
+# record repo, a scratch folder. It is config rather than a constant because
+# the whole point is that it differs per install. Settings key `reader_sources`,
+# a list of
+#   {"path": "~/somewhere", "kind": "dossier", "glob": "*.html", "label": "..."}
+# A connected folder is READ. Nothing is copied out of it and nothing is written
+# back into it, which is the same soft-pointer contract as every other source
+# and the reason connecting a folder is a safe thing to do to a live directory.
+READER_SOURCE_KINDS = ("dossier", "plan", "retro", "brief", "walkthrough")
+DEFAULT_SOURCE_GLOB = "*.html"
+# A connected folder is somebody's working directory, not a curated shelf. The
+# cap is what stops pointing at the wrong one from filling the queue with a
+# thousand rows before the owner notices.
+MAX_SOURCE_FILES = 500
+
 # What a locator means, and therefore who resolves it.
 #   url   -> a path this server already serves (the dossiers under static/)
 #   vault -> a path inside the notes vault, rendered through /api/vault/note
 #   plan  -> a plans.py registry id, rendered through /api/plans/{id}
-LOCATOR_KINDS = ("url", "vault", "plan")
+#   file  -> an absolute path inside a connected folder, served by
+#            /api/reading/file/{id} and re-checked for containment on every read
+LOCATOR_KINDS = ("url", "vault", "plan", "file")
 
 # The kinds of thing that can sit in the queue. `room` is legacy: reading
 # rooms were briefly flattened into the queue (2026-07-27, first cut of this
@@ -262,6 +281,30 @@ def source_path(it):
         return p / "index.html" if p.is_dir() else p
     if lk == "vault":
         return _vault_file(it["locator"])
+    if lk == "file":
+        return _connected_file(it["locator"])
+    return None
+
+
+def _connected_file(locator):
+    """Resolve a connected-folder locator, refusing anything no longer inside a
+    configured root.
+
+    Containment is checked at READ time rather than trusted from registration.
+    That is deliberate: removing a folder from `reader_sources` has to make its
+    rows report missing immediately, rather than leaving the server willing to
+    serve files out of a directory the owner just disconnected. Same discipline
+    as _vault_file, for the same reason."""
+    try:
+        p = Path(locator).expanduser().resolve()
+    except OSError:
+        return None
+    for spec in _reader_specs():
+        try:
+            p.relative_to(spec["root"])
+        except ValueError:
+            continue
+        return p
     return None
 
 
@@ -537,6 +580,86 @@ def _walkthroughs():
         return []
 
 
+def _reader_specs():
+    """The connected folders, normalized, or [] when none are configured.
+
+    A malformed row is SKIPPED rather than raised on. This is owner-edited
+    config read on every sweep and on every file resolution, so one bad entry
+    must not be able to take the queue down with it. A folder that does not
+    exist yet is dormant for the same reason `vault_root` is: absent is a
+    state, not a failure."""
+    raw = settings.get("reader_sources")
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        path = str(row.get("path") or "").strip()
+        if not path:
+            continue
+        try:
+            root = Path(path).expanduser().resolve()
+        except OSError:
+            continue
+        if not root.is_dir():
+            continue
+        kind = str(row.get("kind") or "dossier")
+        if kind not in READER_SOURCE_KINDS:
+            kind = "dossier"
+        pattern = str(row.get("glob") or DEFAULT_SOURCE_GLOB)
+        # A glob here names files inside the folder. Letting it carry separators
+        # or a parent hop would turn one connected folder into a reach anywhere
+        # on disk, which is the one thing the containment check exists to stop.
+        if "/" in pattern or "\\" in pattern or ".." in pattern:
+            pattern = DEFAULT_SOURCE_GLOB
+        out.append({"root": root, "kind": kind, "glob": pattern,
+                    "label": _clean(row.get("label") or root.name, 80)})
+    return out
+
+
+def _document_title(p):
+    """A document's own title where it has one, its filename otherwise.
+
+    A bundle takes its DIRECTORY name when its index carries no title, because
+    "index" is not the name of anything."""
+    fallback = p.parent.name if p.name.lower() == "index.html" else p.stem
+    if p.suffix.lower() not in (".html", ".htm"):
+        return _clean(fallback)
+    try:
+        head = p.read_text(encoding="utf-8", errors="replace")[:4096]
+    except OSError:
+        return _clean(fallback)
+    m = _TITLE_RE.search(head)
+    return _clean(_TAG_RE.sub(" ", m.group(1))) if m else _clean(fallback)
+
+
+def _connected_documents():
+    """Documents inside the folders the owner connected.
+
+    Two shapes are taken, so connecting a folder works whether it holds files or
+    bundles: a file matching the folder's glob is one document, and a
+    SUBDIRECTORY holding index.html is one document too. The second is the same
+    bundle shape static/explainer/ uses, so a generated page with its assets
+    beside it connects without being flattened or copied."""
+    found = []
+    for spec in _reader_specs():
+        root = spec["root"]
+        try:
+            files = sorted(p for p in root.glob(spec["glob"]) if p.is_file())
+            for d in sorted(p for p in root.iterdir() if p.is_dir()):
+                index = d / "index.html"
+                if index.is_file():
+                    files.append(index)
+        except OSError:
+            continue
+        for p in files[:MAX_SOURCE_FILES]:
+            found.append({"title": _document_title(p), "kind": spec["kind"],
+                          "locator": p.as_posix(), "locator_kind": "file",
+                          "created": _file_created(p, p.stem)})
+    return found
+
+
 def _sources():
     """Every producer the sweep reads, declared in one place.
 
@@ -548,7 +671,7 @@ def _sources():
     one fixture directory and keeps a guard test that an empty root finds
     nothing; a new source that skips the seam fails that test on sight."""
     return (_explainer_dossiers() + _plans() + _vault_documents()
-            + _sitedocs() + _walkthroughs())
+            + _sitedocs() + _walkthroughs() + _connected_documents())
 
 
 def _is_stale(created, days=FRESH_DAYS):

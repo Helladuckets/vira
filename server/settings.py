@@ -73,6 +73,8 @@ DEFAULTS = {
     "vault_root": "",                    # notes vault for the Brain index; empty = dormant
                                          # (set via Setup > Brain or config.json)
     "vault_dirs": [],                    # vault subdirs to index; empty = vault.DEFAULT_DIRS
+    "reader_sources": [],                # folders connected to the Reader; empty = only
+                                         # the places Vira writes itself
     "judge_model": "opus",               # fresh-eyes judge sessions (circuits + Jobs history)
     "atlas_anchor_org": "",              # pinned anchor-org cluster in the Contact Atlas
     "atlas_max_nodes": 200,              # atlas node cap (most-active contacts)

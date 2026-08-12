@@ -66,6 +66,8 @@
   "_subs_notify_threshold_usd": "Renewal-ping floor: iMessage when a renewal is within 7 days and the per-cycle amount clears this (annual renewals always ping). Uses notify_handle; deduped per merchant + renewal date.",
   "vault_root": "",
   "_vault_root": "Notes vault the Brain window indexes (Obsidian or any folder of markdown; FTS + local nomic embeddings via Ollama; nothing leaves the machine at index time). Set it from Setup > Brain — point at an existing vault or start a fresh one there. Empty = the Brain stays dormant.",
+  "reader_sources": [],
+  "_reader_sources": "Folders outside Vira connected to the Reader, as a list of {path, kind, glob, label}. Each is READ and never written or copied: a matching file is one document, and a subdirectory holding index.html is one document too (a page plus its assets). kind is dossier | plan | retro | brief | walkthrough (default dossier); glob is a filename pattern inside the folder (default *.html); label names the source. Documents appear after the Reader's Scan. Removing a folder here immediately stops Vira serving anything out of it. Example: [{\"path\": \"~/workspace/crm/data/self/renderings/current\", \"kind\": \"dossier\", \"label\": \"Self-record renderings\"}]",
   "vault_dirs": [],
   "_vault_dirs": "Vault subdirectories to index (recursive), plus root-level .md files always. Empty = the default set (wiki, Briefs, Sessions, retros, brain-retros).",
   "site_root": "",
