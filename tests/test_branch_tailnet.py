@@ -1,4 +1,5 @@
 """Tailnet reachability and handoff URLs for passive branch instances."""
+import json
 import os
 import plistlib
 import signal
@@ -30,12 +31,19 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.bindir = Path(self.tmp.name)
         self.calls = self.bindir / "tailscale-calls"
+        # Real `tailscale serve status --json` output for a node with no
+        # handlers (verified against 1.98.8); serve_config() swaps in a
+        # populated one.
+        self.serve_config = self.bindir / "tailscale-serve-config.json"
+        self.serve_config.write_text("{}\n", encoding="utf-8")
         tailscale = self.bindir / "tailscale"
         tailscale.write_text(
             "#!/bin/sh\n"
             "if [ \"$1\" = status ]; then\n"
             "  printf '%s' '{\"Self\":{\"DNSName\":"
             "\"vira-mac.example.ts.net.\"}}'\n"
+            "elif [ \"$1\" = serve ] && [ \"$2\" = status ]; then\n"
+            "  cat \"$TAILSCALE_SERVE_CONFIG\"\n"
             "else\n"
             "  printf '%s\\n' \"$*\" >> \"$TAILSCALE_CALLS\"\n"
             "fi\n",
@@ -46,6 +54,7 @@ class TailnetBranchInstanceTest(unittest.TestCase):
         self.env["PATH"] = (
             str(self.bindir) + os.pathsep + self.env.get("PATH", ""))
         self.env["TAILSCALE_CALLS"] = str(self.calls)
+        self.env["TAILSCALE_SERVE_CONFIG"] = str(self.serve_config)
 
     def write_executable(self, name, body):
         path = self.bindir / name
@@ -92,6 +101,82 @@ class TailnetBranchInstanceTest(unittest.TestCase):
             calls[0],
             "serve --bg --yes --http=8381 http://127.0.0.1:8381")
         self.assertEqual(calls[1], "serve --yes --http=8381 off")
+
+    def running_instance(self, port):
+        """A live checkout with one worktree whose instance is RUNNING.
+
+        The pid is this test process, so instance_pid's `kill -0` probe is
+        answered by a real process rather than a stub.
+        """
+        # Resolved, because `git worktree list` reports real paths and
+        # cmd_list skips the live line by comparing against $LIVE.
+        root = Path(self.tmp.name).resolve()
+        live = root / "live-repo"
+        worktree = root / "preview-worktree"
+        git = ["git", "-C", str(live)]
+        subprocess.run(["git", "init", "-b", "main", str(live)],
+                       check=True, capture_output=True)
+        subprocess.run(
+            git + ["-c", "user.email=t@example.com", "-c", "user.name=t",
+                   "commit", "--allow-empty", "-m", "init"],
+            check=True, capture_output=True)
+        subprocess.run(
+            git + ["worktree", "add", "-b", "claude/preview", str(worktree)],
+            check=True, capture_output=True)
+        (worktree / ".test-instance.json").write_text(
+            f'{{"pid": {os.getpid()}, "port": {port}}}', encoding="utf-8")
+        return live
+
+    def serve_handler_config(self, port):
+        """Real `serve status --json` for one --http handler (1.98.8)."""
+        host = f"vira-mac.example.ts.net:{port}"
+        return json.dumps({
+            "TCP": {str(port): {"HTTP": True}},
+            "Web": {host: {"Handlers": {
+                "/": {"Proxy": f"http://127.0.0.1:{port}"}}}},
+        })
+
+    def test_listing_prints_localhost_for_an_unbridged_instance(self):
+        # `serve --local` creates no Serve handler, so its MagicDNS URL would
+        # be dead. Both shapes of "not bridged" count: no handlers at all, and
+        # handlers that belong to some OTHER instance.
+        live = self.running_instance(8391)
+        for label, config in (
+                ("no serve config", "{}"),
+                ("another port bridged", self.serve_handler_config(8392))):
+            with self.subTest(label):
+                self.serve_config.write_text(config, encoding="utf-8")
+                result = run_shell(f'LIVE="{live}"\ncmd_list', self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("claude/preview", result.stdout)
+                self.assertIn("RUNNING :8391", result.stdout)
+                self.assertIn("http://localhost:8391/", result.stdout)
+                self.assertNotIn("vira-mac.example.ts.net:8391",
+                                 result.stdout)
+                # CLAUDE.md: Claude Code's Browser pane blocks the numeric
+                # loopback form, so a printed URL never uses it.
+                self.assertNotIn("127.0.0.1", result.stdout)
+
+    def test_listing_prints_the_tailnet_url_for_a_bridged_instance(self):
+        live = self.running_instance(8391)
+        self.serve_config.write_text(
+            self.serve_handler_config(8391), encoding="utf-8")
+        result = run_shell(f'LIVE="{live}"\ncmd_list', self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("RUNNING :8391", result.stdout)
+        self.assertIn("http://vira-mac.example.ts.net:8391/", result.stdout)
+
+    def test_served_ports_reads_every_shape_of_handler(self):
+        self.serve_config.write_text(json.dumps({
+            "TCP": {"8391": {"HTTPS": True}},
+            "AllowFunnel": {"vira-mac.example.ts.net:8392": True},
+            # A foreground `tailscale serve` (no --bg) nests its config here.
+            "Foreground": {"sess-1": {
+                "Web": {"vira-mac.example.ts.net:8393": {"Handlers": {}}}}},
+        }), encoding="utf-8")
+        result = run_shell("tailnet_served_ports", self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["8391", "8392", "8393"])
 
     def test_uvicorn_stays_loopback_only(self):
         source = BRANCH_SH.read_text(encoding="utf-8")
