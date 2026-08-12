@@ -2830,7 +2830,9 @@ function renderFindCloudInto(target) {
     if (found.rotate) node.style.transform = "translate(-50%, -50%) rotate(-90deg)";
     if (turns > 1) node.appendChild(el("span", "find-concept-turns", "x" + turns));
     node.title = c.primary_path || "";
-    node.addEventListener("click", () => openNote(c.primary_path));
+    // The term is the anchor: the note opens ON the passage about it rather
+    // than at its own first line. See applyNoteAnchor.
+    node.addEventListener("click", () => openNote(c.primary_path, null, {term: c.term}));
     target.appendChild(node);
   });
   FIND_CLOUD_OBSERVERS.get(target)?.disconnect();
@@ -12462,8 +12464,9 @@ function noteName(path, title) {
 
 // Fill a container with a rendered note. `spawn` decides what a wikilink
 // inside it does, which is the only difference between the two tiers.
-async function fillNote(host, path, spawn) {
+async function fillNote(host, path, spawn, anchor) {
   host.innerHTML = "";
+  host._noteAnchor = null;
   host.appendChild(el("div", "spin", "Loading note…"));
   try {
     const n = await api("/api/vault/note?path=" + encodeURIComponent(path));
@@ -12488,10 +12491,217 @@ async function fillNote(host, path, spawn) {
     host.querySelectorAll(".note-link").forEach((a) =>
       a.addEventListener("click", () => spawn(a.dataset.ref)));
     markDeadLinks(host);
+    applyNoteAnchor(host, anchor);
   } catch (e) {
     host.innerHTML = "";
     host.appendChild(el("div", "empty left", "Note unavailable: " + e.message));
   }
+}
+
+/* ============== JUMP TO THE PIECE, NOT THE TOP OF THE NOTE ==============
+   A Concept Cloud term names an idea the chat found INSIDE a note, and
+   opening that note at line 1 hands the owner a 90,000-character transcript
+   and a scrollbar. The click already knows what it is about, so the note
+   opens ON the passage: the matching section scrolled to and tinted, the
+   term's own words marked inside it, and a sticky bar saying which match
+   you are on with a step to the next.
+
+   IT IS DERIVED FROM THE RENDERED NOTE, NEVER STORED ON THE CONCEPT. The
+   alternative was to persist the retrieved chunk's heading when a concept
+   is minted — but every concept already in a session predates that field,
+   so the one term the owner clicks today would be the one that could not
+   jump. Reading the note itself also cannot go stale: edit the note and
+   the anchor moves with it. (roomvault.resolve makes the same call for the
+   same reason.)
+
+   GROUNDED OR NOT AT ALL. A term whose words are not really in this note
+   gets NO tint and a bar that says so, rather than a confident jump to the
+   nearest paragraph — a highlight pointing at the wrong passage is worse
+   than the scrollbar it replaced. */
+
+// Words that carry no locating power. A concept term is a PHRASE
+// ("corrigibility under human oversight"), so the connective tissue has to
+// come out or every paragraph in the note scores.
+const NOTE_STOPWORDS = new Set(("the a an and or but of to in on at by for with as from into "
+  + "over under about across through during is are was were be been being it its this that "
+  + "these those we you they our their his her not no than then so such more most other "
+  + "how what why when where which who whom while between within without via per").split(" "));
+
+function noteTokens(term) {
+  return [...new Set(String(term || "").toLowerCase().split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !NOTE_STOPWORDS.has(t)))];
+}
+
+// A UNIT is what gets tinted and stepped through. With headings it is a
+// section (heading + everything under it until the next same-or-higher
+// heading), which is what "highlight the section" means. With none — every
+// long transcript in this vault — it is the block, which is the precision
+// the giant-document case actually needs.
+function noteUnits(host) {
+  const isHead = (n) => /^H[2-5]$/.test(n.tagName);
+  const blocks = [...host.children].filter((n) =>
+    !n.classList.contains("note-anchor") && !n.classList.contains("note-meta"));
+  const heads = blocks.filter(isHead);
+  if (heads.length < 2) return blocks.map((b) => ({ nodes: [b], head: null }));
+  const units = [];
+  let cur = null;
+  blocks.forEach((n) => {
+    if (isHead(n)) {
+      cur = { nodes: [n], head: n, level: +n.tagName[1] };
+      units.push(cur);
+    } else if (cur) cur.nodes.push(n);
+    else units.push({ nodes: [n], head: null });   // preamble before any heading
+  });
+  return units;
+}
+
+// Score each unit by how much of the term's DISTINCTIVE mass it carries.
+// idf is computed over this note's own units, so a token appearing
+// everywhere counts for little and a rare one dominates — the same
+// rare-token principle radar's person tokens and the atlas's shared_topic
+// edge already use. Coverage decides membership; score only decides order.
+function noteMatches(host, term, tokens) {
+  const units = noteUnits(host);
+  if (!units.length) return [];
+  const texts = units.map((u) =>
+    u.nodes.map((n) => n.textContent || "").join(" ").toLowerCase());
+  const N = units.length;
+  const idf = {};
+  tokens.forEach((t) => {
+    const df = texts.reduce((n, x) => n + (x.includes(t) ? 1 : 0), 0);
+    idf[t] = Math.log(1 + N / (1 + df));
+  });
+  const total = tokens.reduce((s, t) => s + idf[t], 0) || 1;
+  const phrase = String(term).toLowerCase().replace(/\s+/g, " ").trim();
+  const out = [];
+  units.forEach((u, i) => {
+    const text = texts[i];
+    const carried = tokens.reduce((s, t) => s + (text.includes(t) ? idf[t] : 0), 0);
+    const cover = carried / total;
+    const exact = phrase.length > 3 && text.includes(phrase);
+    if (!exact && cover < 0.6) return;
+    let score = carried;
+    if (exact) score += total;               // the whole phrase beats scattered words
+    // A heading naming the term speaks for its whole section, even where the
+    // body under it says "it".
+    if (u.head && tokens.some((t) => u.head.textContent.toLowerCase().includes(t)))
+      score += total * 0.35;
+    out.push({ ...u, score, cover, exact });
+  });
+  return out;   // document order; the caller starts on the best-scoring one
+}
+
+const NOTE_MARK_SKIP = new Set(["PRE", "CODE", "MARK", "SCRIPT", "STYLE"]);
+
+function noteMarkRx(term, tokens) {
+  const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const phrase = String(term).trim();
+  const parts = [];
+  if (phrase.length > 3) parts.push(esc(phrase).replace(/\s+/g, "\\s+"));
+  tokens.forEach((t) => parts.push(esc(t)));
+  if (!parts.length) return null;
+  return new RegExp("\\b(?:" + parts.join("|") + ")\\b", "gi");
+}
+
+function noteMark(nodes, rx) {
+  nodes.forEach((root) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (n) => (n.parentElement
+        && !NOTE_MARK_SKIP.has(n.parentElement.tagName) && n.nodeValue.trim())
+        ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT,
+    });
+    const texts = [];
+    while (walker.nextNode()) texts.push(walker.currentNode);
+    texts.forEach((node) => {
+      rx.lastIndex = 0;
+      if (!rx.test(node.nodeValue)) return;
+      rx.lastIndex = 0;
+      const frag = document.createDocumentFragment();
+      let last = 0, m;
+      while ((m = rx.exec(node.nodeValue))) {
+        if (!m[0].length) { rx.lastIndex++; continue; }
+        if (m.index > last)
+          frag.appendChild(document.createTextNode(node.nodeValue.slice(last, m.index)));
+        frag.appendChild(el("mark", "note-term", m[0]));
+        last = m.index + m[0].length;
+      }
+      frag.appendChild(document.createTextNode(node.nodeValue.slice(last)));
+      node.parentNode.replaceChild(frag, node);
+    });
+  });
+}
+
+// Marks are text-node surgery, so undoing them must be too — re-rendering
+// the note would drop the wikilink handlers bound above.
+function noteUnmark(host) {
+  host.querySelectorAll("mark.note-term").forEach((m) => {
+    const parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+}
+
+function noteGoToMatch(host, index) {
+  const st = host._noteAnchor;
+  if (!st || !st.matches.length) return;
+  st.matches.forEach((u) => u.nodes.forEach((n) => n.classList.remove("note-hit")));
+  noteUnmark(host);
+  st.i = (index + st.matches.length) % st.matches.length;
+  const hit = st.matches[st.i];
+  // A section can be enormous. Tint the whole thing when it is small enough
+  // to read at a glance; past that, the heading plus the blocks that
+  // actually carry the term, so the tint stays a pointer rather than a wash.
+  const lit = hit.nodes.length <= 12 ? hit.nodes : hit.nodes.filter((n, j) =>
+    j === 0 || st.tokens.some((t) => (n.textContent || "").toLowerCase().includes(t)));
+  lit.forEach((n) => n.classList.add("note-hit"));
+  noteMark(lit, st.rx);
+  if (st.count) st.count.textContent = st.matches.length > 1
+    ? `${st.i + 1} of ${st.matches.length}` : "1 match";
+  const target = lit.find((n) => st.tokens.some((t) =>
+    (n.textContent || "").toLowerCase().includes(t))) || lit[0] || hit.nodes[0];
+  const pad = (st.bar?.offsetHeight || 0) + 12;
+  host.scrollTo({ top: Math.max(0, target.offsetTop - pad),
+                  behavior: REDUCED_MOTION ? "auto" : "smooth" });
+}
+
+function clearNoteAnchor(host) {
+  const st = host._noteAnchor;
+  if (!st) return;
+  st.matches.forEach((u) => u.nodes.forEach((n) => n.classList.remove("note-hit")));
+  noteUnmark(host);
+  st.bar?.remove();
+  host._noteAnchor = null;
+}
+
+function applyNoteAnchor(host, anchor) {
+  const term = String(anchor?.term || "").trim();
+  if (!term) return;
+  const tokens = noteTokens(term);
+  const matches = tokens.length ? noteMatches(host, term, tokens) : [];
+  const bar = el("div", "note-anchor");
+  bar.appendChild(el("span", "note-anchor-term", '"' + term + '"'));
+  const count = el("span", "note-anchor-count",
+    matches.length ? "" : "not found in this note");
+  bar.appendChild(count);
+  if (matches.length > 1) {
+    const next = el("button", "note-anchor-btn", "next");
+    next.addEventListener("click", () => noteGoToMatch(host, (host._noteAnchor?.i ?? 0) + 1));
+    bar.appendChild(next);
+  }
+  const clear = el("button", "note-anchor-btn", "clear");
+  clear.addEventListener("click", () => clearNoteAnchor(host));
+  bar.appendChild(clear);
+  host.prepend(bar);
+  if (!matches.length) {
+    host._noteAnchor = { matches: [], bar, tokens, count };
+    return;
+  }
+  host._noteAnchor = {
+    matches, tokens, bar, count, i: 0, rx: noteMarkRx(term, tokens),
+  };
+  let best = 0;
+  matches.forEach((m, i) => { if (m.score > matches[best].score) best = i; });
+  noteGoToMatch(host, best);
 }
 
 // Resolve a wikilink and open it as a NEW window, promoting the peek it was
@@ -12515,7 +12725,8 @@ async function spawnNoteRef(ref) {
     const panel = $("#note-panel");
     if (isDesktop && panel?.classList.contains("open")) {
       const from = panel.dataset.notePath;
-      if (from) openNoteWindow(from, panel.dataset.noteTitle);
+      if (from) openNoteWindow(from, panel.dataset.noteTitle,
+                               { term: panel.dataset.noteTerm });
       closeNote();
     }
     openNoteWindow(hit.path, noteName(hit.path));
@@ -12563,13 +12774,19 @@ let noteCascade = 0;
 // A note as its own floating window: drag, resize, zoom, close, and open as
 // many as the chain needs. Keyed on PATH so opening the same note twice
 // raises the window that already holds it rather than minting a duplicate.
-async function openNoteWindow(path, title) {
-  if (!isDesktop) { openNote(path, title); return; }   // no windows on a phone
+async function openNoteWindow(path, title, anchor) {
+  if (!isDesktop) { openNote(path, title, anchor); return; }   // no windows on a phone
   const ex = noteWindows[path];
   if (ex) {
     ex.win.style.display = "flex";
     requestAnimationFrame(() => ex.win.classList.add("open"));
     focusWin(ex.win);
+    // The window is already holding this note, so re-anchor it in place
+    // rather than opening a second copy for the new term.
+    if (anchor?.term && ex.scroll) {
+      clearNoteAnchor(ex.scroll);
+      applyNoteAnchor(ex.scroll, anchor);
+    }
     return;
   }
   const win = el("div", "fwin note-window");
@@ -12599,33 +12816,35 @@ async function openNoteWindow(path, title) {
   requestAnimationFrame(() => win.classList.add("open"));
   focusWin(win);
   markSpawnedClear(win);
-  noteWindows[path] = { win };
+  noteWindows[path] = { win, scroll };
   close.addEventListener("click", () => {
     win.classList.remove("open");
     setTimeout(() => win.remove(), 220);
     delete noteWindows[path];
   });
-  fillNote(scroll, path, spawnNoteRef);
+  fillNote(scroll, path, spawnNoteRef, anchor);
 }
 
 // Promote the peek to a window — the "keep" control, for a glance that
-// turns out to matter.
-function keepNote(path, title) {
+// turns out to matter. The anchor rides along so promoting does not throw
+// away the passage you were reading.
+function keepNote(path, title, anchor) {
   if (!path) return;
-  openNoteWindow(path, title);
+  openNoteWindow(path, title, anchor);
 }
 
-async function openNote(path, title) {
+async function openNote(path, title, anchor) {
   const panel = $("#note-panel");
   panel.classList.add("open");
   enterFocus(panel, () => panel.classList.remove("open"));
   panel.dataset.notePath = path;
   panel.dataset.noteTitle = title || "";
+  panel.dataset.noteTerm = anchor?.term || "";
   const keep = $("#note-keep");
   if (keep) keep.style.display = isDesktop ? "" : "none";
   $("#note-title").textContent = noteName(path, title);
   const body = $("#note-body");
-  await fillNote(body, path, spawnNoteRef);
+  await fillNote(body, path, spawnNoteRef, anchor);
 }
 
 /* ==================== The resume viewport ====================
@@ -13085,6 +13304,7 @@ async function openPlan(id) {
   // is what stops a wikilink here from keeping the PREVIOUS note's peek
   panel.dataset.notePath = "";
   panel.dataset.noteTitle = "";
+  panel.dataset.noteTerm = "";
   const keepBtn = $("#note-keep");
   if (keepBtn) keepBtn.style.display = "none";
   $("#note-title").textContent = "Plan";
@@ -13431,7 +13651,7 @@ $("#note-keep")?.addEventListener("click", () => {
   const panel = $("#note-panel");
   const path = panel?.dataset.notePath;
   if (!path) return;
-  keepNote(path, panel.dataset.noteTitle);
+  keepNote(path, panel.dataset.noteTitle, { term: panel.dataset.noteTerm });
   closeNote();
 });
 
