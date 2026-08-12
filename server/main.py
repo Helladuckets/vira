@@ -3394,6 +3394,17 @@ def api_orphanwork_resume(req: OrphanKeyReq):
     return {"job_id": jid}
 
 
+@app.get("/api/orphanwork/context")
+def api_orphanwork_context(key: str):
+    """Everything known about one unlanded item, unsummarized. READ-ONLY —
+    nothing dispatches, writes or sweeps, so it is safe on a passive
+    instance and safe to open before deciding anything."""
+    it = _orphan_item(key)
+    if it is None:
+        raise HTTPException(404, "no such orphan-work item")
+    return orphanwork.context(it)
+
+
 @app.get("/api/orphanwork/resume-prompt")
 def api_orphanwork_resume_prompt(key: str):
     """The composed resume prompt with no side effects — for a passive

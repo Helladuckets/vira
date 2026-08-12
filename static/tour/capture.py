@@ -378,23 +378,26 @@ def s_live(ctx, anon):
     """Live: what is running, and one session opened to its own terminal."""
     page = boot(ctx)
     tab(page, "live", wait=5000)
+    # Runs is ONE chronological stream since 2026-08-12 — flow runs, stage
+    # sessions and unlanded branches share the .run-card shell, so the beat
+    # photographs the stream and opens a SESSION card out of it.
     d = page.evaluate("""() => ({
-      pills: document.querySelectorAll('#jobs-strip .job-pill').length,
-      rows: document.querySelectorAll('#jobs-list .job-row-full').length,
-      first: (document.querySelector('#jobs-list .job-row-full') || {}).innerText,
+      rows: document.querySelectorAll('#runs-list .run-card').length,
+      sessions: document.querySelectorAll('#runs-list .run-card.k-session').length,
+      first: (document.querySelector('#runs-list .run-card') || {}).innerText,
     })""")
     print("    live:", json.dumps(d)[:220])
     if not d["rows"]:
-        raise SystemExit("no jobs on the board — a Live beat needs one")
+        raise SystemExit("no runs on the board — a Live beat needs one")
 
     page.evaluate(SETTLE)
     shot(page, "live", work_sels(
-        strip="#jobs-strip", sub=".jobs-sub",
-        list="#jobs-list",
-        p0=("#jobs-strip .job-pill", 0),
-        r0=("#jobs-list .job-row-full", 0),
-        r1=("#jobs-list .job-row-full", 1),
-        dot=("#jobs-list .job-dot", 0),
+        strip=".runs-bar", sub="#runs-count",
+        list="#runs-list",
+        p0=("#runs-filter", 0),
+        r0=("#runs-list .run-card", 0),
+        r1=("#runs-list .run-card", 1),
+        dot=("#runs-list .job-dot", 0),
     ), anon=anon, extra={"tab": tabrect(page, "live")})
     m = meta["live"]
     m["rows"] = clamp(union(m.get("r0"), m.get("r1")))
@@ -404,7 +407,7 @@ def s_live(ctx, anon):
     # every write is already dead at the route layer, and the controls that
     # steer or stop a run are photographed rather than pressed.
     opened = page.evaluate("""() => {
-      const r = document.querySelector('#jobs-list .job-row-full');
+      const r = document.querySelector('#runs-list .run-card.k-session');
       if (!r) return null;
       const t = (r.innerText || '').toLowerCase();
       if (!t.includes('complete')) return 'not-complete';

@@ -6589,69 +6589,286 @@ const JOB_PHASE_CLASS = {
   paused: "running",
 };
 
-async function refreshJobs() {
-  const { jobs } = await api("/api/jobs");
-  // The pill strip is GONE (owner, 2026-08-05): it rendered the same
-  // /api/jobs list the full rows below render, so it was the list twice.
-  const full = $("#jobs-list");
-  if (full) {
-    full.innerHTML = "";
-    if (!jobs.length) full.appendChild(el("div", "empty left",
-      "No stage sessions yet — launch a Flow from The Forge."));
-    jobs.slice(0, 20).forEach((j) => {
-      const row = el("div", "card job-row-full");
-      const rph = jobPhase(j);
-      row.appendChild(el("span", "job-dot " + (JOB_PHASE_CLASS[rph] || rph)));
-      const main = el("div", "link-main");
-      main.appendChild(el("div", "link-title", (j.title || j.prompt || "").slice(0, 90)));
-      main.appendChild(el("div", "link-sub",
-        (JOB_PHASE_LABEL[rph] || rph) + " · started " + agoShort(j.started)));
-      row.appendChild(main);
-      row.addEventListener("click", () => openSession(j.id));
-      full.appendChild(row);
+// ==================== RUNS — one chronological stream ====================
+//
+// Flow runs, stage sessions and unlanded branches are three SOURCES of one
+// subject: work this Vira ran. They used to render as three stacked
+// sections in a fixed order, and ordering by source is ordering by
+// PROVENANCE — the least interesting fact about a run. The cost was
+// concrete (owner, 2026-08-12): "flow runs are still stuck at the top, I
+// have to scroll down to see the actual most recent run", and "unlanded
+// work is always a recent run ... it's at the bottom right now. That's a
+// huge problem."
+//
+// So: ONE list, newest activity first, one card shell for all three. The
+// source survives as a quiet mono tag and a filter chip — the "minor
+// distinction" — never as position. Whatever a kind uniquely needs (a
+// flow's stage strip and approval gate, an unlanded branch's evidence and
+// Land/Resume/Discard) hangs INSIDE that shared shell.
+//
+// Sorting is LAST ACTIVITY, not start: `finished || started` for a run or
+// a session, `last_activity` for a branch. One semantic — "when did this
+// last move" — is what lets a branch touched an hour ago sit beside the
+// session that touched it, which is the whole point of the merge.
+const runsState = { flow: [], session: [], orphan: [], ready: false };
+let runsFilter = lsGet("vira-runs-filter", "all");
+let runsQuery = lsGet("vira-runs-q", "");
+let runsFlowTimer = null;
+let runsSig = "";
+// An armed inline confirm ("Land <branch>? …") lives in the DOM, not in
+// state, so a poll-driven repaint would silently disarm it under the
+// cursor. Every path that ends the confirm clears the hold.
+let runsHold = false;
+
+// Epoch seconds from either shape the three sources speak: sessions and
+// the sweeper carry float epochs, circuits carry ISO strings.
+function runTs(v) {
+  if (v == null || v === "") return 0;
+  if (typeof v === "number") return v;
+  const t = Date.parse(v);
+  return isNaN(t) ? 0 : t / 1000;
+}
+
+const RUN_KINDS = { all: "All", unlanded: "Unlanded", flow: "Flows",
+                    session: "Sessions" };
+
+// One merged, filtered, newest-first list. A stage session and the branch
+// a session left behind are NOT separate runs — they are the same work
+// seen from another angle — so the card that owns them claims them and
+// they never render twice.
+function runItems() {
+  const claimed = new Set();
+  runsState.flow.forEach((r) => Object.values(r.stages || {})
+    .forEach((s) => { if (s && s.job_id) claimed.add(s.job_id); }));
+  runsState.orphan.forEach((o) => { if (o.job && o.job.id) claimed.add(o.job.id); });
+
+  const out = [];
+  runsState.flow.forEach((r) => {
+    const defs = r.stages_def || [];
+    const st = r.stages || {};
+    const done = defs.filter((d) => (st[d.id] || {}).status === "done").length;
+    const gate = defs.some((d) => d.mode === "approval"
+      && (st[d.id] || {}).status === "waiting");
+    out.push({
+      kind: "flow", key: "flow:" + r.id, src: r,
+      ts: runTs(r.finished) || runTs(r.started),
+      tsWord: r.finished ? "finished" : "started",
+      title: r.circuit_name || r.circuit_id || "Flow",
+      state: gate ? "waiting" : (r.status === "error" ? "error" : r.status),
+      stateLabel: gate ? "waiting on your approval"
+        : (r.status === "running" ? `running — ${done}/${defs.length} steps done`
+        : r.status === "done" ? `${defs.length} step${defs.length === 1 ? "" : "s"} complete`
+        : r.status),
+      sig: [r.status, gate, defs.map((d) => (st[d.id] || {}).status).join("")].join("|"),
+      hay: searchFold([r.circuit_name, r.circuit_id, r.input, r.status,
+                       r.error].join(" ")),
     });
-  }
+  });
+
+  runsState.orphan.forEach((o) => {
+    const busy = o.action && o.action.status === "running";
+    out.push({
+      kind: "unlanded", key: "orphan:" + o.key, src: o,
+      ts: runTs(o.last_activity) || runTs(o.last_activity_iso),
+      tsWord: "last touched",
+      title: (o.branch || "").replace(/^claude\//, ""),
+      state: busy ? "running" : "unlanded",
+      stateLabel: orphanBits(o),
+      sig: [o.key, busy, (o.action || {}).status, (o.read || {}).verdict].join("|"),
+      hay: searchFold([o.branch, (o.job || {}).title, (o.job || {}).prompt_head,
+                       (o.commits || []).join(" "), (o.files || []).join(" "),
+                       (o.read || {}).why].join(" ")),
+    });
+  });
+
+  runsState.session.forEach((j) => {
+    if (claimed.has(j.id)) return;
+    const ph = jobPhase(j);
+    out.push({
+      kind: "session", key: "job:" + j.id, src: j,
+      ts: runTs(j.finished) || runTs(j.started),
+      tsWord: j.finished ? "finished" : "started",
+      title: (j.title || j.prompt || "").slice(0, 120),
+      state: ph === "waiting" ? "waiting" : (JOB_PHASE_CLASS[ph] || ph),
+      stateLabel: JOB_PHASE_LABEL[ph] || ph,
+      sig: [j.status, j.awaiting].join("|"),
+      hay: searchFold([j.title, j.prompt, j.mode].join(" ")),
+    });
+  });
+
+  out.sort((a, b) => b.ts - a.ts);
+  return out;
 }
 
-// ---------- orphan-work sweeper (Work > Live: unlanded worktrees/branches) ----------
-
-async function loadOrphans() {
-  const list = $("#orphan-list");
-  if (!list) return;
-  let s;
-  try {
-    s = await api("/api/orphanwork");
-  } catch (e) {
-    return;
-  }
-  renderOrphans(s);
-  // ALWAYS re-sweep in the background, not only past the 6h stale window:
-  // a merge done outside this view (a terminal session, the daily routine)
-  // leaves dead rows in the cached store, and already-landed work sitting
-  // under "Unlanded" is exactly what this section must not show. The
-  // cached render above keeps first paint instant.
-  try {
-    renderOrphans(await post("/api/orphanwork/refresh", {}));
-  } catch (e) { /* the cached render stands */ }
+function runsFiltered(items) {
+  const terms = (runsQuery || "").trim().toLowerCase()
+    .match(/"[^"]+"|\S+/g) || [];
+  return items.filter((it) => {
+    if (runsFilter !== "all" && it.kind !== runsFilter) return false;
+    return terms.every((t) => it.hay.includes(searchFold(t.replace(/"/g, ""))));
+  });
 }
 
-function renderOrphans(s) {
-  const list = $("#orphan-list");
+// Chronology reads better with anchors. Grouping WITHIN the sort — never
+// instead of it, which is the pinned-lane mistake the Queue already made
+// once (2026-07-24).
+function runDayLabel(ts) {
+  if (!ts) return "Undated";
+  const d = new Date(ts * 1000), now = new Date();
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const diff = Math.round((midnight(now) - midnight(d)) / 86400000);
+  if (diff <= 0) return "Today";
+  if (diff === 1) return "Yesterday";
+  if (diff < 7) return d.toLocaleDateString([], { weekday: "long" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function renderRuns() {
+  const list = $("#runs-list");
   if (!list) return;
+  const all = runItems();
+  const shown = runsFiltered(all);
+  const unlanded = all.filter((i) => i.kind === "unlanded").length;
+
+  // Land all is the gesture the owner wants constantly reachable, so it
+  // sits in the bar with a live count rather than inside a section that
+  // has to be scrolled to.
+  const landAll = $("#runs-landall");
+  if (landAll) {
+    landAll.hidden = !unlanded;
+    landAll.textContent = `Land all (${unlanded})`;
+  }
+  $("#runs-filter")?.querySelectorAll(".seg-btn").forEach((b) =>
+    b.classList.toggle("on", b.dataset.run === (runsFilter || "all")));
+
+  const count = $("#runs-count");
+  if (count) {
+    const bits = [];
+    if (!runsState.ready) bits.push("loading…");
+    else if (shown.length === all.length) {
+      bits.push(`${all.length} run${all.length === 1 ? "" : "s"}`);
+    } else {
+      bits.push(`showing ${shown.length} of ${all.length}`);
+    }
+    // The unlanded count is stated on every view, filtered or not — it is
+    // the thing that must never go quiet.
+    if (unlanded) bits.push(`${unlanded} unlanded`);
+    count.textContent = bits.join(" · ");
+    count.classList.toggle("filtered", shown.length !== all.length);
+  }
+
+  const sig = [runsFilter, runsQuery, shown.map((i) => i.key + i.state + i.sig).join(",")]
+    .join("~");
+  if (sig === runsSig && list.childElementCount) return;
+  if (runsHold) return;
+  runsSig = sig;
+
   list.innerHTML = "";
-  const items = s.items || [];
-  if (!items.length) {
-    list.appendChild(el("div", "empty left",
-      "Nothing unlanded — every branch is merged or clean."));
+  if (!shown.length) {
+    list.appendChild(el("div", "empty left", runsState.ready
+      ? (all.length ? "No runs match this filter."
+         : "No runs yet — launch a Flow from The Forge.")
+      : "Loading runs…"));
     return;
   }
-  items.forEach((it) => list.appendChild(orphanRow(it)));
+  let day = null;
+  shown.forEach((it) => {
+    const d = runDayLabel(it.ts);
+    if (d !== day) { day = d; list.appendChild(el("div", "runs-day", d)); }
+    list.appendChild(runCard(it));
+  });
 }
 
-function orphanRow(it) {
-  const card = el("div", "orphan-row");
-  const main = el("div", "link-main");
-  main.appendChild(el("div", "link-title", it.branch.replace(/^claude\//, "")));
+// ONE shell for all three kinds. Dot = STATE (what matters), title, then a
+// quiet mono kind tag (the "minor distinction"), then the kind's own body.
+function runCard(it) {
+  const card = el("article", "run-card k-" + it.kind + " is-" + it.state);
+  card.dataset.runKey = it.key;
+  const head = el("div", "run-head");
+  head.appendChild(el("span", "job-dot " + it.state));
+  const main = el("div", "run-main");
+  const titleRow = el("div", "run-titlerow");
+  titleRow.appendChild(el("div", "run-title", it.title || "(untitled)"));
+  titleRow.appendChild(el("span", "run-kind", RUN_KINDS[it.kind]?.toLowerCase()
+    || it.kind));
+  main.appendChild(titleRow);
+  main.appendChild(el("div", "run-sub",
+    [it.stateLabel, it.ts ? it.tsWord + " " + agoShort(it.ts) : ""]
+      .filter(Boolean).join(" · ")));
+  head.appendChild(main);
+  card.appendChild(head);
+
+  if (it.kind === "flow") flowBody(card, it.src);
+  else if (it.kind === "unlanded") orphanBody(card, it.src);
+  else cardAction(card, () => openSession(it.src.id));
+  return card;
+}
+
+// ---------- flow runs ----------
+
+function flowBody(card, run) {
+  if (run.input) card.appendChild(el("div", "run-note", run.input));
+  const defs = run.stages_def || [];
+  if (defs.length) {
+    const strip = el("div", "run-stages");
+    defs.forEach((d) => {
+      const stage = (run.stages || {})[d.id] || {};
+      const chip = el("div", "run-stage is-" + (stage.status || "pending"));
+      chip.appendChild(el("i"));
+      chip.appendChild(el("strong", "", d.name || d.id));
+      chip.appendChild(el("span", "", stage.status || "pending"));
+      if (stage.job_id) {
+        chip.classList.add("is-clickable");
+        chip.addEventListener("click", () => openSession(stage.job_id));
+      }
+      if (stage.status === "waiting" && d.mode === "approval") {
+        const acts = el("div", "run-approval");
+        const note = el("input");
+        note.placeholder = "Decision note (optional)";
+        const decide = async (approved) => {
+          try {
+            await post(`/api/flows/runs/${encodeURIComponent(run.id)}`
+              + `/approval/${encodeURIComponent(d.id)}`, { approved, note: note.value });
+          } catch (e) { toast("Decision failed: " + errText(e)); }
+          loadRuns();
+        };
+        const yes = el("button", "btn primary", "Approve");
+        yes.addEventListener("click", () => decide(true));
+        const no = el("button", "fchip sm", "Decline");
+        no.addEventListener("click", () => decide(false));
+        acts.append(note, yes, no);
+        chip.appendChild(acts);
+      }
+      strip.appendChild(chip);
+    });
+    card.appendChild(strip);
+  }
+  if (run.result?.report?.text) {
+    const box = document.createElement("details");
+    box.className = "run-result";
+    box.appendChild(el("summary", "",
+      "Result · " + (run.result.report.name || run.result.report.stage)));
+    box.appendChild(el("pre", "", run.result.report.text));
+    card.appendChild(box);
+  }
+  if (run.error) card.appendChild(el("div", "run-error", run.error));
+  if (run.status === "running") {
+    const foot = el("div", "run-foot");
+    const cancel = el("button", "fchip sm", "Cancel");
+    cancel.addEventListener("click", async () => {
+      try {
+        await post(`/api/circuits/runs/${encodeURIComponent(run.id)}/cancel`, {});
+      } catch (e) { toast("Cancel failed: " + errText(e)); }
+      loadRuns();
+    });
+    foot.appendChild(cancel);
+    card.appendChild(foot);
+  }
+}
+
+// ---------- unlanded work (the orphan-work sweeper's rows) ----------
+
+function orphanBits(it) {
   const bits = [];
   if (it.kind === "unpushed") {
     bits.push(`main: ${it.ahead} commit${it.ahead === 1 ? "" : "s"} not pushed`);
@@ -6661,38 +6878,126 @@ function orphanRow(it) {
     if (it.stalled) bits.push("stalled session");
     if (it.instance_running) bits.push("test instance running");
     if (it.job && it.job.title) bits.push(it.job.title);
-    bits.push(`${it.age_days}d old`);
   }
-  main.appendChild(el("div", "link-sub", bits.join(" · ")));
+  return bits.join(" · ") || "unlanded";
+}
+
+// The row's evidence lines are a SUMMARY — 6 of 24 files, commit subjects
+// truncated to 160 characters — and the decision under them is land,
+// resume or destroy. This is the unsummarized read, on the same
+// disclosure the flow Result uses (owner, 2026-08-12: "I'd love to be
+// able to review all of the available context before making a decision").
+//
+// Fetched on FIRST EXPAND, never with the sweep: the sweep runs on every
+// view open and this shells out to git per item. Read-only end to end, so
+// it opens on a passive instance exactly as it does on live.
+function orphanContext(it) {
+  const box = document.createElement("details");
+  box.className = "run-result run-ctx";
+  box.appendChild(el("summary", "", "Full context — the whole prompt, "
+    + "every commit, every changed file"));
+  const body = el("div", "run-ctx-body", "Reading the worktree…");
+  box.appendChild(body);
+  let loaded = false;
+  box.addEventListener("toggle", async () => {
+    if (!box.open || loaded) return;
+    loaded = true;
+    try {
+      fillOrphanContext(body,
+        await api("/api/orphanwork/context?key=" + encodeURIComponent(it.key)));
+    } catch (e) {
+      loaded = false;                       // a failed read may be retried
+      body.textContent = "Could not read the context: " + errText(e);
+    }
+  });
+  return box;
+}
+
+function fillOrphanContext(body, c) {
+  body.innerHTML = "";
+  const section = (title, node) => {
+    if (!node) return;
+    body.appendChild(el("div", "run-ctx-h", title));
+    body.appendChild(node);
+  };
+  // Anything the read could not see is stated, never left to look like an
+  // absence — the row is about to be acted on.
+  (c.notes || []).forEach((n) => body.appendChild(el("div", "run-ctx-note", n)));
+
+  if (c.job) {
+    section("The session that started this", el("div", "run-ctx-line",
+      [c.job.title, c.job.status && "ended " + c.job.status,
+       c.job.id && "job " + c.job.id].filter(Boolean).join(" · ")));
+  }
+  if (c.prompt) section("What it was asked", el("pre", "run-ctx-pre", c.prompt));
+  if (c.commits && c.commits.length) {
+    const list = el("div", "run-ctx-commits");
+    c.commits.forEach((cm) => {
+      const row = el("div", "run-ctx-commit");
+      const top = el("div", "run-ctx-line");
+      top.appendChild(el("code", "run-ctx-sha", cm.sha));
+      top.appendChild(document.createTextNode(" " + cm.subject));
+      row.appendChild(top);
+      row.appendChild(el("div", "run-ctx-meta",
+        [cm.author, cm.date].filter(Boolean).join(" · ")));
+      if (cm.body) row.appendChild(el("pre", "run-ctx-pre", cm.body));
+      list.appendChild(row);
+    });
+    section(`Unmerged commits (${c.commits.length})`, list);
+  }
+  if (c.status) {
+    section(`Uncommitted changes (${c.files.length})`,
+      el("pre", "run-ctx-pre", c.status));
+  }
+  if (c.resume_prompt) {
+    // What a Resume would actually SEND. Reviewing the decision means
+    // reading the instruction, not inferring it from a button label.
+    const inner = document.createElement("details");
+    inner.className = "run-ctx-sub";
+    inner.appendChild(el("summary", "", "The prompt a Resume would send"));
+    inner.appendChild(el("pre", "run-ctx-pre", c.resume_prompt));
+    const copy = el("button", "fchip sm", "Copy prompt");
+    copy.addEventListener("click", async () => {
+      await copyText(c.resume_prompt);
+      toast("Resume prompt copied");
+    });
+    inner.appendChild(copy);
+    body.appendChild(inner);
+  }
+  if (!body.childElementCount) {
+    body.appendChild(el("div", "run-ctx-note", "Nothing more on file."));
+  }
+}
+
+function orphanBody(card, it) {
   // The evidence the decision needs, on the row (owner, 2026-08-05: "I
   // just have to arbitrarily decide"): what was asked, what the commits
   // say, which files changed.
   if (it.kind !== "unpushed") {
     if (it.job && it.job.prompt_head) {
-      main.appendChild(el("div", "link-sub orphan-ev",
+      card.appendChild(el("div", "run-ev",
         "asked: " + it.job.prompt_head.slice(0, 160)));
     }
     if (it.commits && it.commits.length) {
-      main.appendChild(el("div", "link-sub orphan-ev",
+      card.appendChild(el("div", "run-ev",
         "commits: " + it.commits.join(" | ").slice(0, 160)));
     }
     if (it.files && it.files.length) {
       const extra = it.dirty > it.files.length
         ? ` +${it.dirty - it.files.length} more` : "";
-      main.appendChild(el("div", "link-sub orphan-ev",
+      card.appendChild(el("div", "run-ev",
         "files: " + it.files.slice(0, 6).join(", ") + extra));
     }
     if (it.read && it.read.verdict) {
       const r = el("div", "orphan-read " + it.read.verdict);
       r.appendChild(el("span", "orphan-read-v", "Vira: " + it.read.verdict));
       r.appendChild(document.createTextNode(" — " + (it.read.why || "")));
-      main.appendChild(r);
+      card.appendChild(r);
     }
-  }
-  card.appendChild(main);
 
-  if (it.kind !== "unpushed") {
-    const foot = el("div", "orphan-foot");
+    card.appendChild(orphanContext(it));
+
+    const foot = el("div", "run-foot orphan-foot");
     if (it.action && it.action.status === "running") {
       foot.appendChild(el("span", "hint",
         it.action.name + "… " + (it.action.output || "").slice(0, 120)));
@@ -6707,8 +7012,9 @@ function orphanRow(it) {
         : "Merge this branch into live main and push";
       land.addEventListener("click", () => armOrphanAction(foot, it, "land"));
       const resume = el("button", "fchip sm" + (rec === "resume" ? " rec" : ""), "Resume");
-      resume.title = "Work on it without landing — the session stops short of merge";
-      resume.addEventListener("click", () => orphanResume(it));
+      resume.title = "Dispatch an agent into this worktree to finish the work — "
+        + "it starts editing immediately and stops short of merge";
+      resume.addEventListener("click", () => armOrphanAction(foot, it, "resume"));
       const disc = el("button", "fchip sm" + (rec === "discard" ? " rec" : ""), "Discard");
       disc.addEventListener("click", () => armOrphanAction(foot, it, "discard"));
       foot.append(land, resume, disc);
@@ -6716,7 +7022,7 @@ function orphanRow(it) {
     card.appendChild(foot);
     if (it.action && it.action.status && it.action.status !== "running") {
       const lastLine = (it.action.output || "").trim().split("\n").pop() || "";
-      card.appendChild(el("div", "link-sub orphan-outcome",
+      card.appendChild(el("div", "run-ev orphan-outcome",
         (it.action.status === "ok" ? "done — " : "failed — ") + lastLine.slice(0, 160)));
     }
   }
@@ -6733,7 +7039,73 @@ function orphanRow(it) {
     }]]);
   });
   card.appendChild(dis);
-  return card;
+}
+
+// ---------- loaders ----------
+
+// Kept under its old name because ~8 call sites (SSE status frames, a
+// launch, the 15s poll) mean "a job changed" and nothing more — they
+// refresh the session slice and repaint the one list.
+async function refreshJobs() {
+  const { jobs } = await api("/api/jobs");
+  runsState.session = jobs || [];
+  renderRuns();
+}
+
+async function refreshFlowRuns() {
+  const data = await api("/api/circuits/runs?limit=24");
+  runsState.flow = data.runs || [];
+  // The Forge's spatial view overlays the current Flow's run, so it is
+  // fed from the same fetch rather than paying for a second one.
+  window.Forge?.setRuns?.(runsState.flow);
+  renderRuns();
+}
+
+async function loadOrphans() {
+  try {
+    const s = await api("/api/orphanwork");
+    runsState.orphan = s.items || [];
+    renderRuns();
+  } catch (e) { /* keep whatever the last sweep left */ }
+  // ALWAYS re-sweep in the background, not only past the 6h stale window:
+  // a merge done outside this view (a terminal session, the daily routine)
+  // leaves dead rows in the cached store, and already-landed work sitting
+  // in the stream is exactly what this must not show. The cached render
+  // above keeps first paint instant.
+  try {
+    const s = await post("/api/orphanwork/refresh", {});
+    runsState.orphan = s.items || [];
+    renderRuns();
+  } catch (e) { /* the cached render stands */ }
+}
+
+async function loadRuns() {
+  if (!$("#runs-list")) return;
+  await Promise.all([
+    refreshJobs().catch(() => {}),
+    refreshFlowRuns().catch(() => {}),
+  ]);
+  runsState.ready = true;
+  renderRuns();
+  scheduleRunsPoll();
+  await loadOrphans();
+  scheduleRunsPoll();
+}
+window.loadRuns = loadRuns;
+
+// A flow stage moves faster than the 15s job poll, so an ACTIVE run gets a
+// 3s tick — flows and sessions only, never the orphan sweep, which shells
+// out to git and has no business running every three seconds.
+function scheduleRunsPoll() {
+  if (runsFlowTimer) { clearTimeout(runsFlowTimer); runsFlowTimer = null; }
+  const live = runsState.flow.some((r) => r.status === "running"
+    || Object.values(r.stages || {}).some((s) => s && s.status === "waiting"));
+  const visible = $("#work-live-pane")?.offsetParent
+    || $("#forge-spatial")?.offsetParent;
+  if (!live || !visible) return;
+  runsFlowTimer = setTimeout(() => {
+    refreshFlowRuns().catch(() => {}).then(scheduleRunsPoll);
+  }, 3000);
 }
 
 async function orphanResume(it) {
@@ -6765,6 +7137,14 @@ function armOrphanAction(foot, it, name) {
     ? (it.dirty
       ? `Land ${it.branch}? A session finishes and commits it, then Vira merges + pushes.`
       : `Land ${it.branch}? Merges into live main and pushes.`)
+    // Resume DISPATCHES — one click used to drop an autonomous agent into
+    // the worktree with no confirm while Land and Discard were both gated
+    // (owner, 2026-08-12: "does it start taking actions or just open up
+    // the session window?"). It is the same class of act, so it takes the
+    // same gate, and the copy says what actually happens.
+    : name === "resume"
+    ? `Resume ${it.branch}? Dispatches an agent into the worktree — it starts `
+      + "editing immediately, runs the tests, and stops short of merge."
     : name === "merge"
     ? `Merge ${it.branch} into live main?`
     : it.dirty
@@ -6772,13 +7152,26 @@ function armOrphanAction(foot, it, name) {
       : `Discard ${it.branch}? This deletes the branch.`;
   foot.appendChild(el("span", "orphan-confirm-q", label));
   const yes = el("button", "fchip sm warn", "Confirm");
-  yes.addEventListener("click", () => runOrphanAction(foot, it, name));
+  yes.addEventListener("click", () => {
+    runsHold = false;
+    if (name === "resume") { orphanResume(it); return; }
+    runOrphanAction(foot, it, name);
+  });
   const no = el("button", "fchip sm", "Cancel");
-  no.addEventListener("click", () => loadOrphans());
+  no.addEventListener("click", () => { runsHold = false; loadOrphans(); });
   foot.append(yes, no);
+  // The confirm lives only in the DOM, so a background repaint would
+  // disarm it under the cursor. Held until it is answered or cancelled —
+  // and the signature is INVALIDATED in the same breath, because the DOM
+  // no longer matches what that signature described. Without this, the
+  // release path renders, finds an unchanged signature, skips the rebuild
+  // and leaves the confirm armed forever (found in verification).
+  runsHold = true;
+  runsSig = "";
 }
 
 async function runOrphanAction(foot, it, name) {
+  runsHold = false;
   foot.textContent = name === "land" ? "Landing…"
     : name === "merge" ? "Merging…" : "Discarding…";
   try {
@@ -6796,9 +7189,10 @@ async function runOrphanAction(foot, it, name) {
     startPoll(async (h) => {
       const s = await api("/api/orphanwork");
       const still = (s.items || []).find((x) => x.key === it.key);
+      runsState.orphan = s.items || [];
+      renderRuns();
       if (still && still.action && still.action.status === "running") return;
       h.stop();
-      renderOrphans(s);
       if (still && still.action) {
         const lastLine = (still.action.output || "").trim().split("\n").pop() || "";
         toast((still.action.status === "ok" ? "Done — " : "Failed — ") + lastLine.slice(0, 160));
@@ -6813,19 +7207,42 @@ async function runOrphanAction(foot, it, name) {
   }
 }
 
-$("#orphan-refresh")?.addEventListener("click", async () => {
-  try {
-    const s = await post("/api/orphanwork/refresh", {});
-    renderOrphans(s);
-  } catch (e) {
-    toast("Sweep failed: " + e.message);
-  }
+// ---------- the Runs toolbar ----------
+
+$("#runs-refresh")?.addEventListener("click", () => {
+  runsHold = false;
+  loadRuns();
 });
 
-$("#orphan-landall")?.addEventListener("click", async () => {
-  const rows = document.querySelectorAll("#orphan-list .orphan-row").length;
+// The saved search has to reach the box, or the list renders filtered by a
+// term nothing on screen names (the reader-with-no-writer shape).
+if ($("#runs-q") && runsQuery) $("#runs-q").value = runsQuery;
+
+$("#runs-filter")?.querySelectorAll(".seg-btn").forEach((b) =>
+  b.addEventListener("click", () => {
+    runsFilter = b.dataset.run || "all";
+    lsSet("vira-runs-filter", runsFilter);
+    renderRuns();
+  }));
+
+$("#runs-q")?.addEventListener("input", (e) => {
+  runsQuery = e.target.value;
+  lsSet("vira-runs-q", runsQuery);
+  renderRuns();
+});
+$("#runs-q-clear")?.addEventListener("click", () => {
+  const box = $("#runs-q");
+  if (box) box.value = "";
+  runsQuery = "";
+  lsSet("vira-runs-q", "");
+  renderRuns();
+  box?.focus();
+});
+
+$("#runs-landall")?.addEventListener("click", async () => {
+  const rows = runsState.orphan.length;
   if (!rows) { toast("Nothing unlanded"); return; }
-  if (!confirm(`Land all ${rows} row${rows === 1 ? "" : "s"}? Vira works through `
+  if (!confirm(`Land all ${rows} branch${rows === 1 ? "" : "es"}? Vira works through `
     + "them one at a time — dirty worktrees get a finishing session, then "
     + "each branch merges into live main and pushes.")) return;
   try {
@@ -11775,11 +12192,7 @@ function workTabLoad(tab) {
   if (tab === "dispatch") {
     window.loadForge?.().catch(() => {});
   }
-  if (tab === "live") {
-    window.loadForgeRuns?.();
-    refreshJobs().catch(() => {});
-    loadOrphans().catch(() => {});
-  }
+  if (tab === "live") loadRuns().catch(() => {});
   if (tab === "record") loadRecord().catch(() => {});
 }
 
