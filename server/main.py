@@ -868,7 +868,7 @@ def api_applications_apply(uid: str, req: AppApplyReq):
     prompt = applications.apply_prompt(role, req.note or "")
     try:
         jid = jobs.launch(prompt, str(applications.self_record()),
-                          None, req.model, False, None, "manual")
+                          None, req.model)
     except ValueError as e:
         raise HTTPException(429, str(e))
     applications.update_state(uid, job_id=jid)
@@ -950,7 +950,7 @@ def api_jobboards_score(req: BoardScoreReq):
         raise HTTPException(400, "nothing unscored — the universe is current")
     try:
         jid = jobs.launch(prompt, str(applications.self_record()),
-                          None, req.model, False, None, "manual")
+                          None, req.model)
     except ValueError as e:
         raise HTTPException(429, str(e))
     return {"job_id": jid, "roles": n}
@@ -978,7 +978,7 @@ def api_map_refresh():
     """Dispatch the map-refresh job now (same prompt the weekly routine
     composes) — watch it in the Jobs window."""
     jid = jobs.launch(modulemap.refresh_prompt(), cwd=str(ROOT),
-                      mode="manual", meta={"kind": "map-refresh"})
+                      meta={"kind": "map-refresh"})
     return {"job_id": jid}
 
 
@@ -1441,8 +1441,7 @@ def api_frontdoor_setup(module_id: str, req: FrontDoorSetupReq):
     except ValueError as e:
         raise HTTPException(400, str(e))
     try:
-        jid = jobs.launch(prompt, str(ROOT), None, req.model, False, None,
-                          "manual")
+        jid = jobs.launch(prompt, str(ROOT), None, req.model)
     except ValueError as e:
         raise HTTPException(429, str(e))
     frontdoor.record_run(module_id, jid, req.answers or {})
@@ -1692,7 +1691,7 @@ def api_reading_room_update(name: str):
         prompt = readingroom.update_prompt(name)
     except (KeyError, ValueError):
         raise HTTPException(404, "no such reading room")
-    jid = jobs.launch(prompt, cwd=str(ROOT), mode="manual",
+    jid = jobs.launch(prompt, cwd=str(ROOT),
                       meta={"kind": "room-update", "room": name})
     return {"job_id": jid}
 
@@ -3055,7 +3054,6 @@ def api_define_source(req: SourceReq):
                                  "live vault")
     try:
         jid = jobs.launch(define.source_prompt(term), cwd=str(ROOT),
-                          mode="acceptEdits",
                           meta={"define_term": term})
     except ValueError as e:
         raise HTTPException(429, str(e))

@@ -487,7 +487,9 @@ def dispatch(r):
         raise ValueError("routine has no prompt")
     jid = session.sessions.launch(prompt, cwd=r.get("cwd") or None,
                                   model=r.get("model") or None,
-                                  mode=session.norm_mode(r.get("mode"), "manual"),
+                                  # no stored mode -> the session_default_mode
+                                  # config default, same as every dispatch
+                                  mode=session.norm_mode(r.get("mode")),
                                   meta={"routine_id": r["id"],
                                         "kind": r["kind"]})
     _stamp(r["id"], last_run=_now_iso(), last_job=jid,

@@ -17431,10 +17431,10 @@ function ctxAskVira(x, y, ctx) {
         "",
         "Investigate with your native vira tools (crm_lookup, imessage_thread,",
         "mail_search, media_search, calendar, daily_brief) and the Vira HTTP API",
-        "on localhost:8377 where they help. Prefer read-only research; any file",
-        "edit or command pauses for the owner's approval. Never restart the Vira",
-        "server. Finish with a concise report of what you found or changed.");
-      await launchJob(lines.join("\n"), "~/workspace/vira", { mode: "manual" });
+        "on localhost:8377 where they help. Prefer read-only research. Never",
+        "restart the Vira server. Finish with a concise report of what you",
+        "found or changed.");
+      await launchJob(lines.join("\n"), "~/workspace/vira", {});
       toast("Vira is on it — session opened");
     },
   });
