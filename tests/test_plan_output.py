@@ -21,6 +21,21 @@ from server import circuits, plans
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def _norm(s):
+    """Whitespace-insensitive, so a SHAPE line and its JS array element
+    compare equal across the indentation each file happens to use."""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _js_fn(name):
+    """The source of one app.js function — these prompts are composed in the
+    browser, so parity with the server's contract is grep or nothing."""
+    src = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
+    m = re.search(r"function " + name + r"\(.*?\n\}", src, re.S)
+    assert m, f"{name} not found in app.js"
+    return m.group(0)
+
+
 def _run(stages, output=""):
     """The minimum of a live run the brief and the publish test read."""
     return {"id": "run_x", "input": "do the thing", "circuit_id": "c",
@@ -133,11 +148,27 @@ class PlanShapeIsStatedOnce(unittest.TestCase):
     that keeps the two from drifting — the renderer reads ONE structure."""
 
     def test_the_queue_s_plan_prompt_asks_for_the_same_structure(self):
+        """EVERY line of SHAPE, not a spot-check of three phrases. The
+        spot-check was too weak to do its own job: the JS copy had silently
+        lost the invented-figures rule and still described the old in-app
+        viewer instead of the hosted dossier, and passed the whole time
+        (found and repaired 2026-08-13)."""
+        body = _js_fn("ideaPlanPrompt")
+        for line in plans.SHAPE.split("\n"):
+            self.assertIn(_norm(line), _norm(body), line)
+
+    def test_both_composed_prompts_lead_with_a_session_slug(self):
+        """The label is what names an exported session in the harness it is
+        pasted into. It has no other writer — a prompt cannot ask the server
+        for its own name — so the wiring is the only thing to check."""
         src = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        body = re.search(r"function ideaPlanPrompt\(.*?\n\}", src,
-                         re.S).group(0)
-        for phrase in ("# Title", "## Executive Summary", "Mermaid"):
-            self.assertIn(phrase, body, phrase)
+        self.assertIn("function ideaSlug(", src)
+        for fn, kind in (("ideaPlanPrompt", "plan"),
+                         ("ideaExportPrompt", "implement")):
+            body = _js_fn(fn)
+            self.assertIn(f'ideaSlug(it, "{kind}")', body, fn)
+            # first element of the returned array, or it is not a label
+            self.assertRegex(body, r"return \[\s*\n\s*ideaSlug\(", fn)
 
     def test_the_shape_names_what_the_renderer_reads(self):
         for phrase in ("# Title", "## Executive Summary", "Mermaid"):

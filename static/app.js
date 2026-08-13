@@ -6004,15 +6004,44 @@ function ideaImageBlock(it) {
   return out.join("\n");
 }
 
+// The label that leads a composed idea prompt: <kind>-<idea>-<date>, the
+// shape applications.session_slug gives an Apply run. It does NOT change
+// what Vira calls the run — joblog names an idea dispatch from the quoted
+// idea text below, which is richer. Its job is the two places that text
+// never reaches: the harness an EXPORTED prompt is pasted into, which names
+// a session from its first line, and the owner's own eye on a prompt where
+// "plan this" and "build this" otherwise open identically.
+const SLUG_CAP = 64;  // joblog.TITLE_CAP — a name is cut past this
+function ideaSlug(it, kind) {
+  const d = new Date();
+  const day = [d.getFullYear(), d.getMonth() + 1, d.getDate()]
+    .map((n, i) => (i ? String(n).padStart(2, "0") : String(n))).join("-");
+  const head = (kind ? kind + "-" : "")
+    + String(it?.text || "idea").toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  // Trim the IDEA, never the kind or the date: they are the two halves that
+  // say which run this is. Cut on a hyphen boundary so the tail is a whole
+  // word. (server/applications.py session_slug budgets the same way.)
+  const budget = SLUG_CAP - day.length - 1;
+  const cut = head.length > budget
+    ? head.slice(0, Math.max(budget, 0)).replace(/-[^-]*$/, "").replace(/-+$/, "")
+    : head;
+  return [cut, day].filter(Boolean).join("-");
+}
+
 // The task itself — identical in every prompt shape that carries an idea.
+// The three optional blocks are dropped when empty rather than joined as
+// empty strings: an idea with no images, folds or extra instructions is the
+// common case, and it was opening a gap of three blank lines between the
+// ask and the instructions. One blank line always separates them.
 function ideaTaskLines(it, extra, fold) {
+  const blocks = [ideaImageBlock(it), ideaFoldBlock(fold),
+                  ideaExtraBlock(extra)].filter(Boolean);
   return [
     "This task comes from the owner's Vira idea backlog:",
     "",
     '"""', it.text, '"""',
-    ideaImageBlock(it),
-    ideaFoldBlock(fold),
-    ideaExtraBlock(extra),
+    ...(blocks.length ? blocks : [""]),
   ];
 }
 
@@ -6065,27 +6094,36 @@ function ideaImplementPrompt(it, extra, cwd, perm, fold) {
   ].join("\n");
 }
 
+// The read-only rung is ENFORCED (server/runner.py gate + the SDK's
+// disallowed_tools), so the prompt states it once as a fact and does not
+// spend three lines re-arguing a rule the model cannot break anyway.
+// The FORMAT block below is the one part that must not be trimmed: it is a
+// JS copy of server/plans.py SHAPE — held to it by tests/test_plan_output.py
+// — and three readers depend on that exact structure, the hosted-dossier
+// renderer most of all. Prose with no headings renders as a wall.
 function ideaPlanPrompt(it, extra, cwd, fold) {
   return [
-    "You are Vira's planning agent, running headless and READ-ONLY inside the",
-    "git repository at " + cwd + ". Research only — do NOT modify, create, or",
-    "delete any file, and do not run any commands that change state.",
+    ideaSlug(it, "plan"),
+    "",
+    "You are Vira's planning agent in the git repository at " + cwd + ".",
+    "You are read-only: plan the work, change nothing.",
     "",
     ...ideaTaskLines(it, extra, fold),
     "Read the repo's agent contract (AGENTS.md, and CLAUDE.md where present)",
-    "and the relevant modules, so the plan is",
-    "grounded in the real code, then produce a thorough, well-structured",
-    "implementation plan.",
+    "and the modules the task touches, so the plan is grounded in real code.",
     "",
     "Output ONLY the plan as markdown — no preamble, no closing remarks, no",
-    "code fence around the whole thing. Vira saves it to your vault as a note",
-    "and renders it in an in-app plan viewer. Follow this plan format exactly:",
+    "code fence around the whole thing. Vira saves it to the vault as an",
+    "editable note and renders it as a hosted dossier. Follow this plan",
+    "format exactly:",
     '- First line: "# Title" (a short noun phrase, max ~8 words).',
-    '- Then "## Executive Summary" (2-3 sentences: what is built, the approach,',
-    "  the key tradeoff or risk).",
+    '- Then "## Executive Summary" (2-3 sentences: what is built, the',
+    "  approach, the key tradeoff or risk).",
     "- Then the full plan as markdown sections: context, architecture,",
     "  step-by-step changes, files touched, risks, open questions.",
     "- Use Mermaid code fences for any diagrams. No emojis.",
+    "- Only state figures the work actually supports — the renderer counts",
+    "  them up on the page, so an invented number becomes a headline.",
   ].join("\n");
 }
 
@@ -6146,33 +6184,35 @@ function savedPermMode() {
 //
 // So the export states only what holds wherever it lands, and points at the
 // repo's own contract for the rest.
+// Every rule below is load-bearing and none was dropped in the 2026-08-13
+// tightening — only the wording. The branch line is the one that MUST stay
+// whole: a dispatch gets its placement from worktree.ensure, an exported
+// session gets it from nothing but this sentence, and the cwd above points
+// straight at the checkout the owner runs from.
 function ideaExportPrompt(it, cwd, extra, fold) {
   return [
-    "Work on the owner's Vira repository at " + cwd
-      + " — cd there first if you are not already inside it.",
+    ideaSlug(it, "implement"),
+    "",
+    "Work in the git repository at " + cwd + " — cd there first.",
     "",
     ...ideaTaskLines(it, extra, fold),
     "Carry it out end to end:",
-    "- Read the repo's agent contract first — AGENTS.md, plus CLAUDE.md if a",
-    "  copy is present — and follow it. It carries the branching rule, the",
-    "  test command, and the conventions this repo enforces.",
-    "- Branch first: the path above is the checkout the owner runs from, so do",
-    "  not build in it directly. If the repo ships scripts/branch.sh, run",
-    '  "scripts/branch.sh start <slug>" from it and work in the worktree that',
-    "  creates; otherwise work on your own branch. If you are already in a",
-    "  worktree of this repo, stay in it.",
-    "- Make the real code changes needed to accomplish the task, then verify",
-    "  by actually exercising them — the test suite, or the app on a test",
-    "  instance — and fix what you find.",
+    "- Read the repo's agent contract first — AGENTS.md, and CLAUDE.md if",
+    "  present — and follow it. It carries the branching rule, the test",
+    "  command, and the conventions this repo enforces.",
+    "- Branch first. That path is the checkout the owner runs from, so do not",
+    '  build in it: run "scripts/branch.sh start <slug>" if the repo ships it,',
+    "  otherwise make your own branch. If you are already in a worktree of",
+    "  this repo, stay in it.",
+    "- Make the real change, then verify it by exercising it — the test suite,",
+    "  or the app on a test instance — and fix what you find.",
     "- Do not merge and do not push. The owner decides that after reviewing.",
-    "- The owner's Vira server is running on this machine. Do not restart,",
-    "  stop, or kill it. If your change needs a restart to take effect, say so",
-    "  in your report and leave it to them.",
-    "- If you hit a decision this task does not settle, ask the owner and stop",
-    "  rather than guessing.",
+    "- Vira is running on this machine. Do not restart, stop, or kill it; if",
+    "  your change needs a restart, say so in your report and leave it.",
+    "- Ask the owner and stop if you hit a decision this task does not settle.",
     "",
-    "End with a concise report: the files you changed and why, how you verified",
-    "it works, and anything unfinished or needing the owner's decision.",
+    "Report what you changed and why, how you verified it, and anything left",
+    "open or needing the owner's decision.",
   ].join("\n");
 }
 
