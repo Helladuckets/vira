@@ -15087,6 +15087,8 @@ async function loadApplications() {
   renderApplications();
   loadBoardsStrip().catch(() => {});
   appsCheckStale().catch(() => {});
+  // A run started before this reload is still going; the line has to say so.
+  if (!appBulkPoll) appBulkTick().catch(() => {});
 }
 
 // Opening the module asks the background poller for a sweep when the last
@@ -15450,15 +15452,36 @@ function appSeen(r) {
 // toggle rather than filling the row.
 const DOSSIER_CLAMP = 600;
 
+// THE CLOCK TIME, not just the day. This line sits directly above the
+// rescore control, so its whole job is to answer "is this read current?"
+// the moment after a rescore lands — and "today" is true for a judgment
+// written eleven hours ago and for one written thirty seconds ago. Beyond
+// yesterday the time of day says nothing worth the room, so it reverts to
+// days and then to a date.
+function appScoredWhen(iso, now) {
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const ref = now === undefined ? new Date() : new Date(now);
+  const mins = Math.floor((ref.getTime() - d.getTime()) / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return mins + "m ago";
+  const clock = d.toLocaleTimeString([], { hour: "numeric",
+                                           minute: "2-digit" });
+  // Calendar days apart, NOT elapsed hours: 11pm and 1am are "yesterday"
+  // and "today" two hours apart, which is what the owner means by them.
+  const midnight = (x) => new Date(x.getFullYear(), x.getMonth(), x.getDate());
+  const apart = Math.round(
+    (midnight(ref).getTime() - midnight(d).getTime()) / 86400000);
+  if (apart <= 0) return clock;
+  if (apart === 1) return "yesterday " + clock;
+  if (apart < 30) return apart + "d ago";
+  return d.toISOString().slice(0, 10);
+}
+
 function appScored(r) {
   if (!r.scored_at) return "";
-  const d = new Date(r.scored_at);
-  if (isNaN(d)) return "";
-  const days = Math.floor((Date.now() - d.getTime()) / 86400000);
-  const when = days <= 0 ? "today"
-    : days < 30 ? days + "d ago"
-    : d.toISOString().slice(0, 10);
-  return "scored " + when;
+  const when = appScoredWhen(r.scored_at);
+  return when ? "scored " + when : "";
 }
 
 // Re-judge one role against the record as it reads now. Two depths behind
@@ -15501,6 +15524,143 @@ function appRescoreBtn(r) {
     ]);
   });
   return btn;
+}
+
+// ---------- Rescore in bulk: the roles now showing ----------
+//
+// THE FILTER IS THE SELECTION. The owner narrows the list he is looking at
+// and says "rescore all of these", so there is deliberately no second
+// picker to keep in sync with the one he just used — and the client sends
+// the uids, because a server-side re-derivation of "these" could disagree
+// with what is on his screen.
+//
+// It runs the SAME one-shot pass the per-role button runs, N times. Not
+// the batch-session path: that control is the one he drives daily, and a
+// bulk that judged by a different mechanism would let the two disagree
+// about one role with nothing on the surface to explain why.
+
+const BULK_SECS_PER_ROLE = 35;   // measured against a real role, 2026-08-13
+let appBulkPoll = null;
+
+function appBulkEta(n, workers) {
+  const secs = Math.ceil(n / Math.max(1, workers || 1)) * BULK_SECS_PER_ROLE;
+  if (secs < 90) return "under 2 min";
+  const mins = Math.round(secs / 60);
+  if (mins < 90) return "~" + mins + " min";
+  const hrs = secs / 3600;
+  return "~" + (hrs < 10 ? hrs.toFixed(1) : Math.round(hrs)) + " hr";
+}
+
+// The strip line: what is running, or what the last run did. Rendered from
+// the server's own record, so a reload mid-run still shows the truth.
+function appBulkRender(st) {
+  const box = $("#app-bulk");
+  if (!box) return;
+  if (!st || (!st.running && !st.total)) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.style.cursor = st.running ? "pointer" : "";
+  box.classList.toggle("warn", !!(st.errors_total && !st.running));
+  if (st.running) {
+    const now = (st.current || [])[0];
+    box.textContent =
+      `Rescoring ${st.done}/${st.total}` +
+      (st.cancelled ? " — stopping after these" : "") +
+      (now && !st.cancelled ? ` · ${now}` : "");
+    box.title = "Click to stop after the passes already running.";
+    return;
+  }
+  const bits = [`Rescored ${st.ok} of ${st.total}`];
+  if (st.moved_total) bits.push(`${st.moved_total} moved`);
+  if (st.failed) bits.push(`${st.failed} failed`);
+  if (st.skipped) bits.push(`${st.skipped} skipped`);
+  box.textContent = bits.join(" · ");
+  box.title = (st.errors || []).map((e) => `${e.label}: ${e.error}`).join("\n")
+    || "";
+}
+
+async function appBulkTick(force) {
+  let st = null;
+  try { st = await api("/api/applications/rescore-bulk"); }
+  catch { return null; }              // a failed poll never clears the line
+  appBulkRender(st);
+  if (st.running) {
+    if (!appBulkPoll) appBulkPoll = startPoll(() => appBulkTick(), 2500);
+  } else if (appBulkPoll) {
+    appBulkPoll.stop();
+    appBulkPoll = null;
+    await loadApplications();         // the finished run changed the reads
+  } else if (force) {
+    await loadApplications();
+  }
+  return st;
+}
+
+async function appBulkStart(uids, mode) {
+  try {
+    const st = await post("/api/applications/rescore-bulk", { uids, mode });
+    toast(`Rescoring ${st.total} role${st.total === 1 ? "" : "s"} — ` +
+          `about ${appBulkEta(st.total, st.workers)}.`);
+    appBulkRender(st);
+    if (!appBulkPoll) appBulkPoll = startPoll(() => appBulkTick(), 2500);
+  } catch (e) {
+    toast("Bulk rescore failed: " + errText(e));
+  }
+}
+
+async function appBulkMenu(ev) {
+  const st = await api("/api/applications/rescore-bulk").catch(() => null);
+  if (st && st.running) {
+    showContextMenu(ev.clientX, ev.clientY, [
+      { head: "A rescore is running",
+        sub: `${st.done} of ${st.total} done` },
+      { label: "Stop after the passes already running",
+        run: async () => {
+          appBulkRender(await post("/api/applications/rescore-bulk/cancel",
+                                   {}));
+        } },
+    ]);
+    return;
+  }
+
+  const rows = appsFiltered();
+  // A role with NO score cannot be re-judged — there is no prior read to
+  // re-read. Those belong to auto-scoring, and the menu says so rather
+  // than quietly counting them in.
+  const scored = rows.filter((r) => r.scored_at);
+  const stale = scored.filter((r) => r.score_stale);
+  const workers = (st && st.workers) || 1;
+  const uidsOf = (list) => list.map((r) => r.uid);
+
+  if (!scored.length) {
+    showContextMenu(ev.clientX, ev.clientY, [
+      { head: "Nothing here to rescore" },
+      { dim: true,
+        label: rows.length
+          ? `None of the ${rows.length} showing has been scored yet.`
+          : "No roles are showing." },
+    ]);
+    return;
+  }
+
+  const items = [{ head: "Rescore the roles showing",
+                   sub: `${scored.length} scored · ${stale.length} stale` }];
+  if (stale.length && stale.length < scored.length)
+    items.push({ label: `Rescore the ${stale.length} stale`,
+                 hint: appBulkEta(stale.length, workers),
+                 run: () => appBulkStart(uidsOf(stale), "current") });
+  items.push({ label: `Rescore all ${scored.length}`,
+               hint: appBulkEta(scored.length, workers),
+               run: () => appBulkStart(uidsOf(scored), "current") });
+  items.push({ sep: true });
+  items.push({ label: `Refetch each posting and rescore all ${scored.length}`,
+               hint: "slower — catches edited postings",
+               run: () => appBulkStart(uidsOf(scored), "refetch") });
+  const unscored = rows.length - scored.length;
+  if (unscored)
+    items.push({ dim: true,
+                 label: `${unscored} showing not scored yet — auto-scoring `
+                        + "covers those" });
+  showContextMenu(ev.clientX, ev.clientY, items);
 }
 
 function fmtComp(r) {
@@ -15865,11 +16025,16 @@ function appRow(r) {
   if (scoredAge) {
     const line = el("div", "app-scored" + (r.score_stale ? " stale" : ""));
     line.appendChild(document.createTextNode(scoredAge));
+    // The exact stamp always answers precisely, whatever the line says.
+    const exact = new Date(r.scored_at);
+    let tip = isNaN(exact) ? "" : "Scored " + exact.toLocaleString() + ".";
     if (r.score_stale) {
       line.appendChild(el("span", "app-stale-tag", "stale"));
-      line.title = "Written before your canon last changed — the read below "
+      tip += (tip ? " " : "")
+        + "Written before your canon last changed — the read below "
         + "may not reflect what your record now says.";
     }
+    if (tip) line.title = tip;
     // The fix belongs where the owner LEARNS the read is old, not down in
     // the action row: this line is the one that says so.
     line.appendChild(appRescoreBtn(r));
@@ -17016,6 +17181,17 @@ $("#app-run-copy").addEventListener("click", async () => {
       refresh.disabled = false;
       refresh.textContent = "Refresh";
     }
+  });
+  const rescoreAll = $("#app-rescore-all");
+  if (rescoreAll) rescoreAll.addEventListener("click", (ev) => {
+    appBulkMenu(ev).catch((e) => toast("Rescore failed: " + errText(e)));
+  });
+  const bulkLine = $("#app-bulk");
+  if (bulkLine) bulkLine.addEventListener("click", async () => {
+    // The line is only a control while a run is live; otherwise it is the
+    // last run's result and clicking it must do nothing.
+    if (!appBulkPoll) return;
+    appBulkRender(await post("/api/applications/rescore-bulk/cancel", {}));
   });
   const score = $("#app-score");
   if (score) score.addEventListener("click", async () => {
