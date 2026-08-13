@@ -810,6 +810,38 @@ def api_applications_rescore(uid: str, req: AppRescoreReq):
         raise HTTPException(400, str(e))
 
 
+class AppBulkRescoreReq(BaseModel):
+    uids: list[str] = []
+    mode: str = "current"
+
+
+@app.post("/api/applications/rescore-bulk")
+def api_applications_rescore_bulk(req: AppBulkRescoreReq):
+    """Rescore the roles the client names — the filtered set on screen.
+
+    The selection is the CLIENT's: this never re-derives which roles to do,
+    because a second definition of "these" could disagree with the list the
+    owner is looking at. Returns immediately; progress is polled from the
+    GET below.
+    """
+    try:
+        return jobrescore.bulk_start(req.uids, req.mode or "current")
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except jobrescore.RescoreError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/applications/rescore-bulk")
+def api_applications_rescore_bulk_status():
+    return jobrescore.bulk_status()
+
+
+@app.post("/api/applications/rescore-bulk/cancel")
+def api_applications_rescore_bulk_cancel():
+    return jobrescore.bulk_cancel()
+
+
 @app.get("/api/applications/{uid}/evidence-map")
 def api_applications_evidence_map(uid: str):
     """Role concepts joined to the current package and canonical self.

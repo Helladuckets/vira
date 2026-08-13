@@ -9,6 +9,7 @@ fails there rather than quietly reading the owner's real self-record.
 """
 import json
 import os
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -511,6 +512,209 @@ class ScorePromptCarryover(Base):
         self.assertIn("screen (0-100)", text)
         self.assertNotIn("append a score entry", text)
         self.assertNotIn("raw-scores.json", text)
+
+
+class BulkBase(Base):
+    """The bulk runner: `rescore()` N times, a few at a time.
+
+    Module state is global (one run at a time by construction), so every
+    case resets it — otherwise a run left `running` by a failing case would
+    make every later `bulk_start` refuse.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.reset_bulk()
+        self.addCleanup(self.reset_bulk)
+
+    def reset_bulk(self):
+        jobrescore._bulk_cancel.clear()
+        with jobrescore._bulk_lock:
+            jobrescore._bulk = None
+
+    def wait(self, timeout=10.0):
+        """Block until the run is finished. Polls rather than joining: the
+        pool's threads are not exposed, and this is what the UI does too."""
+        end = time.time() + timeout
+        while time.time() < end:
+            st = jobrescore.bulk_status()
+            if not st.get("running"):
+                return st
+            time.sleep(0.01)
+        raise AssertionError("the bulk run never finished")
+
+    def bulk(self, uids, mode="current", replies=None, fail=(), fits=None):
+        """Run the real bulk over `uids` with the model stubbed.
+
+        `fail` names uids whose model call raises; `fits` maps a uid to the
+        fit its rescore returns, which is what drives the `moved` list.
+        """
+        for uid in uids:
+            self.role_file(uid)
+            self.put_score(score(uid))
+        self.canon()
+
+        def complete(prompt, **kw):
+            uid = next((u for u in uids if u in prompt), "")
+            if uid in fail:
+                raise RuntimeError("the model refused")
+            raw = json.loads(GOOD)
+            if fits and uid in fits:
+                raw["fit"] = fits[uid]
+            return json.dumps(raw)
+
+        with mock.patch("server.applications.find_role",
+                        side_effect=lambda u: role(u)), \
+             mock.patch("server.jobdesc.describe", return_value=JD), \
+             mock.patch("server.suggest.complete", side_effect=complete):
+            jobrescore.bulk_start(uids, mode)
+            return self.wait()
+
+
+class BulkRuns(BulkBase):
+    def test_every_selected_role_is_rescored(self):
+        st = self.bulk(["a-1", "a-2", "a-3"])
+        self.assertEqual((st["total"], st["done"], st["ok"], st["failed"]),
+                         (3, 3, 3, 0))
+        for uid in ("a-1", "a-2", "a-3"):
+            self.assertEqual(jobscores.load(self.udir)[uid]["fit"], 82)
+
+    def test_the_prior_score_is_kept_one_deep(self):
+        self.bulk(["a-1"])
+        self.assertEqual(jobscores.load(self.udir)["a-1"]["prev"]["fit"], 60)
+
+    def test_a_repeated_uid_is_rescored_once(self):
+        st = self.bulk(["a-1", "a-1", "a-1"])
+        self.assertEqual(st["total"], 1)
+
+    def test_one_failing_role_never_stops_the_run(self):
+        st = self.bulk(["a-1", "a-2", "a-3"], fail={"a-2"})
+        self.assertEqual((st["ok"], st["failed"]), (2, 1))
+        self.assertEqual([e["uid"] for e in st["errors"]], ["a-2"])
+        self.assertEqual(jobscores.load(self.udir)["a-3"]["fit"], 82)
+        # the one that failed keeps the read it already had
+        self.assertEqual(jobscores.load(self.udir)["a-2"]["fit"], 60)
+
+    def test_a_moved_fit_is_reported_and_an_unmoved_one_is_not(self):
+        st = self.bulk(["a-1", "a-2"], fits={"a-1": 60, "a-2": 91})
+        self.assertEqual(st["moved_total"], 1)
+        self.assertEqual(st["moved"][0]["uid"], "a-2")
+        self.assertEqual((st["moved"][0]["was"], st["moved"][0]["now"]),
+                         (60, 91))
+
+    def test_the_run_finishes_and_stamps_itself(self):
+        st = self.bulk(["a-1"])
+        self.assertFalse(st["running"])
+        self.assertTrue(st["finished"])
+        self.assertEqual(st["current"], [])
+
+    def test_the_mode_reaches_the_posting_fetch(self):
+        for uid in ("a-1",):
+            self.role_file(uid)
+            self.put_score(score(uid))
+        self.canon()
+        with mock.patch("server.applications.find_role",
+                        side_effect=lambda u: role(u)), \
+             mock.patch("server.jobdesc.describe",
+                        return_value=JD) as desc, \
+             mock.patch("server.suggest.complete", return_value=GOOD):
+            jobrescore.bulk_start(["a-1"], "refetch")
+            self.wait()
+        self.assertTrue(desc.call_args.kwargs["refresh"])
+
+
+class BulkRefusals(BulkBase):
+    def test_an_empty_selection_is_refused(self):
+        with self.assertRaises(jobrescore.RescoreError):
+            jobrescore.bulk_start([])
+
+    def test_a_blank_uid_does_not_count_as_a_selection(self):
+        with self.assertRaises(jobrescore.RescoreError):
+            jobrescore.bulk_start(["", "   "])
+
+    def test_an_unknown_mode_is_refused(self):
+        with self.assertRaises(jobrescore.RescoreError):
+            jobrescore.bulk_start(["a-1"], "sideways")
+
+    def test_a_second_run_is_refused_while_one_is_live(self):
+        with jobrescore._bulk_lock:
+            jobrescore._bulk = {"running": True, "done": 1, "total": 4,
+                                "current": [], "errors": [], "moved": []}
+        with self.assertRaises(jobrescore.RescoreError) as cm:
+            jobrescore.bulk_start(["a-1"])
+        self.assertIn("already running", str(cm.exception))
+
+    def test_passive_refuses_before_any_model_call(self):
+        os.environ["VIRA_PASSIVE"] = "1"
+        self.addCleanup(lambda: os.environ.pop("VIRA_PASSIVE", None))
+        with mock.patch("server.suggest.complete") as complete:
+            with self.assertRaises(PermissionError):
+                jobrescore.bulk_start(["a-1"])
+        complete.assert_not_called()
+        self.assertFalse(jobrescore.bulk_status()["running"])
+
+    def test_fixture_mode_is_dormant(self):
+        with mock.patch("server.settings.fixture_mode", return_value=True):
+            with self.assertRaises(jobrescore.RescoreError):
+                jobrescore.bulk_start(["a-1"])
+
+
+class BulkCancel(BulkBase):
+    def test_cancelling_skips_the_rest_and_keeps_what_landed(self):
+        uids = [f"a-{i}" for i in range(1, 13)]
+        for uid in uids:
+            self.role_file(uid)
+            self.put_score(score(uid))
+        self.canon()
+        seen = []
+
+        def complete(prompt, **kw):
+            seen.append(1)
+            if len(seen) == 1:
+                jobrescore.bulk_cancel()
+            return GOOD
+
+        with mock.patch("server.applications.find_role",
+                        side_effect=lambda u: role(u)), \
+             mock.patch("server.jobdesc.describe", return_value=JD), \
+             mock.patch("server.suggest.complete", side_effect=complete):
+            jobrescore.bulk_start(uids)
+            st = self.wait()
+        self.assertTrue(st["cancelled"])
+        # every uid is resolved, so progress reaches its own total
+        self.assertEqual(st["done"], st["total"])
+        self.assertEqual(st["ok"] + st["failed"] + st["skipped"], st["total"])
+        self.assertTrue(st["skipped"])
+        # the passes already in flight were left to land, never discarded
+        self.assertTrue(st["ok"])
+        self.assertLess(len(seen), len(uids))
+
+    def test_cancelling_when_nothing_runs_is_harmless(self):
+        self.assertFalse(jobrescore.bulk_cancel()["running"])
+
+
+class BulkStatusShape(BulkBase):
+    def test_workers_rides_the_idle_answer_too(self):
+        # the client quotes an estimate before any run exists, so a second
+        # copy of this number in the frontend would be one that can drift
+        self.assertEqual(jobrescore.bulk_status()["workers"],
+                         jobrescore.BULK_WORKERS)
+
+    def test_the_snapshot_is_a_copy_not_the_live_record(self):
+        st = self.bulk(["a-1"])
+        st["errors"].append({"uid": "invented"})
+        self.assertEqual(jobrescore.bulk_status()["errors"], [])
+
+    def test_the_error_list_is_capped_but_the_count_is_true(self):
+        with jobrescore._bulk_lock:
+            jobrescore._bulk = {
+                "running": False, "total": 0, "done": 0, "current": [],
+                "errors": [{"uid": str(i)}
+                           for i in range(jobrescore.ERR_CAP)],
+                "moved": [], "errors_total": 500, "moved_total": 0}
+        st = jobrescore.bulk_status()
+        self.assertEqual(len(st["errors"]), jobrescore.ERR_CAP)
+        self.assertEqual(st["errors_total"], 500)
 
 
 if __name__ == "__main__":

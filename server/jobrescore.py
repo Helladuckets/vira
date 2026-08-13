@@ -43,6 +43,8 @@ provenance could claim to be newer than it is, and the whole staleness
 report reads off those two fields.
 """
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from . import jobscores, settings, suggest
 
@@ -286,6 +288,192 @@ def rescore(uid, mode="current"):
             "jd_source": jd.get("source") or "", "jd_as_of": jd.get("as_of"),
             "anchors": len(anchors),
             "was": {k: (prior or {}).get(k) for k in ("fit", "screen", "tier")}}
+
+
+# --------------------------------------------------------------- in bulk
+
+# "Rescore all of these" means doing to each role exactly what the button
+# does, N times — `rescore()` unchanged, a few at a time. Deliberately NOT
+# the `batch_prompt` session path below: the per-role control is the one
+# the owner drives daily, and a bulk that judged by a different mechanism
+# would let the two disagree about the same role with nothing on the
+# surface to explain why.
+#
+# THE SELECTION IS THE CLIENT'S. This module never re-derives which roles
+# to do from a filter of its own — the owner filtered the list he is
+# looking at, and a second definition of "these" here could disagree with
+# what is on his screen.
+#
+# WORKERS is small, and not because of this machine: every pass is a model
+# call on the same account Vira's own sessions run on, so the ceiling worth
+# respecting is the owner's quota. The per-role file I/O either side of the
+# call measures ~0.24s against a ~35s model call, so three workers hold
+# well under 2% of a core between them and the loop-starvation class
+# (admission.py) is not in play — do not wrap these in the CPU gate, which
+# exists for CPU-bound request work and would be held for a whole minute
+# per role.
+BULK_WORKERS = 3
+
+# Caps on what the progress record carries back. Both are REPORTED against
+# the true counts rather than silently truncating (the no-silent-caps rule).
+ERR_CAP = 40
+MOVED_CAP = 200
+
+_bulk_lock = threading.Lock()
+_bulk_cancel = threading.Event()
+_bulk = None            # the one run in flight or last finished, or None
+
+
+def _bulk_snapshot():
+    """The run as a plain dict, copied under the lock — a caller holding a
+    reference to the live record would read fields mid-update."""
+    # `workers` rides every answer, idle included: the client quotes an
+    # estimate before any run exists, and a second copy of this number in
+    # the frontend is a second copy that can drift.
+    if _bulk is None:
+        return {"running": False, "total": 0, "done": 0,
+                "workers": BULK_WORKERS}
+    s = dict(_bulk)
+    for k in ("current", "errors", "moved"):
+        s[k] = list(_bulk[k])
+    s["workers"] = BULK_WORKERS
+    return s
+
+
+def bulk_status():
+    with _bulk_lock:
+        return _bulk_snapshot()
+
+
+def bulk_start(uids, mode="current"):
+    """Rescore an explicit list of roles — the filtered set on the owner's
+    screen. Returns the run's opening status; progress is polled."""
+    global _bulk
+    if mode not in MODES:
+        raise RescoreError(f"mode must be one of: {', '.join(MODES)}")
+    if settings.fixture_mode():
+        raise RescoreError("fixture mode: there is nothing real to rescore")
+    # Refused before the first model call, for the reason `rescore` states.
+    jobscores._refuse_if_passive()
+
+    ordered, seen = [], set()
+    for u in uids or []:
+        u = str(u or "").strip()
+        if u and u not in seen:
+            seen.add(u)
+            ordered.append(u)
+    if not ordered:
+        raise RescoreError("no roles given")
+
+    with _bulk_lock:
+        if _bulk and _bulk.get("running"):
+            raise RescoreError(
+                f"a bulk rescore is already running ({_bulk['done']} of "
+                f"{_bulk['total']}) — cancel it first")
+        _bulk_cancel.clear()
+        _bulk = {"running": True, "mode": mode, "total": len(ordered),
+                 "done": 0, "ok": 0, "failed": 0, "skipped": 0,
+                 "started": jobscores.now_stamp(), "finished": "",
+                 "cancelled": False, "current": [], "errors": [],
+                 "moved": [], "errors_total": 0, "moved_total": 0}
+        snap = _bulk_snapshot()
+    threading.Thread(target=_bulk_run, args=(ordered, mode), daemon=True,
+                     name="vira-bulk-rescore").start()
+    return snap
+
+
+def bulk_cancel():
+    """Stop after the passes already in flight.
+
+    A model call underway is left to finish and land: it is already paid
+    for, and throwing its answer away is the one outcome nobody asked for.
+    """
+    with _bulk_lock:
+        if not (_bulk and _bulk.get("running")):
+            return _bulk_snapshot()
+        _bulk["cancelled"] = True
+        _bulk_cancel.set()
+        return _bulk_snapshot()
+
+
+def _bulk_run(uids, mode):
+    """The whole run.
+
+    `running` stays true until this returns — INCLUDING the drain after a
+    cancel — which is what makes `bulk_start`'s refusal sufficient to keep
+    two runs from ever sharing one set of counters. The finally is not
+    belt-and-braces: without it a raise here would leave the module wedged
+    at running forever with no way to start another run.
+    """
+    try:
+        with ThreadPoolExecutor(max_workers=BULK_WORKERS,
+                                thread_name_prefix="vira-rescore") as pool:
+            for uid in uids:
+                pool.submit(_bulk_one, uid, mode)
+    finally:
+        with _bulk_lock:
+            if _bulk is not None:
+                _bulk["running"] = False
+                _bulk["finished"] = jobscores.now_stamp()
+                _bulk["current"] = []
+
+
+def _bulk_one(uid, mode):
+    # A skipped role is RESOLVED, so it counts toward `done` — the
+    # invariant is ok + failed + skipped == done == total, which is what
+    # lets a cancelled run's progress reach its own total instead of
+    # stopping at 3/12 forever with nothing saying why.
+    if _bulk_cancel.is_set():
+        with _bulk_lock:
+            if _bulk is not None:
+                _bulk["skipped"] += 1
+                _bulk["done"] += 1
+        return
+
+    from . import applications
+    try:
+        role = applications.find_role(uid) or {}
+    except Exception:  # noqa: BLE001 — a bad catalog read is not this role's
+        role = {}
+    label = " - ".join(str(x) for x in (role.get("company"),
+                                        role.get("title")) if x) or uid
+
+    with _bulk_lock:
+        if _bulk is not None:
+            _bulk["current"].append(label)
+    try:
+        out = rescore(uid, mode)
+        if (out or {}).get("status") != "ok":
+            raise RescoreError((out or {}).get("note") or "no rescore")
+        was, now = out.get("was") or {}, out.get("score") or {}
+        with _bulk_lock:
+            if _bulk is None:
+                return
+            _bulk["ok"] += 1
+            if was.get("fit") is not None and was.get("fit") != now.get("fit"):
+                _bulk["moved_total"] += 1
+                if len(_bulk["moved"]) < MOVED_CAP:
+                    _bulk["moved"].append({
+                        "uid": uid, "label": label, "was": was.get("fit"),
+                        "now": now.get("fit"),
+                        "verdict": now.get("verdict") or ""})
+    except Exception as e:  # noqa: BLE001 — one bad role never stops the run
+        with _bulk_lock:
+            if _bulk is None:
+                return
+            _bulk["failed"] += 1
+            _bulk["errors_total"] += 1
+            if len(_bulk["errors"]) < ERR_CAP:
+                _bulk["errors"].append({"uid": uid, "label": label,
+                                        "error": str(e)[:200]})
+    finally:
+        with _bulk_lock:
+            if _bulk is not None:
+                _bulk["done"] += 1
+                try:
+                    _bulk["current"].remove(label)
+                except ValueError:
+                    pass
 
 
 # ------------------------------------------------------------- the queue
