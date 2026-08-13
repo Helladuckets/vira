@@ -192,9 +192,16 @@ def command(record, idea_text=None):
     return head or "(untitled job)"
 
 
+# How wide a session's display name may be before it is cut with an
+# ellipsis. Exported because a composer that WANTS its label to survive
+# whole has to budget against the same number — applications.session_slug
+# does, and a second copy of 64 would let the two drift.
+TITLE_CAP = 64
+
+
 def default_title(record, idea_text=None):
     """The short session name a job is auto-given (before any edit)."""
-    return _short(command(record, idea_text), 64)
+    return _short(command(record, idea_text), TITLE_CAP)
 
 
 def name(record, idea_text=None):
