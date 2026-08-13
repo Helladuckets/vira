@@ -155,25 +155,44 @@ def shared_language(left: str, right: str) -> int:
     return round(200 * len(a & b) / (len(a) + len(b)))
 
 
+_HEADINGS = {"about the role", "about this role", "the role",
+             "role overview", "responsibilities", "requirements",
+             "qualifications", "what you'll do", "what you’ll do",
+             "what you will do", "you may be a good fit if you have"}
+
+
+def _split_rows(text: str) -> list[tuple[str, str]]:
+    """Every readable row of a posting in document order.
+
+    Yields ``("heading", text)`` and ``("unit", text)``.  One splitter serves
+    both the analysis (which drops headings and caps unit length) and the
+    side-by-side view (which keeps headings as section labels and never
+    truncates the posting's own words), so the two cannot disagree about
+    where one statement ends and the next begins.
+    """
+    rows = []
+    focused = _INLINE_UNIT_START_RE.sub("\n", role_text(text))
+    for line in focused.splitlines():
+        for part in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", line):
+            part = re.sub(r"\s+", " ", part).strip(" -•")
+            if not part:
+                continue
+            if part.casefold().rstrip(":") in _HEADINGS:
+                rows.append(("heading", part))
+            elif 3 <= len(_tokens(part)) <= 90:
+                rows.append(("unit", part))
+    return rows
+
+
 def _units(text: str) -> list[str]:
     """Readable responsibility-sized units from lines and sentences."""
     out = []
-    headings = {"about the role", "about this role", "the role",
-                "role overview", "responsibilities", "requirements",
-                "qualifications", "what you'll do", "what you’ll do",
-                "what you will do", "you may be a good fit if you have"}
-    focused = _INLINE_UNIT_START_RE.sub("\n", role_text(text))
-    for line in focused.splitlines():
-        parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", line)
-        for part in parts:
-            part = re.sub(r"\s+", " ", part).strip(" -•")
-            words = _tokens(part)
-            if part.casefold().rstrip(":") in headings:
-                continue
-            if 3 <= len(words) <= 90:
-                if len(part) > 360:
-                    part = part[:357].rsplit(" ", 1)[0] + "..."
-                out.append(part)
+    for kind, part in _split_rows(text):
+        if kind != "unit":
+            continue
+        if len(part) > 360:
+            part = part[:357].rsplit(" ", 1)[0] + "..."
+        out.append(part)
     return out
 
 
@@ -333,6 +352,199 @@ def _specific_rows(roles: list[dict], unit_sets: list[list[str]]) -> list[dict]:
     return rows
 
 
+# ==================== The marked-up side by side ====================
+#
+# Two postings rendered whole, in their own order, with every statement
+# classified against its counterpart in the other: identical wording, the
+# same statement said differently, or a line only one posting makes.  A
+# matched pair is diffed WORD BY WORD, so a line that differs by two words
+# reads as shared with those two words marked rather than as a difference.
+#
+# Every number below is a similarity between two statements, not a claim
+# about the jobs.  The reader can see the words that earned it.
+
+LINK_FLOOR = 0.40      # under this, a statement has no counterpart at all
+SAME_FLOOR = 0.88      # at or above, the pair is the same statement
+MAX_ALIGN_UNITS = 200  # a runaway posting is capped and the drop reported
+
+_SPAN_RE = re.compile(r"\S+")
+_EDGE_RE = re.compile(r"^[^\w]+|[^\w]+$")
+
+
+def document_rows(raw: str) -> list[dict]:
+    """The role section as readable rows, headings kept, nothing truncated."""
+    return [{"kind": kind, "text": text} for kind, text in _split_rows(raw)]
+
+
+def _fold(word: str) -> str:
+    """A word compared without its surrounding punctuation or case."""
+    return _EDGE_RE.sub("", word).casefold()
+
+
+def _diff_parts(text: str, other: str) -> list[dict]:
+    """Split ``text`` into runs of shared and differing words against ``other``.
+
+    Parts concatenate back to the original string exactly — whitespace and
+    punctuation ride along untouched, so the posting's own wording is never
+    rebuilt from tokens.  Punctuation-only tokens inherit their neighbour
+    rather than becoming differences of their own.
+    """
+    spans = [(m.start(), m.end(), _fold(m.group(0)))
+             for m in _SPAN_RE.finditer(text)]
+    if not spans:
+        return [{"t": text, "d": False}] if text else []
+    other_words = [_fold(m.group(0)) for m in _SPAN_RE.finditer(other)]
+    matcher = SequenceMatcher(None, [span[2] for span in spans], other_words,
+                              autojunk=False)
+    shared = set()
+    for i, _j, size in matcher.get_matching_blocks():
+        shared.update(range(i, i + size))
+
+    parts, cursor, current = [], 0, None
+    for index, (start, _end, folded) in enumerate(spans):
+        differs = index not in shared
+        if not folded and current is not None:
+            differs = current
+        if current is None:
+            current = differs
+        elif differs != current:
+            parts.append({"t": text[cursor:start], "d": current})
+            cursor, current = start, differs
+    parts.append({"t": text[cursor:], "d": bool(current)})
+    return parts
+
+
+def _fingerprint(unit: str) -> tuple:
+    tokens = _tokens(unit)
+    counts = {}
+    for token in tokens:
+        counts[token] = counts.get(token, 0) + 1
+    return counts, len(tokens), set(tokens)
+
+
+def _upper_bound(left: tuple, right: tuple) -> float:
+    """The most `_unit_similarity` could possibly return for this pair.
+
+    SequenceMatcher's ratio cannot exceed twice the multiset intersection
+    over the combined length, and Jaccard cannot exceed the set overlap, so
+    a pair failing this bound can be skipped without the quadratic compare.
+    """
+    (ca, la, sa), (cb, lb, sb) = left, right
+    if not la or not lb:
+        return 0.0
+    overlap = sum(min(ca[t], cb[t]) for t in ca.keys() & cb.keys())
+    return max(2 * overlap / (la + lb), len(sa & sb) / len(sa | sb))
+
+
+def _match(left_units: list[str], right_units: list[str]) -> dict:
+    """Pair each statement with at most one counterpart, strongest first.
+
+    One-to-one on purpose: a statement that reads as the counterpart of a
+    line already claimed by a closer match is reported as unpaired but
+    carries `near`, so the view can say "closest wording is already paired"
+    instead of implying the posting never makes that point.
+    """
+    left_fp = [_fingerprint(unit) for unit in left_units]
+    right_fp = [_fingerprint(unit) for unit in right_units]
+    scored = []
+    for i, fa in enumerate(left_fp):
+        for j, fb in enumerate(right_fp):
+            if _upper_bound(fa, fb) < LINK_FLOOR:
+                continue
+            score = _unit_similarity(left_units[i], right_units[j])
+            if score >= LINK_FLOOR:
+                scored.append((score, i, j))
+    scored.sort(key=lambda row: (-row[0], row[1], row[2]))
+
+    best_left, best_right = {}, {}
+    for score, i, j in scored:
+        best_left.setdefault(i, j)
+        best_right.setdefault(j, i)
+
+    taken_left, taken_right, pairs = set(), set(), []
+    for score, i, j in scored:
+        if i in taken_left or j in taken_right:
+            continue
+        taken_left.add(i)
+        taken_right.add(j)
+        pairs.append((score, i, j))
+    return {"pairs": pairs, "near_left": best_left, "near_right": best_right}
+
+
+def _side_rows(raw: str, prefix: str) -> tuple[list[dict], list[int], int]:
+    """Document rows plus the index of each unit row, capped and counted."""
+    rows, unit_at, dropped = [], [], 0
+    for row in document_rows(raw):
+        if row["kind"] != "unit":
+            rows.append(dict(row))
+            continue
+        if len(unit_at) >= MAX_ALIGN_UNITS:
+            dropped += 1
+            continue
+        row = dict(row)
+        row["id"] = f"{prefix}{len(unit_at)}"
+        unit_at.append(len(rows))
+        rows.append(row)
+    return rows, unit_at, dropped
+
+
+def align(left: dict, right: dict) -> dict:
+    """Both postings, whole and in order, with every statement classified."""
+    left_rows, left_at, left_dropped = _side_rows(left.get("jd") or "", "L")
+    right_rows, right_at, right_dropped = _side_rows(right.get("jd") or "", "R")
+    left_units = [left_rows[i]["text"] for i in left_at]
+    right_units = [right_rows[i]["text"] for i in right_at]
+
+    matched = _match(left_units, right_units)
+    for row in left_rows + right_rows:
+        if row["kind"] == "unit":
+            row.update(state="only", link="", score=0, near="", parts=[])
+
+    counts = {"same": 0, "similar": 0, "only_left": 0, "only_right": 0}
+    links = []
+    for score, i, j in matched["pairs"]:
+        a, b = left_rows[left_at[i]], right_rows[right_at[j]]
+        state = "same" if score >= SAME_FLOOR else "similar"
+        percent = round(score * 100)
+        a.update(state=state, link=b["id"], score=percent,
+                 parts=_diff_parts(a["text"], b["text"]))
+        b.update(state=state, link=a["id"], score=percent,
+                 parts=_diff_parts(b["text"], a["text"]))
+        links.append({"left": a["id"], "right": b["id"],
+                      "kind": state, "score": percent})
+        counts[state] += 1
+
+    for rows, at, near, side in ((left_rows, left_at, matched["near_left"], "left"),
+                                 (right_rows, right_at, matched["near_right"], "right")):
+        other = right_rows if side == "left" else left_rows
+        other_at = right_at if side == "left" else left_at
+        for index, row_index in enumerate(at):
+            row = rows[row_index]
+            if row["state"] != "only":
+                continue
+            counts[f"only_{side}"] += 1
+            row["parts"] = [{"t": row["text"], "d": True}]
+            if index in near:
+                row["near"] = other[other_at[near[index]]]["id"]
+
+    paired = counts["same"] + counts["similar"]
+    total = paired * 2 + counts["only_left"] + counts["only_right"]
+    return {
+        "left": {"uid": left["uid"], "rows": left_rows,
+                 "dropped": left_dropped},
+        "right": {"uid": right["uid"], "rows": right_rows,
+                  "dropped": right_dropped},
+        "links": links,
+        "counts": counts,
+        "matched_pct": round(200 * paired / total) if total else 0,
+        "method": ("Statements are paired with their closest counterpart in "
+                   "the other posting, one to one. A pair is marked the same "
+                   "statement above " + str(round(SAME_FLOOR * 100)) +
+                   "% word similarity; the words that differ are marked "
+                   "inside it either way."),
+    }
+
+
 def compare(roles: list[dict]) -> dict:
     """Compare two to six full role records carrying ``uid`` and ``jd``."""
     if not MIN_ROLES <= len(roles) <= MAX_ROLES:
@@ -371,6 +583,10 @@ def compare(roles: list[dict]) -> dict:
         "common": _common_units(unit_sets),
         "unique": {role["uid"]: _unique_units(i, unit_sets)
                    for i, role in enumerate(roles)},
+        # The side-by-side reads two postings against each other line for
+        # line, so it exists only for a pair.  Three or more roles keep the
+        # summary above, which is what a set comparison can honestly say.
+        "alignment": align(roles[0], roles[1]) if len(roles) == 2 else None,
         "method": ("Shared language is a three-word phrase comparison of "
                    "the role sections. Employer boilerplate, compensation, "
                    "benefits, and legal text are excluded when headings "

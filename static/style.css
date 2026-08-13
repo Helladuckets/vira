@@ -4994,10 +4994,105 @@ a.rm-name:hover { color: var(--accent); }
 }
 .app-cmp-unique h5 { color: var(--text-head); margin: 3px 0 7px; font-size: 12px; }
 .app-cmp-method { border-top: 1px solid var(--line); padding-top: 10px; }
+.app-cmp-view { margin-bottom: 12px; }
+
+/* The marked-up side by side. Sage is wording both postings share, oxidized
+   is wording only one of them uses — inside a matched statement as well as
+   on a statement standing alone, so a line differing by two words reads as
+   shared with those two words called out. */
+.jdx-bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 8px;
+}
+.jdx-legend { display: flex; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.jdx-key {
+  display: inline-flex; align-items: center; gap: 5px;
+  color: var(--text-dim); font: 10px var(--mono);
+  letter-spacing: .06em; text-transform: uppercase;
+}
+.jdx-key i { width: 9px; height: 9px; border: 1px solid var(--line); }
+.jdx-key.jdx-same i {
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  border-color: var(--green);
+}
+.jdx-key.jdx-similar i, .jdx-key.jdx-only i {
+  background: color-mix(in srgb, var(--oxidized) 13%, transparent);
+  border-color: var(--oxidized);
+}
+.jdx-key.jdx-only i { border-style: dashed; }
+
+/* Two whole postings want the screen, so the pair view widens the sheet the
+   set summary sits comfortably in. */
+.app-compare-card.jdx-wide {
+  width: min(1500px, calc(100vw - 32px)); max-width: 1500px;
+}
+
+.jdx-scroll {
+  overflow: auto; max-height: min(62vh, 720px);
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--bg);
+}
+.jdx-board {
+  position: relative; display: grid; gap: 74px; padding: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start;
+}
+.jdx-lines {
+  position: absolute; inset: 0; pointer-events: none; overflow: visible;
+}
+.jdx-col { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.jdx-colhead {
+  position: sticky; top: -12px; z-index: 2; padding: 6px 0 7px;
+  background: var(--bg); border-bottom: 1px solid var(--line);
+}
+.jdx-colhead h4 { color: var(--text-head); font-size: 12px; }
+.jdx-colhead .hint { margin: 2px 0 0; }
+.jdx-head {
+  color: var(--text-dim); font: 10px var(--mono); letter-spacing: .1em;
+  text-transform: uppercase; margin: 10px 0 1px;
+}
+
+.jdx-unit {
+  position: relative; z-index: 1; padding: 5px 8px; font-size: 12px;
+  line-height: 1.5; color: var(--text); cursor: pointer;
+  border: 1px solid transparent; border-left-width: 2px;
+  border-radius: var(--radius); transition: opacity .12s ease;
+}
+.jdx-unit.jdx-same {
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  border-left-color: var(--green);
+}
+.jdx-unit.jdx-similar, .jdx-unit.jdx-only {
+  background: color-mix(in srgb, var(--oxidized) 13%, transparent);
+  border-left-color: var(--oxidized);
+}
+.jdx-unit.jdx-only { border-left-style: dashed; }
+.jdx-unit:hover { border-color: var(--accent-line); }
+.jdx-unit.jdx-lit {
+  border-color: var(--accent); background: var(--accent-soft);
+}
+.jdx-unit.jdx-faded { opacity: .28; }
+.jdx-unit.jdx-hidden { display: none; }
+.jdx-diff {
+  background: color-mix(in srgb, var(--oxidized) 30%, transparent);
+  box-shadow: 0 1px 0 var(--oxidized);
+}
+/* Steel for a matched pair and oxidized for a diverged one — the drawn line
+   is deliberately NOT the colour of the tint it joins, so a connector stays
+   readable crossing a column of the statements it is pairing. */
+.jdx-edge { fill: none; stroke-width: 1.2; opacity: .5; stroke: var(--oxidized); }
+.jdx-edge.same { stroke: var(--steel); opacity: .55; }
+.jdx-edge.jdx-lit { opacity: 1; stroke-width: 2.4; stroke: var(--accent-bright); }
+.jdx-edge.jdx-faded { opacity: .08; }
+
 @media (max-width: 720px) {
   .app-cmp-hero { align-items: flex-start; flex-direction: column; gap: 12px; }
   .app-cmp-measure { width: 100%; }
   .app-cmp-unique-grid { grid-template-columns: 1fr; }
+  /* Two columns are the format, so on a phone the board PANS inside its own
+     scroller rather than stacking — stacked columns put a connector's ends a
+     whole posting apart, and it must never widen the document itself. */
+  .jdx-board { min-width: 660px; gap: 46px; }
+  .jdx-scroll { max-height: 68vh; }
   .app-compare-card {
     width: 100%; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
   }
