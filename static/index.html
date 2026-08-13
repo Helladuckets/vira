@@ -427,8 +427,8 @@
       <button id="app-compare-toggle" class="fchip sm" style="margin-left:auto"
               aria-pressed="false">Compare jobs</button>
     </div>
-    <p class="hint">Every role in one list: your eight frontier-fit picks on
-      top, then the v2 tiers, then postings not yet analyzed. The
+    <p class="hint">Every role in one list, sorted on the axis you choose —
+      tiers first, then postings not yet analyzed. The
       sales/marketing lane is cut on your 2026-07-14 call and demoted,
       labeled, never hidden — and a posting that comes down is marked GONE
       and filtered out by default, never deleted, so its analysis survives.
@@ -453,11 +453,9 @@
               title="Register a new company board (one registry entry; the next poll sweeps it)">+ board</button>
     </div>
     <div class="app-filters">
-      <select id="app-sort" class="idea-sort" title="Sort order">
-        <option value="relevance">Relevance (picks, tier, fit)</option>
-        <option value="newest">Newest first</option>
-        <option value="fit">Highest fit</option>
-      </select>
+      <!-- options are built from APP_SORTS in app.js — a literal list here
+           is invisible to every change made there (the model-picker trap) -->
+      <select id="app-sort" class="idea-sort" title="Sort order"></select>
       <select id="app-loc" class="idea-sort" title="Location"></select>
       <select id="app-company" class="idea-sort" title="Company"></select>
       <select id="app-avail" class="idea-sort" title="Availability">

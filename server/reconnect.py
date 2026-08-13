@@ -77,12 +77,9 @@ def pivot_picture():
         name = (r.get("company") or "").strip()
         if not name:
             continue
-        info = companies.setdefault(name.lower(),
-                                    {"name": name, "tier1": 0, "shortlist": 0})
+        info = companies.setdefault(name.lower(), {"name": name, "tier1": 0})
         if r.get("tier") == "1":
             info["tier1"] += 1
-        if r.get("shortlist"):
-            info["shortlist"] += 1
     if not companies:
         return None
     lanes = sorted({r["lane"] for r in uncut if r.get("lane")})
@@ -93,13 +90,17 @@ def pivot_picture():
     keywords = radar._words(text)
     override = settings.raw().get("pivot_keywords") or []
     keywords |= {str(k).strip().lower() for k in override if str(k).strip()}
-    shortlisted = sorted((r for r in uncut if r.get("shortlist")),
-                         key=lambda r: r["shortlist"])
+    # The roles the search is actually about. This was the owner's pinned
+    # shortlist until 2026-08-13; picks are retired (stale by construction —
+    # a July rank against a catalog that has since tripled), so the live
+    # tier-1 reads carry the same signal and cannot go stale.
+    top = sorted((r for r in uncut if r.get("tier") == "1"),
+                 key=lambda r: -(r.get("fit") or 0))
     return {
         "companies": companies,
         "lanes": lanes,
         "keywords": keywords,
-        "shortlist_titles": [r["title"] for r in shortlisted][:8],
+        "top_titles": [r["title"] for r in top][:8],
     }
 
 
@@ -213,15 +214,15 @@ def score_candidates(picture):
             best = None
             for key, info in companies.items():
                 if key and (key in comp_l or comp_l in key):
-                    if best is None or (info.get("shortlist", 0)
-                                        > best[1].get("shortlist", 0)):
+                    if best is None or (info.get("tier1", 0)
+                                        > best[1].get("tier1", 0)):
                         best = (key, info)
             if best:
                 _key, info = best
-                pts = 60 + (10 if info.get("shortlist") else 0)
+                pts = 60 + (10 if info.get("tier1") else 0)
                 score += pts
-                extra = (f" ({info['shortlist']} shortlist roles)"
-                        if info.get("shortlist") else "")
+                extra = (f" ({info['tier1']} tier-1 roles)"
+                        if info.get("tier1") else "")
                 reasons.append(
                     f"works at {info['name']} — a target company{extra}")
 
@@ -272,7 +273,7 @@ active AI-role job search.
 
 Target companies: {companies}
 Lanes under consideration: {lanes}
-Shortlisted role titles: {shortlist_titles}
+Tier-1 role titles: {top_titles}
 
 Below are candidates — dormant or quiet contacts scored for pivot \
 relevance, each with their current company/title (source-labeled: CRM or \
@@ -365,8 +366,8 @@ def refresh():
             owner=owner,
             companies=", ".join(disp["companies"]) or "(none named)",
             lanes=", ".join(disp["lanes"]) or "(none named)",
-            shortlist_titles=(", ".join(picture.get("shortlist_titles") or [])
-                              or "(none)"),
+            top_titles=(", ".join(picture.get("top_titles") or [])
+                        or "(none)"),
             candidates="\n".join(blocks)[:20_000])
 
         targets, curated = [], True

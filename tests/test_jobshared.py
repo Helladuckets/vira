@@ -15,7 +15,6 @@ from pathlib import Path
 from server import applications, jobboards, jobshared
 
 ADJ = {
-    "shortlist": {"pick-1": 0},
     "cut_comp": {"ote"},
     "cut_titles": [re.compile(r"account executive|\bsales\b", re.I)],
     "reason_comp": "quota comp — cut",
@@ -28,8 +27,7 @@ class CutParityTests(unittest.TestCase):
 
     def _both(self, title, comp):
         """(applications cut, jobboards cut) for the same role facts."""
-        role = {"uid": "x", "title": title, "comp_kind": comp,
-                "shortlist": 0, "cut": ""}
+        role = {"uid": "x", "title": title, "comp_kind": comp, "cut": ""}
         applications._apply_adjudication(role, ADJ)
         rec = {"uid": "x", "title": title, "comp": comp,
                "locations": ["New York City, NY"]}
@@ -59,12 +57,14 @@ class CutParityTests(unittest.TestCase):
     def test_no_adjudication_never_cuts(self):
         self.assertEqual(jobshared.cut_reason("ote", "Sales", None), "")
 
-    def test_pick_never_cut_applications_side(self):
-        role = {"uid": "pick-1", "title": "Sales Account Executive",
-                "comp_kind": "ote", "shortlist": 0, "cut": ""}
-        applications._apply_adjudication(role, ADJ)
-        self.assertEqual(role["shortlist"], 1)
-        self.assertEqual(role["cut"], "")
+    def test_a_formerly_pinned_role_is_cut_like_any_other(self):
+        # Picks used to exempt a role from the cut on the applications side
+        # ONLY — jobboards.evaluate never had the exemption, so the two call
+        # sites disagreed about a pinned sales role. Retiring picks
+        # (2026-08-13) is what made this pair agree.
+        a, b = self._both("Sales Account Executive", "ote")
+        self.assertEqual(a, "quota comp — cut")
+        self.assertEqual(a, b)
 
 
 class UidParityTests(unittest.TestCase):

@@ -194,8 +194,12 @@ class ApplicationsBase(unittest.TestCase):
         applications._universe_cache.update({"key": None, "roles": None})
 
     def seed_adjudication(self, shortlist=None):
-        """Owner ruling fixture: OTE cut by comp, marketing cut by title,
-        optional pinned shortlist."""
+        """Owner ruling fixture: OTE cut by comp, marketing cut by title.
+
+        `shortlist` still writes the pinned-picks key so a test can prove
+        the loader IGNORES it — the file on the owner's disk still carries
+        one, and reading it back is exactly the regression to catch.
+        """
         rdir = self.universe / "candidate-universe" / "role"
         (rdir / "g-examplelabs-888.json").write_text(json.dumps({
             "uid": "g-examplelabs-888", "company": "Example Labs",
@@ -463,27 +467,31 @@ class UniverseTest(ApplicationsBase):
         self.assertEqual(again["g-examplelabs-1234567"]["availability"],
                          "gone")
 
-    def test_adjudication_pins_and_cuts(self):
+    def test_a_pinned_pick_in_the_file_is_not_read_back(self):
+        # Picks are retired (2026-08-13). The owner's adjudication file still
+        # lists them, so the loader has to ignore the key rather than depend
+        # on the data being gone — and a listed role is cut like any other
+        # when the cut rules reach it, since nothing outranks them now.
         self.seed_adjudication(shortlist=["g-examplelabs-777"])
         uni = applications.load_universe()
         by = {r["uid"]: r for r in uni}
-        # the pinned pick sorts first and can never be cut (it is OTE)
-        self.assertEqual(uni[0]["uid"], "g-examplelabs-777")
-        self.assertEqual(uni[0]["shortlist"], 1)
-        self.assertEqual(uni[0]["cut"], "")
-        # scored tier-1 role stays uncut, ranked after the picks
-        self.assertEqual(uni[1]["uid"], "g-examplelabs-1234567")
-        # marketing title cut by pattern, demoted to the bottom
-        self.assertEqual(uni[-1]["uid"], "g-examplelabs-888")
-        self.assertIn("marketing", by["g-examplelabs-888"]["cut"])
-
-    def test_adjudication_cut_by_comp_without_shortlist(self):
-        self.seed_adjudication()
-        by = {r["uid"]: r for r in applications.load_universe()}
+        self.assertNotIn("shortlist", by["g-examplelabs-777"])
         self.assertIn("quota/commission", by["g-examplelabs-777"]["cut"])
+        self.assertNotIn("shortlist", applications.compose()["meta"]["universe"])
+
+    def test_adjudication_cuts_and_demotes(self):
+        self.seed_adjudication()
+        uni = applications.load_universe()
+        by = {r["uid"]: r for r in uni}
+        self.assertIn("quota/commission", by["g-examplelabs-777"]["cut"])
+        self.assertIn("marketing", by["g-examplelabs-888"]["cut"])
+        # the scored tier-1 role leads; both cut roles sink below it
+        self.assertEqual(uni[0]["uid"], "g-examplelabs-1234567")
+        cut_at = [i for i, r in enumerate(uni) if r["cut"]]
+        self.assertEqual(cut_at, sorted(cut_at))
+        self.assertEqual(min(cut_at), 1)
         out = applications.compose()
         self.assertEqual(out["meta"]["universe"]["cut"], 2)
-        self.assertEqual(out["meta"]["universe"]["shortlist"], 0)
 
     def test_apply_prompt_warns_on_cut_role(self):
         self.seed_adjudication()
@@ -817,6 +825,54 @@ class StatusFilterContract(unittest.TestCase):
         # The owner's ask: one filter for what is drafted and still his.
         self.assertIn("written", self.options())
         self.assertIn("written", self.derived())
+
+
+class SortContract(unittest.TestCase):
+    """Each sort option names ONE axis, and something answers for it.
+
+    `appSortKey` falls through to the combined score, so an option the
+    comparator does not name does not error — it silently sorts by
+    something else while its label claims otherwise. That is the failure
+    this pins. (The suite cannot execute the comparator; the ordering
+    itself is verified by driving the real list.)
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = (Path(__file__).resolve().parents[1] / "static" / "app.js"
+                   ).read_text(encoding="utf-8")
+
+    def options(self):
+        block = re.search(r"const APP_SORTS = \[(.*?)\];", self.app, re.S)
+        self.assertIsNotNone(block, "APP_SORTS not found in app.js")
+        return re.findall(r'\["([a-z]+)",', block.group(1))
+
+    def test_every_option_is_named_by_the_comparator(self):
+        body = re.search(r"function appSortKey\(r, mode\) \{(.*?)\n\}",
+                         self.app, re.S)
+        self.assertIsNotNone(body, "appSortKey not found in app.js")
+        named = set(re.findall(r'mode === "([a-z]+)"', body.group(1)))
+        options = self.options()
+        self.assertTrue(options, "the sort dropdown offers nothing")
+        # "best" is the documented fall-through, so it needs no branch
+        unnamed = [v for v in options if v not in named and v != "best"]
+        self.assertEqual(unnamed, [], f"sort options nothing reads: {unnamed}")
+
+    def test_the_validation_list_derives_from_the_table(self):
+        # A second hand-written list is a second thing to forget: a saved
+        # sort the table no longer offers must fall back, not stick.
+        self.assertIn("const APPS_SORTS = APP_SORTS.map(([v]) => v);",
+                      self.app)
+
+    def test_the_cut_lane_is_demoted_before_any_score(self):
+        # Cut roles score as high as 90 on the real universe, so a bare
+        # score sort puts a role the owner refuses at the top of the list.
+        body = re.search(r"function appsSort\(rows, mode\) \{(.*?)\n\}",
+                         self.app, re.S)
+        self.assertIsNotNone(body, "appsSort not found in app.js")
+        text = body.group(1)
+        self.assertLess(text.index("a.cut"), text.index("appSortKey"),
+                        "the cut test must run before the score comparison")
 
 
 if __name__ == "__main__":

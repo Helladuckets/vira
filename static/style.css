@@ -4860,10 +4860,8 @@ a.rm-name:hover { color: var(--accent); }
 .app-rescore:hover { color: var(--accent); }
 .app-rescore:disabled { color: var(--text-faint); cursor: default; }
 
-/* applications: owner adjudication (picks pinned, cut lane demoted) */
-.tier-badge.pick {
-  color: var(--accent-contrast); background: var(--accent-bright);
-}
+/* applications: owner adjudication (the cut lane, demoted never hidden).
+   The pinned-picks badge is retired with the picks themselves, 2026-08-13. */
 .cut-chip {
   font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; flex: none;
   color: var(--red); border: 1px solid var(--red-line);
