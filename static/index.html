@@ -432,8 +432,10 @@
       sales/marketing lane is cut on your 2026-07-14 call and demoted,
       labeled, never hidden — and a posting that comes down is marked GONE
       and filtered out by default, never deleted, so its analysis survives.
-      Star, note, track — Apply dispatches an agent that drafts the full
-      package in the self-record. Nothing is ever submitted for you.</p>
+      Star, note, track — Write application dispatches an agent that drafts
+      the full package. A role whose package is on disk wears WRITTEN and
+      answers the "Written — not sent yet" status filter, so what is still
+      on your desk is one click away. Nothing is ever submitted for you.</p>
     <div id="app-compare-bar" class="app-compare-bar" style="display:none">
       <span id="app-compare-count">Choose 2–6 roles with descriptions</span>
       <button id="app-compare-clear" class="btn small" style="display:none">Clear</button>
@@ -937,8 +939,8 @@
 <div id="app-run-sheet" class="sheet">
   <div class="sheet-card">
     <div class="sheet-head">
-      <div class="run-kind">Apply</div>
-      <h3 id="app-run-title">Apply</h3>
+      <div class="run-kind">Write application</div>
+      <h3 id="app-run-title">Write application</h3>
       <p class="hint" id="app-run-text"></p>
     </div>
     <p class="hint warn" id="app-run-cut"></p>
@@ -951,12 +953,16 @@
     <label class="field">Additional instructions (optional)
       <textarea id="app-run-extra" rows="3" spellcheck="false"
                 placeholder="Anything else Vira should tailor or emphasize…"></textarea></label>
+    <!-- Deliberately does NOT say "in the self-record": the record's own
+         CLAUDE.md places packages OUTSIDE it, and they land in the
+         application-packages folder (applicationmap.packages_root). -->
     <p class="hint" id="app-run-note">Drafts the full package (CV, cover letter,
-      answers, prep) in the self-record. Nothing is ever submitted for you.</p>
+      answers, prep) into your application packages folder. Nothing is ever
+      submitted for you.</p>
     <div class="row-end">
       <button class="btn" id="app-run-cancel">Cancel</button>
       <button class="btn" id="app-run-copy">Copy for another session</button>
-      <button class="btn primary" id="app-run-go">Apply in Vira</button>
+      <button class="btn primary" id="app-run-go">Write it in Vira</button>
     </div>
   </div>
 </div>

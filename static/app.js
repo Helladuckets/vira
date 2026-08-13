@@ -14998,8 +14998,9 @@ DESKTOP_MQ.addEventListener("change", () => location.reload());
 
 // ---------- applications (the job-application front door) ----------
 // Roles come from the careers-teardown corpora (fit-scored); star/comment/
-// status persist server-side; Apply dispatches an application-package agent
-// session that drafts the full package. Nothing is ever submitted for the owner.
+// status persist server-side; "Write application" dispatches an application-
+// package agent session that drafts the full package, and whether one exists
+// is read off disk (r.written). Nothing is ever submitted for the owner.
 let appsData = null;
 let appsShown = 200;
 const APPS_PAGE = 200;
@@ -15022,7 +15023,11 @@ const APP_TIER_OPTIONS = [
   ["pass", "Passed on"], ["analyzed", "Analyzed only"],
   ["raw", "Not yet analyzed"], ["fresh", "New on the boards"],
 ];
+// "Written" is not one of the server's stored statuses — it is DERIVED from
+// the package on disk, and it is the working set: drafted, still in your
+// hands. Everything else here maps 1:1 onto applications.STATUSES.
 const APP_STATUS_OPTIONS = [
+  ["written", "Written — not sent yet"],
   ["none", "Untouched"], ["applied", "Applied"],
   ["interviewing", "Interviewing"], ["offer", "Offer"],
   ["closed", "Closed"], ["skipped", "Skipped"],
@@ -15306,6 +15311,16 @@ function openAppsMultiPicker(anchor, key, options, title) {
   placeCtxPop(pop, Math.max(8, r.right - 240), r.bottom + 4);
 }
 
+function appStatusMatches(r, value) {
+  // The label says "not sent yet", so the rule has to mean it: a package
+  // exists and the role has not moved anywhere. A written role you marked
+  // applied is out the door and lives under Applied — which is the whole
+  // point of a filter for what is still on your desk.
+  if (value === "written")
+    return !!r.written && (r.status || "none") === "none";
+  return (r.status || "none") === value;
+}
+
 function appTierMatches(r, value) {
   if (value === "shortlist") return !!r.shortlist;
   if (value === "cut") return !!r.cut;
@@ -15326,7 +15341,7 @@ function appsFiltered() {
     if (f.loc && f.loc.startsWith("place:")
         && !(r.places || []).includes(f.loc.slice(6))) return false;
     if (f.starred && !r.starred) return false;
-    if (f.status.length && !f.status.includes(r.status || "none"))
+    if (f.status.length && !f.status.some((v) => appStatusMatches(r, v)))
       return false;
     const av = r.availability || "unverified";
     if (f.avail === "live" && av === "gone") return false;
@@ -15622,6 +15637,10 @@ function renderApplications() {
   const summary = $("#app-summary");
   if (summary) {
     const starred = appsData.roles.filter((r) => r.starred).length;
+    // Counted with the filter's OWN rule, so the number and the option can
+    // never state different sets.
+    const written = appsData.roles
+      .filter((r) => appStatusMatches(r, "written")).length;
     const u = (appsData.meta || {}).universe || {};
     const av = (appsData.meta || {}).availability || {};
     let line = `${rows.length} of ${appsData.roles.length} roles` +
@@ -15631,6 +15650,7 @@ function renderApplications() {
                    (u.cut ? ` · ${u.cut} cut` : "") +
                    (u.unanalyzed ? ` · ${u.unanalyzed} not yet analyzed` : "")
                  : "") +
+               (written ? ` · ${written} written, not sent` : "") +
                (starred ? ` · ${starred} starred` : "") +
                // never let the default filter read as "that's everything"
                (appsFilters.avail === "live" && av.gone
@@ -15731,6 +15751,13 @@ function appRow(r) {
   }
   const availChip = appAvailChip(r);
   if (availChip) title.appendChild(availChip);
+  if (r.written) {
+    const w = el("span", "written-chip", "WRITTEN");
+    w.title = "An application package is on disk"
+      + (r.package ? ` — ${r.package}` : "")
+      + ". Read opens it.";
+    title.appendChild(w);
+  }
   const a = document.createElement("a");
   a.href = r.url || r.apply_url;
   a.target = "_blank";
@@ -15884,8 +15911,16 @@ function appRow(r) {
   doc.addEventListener("click", () => openResumeView(r));
   actions.appendChild(doc);
 
+  // "Apply" read like submitting the application, which this has never
+  // done — it dispatches an agent that DRAFTS the package, and the sheet
+  // has always said so in small print underneath. The label says it now.
+  const drafted = r.written || r.last_job;
   const apply = el("button", "btn primary app-apply",
-                   r.last_job ? "Re-apply" : "Apply");
+                   drafted ? "Write again" : "Write application");
+  apply.title = drafted
+    ? "Draft a fresh version of the package. Nothing is ever submitted for you."
+    : "Dispatch an agent that drafts the full package. Nothing is ever "
+      + "submitted for you.";
   apply.addEventListener("click", () => appApply(r));
   actions.appendChild(apply);
   if (r.last_job) {
@@ -16758,7 +16793,8 @@ window.addEventListener("resize", () => {
 let appRunCtx = null;
 function appApply(r) {
   appRunCtx = r;
-  $("#app-run-title").textContent = `Apply — ${r.title} at ${r.company}`;
+  $("#app-run-title").textContent =
+    `Write application — ${r.title} at ${r.company}`;
   $("#app-run-text").textContent =
     r.locations && r.locations.length ? r.locations.join(" · ") : "";
   const cut = $("#app-run-cut");

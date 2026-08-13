@@ -1,10 +1,12 @@
 """Applications module — the job-application catalog.
 
 A merged, deduplicated role catalog the owner can star, comment on, track
-status against, and — the point — hit Apply on, which dispatches the
-`application-package` skill as a live agent session that builds the full
-package (tailored CV, cover letter, form answers, interview prep) inside
-the owner's self-record.
+status against, and — the point — write an application for, which
+dispatches the `application-package` skill as a live agent session that
+builds the full package (tailored CV, cover letter, form answers,
+interview prep).  Whether a role HAS a package is read off disk rather
+than off that dispatch (`applicationmap.written_for`), so the catalog
+reports what exists rather than what was asked for.
 
 Roles arrive from two kinds of source: the live board poller
 (server/jobboards.py, generic — a registry of company boards per ATS) and
@@ -785,6 +787,12 @@ def compose(company=None, view=None):
         return exact or next((g for g in research_rows if wanted in
                               str(g.get("company") or "").casefold()), None)
 
+    # Which roles have an application package on disk. Derived, not stored,
+    # and deliberately NOT read off `last_job` — see applicationmap.written_for
+    # for why a dispatch stamp is a different fact from a written package.
+    from . import applicationmap
+    written = applicationmap.written_for(roles)
+
     companies = {}
     out = []
     for r in roles:
@@ -796,6 +804,8 @@ def compose(company=None, view=None):
         row["status"] = st.get("status", "none")
         row["comments"] = st.get("comments", [])
         row["last_job"] = st.get("last_job")
+        row["written"] = r["uid"] in written
+        row["package"] = written.get(r["uid"])
         # The list only needs the capability flag. Full descriptions stay
         # server-side and travel only for the roles the owner compares.
         row["has_description"] = jobcompare.description_available(

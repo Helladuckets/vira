@@ -6,6 +6,7 @@ All fixtures are synthetic — no real teardown data, names, or contacts.
 Run: .venv/bin/python -m unittest tests.test_applications
 """
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -148,6 +149,8 @@ class ApplicationsBase(unittest.TestCase):
         for cache, blank in ((applications._cache, {"key": None, "roles": None}),
                              (applications._universe_cache,
                               {"key": None, "roles": None}),
+                             (applicationmap._PKG_CACHE,
+                              {"key": None, "rows": []}),
                              (applications._conn_cache,
                               {"mtime": None, "by_company": None})):
             cache.update(blank)
@@ -316,6 +319,38 @@ class ComposeTest(ApplicationsBase):
         self.assertEqual(out["meta"]["universe"]["total"], 0)
         self.assertEqual(out["meta"]["universe"]["unanalyzed"], 2)
         self.assertTrue(all(not r["in_universe"] for r in out["roles"]))
+
+    def write_package(self, name, uid, company, title, url):
+        version = self.packages / name / "V1"
+        version.mkdir(parents=True)
+        (version / "posting.md").write_text(
+            f"# {title}\n\nCompany: {company}\nPosting URL: {url}\n"
+            f"Role record uid: {uid}\n", encoding="utf-8")
+
+    def test_a_role_with_a_package_on_disk_reads_as_written(self):
+        self.write_package(
+            "example-labs-architect", "g-examplelabs-1234567", "Example Labs",
+            "Platform Architect",
+            "https://job-boards.greenhouse.io/examplelabs/jobs/1234567")
+        out = applications.compose(view="all")
+        rows = {r["uid"]: r for r in out["roles"]}
+        self.assertTrue(rows["g-examplelabs-1234567"]["written"])
+        self.assertEqual(rows["g-examplelabs-1234567"]["package"],
+                         "example-labs-architect")
+        others = [r for uid, r in rows.items() if uid != "g-examplelabs-1234567"]
+        self.assertTrue(others and all(not r["written"] for r in others))
+        self.assertTrue(all(r["package"] is None for r in others))
+
+    def test_written_is_read_off_disk_not_off_the_dispatch_stamp(self):
+        # `last_job` records that a session was DISPATCHED — it survives one
+        # that failed, and it misses a package written from a copy-out
+        # session Vira never launched. The catalog reports what exists.
+        applications.update_state("g-examplelabs-1234567",
+                                  job_id="job-that-produced-nothing")
+        rows = {r["uid"]: r for r in applications.compose(view="all")["roles"]}
+        self.assertEqual(rows["g-examplelabs-1234567"]["last_job"],
+                         "job-that-produced-nothing")
+        self.assertFalse(rows["g-examplelabs-1234567"]["written"])
 
     def test_company_research_graph_is_joined_without_becoming_role_data(self):
         graph = {"id": "example-labs", "name": "Example research",
@@ -743,6 +778,45 @@ class PlacesAndLocationTest(ApplicationsBase):
         self.assertTrue(lr["configured"])
         self.assertEqual(lr["places"], ["New York", "NYC"])
         self.assertTrue(lr["remote_ok"])
+
+
+class StatusFilterContract(unittest.TestCase):
+    """The status filter's options and its matcher must cover each other.
+
+    Every option is either one of the server's stored statuses or a DERIVED
+    one the client resolves itself.  An option with neither backing is the
+    silent failure this pins: it renders in the picker, ticks, and filters
+    the list down to nothing with no error anywhere.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.app = (Path(__file__).resolve().parents[1] / "static" / "app.js"
+                   ).read_text(encoding="utf-8")
+
+    def options(self):
+        block = re.search(r"const APP_STATUS_OPTIONS = \[(.*?)\];",
+                          self.app, re.S)
+        self.assertIsNotNone(block, "APP_STATUS_OPTIONS not found in app.js")
+        return re.findall(r'\["([a-z-]+)",', block.group(1))
+
+    def derived(self):
+        body = re.search(r"function appStatusMatches\(r, value\) \{(.*?)\n\}",
+                         self.app, re.S)
+        self.assertIsNotNone(body, "appStatusMatches not found in app.js")
+        return set(re.findall(r'value === "([a-z-]+)"', body.group(1)))
+
+    def test_every_option_is_a_stored_status_or_a_handled_derived_one(self):
+        options = self.options()
+        self.assertTrue(options, "the status picker offers nothing")
+        unbacked = [v for v in options
+                    if v not in applications.STATUSES and v not in self.derived()]
+        self.assertEqual(unbacked, [], f"status options nothing answers: {unbacked}")
+
+    def test_the_working_set_option_is_offered(self):
+        # The owner's ask: one filter for what is drafted and still his.
+        self.assertIn("written", self.options())
+        self.assertIn("written", self.derived())
 
 
 if __name__ == "__main__":

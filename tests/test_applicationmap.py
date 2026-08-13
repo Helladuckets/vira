@@ -153,6 +153,75 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
                 "url": "https://job-boards.greenhouse.io/examplelabs/jobs/654"}
         self.assertEqual(applicationmap.find_package(role), package)
 
+    # ---- which roles have a package written (the Written filter's source)
+
+    def test_written_for_reports_the_role_whose_package_is_on_disk(self):
+        other = {**self.role, "uid": "a-999", "title": "Unwritten Role",
+                 "url": "https://job-boards.greenhouse.io/examplelabs/jobs/999"}
+        written = applicationmap.written_for([self.role, other])
+        self.assertEqual(written,
+                         {"g-examplelabs-321": "launch-lead-2026-08-07"})
+
+    def test_written_for_and_find_package_agree_on_every_role(self):
+        # The Read button and the Written filter answer the same question, so
+        # a role the filter calls written must be one Read can actually open.
+        role = {**self.role, "uid": "a-654", "title": "Different title",
+                "url": "https://job-boards.greenhouse.io/examplelabs/jobs/654"}
+        roles = [self.role, role, {**self.role, "uid": "a-000",
+                                   "company": "Nobody", "title": "Nothing"}]
+        written = applicationmap.written_for(roles)
+        for r in roles:
+            package = applicationmap.find_package(r)
+            self.assertEqual(r["uid"] in written, package is not None)
+            if package is not None:
+                self.assertEqual(written[r["uid"]], package.name)
+
+    def test_a_package_written_without_a_vira_dispatch_still_counts(self):
+        # The owner writes some packages from a copy-out session Vira never
+        # launched, so `last_job` is not the signal — the disk is.
+        package = self.packages / "example-labs" / "hand-written-2026-08-13"
+        version = package / "V1"
+        version.mkdir(parents=True)
+        (version / "posting.md").write_text(
+            "# Data Lead\n\nCompany: Example Labs\n"
+            "Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/777\n",
+            encoding="utf-8")
+        role = {"uid": "g-examplelabs-777", "company": "Example Labs",
+                "title": "Data Lead"}
+        self.assertIn("g-examplelabs-777",
+                      applicationmap.written_for([role]))
+
+    def test_two_postings_missing_a_company_never_claim_each_other(self):
+        # Both sides of the company/title fallback must be non-empty: a
+        # posting with no Company: field slugs to "", and so would a role
+        # record missing one — an empty match would claim a stranger's work.
+        package = self.packages / "no-company"
+        version = package / "V1"
+        version.mkdir(parents=True)
+        (version / "posting.md").write_text(
+            "# Posting snapshot\n\n- Captured: 2026-08-13\n", encoding="utf-8")
+        role = {"uid": "", "company": "", "title": ""}
+        self.assertIsNone(applicationmap.find_package(role))
+
+    def test_a_new_package_lands_without_a_restart(self):
+        role = {"uid": "g-examplelabs-654", "company": "Example Labs",
+                "title": "Later Role"}
+        self.assertEqual(applicationmap.written_for([role]), {})
+        version = self.packages / "example-labs" / "later-role" / "V1"
+        version.mkdir(parents=True)
+        (version / "posting.md").write_text(
+            "# Later Role\n\nCompany: Example Labs\n"
+            "Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/654\n",
+            encoding="utf-8")
+        self.assertIn("g-examplelabs-654",
+                      applicationmap.written_for([role]))
+
+    def test_no_packages_root_reads_as_nothing_written(self):
+        with mock.patch.object(applicationmap, "packages_root",
+                               return_value=self.packages / "absent"):
+            self.assertEqual(applicationmap.written_for([self.role]), {})
+            self.assertIsNone(applicationmap.find_package(self.role))
+
     def test_build_joins_all_five_lanes_and_claim_authority(self):
         out = applicationmap.build(self.role)
         columns = {column["id"]: column for column in out["columns"]}
