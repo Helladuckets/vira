@@ -858,6 +858,38 @@ def compare_roles(uids):
     return jobcompare.compare(roles)
 
 
+def _slug_part(text, cap=None):
+    s = re.sub(r"-{2,}", "-",
+               re.sub(r"[^a-z0-9]+", "-", str(text or "").lower())).strip("-")
+    return s[:cap].strip("-") if cap else s
+
+
+def session_slug(role, when=None):
+    """`<company>-<title>-<YYYY-MM-DD>` — the label that leads every Apply
+    prompt.
+
+    Every Apply dispatch used to open on the same sentence ("Run the
+    application-package skill..."), and joblog derives a session's name from
+    the prompt's first substantive line — so a dozen concurrent Apply runs
+    were a dozen identically-named rows in Live and a dozen identical
+    terminal title bars. This slug is what tells them apart.
+
+    It is budgeted against joblog.TITLE_CAP by trimming the TITLE on a
+    hyphen boundary, so COMPANY and DATE always survive whole. That is not
+    cosmetic: `_short` cuts from the end, and 826 of the 3,197 catalog roles
+    exceed the cap, so the naive slug would have the date — the half that
+    separates one attempt at a role from the next — eaten off exactly the
+    quarter of roles with the longest titles."""
+    from . import joblog  # lazy: naming is joblog's, the label is ours
+    day = (when or datetime.now()).strftime("%Y-%m-%d")
+    company = _slug_part(role.get("company"), 32) or "role"
+    budget = joblog.TITLE_CAP - len(company) - len(day) - 2
+    title = _slug_part(role.get("title"))
+    if len(title) > budget:
+        title = title[:max(budget, 0)].rsplit("-", 1)[0].strip("-")
+    return "-".join(p for p in (company, title, day) if p)
+
+
 def apply_prompt(role, note=""):
     """The prompt an Apply dispatch hands the agent session. cwd is the
     self-record; on Claude its CLAUDE.md auto-loads, but the load-bearing
@@ -872,6 +904,11 @@ def apply_prompt(role, note=""):
     freshness = record / "renderings" / "check_freshness.py"
     inventory = record / "INVENTORY.md"
     lines = [
+        # Leads the prompt because joblog names the run from its first
+        # line — see session_slug. Company and title are also stated for
+        # real in the ROLE block below; this line is the label.
+        session_slug(role),
+        "",
         "Run the application-package skill "
         f"(read {SKILL_MD} and follow it end to end) for this role. "
         "Build the FULL package. Draft only — never submit anything.",

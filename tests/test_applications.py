@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from server import applicationmap, applications, jobboards
+from server import applicationmap, applications, joblog, jobboards
 
 
 def fresh_seen():
@@ -465,6 +465,66 @@ class UniverseTest(ApplicationsBase):
         self.assertIn("DOSSIER READ", p)
         self.assertIn("the shipped systems", p)
         self.assertIn("no formal SA title", p)
+
+
+class SessionSlugTest(ApplicationsBase):
+    """The label leading every Apply prompt, and the naming it drives."""
+
+    def test_the_slug_is_company_then_title_then_date(self):
+        role = {"company": "Scale AI", "title": "Frontier Agents "
+                "Engineer, Applied AI"}
+        self.assertEqual(
+            applications.session_slug(role, when=datetime(2026, 8, 12)),
+            "scale-ai-frontier-agents-engineer-applied-ai-2026-08-12")
+
+    def test_the_slug_leads_the_prompt(self):
+        roles, _ = applications.load_roles()
+        first = applications.apply_prompt(roles[0]).splitlines()[0]
+        # Computed here rather than compared against a second session_slug
+        # call: both would read the clock, and a run crossing midnight
+        # between them would fail on a date that was never wrong.
+        self.assertRegex(first, r"^[a-z0-9-]+-\d{4}-\d{2}-\d{2}$")
+        self.assertTrue(first.startswith("example-labs-platform-architect-"),
+                        first)
+
+    def test_the_slug_is_what_names_the_session(self):
+        """The join. The slug exists to name the run, and the naming lives
+        in joblog — so assert against the REAL composed prompt through the
+        REAL naming, not against the string this module just built."""
+        roles, _ = applications.load_roles()
+        record = {"prompt": applications.apply_prompt(roles[0])}
+        slug = applications.session_slug(roles[0])
+        self.assertEqual(joblog.command(record), slug)
+        self.assertEqual(joblog.default_title(record), slug)
+
+    def test_a_long_title_is_trimmed_so_company_and_date_survive(self):
+        # 826 of 3,197 live roles exceed TITLE_CAP; the cut must come out of
+        # the title, never the date, or every long-titled role's sessions
+        # become indistinguishable again.
+        role = {"company": "Example Deepmind",
+                "title": "Senior Strategic Portfolio Manager, Frontier "
+                         "Safety Alignment and Collaboration"}
+        slug = applications.session_slug(role, when=datetime(2026, 8, 12))
+        self.assertLessEqual(len(slug), joblog.TITLE_CAP)
+        self.assertTrue(slug.startswith("example-deepmind-"), slug)
+        self.assertTrue(slug.endswith("-2026-08-12"), slug)
+        # and the trim is on a hyphen boundary, not mid-word
+        self.assertNotIn("--", slug)
+        # the name survives whole — no ellipsis, which is the whole point
+        self.assertEqual(joblog.default_title({"prompt": slug}), slug)
+
+    def test_an_absurd_company_still_leaves_a_usable_label(self):
+        role = {"company": "A" * 200, "title": "Engineer"}
+        slug = applications.session_slug(role, when=datetime(2026, 8, 12))
+        self.assertLessEqual(len(slug), joblog.TITLE_CAP)
+        self.assertTrue(slug.endswith("-2026-08-12"), slug)
+
+    def test_a_missing_company_never_yields_a_leading_hyphen(self):
+        # joblog.slugify-class rule: a label starting with punctuation reads
+        # as a broken name, and branch slugs derived from one are illegal.
+        slug = applications.session_slug({"title": "Engineer"},
+                                         when=datetime(2026, 8, 12))
+        self.assertEqual(slug, "role-engineer-2026-08-12")
 
 
 class PromptTest(ApplicationsBase):
