@@ -2803,6 +2803,11 @@ def _job_from_disk(jid):
         "publish_plan": r.get("publish_plan"),
         "idea_id": r.get("idea_id"), "session_id": r.get("session_id", ""),
         "mode": r.get("mode"), "awaiting": None, "live": False,
+        # Same reasoning as `provider` again: the compose bar asks whether
+        # this conversation can still be continued, and once a session
+        # leaves the live registry the ledger is the only thing it can ask.
+        "finished_by_owner": bool(r.get("finished_by_owner")),
+        "resumable": session.resumable(r),
         "pending": [], "transcript": r.get("transcript", ""),
     }
 
@@ -2827,12 +2832,15 @@ class SayReq(BaseModel):
 @app.post("/api/session/{sid}/say")
 async def api_session_say(sid: str, req: SayReq):
     try:
-        session.sessions.say(sid, req.text)
+        res = session.sessions.say(sid, req.text)
     except KeyError:
         raise HTTPException(404, "unknown session")
     except ValueError as e:
         raise HTTPException(409, str(e))
-    return {"queued": True}
+    # `job` is a NEW id when the session had ended and this continued it, so
+    # the terminal can follow the conversation rather than keep polling a run
+    # that will never speak again.
+    return {"queued": True, **(res or {})}
 
 
 class PermissionReq(BaseModel):

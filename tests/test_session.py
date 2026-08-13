@@ -233,11 +233,28 @@ class ControlTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             reg.permission(h.id, "nope", True)
 
-    def test_controls_rejected_when_not_running(self):
+    def test_controls_other_than_say_rejected_when_not_running(self):
+        # These drive the runner through its control file, so a dead session
+        # would take the write and nobody would ever read it — a silent
+        # no-op. `say` is deliberately NOT here: it resumes instead (see
+        # ResumeTests), which is the one control that has somewhere to go.
         reg = make_registry()
         h = make_detached(reg, self.tmp.name, status="done")
-        with self.assertRaises(ValueError):
-            reg.say(h.id, "too late")
+        for call in (lambda: reg.interrupt(h.id),
+                     lambda: reg.close(h.id),
+                     lambda: reg.permission(h.id, "req1", True),
+                     lambda: reg.answer(h.id, "req1", "yes")):
+            with self.assertRaises(ValueError):
+                call()
+
+    def test_say_on_an_unknown_job_is_still_a_404(self):
+        # Resuming looks the job up in the ledger; one that exists nowhere
+        # must stay a KeyError (404) rather than becoming a confusing 409.
+        reg = make_registry()
+        with mock.patch.object(session.joblog, "get_record",
+                               lambda jid: None):
+            with self.assertRaises(KeyError):
+                reg.say("nosuchjob1234", "hello?")
 
     def test_empty_say_rejected(self):
         reg = make_registry()
@@ -301,13 +318,21 @@ class LaunchTests(unittest.TestCase):
     def test_steering_rejected_on_non_live_session(self):
         # provider pinned for the same reason as the fallback test above:
         # only the SDK-less ANTHROPIC path yields a non-live session.
+        #
+        # The legacy one-shot path has no control file AND records no model
+        # session, so there is nothing to steer and nothing to continue. It
+        # still refuses — but by NAMING why, rather than writing into a void.
         reg = make_registry()
         with mock.patch.object(session, "SDK_AVAILABLE", False), \
              mock.patch.object(session.Sessions, "_run_subprocess",
                                lambda self, s: None):
             jid = reg.launch("hello", provider="anthropic")
-        with self.assertRaises(ValueError):
-            reg.say(jid, "steer this")
+        with mock.patch.object(session.joblog, "get_record",
+                               lambda j: {"id": j, "session_id": "",
+                                          "cwd": "/tmp"}):
+            with self.assertRaises(ValueError) as caught:
+                reg.say(jid, "steer this")
+        self.assertIn("no conversation to continue", str(caught.exception))
 
     def test_sdk_present_spawns_detached_runner(self):
         reg = make_registry()
@@ -349,6 +374,185 @@ class LaunchTests(unittest.TestCase):
             reg.launch("first")
             with self.assertRaises(ValueError):
                 reg.launch("second")
+
+
+class ResumableTests(unittest.TestCase):
+    """One answer to "does the compose box still reach the model" — the live
+    snapshot and the ledger replay both read it, so they cannot disagree."""
+
+    def test_a_running_session_is_always_reachable(self):
+        # steered through its control file; it needs no recorded session id
+        self.assertTrue(session.resumable({"status": "running",
+                                           "session_id": ""}))
+
+    def test_a_failed_session_with_a_conversation_is_resumable(self):
+        # the usage-limit case: it ended, nobody finished it, the model
+        # session exists
+        self.assertTrue(session.resumable({"status": "error",
+                                           "session_id": "sess-1"}))
+
+    def test_finishing_closes_the_door(self):
+        self.assertFalse(session.resumable({"status": "done",
+                                            "session_id": "sess-1",
+                                            "finished_by_owner": True}))
+
+    def test_no_conversation_is_not_resumable(self):
+        self.assertFalse(session.resumable({"status": "error",
+                                            "session_id": ""}))
+
+    def test_empty_is_safe(self):
+        self.assertFalse(session.resumable({}))
+        self.assertFalse(session.resumable(None))
+
+
+class ResumeTests(unittest.TestCase):
+    """Typing into an ENDED session continues the same conversation.
+
+    The compose box is the owner's only channel and it used to close with
+    the process, so a usage limit — 21 of 450 ledger jobs on 2026-08-13 —
+    ended the conversation for good while its transcript sat on disk.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.calls = []
+
+    def _reg(self, row):
+        """A registry whose launch is captured rather than run, over a ledger
+        holding exactly `row`."""
+        reg = make_registry()
+        def fake_launch(_self, prompt, **kw):
+            self.calls.append({"prompt": prompt, **kw})
+            return "newjob123456"
+        self.launch_patch = mock.patch.object(
+            session.Sessions, "launch", fake_launch)
+        self.ledger_patch = mock.patch.object(
+            session.joblog, "get_record", lambda jid: row)
+        return reg
+
+    def _row(self, **over):
+        row = {"id": "oldjob123456", "session_id": "sess-abc-123",
+               "cwd": self.tmp.name, "model": "claude-opus-5",
+               "provider": "anthropic", "mode": "bypassPermissions",
+               "permission_mode": None, "read_only": False,
+               "publish_plan": False, "idea_id": "idea_x",
+               "meta": {"machine": True, "kind": "board-score"}}
+        row.update(over)
+        return row
+
+    def test_say_on_an_ended_session_resumes_the_conversation(self):
+        reg = self._reg(self._row())
+        h = make_detached(reg, self.tmp.name, status="error")
+        with self.launch_patch, self.ledger_patch:
+            res = reg.say(h.id, "usage is back — carry on")
+        self.assertTrue(res["resumed"])
+        self.assertEqual(res["job"], "newjob123456")
+        call = self.calls[0]
+        # The recorded conversation is continued, not a fresh one started.
+        self.assertEqual(call["resume_session"], "sess-abc-123")
+        self.assertEqual(call["resumed_from"], h.id)
+        # The owner's message IS the prompt.
+        self.assertEqual(call["prompt"], "usage is back — carry on")
+        # cwd carries the placement, so launch re-arms the branch guard from
+        # the same worktree instead of minting a second one.
+        self.assertEqual(call["cwd"], self.tmp.name)
+        self.assertEqual(call["model"], "claude-opus-5")
+        self.assertEqual(call["idea_id"], "idea_x")
+
+    def test_a_resumed_machine_run_becomes_an_owner_session(self):
+        # meta.machine keeps a run from parking at its turn end — right for a
+        # dispatch nobody watches, wrong the moment the owner types into it.
+        reg = self._reg(self._row())
+        h = make_detached(reg, self.tmp.name, status="error")
+        with self.launch_patch, self.ledger_patch:
+            reg.say(h.id, "keep going")
+        meta = self.calls[0]["meta"]
+        self.assertNotIn("machine", meta)
+        self.assertEqual(meta["resumed_from"], h.id)
+
+    def test_a_live_session_is_steered_not_resumed(self):
+        reg = self._reg(self._row())
+        h = make_detached(reg, self.tmp.name, status="running")
+        with self.launch_patch, self.ledger_patch:
+            res = reg.say(h.id, "while you work")
+        self.assertFalse(res["resumed"])
+        self.assertEqual(res["job"], h.id)
+        self.assertEqual(self.calls, [])          # nothing was launched
+        ctl = (h.dir / "control.jsonl").read_text(encoding="utf-8")
+        self.assertIn("while you work", ctl)
+
+    def test_no_recorded_conversation_refuses_by_name(self):
+        reg = self._reg(self._row(session_id=""))
+        h = make_detached(reg, self.tmp.name, status="error")
+        with self.launch_patch, self.ledger_patch:
+            with self.assertRaises(ValueError) as caught:
+                reg.say(h.id, "hello?")
+        self.assertIn("no conversation to continue", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_a_vanished_working_directory_refuses_by_name(self):
+        # Its worktree was tidied away. Resuming elsewhere would drop the
+        # session into an unrelated tree with the guard armed from THAT tree.
+        gone = str(Path(self.tmp.name) / "no-such-worktree")
+        reg = self._reg(self._row(cwd=gone))
+        h = make_detached(reg, self.tmp.name, status="error")
+        with self.launch_patch, self.ledger_patch:
+            with self.assertRaises(ValueError) as caught:
+                reg.say(h.id, "hello?")
+        self.assertIn("gone", str(caught.exception))
+        self.assertIn(gone, str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_passive_instances_refuse_to_resume(self):
+        reg = self._reg(self._row())
+        h = make_detached(reg, self.tmp.name, status="error")
+        with self.launch_patch, self.ledger_patch, \
+             mock.patch.dict(session.os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(ValueError) as caught:
+                reg.say(h.id, "hello?")
+        self.assertIn("passive", str(caught.exception))
+        self.assertEqual(self.calls, [])
+
+    def test_resume_session_reaches_the_launch_data(self):
+        """The JOIN, not the halves. The branch guard shipped dead for four
+        days because launch() accepted a field the spawn path never carried;
+        the structural test in test_branch_guard_wiring then proves anything
+        in the launch data reaches job.json."""
+        reg = make_registry()
+        seen = {}
+
+        def fake_spawn(_self, data):
+            seen.update(data)
+            return make_detached(reg, self.tmp.name, jid=data["id"])
+
+        with mock.patch.object(session, "SDK_AVAILABLE", True), \
+             mock.patch.object(session.Sessions, "_spawn_runner", fake_spawn), \
+             mock.patch.object(session.joblog, "record_launch",
+                               lambda job: None):
+            reg.launch("continue please", cwd=self.tmp.name,
+                       provider="anthropic",
+                       resume_session="sess-abc-123",
+                       resumed_from="oldjob123456")
+        self.assertEqual(seen["resume_session"], "sess-abc-123")
+        self.assertEqual(seen["resumed_from"], "oldjob123456")
+
+    def test_an_ordinary_launch_carries_no_resume(self):
+        reg = make_registry()
+        seen = {}
+
+        def fake_spawn(_self, data):
+            seen.update(data)
+            return make_detached(reg, self.tmp.name, jid=data["id"])
+
+        with mock.patch.object(session, "SDK_AVAILABLE", True), \
+             mock.patch.object(session.Sessions, "_spawn_runner", fake_spawn), \
+             mock.patch.object(session.joblog, "record_launch",
+                               lambda job: None):
+            reg.launch("fresh work", cwd=self.tmp.name, provider="anthropic")
+        # Empty, never absent: the runner reads `spec.get("resume_session")`
+        # and an empty string is what makes it start a NEW conversation.
+        self.assertEqual(seen["resume_session"], "")
 
 
 if __name__ == "__main__":

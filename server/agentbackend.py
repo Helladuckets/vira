@@ -355,9 +355,14 @@ async def run_cliexec(runner):
         worktree_path=spec.get("worktree") or "",
         branch=spec.get("branch") or "",
         live_root=spec.get("live_root") or "")
-    prompt = pre + "\n\n" + spec["prompt"]
+    # Resuming an EARLIER run's thread: the preamble is already in that
+    # conversation, so it is not re-carried — the same rule the reply turn
+    # below follows (`reply if thread_id else pre + reply`). The prompt is
+    # the owner's message, delivered straight into the existing thread.
+    thread_id = spec.get("resume_session") or None
+    prompt = spec["prompt"] if thread_id else pre + "\n\n" + spec["prompt"]
 
-    thread_id = None
+
     result_text = ""
     ok = False
     done = False

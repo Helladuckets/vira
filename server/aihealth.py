@@ -67,6 +67,28 @@ _AUTH_TELLS = (
     "insufficient credit",
 )
 
+# Signatures of a USAGE LIMIT — the plan's cap, not a broken credential.
+# Deliberately its own kind rather than folded into `credit`, because the two
+# call for opposite handling: a credit failure means the account needs money
+# and the login may be wrong, while a limit means the login is FINE and the
+# work is merely blocked until the window rolls over. The health probe agrees
+# — `claude auth status` reports loggedIn=true throughout a spend limit — so
+# treating one as an auth fault would flip the banner red against a working
+# credential and flap green again on the next probe.
+#
+# Measured on the live ledger 2026-08-13: 21 of 450 jobs died on
+# "You've hit your monthly spend limit", six of them in one morning, and
+# every one classified as `other` — the generic "try again shortly", which is
+# false for a MONTHLY cap.
+_LIMIT_TELLS = (
+    "monthly spend limit",
+    "spend limit",
+    "usage limit",
+    "rate_limit_error",
+    "rate limit exceeded",
+    "quota exceeded",
+)
+
 
 # ---------- config (read config.json directly, like notify.py) ----------
 
@@ -136,12 +158,27 @@ def is_auth_failure(text):
     return any(t in (text or "").lower() for t in _AUTH_TELLS)
 
 
+def is_limit_failure(text):
+    return any(t in (text or "").lower() for t in _LIMIT_TELLS)
+
+
 def classify(text):
     """Map a raw failure string from a model call to a friendly, actionable
     state. Deterministic string match — safe to call from any except-block,
     never raises. The message always tells the user their work was kept."""
     low = (text or "").lower()
     credit = "credit balance is too low" in low or "insufficient credit" in low
+    # A LIMIT outranks both. It is tested first because it is the narrower
+    # claim: a limit message names a cap, while the auth tells are broad
+    # enough that a future provider could word a limit with one of them and
+    # have it read as "your login is broken" — the least useful thing to
+    # tell someone whose login is working.
+    if is_limit_failure(text) and not credit:
+        return {"kind": "limit", "needs_reauth": False,
+                "message": "The model backend hit a usage limit — the login "
+                           "is fine, the plan's cap is reached. Nothing was "
+                           "lost: reply to the session to pick it up once "
+                           "the limit clears."}
     auth = is_auth_failure(text) and not credit
     if auth:
         return {"kind": "auth", "needs_reauth": True,

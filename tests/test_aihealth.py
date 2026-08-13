@@ -62,6 +62,52 @@ class ClassifyTests(Base):
         self.assertTrue(aihealth.is_auth_failure("not logged in"))
         self.assertFalse(aihealth.is_auth_failure("rate_limit_error"))
 
+    def test_the_real_spend_limit_string_is_a_limit(self):
+        # VERBATIM from the ledger — 21 of 450 jobs died on this exact
+        # sentence and every one classified as `other`, i.e. "try again
+        # shortly", which is false for a MONTHLY cap. A tidied paraphrase
+        # would pass against a reader that cannot parse the real thing.
+        info = aihealth.classify(
+            "You've hit your monthly spend limit · raise it at "
+            "claude.ai/settings/usage")
+        self.assertEqual(info["kind"], "limit")
+        self.assertFalse(info["needs_reauth"])
+        self.assertIn("usage limit", info["message"])
+
+    def test_a_limit_does_not_read_as_a_broken_login(self):
+        # The probe agrees the credential is fine throughout a spend limit,
+        # so calling it auth would point the owner at a login that works.
+        for text in ("Claude usage limit reached|1755100000",
+                     "rate_limit_error", "quota exceeded"):
+            with self.subTest(text=text):
+                info = aihealth.classify(text)
+                self.assertEqual(info["kind"], "limit")
+                self.assertFalse(info["needs_reauth"])
+
+    def test_credit_still_outranks_a_limit_word(self):
+        # "credit balance is too low" means the account needs money, which is
+        # a different action from waiting out a cap.
+        info = aihealth.classify(
+            "Credit balance is too low; your usage limit is unaffected")
+        self.assertEqual(info["kind"], "credit")
+
+    def test_a_limit_never_flips_the_health_banner_red(self):
+        # note_failure flips red for auth/credit only. A limit leaves a
+        # WORKING login, and the 5-minute probe would flip it straight back
+        # to green — the documented flapping this must not reintroduce.
+        with mock.patch.object(aihealth, "maybe_alert") as alert, \
+             mock.patch.object(aihealth, "_record") as record:
+            info = aihealth.note_failure("You've hit your monthly spend limit")
+        self.assertEqual(info["kind"], "limit")
+        record.assert_not_called()
+        alert.assert_not_called()
+        # control: the kinds that DO flip it still do, so this is not passing
+        # because note_failure went inert
+        with mock.patch.object(aihealth, "maybe_alert"), \
+             mock.patch.object(aihealth, "_record") as record:
+            aihealth.note_failure("Failed to authenticate: not logged in")
+        record.assert_called_once()
+
 
 class LadderTests(Base):
     def test_dead_cli_with_key_routes_to_api(self):

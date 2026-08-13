@@ -64,6 +64,61 @@ class RunnerCase(unittest.TestCase):
         return json.loads((r.dir / "state.json").read_text(encoding="utf-8"))
 
 
+class ResumeWiring(RunnerCase):
+    """The runner must actually READ resume_session into the SDK options.
+
+    This is the join, deliberately: `test_session.ResumeTests` proves the
+    field reaches the launch data and the structural test in
+    test_branch_guard_wiring proves the launch data reaches job.json — and
+    that is EXACTLY the shape that shipped a dead branch guard for four days
+    (both halves covered, the join never). A reader with no writer and a
+    writer with no reader fail identically: silently, looking correct.
+    """
+
+    def _options_for(self, **over):
+        r = self.make_runner(provider="anthropic", **over)
+        seen = {}
+
+        class Stop(Exception):
+            pass
+
+        def fake_options(**kw):
+            seen.update(kw)
+            raise Stop()               # nothing past the options is under test
+
+        with mock.patch.object(runner_mod, "ClaudeAgentOptions",
+                               fake_options), \
+             mock.patch.object(runner_mod, "SDK_IMPORT_ERROR", None), \
+             mock.patch.object(runner_mod.viratools, "sdk_server",
+                               lambda: None), \
+             mock.patch.object(runner_mod.joblog, "record_finish",
+                               lambda *a, **k: None):
+            asyncio.run(r.run_session())
+        return seen, r
+
+    def test_a_resumed_run_hands_the_session_id_to_the_sdk(self):
+        seen, r = self._options_for(resume_session="sess-abc-123",
+                                    resumed_from="oldjob123456")
+        self.assertEqual(seen["resume"], "sess-abc-123")
+        # and the transcript says which conversation this picks up, since a
+        # resumed run gets its own output.log by design
+        out = self.output(r)
+        self.assertIn("continuing session sess-abc", out)
+        self.assertIn("oldjob123456", out)
+
+    def test_an_ordinary_run_starts_a_fresh_conversation(self):
+        seen, r = self._options_for()
+        self.assertIsNone(seen["resume"])
+        self.assertNotIn("continuing session", self.output(r))
+
+    def test_an_empty_resume_field_is_not_a_resume(self):
+        # launch() always writes the key; empty is what "fresh" looks like,
+        # and passing "" to the SDK would be a resume of nothing.
+        seen, r = self._options_for(resume_session="")
+        self.assertIsNone(seen["resume"])
+        self.assertNotIn("continuing session", self.output(r))
+
+
 class GateTests(RunnerCase):
     def test_auto_allow_read_only_tool(self):
         r = self.make_runner()
@@ -380,6 +435,32 @@ class ReplyWindowTests(RunnerCase):
         self.assertTrue(r.closing)
         self.assertFalse(r.interrupted)
         self.assertTrue(r.finished_cleanly)
+
+    def test_finish_marks_the_session_finished_by_the_owner(self):
+        """The one thing that takes the compose box away, so it is recorded
+        rather than inferred: a run killed by a usage limit and one the owner
+        closed both end "not running"."""
+        r = self.make_runner()
+        self.await_reply(r, {"op": "interrupt"})
+        self.assertTrue(r.finished_by_owner)
+
+    def test_a_close_control_is_the_owner_finishing(self):
+        r = self.make_runner()
+        self.await_reply(r, {"op": "close"})
+        self.assertTrue(r.finished_by_owner)
+
+    def test_a_signal_close_is_not_the_owner_finishing(self):
+        """SIGTERM routes through the same close op (system shutdown, a
+        manual kill). Reading that as a deliberate ending would make every
+        open session unresumable after a reboot."""
+        r = self.make_runner()
+        self.await_reply(r, {"op": "close", "why": "signal"})
+        self.assertTrue(r.closing)
+        self.assertFalse(r.finished_by_owner)
+
+    def test_a_failed_run_was_not_finished_by_the_owner(self):
+        r = self.make_runner()
+        self.assertFalse(r.finished_by_owner)
 
     def test_mid_turn_interrupt_still_aborts(self):
         """The distinction has to hold in the other direction: a Stop that
