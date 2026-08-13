@@ -4,6 +4,7 @@ Fixtures are synthetic.  No owner data or rendered application is copied into
 the tracked test tree.
 """
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -221,6 +222,55 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
                                return_value=self.packages / "absent"):
             self.assertEqual(applicationmap.written_for([self.role]), {})
             self.assertIsNone(applicationmap.find_package(self.role))
+
+    # ---- a read that failed is not evidence that a package says nothing.
+    # An Apply session rewrites these files under the reader, so a posting
+    # the walk just listed can be unreadable an instant later.  Simulated by
+    # patching the read rather than by chmod: mode bits are a no-op on the
+    # Windows runner, and a test that only bites on one OS is not a test.
+
+    def _unreadable(self, path):
+        real = Path.read_text
+        target = Path(path)
+
+        def flaky(this, *a, **kw):
+            if this == target:
+                raise FileNotFoundError(this)
+            return real(this, *a, **kw)
+        return mock.patch.object(Path, "read_text", flaky)
+
+    def test_a_posting_unreadable_mid_rewrite_keeps_its_role_written(self):
+        posting = self.package / "V2" / "posting.md"
+        self.assertIn("g-examplelabs-321",
+                      applicationmap.written_for([self.role]))
+        # a rewrite moves the mtime, so the failed pass would otherwise file
+        # its blank answer under the key the file has settled on for good
+        os.utime(posting, (0, 0))
+        with self._unreadable(posting):
+            self.assertIn("g-examplelabs-321",
+                          applicationmap.written_for([self.role]),
+                          "a package being rewritten is still written")
+        self.assertIn("g-examplelabs-321",
+                      applicationmap.written_for([self.role]),
+                      "the blank row must not have been cached")
+
+    def test_a_failed_read_is_never_cached_so_the_next_call_recovers(self):
+        role = {"uid": "g-examplelabs-654", "company": "Example Labs",
+                "title": "Later Role"}
+        version = self.packages / "example-labs" / "later-role" / "V1"
+        version.mkdir(parents=True)
+        posting = version / "posting.md"
+        posting.write_text(
+            "# Later Role\n\nCompany: Example Labs\n"
+            "Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/654\n",
+            encoding="utf-8")
+        with self._unreadable(posting):
+            # never read before, so there is nothing to carry forward: the
+            # honest answer is that this one is not known to be written
+            self.assertNotIn("g-examplelabs-654",
+                             applicationmap.written_for([role]))
+        self.assertIn("g-examplelabs-654",
+                      applicationmap.written_for([role]))
 
     def test_build_joins_all_five_lanes_and_claim_authority(self):
         out = applicationmap.build(self.role)

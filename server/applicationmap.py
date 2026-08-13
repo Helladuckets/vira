@@ -255,17 +255,23 @@ def _docx_markdown(path):
 
 
 def _posting_fields(path):
+    """(fields, text, ok) — `ok` False ONLY when the file could not be read.
+
+    The flag is the whole point: an unreadable posting and an empty one
+    produce identical fields, and the index must never treat the first as
+    evidence that a package says nothing (see _package_rows).
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except OSError:
-        return {}, ""
+        return {}, "", False
     fields = {}
     for line in text.splitlines()[:30]:
         if ":" not in line or line.startswith("#"):
             continue
         key, value = line.split(":", 1)
         fields[_slug(key)] = value.strip()
-    return fields, text
+    return fields, text, True
 
 
 def _latest_version(package):
@@ -300,10 +306,27 @@ UID_TOKEN_RE = re.compile(
 
 
 def _package_rows():
-    """Every versioned posting.md under the packages root, indexed."""
+    """Every versioned posting.md under the packages root, indexed.
+
+    A FAILED READ IS NEVER CACHED AS A FACT.  An Apply session writes and
+    moves these files while the module is being read, so a posting the walk
+    just listed can be unreadable an instant later — and the mtime it
+    settles on is the very key such a pass would file its blank answer
+    under, so the damage STICKS until the file is edited again.  Measured
+    2026-08-13: one pass mid-package-write reported every role in the
+    catalog as unwritten, which is what the Written filter renders as an
+    empty list, with nothing anywhere saying a read had failed.
+
+    So: a posting that cannot be read keeps its LAST KNOWN row (a package
+    being rewritten is still a written package), a posting that fails
+    before it was ever read contributes NO row rather than a blank one
+    that can never match, and any degraded pass returns without caching so
+    the next call retries.  An absent root is not a failure — that is an
+    install with no packages yet, and an empty answer is the true one.
+    """
     from . import applications
     root = packages_root()
-    stats = []
+    stats, degraded = [], False
     if root.is_dir():
         for path in root.rglob("posting.md"):
             if not VERSION_RE.match(path.parent.name):
@@ -311,22 +334,35 @@ def _package_rows():
             try:
                 stats.append((path, path.stat().st_mtime))
             except OSError:
-                continue
+                # A file that vanishes between the walk and the stat drops
+                # out of the KEY too, so this pass self-heals on the next
+                # call either way; not caching it is simply the cheaper
+                # side of the trade.  The read below is the case that does
+                # NOT self-heal, and that is what the tests pin.
+                degraded = True
     # The whole (path, mtime) set, not just the newest: an edit in place, a
     # deletion and an addition all have to invalidate, and 17 tuples is
     # cheaper than one wrong answer about which package a role has.
     key = (str(root), tuple(sorted((str(p), m) for p, m in stats)))
-    if _PKG_CACHE["key"] == key:
+    if _PKG_CACHE["key"] == key and not degraded:
         return _PKG_CACHE["rows"]
+    known = {row["path"]: row for row in _PKG_CACHE["rows"]}
     rows = []
     for path, mtime in stats:
-        fields, text = _posting_fields(path)
+        fields, text, ok = _posting_fields(path)
+        if not ok:
+            degraded = True
+            prior = known.get(str(path))
+            if prior is not None:
+                rows.append(prior)
+            continue
         urls = [fields.get("posting-url") or fields.get("apply-url") or ""]
         urls.extend(URL_RE.findall(text))
         uids = {applications.role_uid({"url": url}) for url in urls if url}
         uids |= {token.lower() for token in UID_TOKEN_RE.findall(text)}
         lines = text.splitlines()
         rows.append({
+            "path": str(path),
             "package": path.parent.parent,
             "version": int(VERSION_RE.match(path.parent.name).group(1)),
             "mtime": mtime,
@@ -334,6 +370,8 @@ def _package_rows():
             "company": _slug(fields.get("company")),
             "title": _slug(lines[0].lstrip("# ") if lines else ""),
         })
+    if degraded:
+        return rows
     _PKG_CACHE["key"], _PKG_CACHE["rows"] = key, rows
     return rows
 
@@ -484,7 +522,7 @@ def _job_concepts(role, package):
     if package is not None:
         posting = _latest_version(package) / "posting.md"
         if posting.is_file():
-            _fields, text = _posting_fields(posting)
+            _fields, text, _ok = _posting_fields(posting)
             nodes = _job_concepts_from_text(role, text, "saved posting.md")
             if nodes:
                 candidates.append((len(nodes), 1, nodes))
