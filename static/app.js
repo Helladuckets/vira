@@ -72,6 +72,12 @@ function startPoll(fn, ms, maxMs) {
 // anything else that already means something. Right-click is left alone so
 // the Vira-wide context menu still opens, and a click that ends a text
 // selection is a read, not an activation.
+//
+// THE DRAG HANDLES READ THIS TOO (makeDraggable / dragBySheetHead). "Did this
+// press land on a control?" is one question, so it gets one answer: a bar that
+// claims the pointer over a control is worse than a card that swallows a
+// click, because setPointerCapture RETARGETS the eventual click to the bar and
+// the control never hears it at all — it looks dead rather than mis-handled.
 const CARD_CONTROL_SEL =
   "button, a, input, select, textarea, label, summary, [contenteditable], "
   + ".tag-chip, .idea-status, .seg-btn";
@@ -168,7 +174,7 @@ function dragBySheetHead(card) {
   if (!head) return;
   head.addEventListener("pointerdown", (e) => {
     if (e.button !== 0 || card.classList.contains("floating")) return;
-    if (e.target.closest("button")) return;      // as makeDraggable itself skips
+    if (e.target.closest(CARD_CONTROL_SEL)) return;  // as makeDraggable skips
     const r = card.getBoundingClientRect();
     card.style.left = r.left + "px";
     card.style.top = r.top + "px";
@@ -18409,7 +18415,12 @@ document.addEventListener("contextmenu", (e) => {
 function makeDraggable(node, bar, onEnd) {
   bar.style.touchAction = "none";
   bar.addEventListener("pointerdown", (e) => {
-    if (e.target.closest("button")) return;
+    // A control in the bar keeps its own press — see CARD_CONTROL_SEL. This
+    // read "button" alone until 2026-08-13, so the three <a class="icon-btn">
+    // links that live in panel heads (the posting link, the resume PDF, the
+    // viewer's open-in-tab) started a drag instead: capture retargeted the
+    // click to the bar and the anchor never navigated.
+    if (e.target.closest(CARD_CONTROL_SEL)) return;
     // a pinned perimeter tile is click-to-grow, not draggable
     if (node.classList.contains("fwin-locked")) return;
     focusWin(node);
