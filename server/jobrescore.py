@@ -99,17 +99,13 @@ def _anchors(role, jd_text):
 
 def _ruling_lines(udir):
     """The owner's standing ruling, stated inline. Small enough to inline
-    (a shortlist and two cut rules), unlike the canon — and a rescore that
-    could not see it would happily promote a role he has already cut."""
+    (two cut rules), unlike the canon — and a rescore that could not see it
+    would happily promote a role he has already cut."""
     from . import applications
     adj = applications._load_adjudication(udir)
     if not adj:
         return []
-    out = ["THE OWNER'S STANDING RULING (honor it — a pick stays picked, "
-           "a cut stays cut):"]
-    if adj["shortlist"]:
-        out.append(f"- {len(adj['shortlist'])} roles are pinned picks; a "
-                   "pick is never demoted to a cut.")
+    out = ["THE OWNER'S STANDING RULING (honor it — a cut stays cut):"]
     if adj["cut_comp"]:
         out.append(f"- comp structure {sorted(adj['cut_comp'])} is cut: "
                    + adj["reason_comp"])

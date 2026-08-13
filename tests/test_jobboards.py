@@ -51,7 +51,6 @@ ASHBY_PAYLOAD = {
 }
 
 ADJ = {
-    "shortlist": {},
     "cut_comp": {"ote"},
     "cut_titles": [__import__("re").compile(
         r"account executive|\bsales\b", __import__("re").I)],

@@ -1,10 +1,12 @@
 """Applications module — the job-application catalog.
 
 A merged, deduplicated role catalog the owner can star, comment on, track
-status against, and — the point — hit Apply on, which dispatches the
-`application-package` skill as a live agent session that builds the full
-package (tailored CV, cover letter, form answers, interview prep) inside
-the owner's self-record.
+status against, and — the point — write an application for, which
+dispatches the `application-package` skill as a live agent session that
+builds the full package (tailored CV, cover letter, form answers,
+interview prep).  Whether a role HAS a package is read off disk rather
+than off that dispatch (`applicationmap.written_for`), so the catalog
+reports what exists rather than what was asked for.
 
 Roles arrive from two kinds of source: the live board poller
 (server/jobboards.py, generic — a registry of company boards per ATS) and
@@ -391,10 +393,18 @@ _universe_cache = {"key": None, "roles": None}
 
 def _load_adjudication(udir):
     """The owner's standing ruling (owner-adjudication.json next to the
-    universe): a pinned shortlist plus cut rules (no sales / no commission /
-    no marketing, 2026-07-14). Cut is by comp structure and TITLE — never by
-    the board's function label, which files base-comp deployment roles under
-    'Sales & Go-To-Market'. Absent file -> no adjudication applied."""
+    universe): the cut rules (no sales / no commission / no marketing,
+    2026-07-14). Cut is by comp structure and TITLE — never by the board's
+    function label, which files base-comp deployment roles under 'Sales &
+    Go-To-Market'. Absent file -> no adjudication applied.
+
+    THE PINNED SHORTLIST IS DELIBERATELY NOT READ (owner's call,
+    2026-08-13: "the idea of picks is stale"). It was a July snapshot of
+    eight roles and three of the seven survivors were dead postings by
+    August; a rank frozen against a catalog that has since tripled is a
+    claim the module cannot keep true. The list is still in the file,
+    untouched, so restoring picks is a code change and not a data loss.
+    """
     try:
         a = json.loads((udir / "owner-adjudication.json").read_text())
     except (OSError, json.JSONDecodeError):
@@ -403,8 +413,6 @@ def _load_adjudication(udir):
         return None
     cut = a.get("cut") or {}
     return {
-        "shortlist": {r["uid"]: i for i, r in
-                      enumerate(a.get("shortlist") or []) if r.get("uid")},
         "cut_comp": set(cut.get("comp") or []),
         "cut_titles": [re.compile(p, re.I)
                        for p in cut.get("title_patterns") or []],
@@ -416,10 +424,6 @@ def _load_adjudication(udir):
 def _apply_adjudication(role, adj):
     if not adj:
         return
-    idx = adj["shortlist"].get(role["uid"])
-    if idx is not None:
-        role["shortlist"] = idx + 1          # 1-based page order
-        return                                # a pick can never be cut
     reason = jobshared.cut_reason(role.get("comp_kind"),
                                   role.get("title"), adj)
     if reason:
@@ -536,17 +540,14 @@ def load_universe():
                 "in_universe": True,
                 # role files carry no first_seen; the corpus overlay does
                 "fresh": _fresh(j) or bool(cr.get("fresh")),
-                "shortlist": 0,               # page-order rank when picked
                 "cut": "",                    # reason text when cut
                 "availability": av_state,
                 "availability_when": av_when,
             })
             _apply_adjudication(out[-1], adj)
-    # picks first in page order, then tiers, cut lane last (still visible)
+    # tiers first, cut lane last (demoted, never hidden)
     out.sort(key=lambda r: (
-        (0, r["shortlist"], 0) if r["shortlist"] else
-        (2, TIER_RANK.get(r["tier"], 4), -(r["fit"] or 0)) if r["cut"] else
-        (1, TIER_RANK.get(r["tier"], 4), -(r["fit"] or 0)),
+        1 if r["cut"] else 0, TIER_RANK.get(r["tier"], 4), -(r["fit"] or 0),
         -(r["fit_old"] or 0), r["company"], r["title"]))
     with _lock:
         _universe_cache["key"] = key
@@ -734,7 +735,6 @@ def compose(company=None, view=None):
         "total": len(uni),
         "scored": sum(1 for r in uni if r["fit"] is not None),
         "tier1": sum(1 for r in uni if r["tier"] == "1" and not r["cut"]),
-        "shortlist": sum(1 for r in uni if r["shortlist"]),
         "cut": sum(1 for r in uni if r["cut"]),
         "unanalyzed": len(rest),
         "dir": str(universe_dir()),
@@ -785,6 +785,12 @@ def compose(company=None, view=None):
         return exact or next((g for g in research_rows if wanted in
                               str(g.get("company") or "").casefold()), None)
 
+    # Which roles have an application package on disk. Derived, not stored,
+    # and deliberately NOT read off `last_job` — see applicationmap.written_for
+    # for why a dispatch stamp is a different fact from a written package.
+    from . import applicationmap
+    written = applicationmap.written_for(roles)
+
     companies = {}
     out = []
     for r in roles:
@@ -796,6 +802,8 @@ def compose(company=None, view=None):
         row["status"] = st.get("status", "none")
         row["comments"] = st.get("comments", [])
         row["last_job"] = st.get("last_job")
+        row["written"] = r["uid"] in written
+        row["package"] = written.get(r["uid"])
         # The list only needs the capability flag. Full descriptions stay
         # server-side and travel only for the roles the owner compares.
         row["has_description"] = jobcompare.description_available(
@@ -960,7 +968,7 @@ def apply_prompt(role, note=""):
     ]
     dossier = {k: role.get(k) for k in
                ("tier", "lane", "why_fit", "lead_with", "caveat",
-                "comp_note", "comp_kind", "verdict", "shortlist", "cut")
+                "comp_note", "comp_kind", "verdict", "cut")
                if role.get(k)}
     if dossier:
         lines += ["", "DOSSIER READ (v2 repass + owner adjudication — the "

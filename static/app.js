@@ -14998,8 +14998,9 @@ DESKTOP_MQ.addEventListener("change", () => location.reload());
 
 // ---------- applications (the job-application front door) ----------
 // Roles come from the careers-teardown corpora (fit-scored); star/comment/
-// status persist server-side; Apply dispatches an application-package agent
-// session that drafts the full package. Nothing is ever submitted for the owner.
+// status persist server-side; "Write application" dispatches an application-
+// package agent session that drafts the full package, and whether one exists
+// is read off disk (r.written). Nothing is ever submitted for the owner.
 let appsData = null;
 let appsShown = 200;
 const APPS_PAGE = 200;
@@ -15012,25 +15013,41 @@ const APPS_COMPARE_MAX = 6;
 // back, so the default can never read as "that's all there is".
 let appsFilters = { company: "", q: "", fit: "", status: [], starred: false,
                     avail: "live", tier: [], comp: "", loc: "",
-                    sort: "relevance" };
+                    sort: "best" };
 // A saved value the dropdown no longer offers must fall back, not stick:
 // the retired "untriaged" tier matches no role, so a browser carrying it
 // would render an empty list with every control looking unset.
 const APP_TIER_OPTIONS = [
-  ["shortlist", "Your eight picks"], ["cut", "Cut lane"],
+  ["cut", "Cut lane"],
   ["1", "Tier 1"], ["2", "Tier 2"], ["3", "Tier 3"],
   ["pass", "Passed on"], ["analyzed", "Analyzed only"],
   ["raw", "Not yet analyzed"], ["fresh", "New on the boards"],
 ];
+// "Written" is not one of the server's stored statuses — it is DERIVED from
+// the package on disk, and it is the working set: drafted, still in your
+// hands. Everything else here maps 1:1 onto applications.STATUSES.
 const APP_STATUS_OPTIONS = [
+  ["written", "Written — not sent yet"],
   ["none", "Untouched"], ["applied", "Applied"],
   ["interviewing", "Interviewing"], ["offer", "Offer"],
   ["closed", "Closed"], ["skipped", "Skipped"],
 ];
+// ONE ordering per axis, each named for the axis it keys on — the retired
+// "Relevance (picks, tier, fit)" bundled three and could not be reasoned
+// about, and its lead signal (the pinned picks) is gone. The server order
+// still breaks ties, so a sort only ever re-reads what it names.
+const APP_SORTS = [
+  ["best", "Highest fit (fit and screen)"],
+  ["fit", "Fit score"],
+  ["screen", "Screen score"],
+  ["tier", "Tier"],
+  ["newest", "Newest first"],
+];
 const APPS_TIERS = APP_TIER_OPTIONS.map(([v]) => v);
 const APPS_STATUSES = APP_STATUS_OPTIONS.map(([v]) => v);
 const APPS_AVAIL = ["live", "gone", "unverified", ""];
-const APPS_SORTS = ["relevance", "newest", "fit"];
+const APPS_SORTS = APP_SORTS.map(([v]) => v);
+const APP_TIER_RANK = { "1": 0, "2": 1, "3": 2, pass: 3 };
 
 function appsFilterValues(value, allowed) {
   // Migrate the old single-select value in place. Unknown and retired values
@@ -15045,7 +15062,9 @@ try {
   appsFilters.tier = appsFilterValues(appsFilters.tier, APPS_TIERS);
   appsFilters.status = appsFilterValues(appsFilters.status, APPS_STATUSES);
   if (!APPS_AVAIL.includes(appsFilters.avail)) appsFilters.avail = "live";
-  if (!APPS_SORTS.includes(appsFilters.sort)) appsFilters.sort = "relevance";
+  // The retired "relevance" lands on the combined score, which is the
+  // closest thing to what it meant; anything else unknown does too.
+  if (!APPS_SORTS.includes(appsFilters.sort)) appsFilters.sort = "best";
   delete appsFilters.view;              // the retired mode toggle
 } catch (e) { /* corrupt saved filters -> defaults */ }
 
@@ -15306,8 +15325,17 @@ function openAppsMultiPicker(anchor, key, options, title) {
   placeCtxPop(pop, Math.max(8, r.right - 240), r.bottom + 4);
 }
 
+function appStatusMatches(r, value) {
+  // The label says "not sent yet", so the rule has to mean it: a package
+  // exists and the role has not moved anywhere. A written role you marked
+  // applied is out the door and lives under Applied — which is the whole
+  // point of a filter for what is still on your desk.
+  if (value === "written")
+    return !!r.written && (r.status || "none") === "none";
+  return (r.status || "none") === value;
+}
+
 function appTierMatches(r, value) {
-  if (value === "shortlist") return !!r.shortlist;
   if (value === "cut") return !!r.cut;
   if (value === "analyzed") return !!r.in_universe;
   if (value === "raw") return !r.in_universe;
@@ -15326,7 +15354,7 @@ function appsFiltered() {
     if (f.loc && f.loc.startsWith("place:")
         && !(r.places || []).includes(f.loc.slice(6))) return false;
     if (f.starred && !r.starred) return false;
-    if (f.status.length && !f.status.includes(r.status || "none"))
+    if (f.status.length && !f.status.some((v) => appStatusMatches(r, v)))
       return false;
     const av = r.availability || "unverified";
     if (f.avail === "live" && av === "gone") return false;
@@ -15346,14 +15374,58 @@ function appsFiltered() {
     }
     return true;
   });
-  // sort() is stable, so ties keep the server's relevance order
-  if (f.sort === "newest")
-    rows.sort((a, b) =>
-      (b.first_seen || "").localeCompare(a.first_seen || ""));
-  else if (f.sort === "fit")
-    rows.sort((a, b) => (b.fit ?? b.fit_old ?? -1)
-                      - (a.fit ?? a.fit_old ?? -1));
+  appsSort(rows, f.sort);
   return rows;
+}
+
+// What one role scores on the chosen axis, as an array compared
+// left-to-right and best-first, or null when it cannot answer — a role with
+// no analysis has no opinion to rank, and guessing zero would bury it below
+// a role genuinely scored zero.
+function appSortKey(r, mode) {
+  if (mode === "tier") {
+    const t = APP_TIER_RANK[r.tier];
+    return t === undefined ? null : [-t];    // tier 1 is the highest
+  }
+  if (mode === "newest") return r.first_seen ? [r.first_seen] : null;
+  const fit = r.fit ?? r.fit_old ?? null;
+  if (mode === "fit") return fit === null ? null : [fit];
+  if (mode === "screen") return r.screen == null ? null : [r.screen];
+  // "best": the two-score discipline read together. Averaged rather than
+  // maxed — on the real universe screen runs far below fit (medians 3 and
+  // 50), so a max would reproduce the fit sort exactly and this option
+  // would be a duplicate. The mean is what surfaces a role that is both
+  // worth wanting AND reachable.
+  //
+  // A role scored on ONE axis ranks below every role scored on both, and
+  // that leading 1/0 is the whole reason the key is an array. Averaging
+  // over what happens to exist put fit-88-no-screen above fit-97-screen-74
+  // — three of the top five were roles with half the evidence, under a
+  // label that promises to read both. Missing is not a score; it sorts as
+  // less known, never as better.
+  if (fit === null && r.screen == null) return null;
+  if (fit === null || r.screen == null) return [0, fit ?? r.screen];
+  return [1, (fit + r.screen) / 2];
+}
+
+function appsSort(rows, mode) {
+  // sort() is stable, so ties keep the server's order (tier, then fit).
+  rows.sort((a, b) => {
+    // The cut lane stays demoted under EVERY ordering — it is the owner's
+    // standing "no sales, no commission" call, not a ranking opinion, and
+    // cut roles score as high as 90, so any bare score sort would put a
+    // role he refuses at the top of the list.
+    if (!!a.cut !== !!b.cut) return a.cut ? 1 : -1;
+    const ka = appSortKey(a, mode), kb = appSortKey(b, mode);
+    if (ka === null && kb === null) return 0;
+    if (ka === null) return 1;               // unscored sinks, never hides
+    if (kb === null) return -1;
+    for (let i = 0; i < Math.max(ka.length, kb.length); i++) {
+      const x = ka[i] ?? 0, y = kb[i] ?? 0;
+      if (x !== y) return x > y ? -1 : 1;    // best first
+    }
+    return 0;
+  });
 }
 
 function appSeen(r) {
@@ -15622,15 +15694,19 @@ function renderApplications() {
   const summary = $("#app-summary");
   if (summary) {
     const starred = appsData.roles.filter((r) => r.starred).length;
+    // Counted with the filter's OWN rule, so the number and the option can
+    // never state different sets.
+    const written = appsData.roles
+      .filter((r) => appStatusMatches(r, "written")).length;
     const u = (appsData.meta || {}).universe || {};
     const av = (appsData.meta || {}).availability || {};
     let line = `${rows.length} of ${appsData.roles.length} roles` +
                (u.scored
-                 ? (u.shortlist ? ` · ${u.shortlist} picks` : "") +
-                   ` · ${u.scored} scored` +
+                 ? ` · ${u.scored} scored` +
                    (u.cut ? ` · ${u.cut} cut` : "") +
                    (u.unanalyzed ? ` · ${u.unanalyzed} not yet analyzed` : "")
                  : "") +
+               (written ? ` · ${written} written, not sent` : "") +
                (starred ? ` · ${starred} starred` : "") +
                // never let the default filter read as "that's everything"
                (appsFilters.avail === "live" && av.gone
@@ -15712,11 +15788,7 @@ function appRow(r) {
 
   const main = el("div", "app-main");
   const title = el("div", "app-title");
-  if (r.shortlist) {
-    const pick = el("span", "tier-badge pick", "PICK " + r.shortlist);
-    pick.title = "Your frontier-fit shortlist (Where I Fit, page order)";
-    title.appendChild(pick);
-  } else if (r.tier)
+  if (r.tier)
     title.appendChild(el("span", "tier-badge t" + r.tier,
       r.tier === "pass" ? "pass" : "T" + r.tier));
   if (r.cut) {
@@ -15731,6 +15803,13 @@ function appRow(r) {
   }
   const availChip = appAvailChip(r);
   if (availChip) title.appendChild(availChip);
+  if (r.written) {
+    const w = el("span", "written-chip", "WRITTEN");
+    w.title = "An application package is on disk"
+      + (r.package ? ` — ${r.package}` : "")
+      + ". Read opens it.";
+    title.appendChild(w);
+  }
   const a = document.createElement("a");
   a.href = r.url || r.apply_url;
   a.target = "_blank";
@@ -15884,8 +15963,16 @@ function appRow(r) {
   doc.addEventListener("click", () => openResumeView(r));
   actions.appendChild(doc);
 
+  // "Apply" read like submitting the application, which this has never
+  // done — it dispatches an agent that DRAFTS the package, and the sheet
+  // has always said so in small print underneath. The label says it now.
+  const drafted = r.written || r.last_job;
   const apply = el("button", "btn primary app-apply",
-                   r.last_job ? "Re-apply" : "Apply");
+                   drafted ? "Write again" : "Write application");
+  apply.title = drafted
+    ? "Draft a fresh version of the package. Nothing is ever submitted for you."
+    : "Dispatch an agent that drafts the full package. Nothing is ever "
+      + "submitted for you.";
   apply.addEventListener("click", () => appApply(r));
   actions.appendChild(apply);
   if (r.last_job) {
@@ -16758,7 +16845,8 @@ window.addEventListener("resize", () => {
 let appRunCtx = null;
 function appApply(r) {
   appRunCtx = r;
-  $("#app-run-title").textContent = `Apply — ${r.title} at ${r.company}`;
+  $("#app-run-title").textContent =
+    `Write application — ${r.title} at ${r.company}`;
   $("#app-run-text").textContent =
     r.locations && r.locations.length ? r.locations.join(" · ") : "";
   const cut = $("#app-run-cut");
@@ -16855,7 +16943,13 @@ $("#app-run-copy").addEventListener("click", async () => {
   }
   const sort = $("#app-sort");
   if (sort) {
-    sort.value = appsFilters.sort || "relevance";
+    APP_SORTS.forEach(([value, label]) => {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      sort.appendChild(o);
+    });
+    sort.value = appsFilters.sort;
     sort.addEventListener("change", () => {
       appsFilters.sort = sort.value;
       appsShown = APPS_PAGE; saveAppsFilters(); renderApplications();

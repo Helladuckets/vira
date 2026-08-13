@@ -26,13 +26,13 @@ UNIVERSE_ROLES = [
     {"uid": "u1", "company": "Lumon Industries",
      "title": "Forward Deployed Engineer", "tier": "1",
      "lane": "forward deployed", "why_fit": "ships production agents",
-     "lead_with": "infrastructure background", "cut": "", "shortlist": 1},
+     "lead_with": "infrastructure background", "cut": "", "fit": 90},
     {"uid": "u2", "company": "Lumon Industries", "title": "Applied AI Lead",
      "tier": "1", "lane": "applied ai", "why_fit": "owns applied roadmap",
-     "lead_with": "", "cut": "", "shortlist": 0},
+     "lead_with": "", "cut": "", "fit": 80},
     {"uid": "u3", "company": "Initech", "title": "Sales Engineer",
      "tier": "2", "lane": "sales", "why_fit": "sells the platform",
-     "lead_with": "", "cut": "no sales — owner's rule", "shortlist": 0},
+     "lead_with": "", "cut": "no sales — owner's rule", "fit": 95},
 ]
 
 RECON_CRM = {
@@ -101,7 +101,11 @@ class PivotPictureTests(unittest.TestCase):
         self.assertNotIn("initech", picture["companies"])   # cut, no signal
         info = picture["companies"]["lumon industries"]
         self.assertEqual(info["tier1"], 2)
-        self.assertEqual(info["shortlist"], 1)
+        self.assertNotIn("shortlist", info)   # picks retired
+        # the roles the search is about, tier-1 and fit-ordered
+        self.assertEqual(picture["top_titles"],
+                         ["Forward Deployed Engineer",
+                          "Applied AI Lead"])
         self.assertIn("forward deployed", picture["lanes"])
         self.assertIn("applied ai", picture["lanes"])
         self.assertNotIn("sales", picture["lanes"])          # cut role only

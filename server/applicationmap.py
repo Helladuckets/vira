@@ -281,41 +281,123 @@ def _latest_version(package):
     return max(versions, default=(0, package))[1]
 
 
-def find_package(role):
-    """Resolve a package by posting uid, then exact company/title fallback."""
+# --------------------------------------------------------- package index
+#
+# One walk over the packages root, cached on the postings' own mtimes,
+# answering both questions asked of it: "which package is THIS role's"
+# (find_package, one role at a time, behind Map and Read) and
+# "which roles have one at all" (written_for, the whole catalog on every
+# list render).  They share the rows AND the scoring, so the Read button
+# and the Written filter cannot disagree about whether a role is written.
+_PKG_CACHE: dict = {"key": None, "rows": []}
+
+# role_uid mints lowercase alphanumerics joined by hyphens, so every token
+# of that shape in a posting is a candidate uid.  Extracting them once at
+# index time is what makes the catalog-wide pass affordable: searching each
+# posting's text per role is thousands of regex passes over 20KB each.
+UID_TOKEN_RE = re.compile(
+    r"(?<![a-z0-9-])[a-z0-9]+(?:-[a-z0-9]+)+(?![a-z0-9-])", re.I)
+
+
+def _package_rows():
+    """Every versioned posting.md under the packages root, indexed."""
     from . import applications
     root = packages_root()
-    if not root.is_dir():
-        return None
-    wanted_uid = role.get("uid") or ""
-    wanted_company = _slug(role.get("company"))
-    wanted_title = _slug(role.get("title"))
-    matches = []
-    for posting in root.rglob("posting.md"):
-        if not VERSION_RE.match(posting.parent.name):
-            continue
-        fields, posting_text = _posting_fields(posting)
+    stats = []
+    if root.is_dir():
+        for path in root.rglob("posting.md"):
+            if not VERSION_RE.match(path.parent.name):
+                continue
+            try:
+                stats.append((path, path.stat().st_mtime))
+            except OSError:
+                continue
+    # The whole (path, mtime) set, not just the newest: an edit in place, a
+    # deletion and an addition all have to invalidate, and 17 tuples is
+    # cheaper than one wrong answer about which package a role has.
+    key = (str(root), tuple(sorted((str(p), m) for p, m in stats)))
+    if _PKG_CACHE["key"] == key:
+        return _PKG_CACHE["rows"]
+    rows = []
+    for path, mtime in stats:
+        fields, text = _posting_fields(path)
         urls = [fields.get("posting-url") or fields.get("apply-url") or ""]
-        urls.extend(URL_RE.findall(posting_text))
-        candidate_uids = {applications.role_uid({"url": url})
-                          for url in urls if url}
-        company = _slug(fields.get("company"))
-        lines = posting_text.splitlines()
-        title = _slug(lines[0].lstrip("# ") if lines else "")
-        explicit_uid = bool(wanted_uid and re.search(
-            rf"(?<![a-z0-9-]){re.escape(wanted_uid)}(?![a-z0-9-])",
-            posting_text, re.I))
-        score = 100 if wanted_uid in candidate_uids or explicit_uid else 0
-        if company == wanted_company and title == wanted_title:
-            score = max(score, 70)
-        elif company == wanted_company and (title in wanted_title
-                                             or wanted_title in title):
-            score = max(score, 45)
+        urls.extend(URL_RE.findall(text))
+        uids = {applications.role_uid({"url": url}) for url in urls if url}
+        uids |= {token.lower() for token in UID_TOKEN_RE.findall(text)}
+        lines = text.splitlines()
+        rows.append({
+            "package": path.parent.parent,
+            "version": int(VERSION_RE.match(path.parent.name).group(1)),
+            "mtime": mtime,
+            "uids": {u for u in uids if u},
+            "company": _slug(fields.get("company")),
+            "title": _slug(lines[0].lstrip("# ") if lines else ""),
+        })
+    _PKG_CACHE["key"], _PKG_CACHE["rows"] = key, rows
+    return rows
+
+
+def _match_score(row, uid, company, title):
+    """The ONE definition of "this package belongs to this role".
+
+    A posting that names the uid — in a field, an apply URL, or its own
+    prose — is that role's beyond doubt.  Company plus title is the
+    fallback for a package written before uids were recorded; both sides
+    must be non-empty, or two postings missing a company field would claim
+    each other's roles.
+    """
+    if uid and uid in row["uids"]:
+        return 100
+    if not (company and title) or company != row["company"]:
+        return 0
+    if title == row["title"]:
+        return 70
+    if row["title"] and (title in row["title"] or row["title"] in title):
+        return 45
+    return 0
+
+
+def match_package(role, rows=None):
+    """Best package for one role, or None. Deterministic, no model."""
+    rows = _package_rows() if rows is None else rows
+    uid = (role.get("uid") or "").casefold()
+    company = _slug(role.get("company"))
+    title = _slug(role.get("title"))
+    best = (0, 0, 0.0, None)
+    for row in rows:
+        score = _match_score(row, uid, company, title)
         if score:
-            version = int(VERSION_RE.match(posting.parent.name).group(1))
-            matches.append((score, version, posting.stat().st_mtime,
-                            posting.parent.parent))
-    return max(matches, default=(0, 0, 0, None))[3]
+            best = max(best, (score, row["version"], row["mtime"],
+                              row["package"]))
+    return best[3]
+
+
+def find_package(role):
+    """Resolve a package by posting uid, then exact company/title fallback."""
+    return match_package(role)
+
+
+def written_for(roles):
+    """{uid: package folder name} for every role whose package is on disk.
+
+    DERIVED on every read, never stored.  The on-disk package is the only
+    signal that stays true: Vira's own `last_job` stamp records a DISPATCH,
+    which is a different fact — it survives a session that failed, and it
+    misses every package the owner had written from a copy-out session Vira
+    never launched (measured 2026-08-13: 13 roles have a package on disk
+    against 10 carrying a stamp, so a stamp-based filter would have hidden
+    three of the applications it exists to surface).
+    """
+    rows = _package_rows()
+    if not rows:
+        return {}
+    out = {}
+    for role in roles:
+        package = match_package(role, rows)
+        if package is not None:
+            out[role["uid"]] = package.name
+    return out
 
 
 def _read_artifact(package, lane, root_globs, version_names):
