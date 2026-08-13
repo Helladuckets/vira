@@ -593,8 +593,8 @@ class ApplyRouteTest(ApplicationsBase):
     def test_apply_passes_note_and_model_to_launch(self):
         calls = {}
 
-        def fake_launch(prompt, cwd, permission_mode, model,
-                        publish_plan, idea_id, mode):
+        def fake_launch(prompt, cwd, permission_mode=None, model=None,
+                        publish_plan=False, idea_id=None, mode=None):
             calls.update(prompt=prompt, cwd=cwd, model=model, mode=mode,
                          permission_mode=permission_mode)
             return "job-123"
@@ -607,7 +607,9 @@ class ApplyRouteTest(ApplicationsBase):
         self.assertEqual(out["job_id"], "job-123")
         self.assertIn("emphasize the caveat", calls["prompt"])
         self.assertEqual(calls["model"], "opus")
-        self.assertEqual(calls["mode"], "manual")
+        # No hardcoded mode: the dispatch derives from session_default_mode
+        # (owner's call, 2026-08-12 — Apply used to pin "manual").
+        self.assertIsNone(calls["mode"])
         self.assertIsNone(calls["permission_mode"])
         self.assertEqual(
             applications.get_state()["g-examplelabs-1234567"]["last_job"],
