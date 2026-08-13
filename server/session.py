@@ -420,6 +420,29 @@ def _sdk_env():
             and k not in skip}
 
 
+def resumable(snap):
+    """Whether typing into this session's box still reaches the model.
+
+    ONE answer to that question, because two surfaces ask it (the live
+    snapshot and the ledger replay) and a UI honesty claim must be
+    reconstructible from the ledger — that is what the compose bar reads
+    once a session ages out of the registry.
+
+    A running session is steered through its control file. An ended one is
+    CONTINUED from its recorded conversation — unless the owner finished it,
+    which is the only thing that closes the door (owner's rule, 2026-08-13).
+    No session id means the run died before the model session began; there
+    is nothing to continue and saying otherwise would be a promise the
+    resume cannot keep.
+    """
+    snap = snap or {}
+    if snap.get("status") == "running":
+        return True
+    if snap.get("finished_by_owner"):
+        return False
+    return bool(snap.get("session_id"))
+
+
 # ---------- registry entries ----------
 
 class DetachedJob:
@@ -516,7 +539,8 @@ class Sessions:
 
     def launch(self, prompt, cwd=None, permission_mode=None, model=None,
                publish_plan=False, idea_id=None, mode=None,
-               read_only=False, meta=None, provider=None):
+               read_only=False, meta=None, provider=None,
+               resume_session=None, resumed_from=None):
         """Start a run; returns the job id. `mode` is one of MODES — the
         permission ladder (manual / acceptEdits / bypassPermissions), and
         retired spellings still resolve via norm_mode; when absent it
@@ -646,6 +670,11 @@ class Sessions:
                 # session editing?" is exactly the question the 2026-07-25
                 # incident left unanswerable
                 "branch_note": branch_note,
+                # Continue an earlier conversation instead of starting one.
+                # Rides the spec automatically (RUNNER_OWNED is the only
+                # exclusion), so the runner reads it with no plumbing here.
+                "resume_session": (resume_session or "").strip(),
+                "resumed_from": (resumed_from or "").strip(),
                 "ask_timeout": float(_scfg("session_ask_timeout"))}
         with self.lock:
             if live:
@@ -775,7 +804,9 @@ class Sessions:
             "result_text": st.get("result_text", ""),
             "pending": sorted(st.get("pending") or [],
                               key=lambda p: p.get("created", 0)),
+            "finished_by_owner": bool(st.get("finished_by_owner")),
         }
+        snap["resumable"] = resumable(snap)
         return snap
 
     def get(self, jid):
@@ -788,6 +819,10 @@ class Sessions:
             return self._snapshot_detached(obj)
         snap = dict(obj.data)
         snap["pending"] = []
+        # The legacy one-shot records no model session, so this reads False
+        # once it ends — correct, and stated rather than absent so the
+        # compose bar never has to guess at a missing field.
+        snap["resumable"] = resumable(snap)
         return snap
 
     def recent(self):
@@ -871,13 +906,88 @@ class Sessions:
         return obj
 
     def say(self, jid, text):
-        """Queue a steering message; the runner delivers it at the next turn
-        boundary (and echoes it into the transcript within ~250ms)."""
+        """Talk to a session. A LIVE one is steered through its control file
+        (the runner delivers at the next turn boundary and echoes into the
+        transcript within ~250ms); one that has ENDED is CONTINUED — a fresh
+        runner resumes the same conversation and takes this message as its
+        prompt.
+
+        The fork exists because the compose box is the owner's only channel
+        and it used to close with the process. `await_reply` holds a session
+        open while its runner lives, which covers a finished turn and nothing
+        else: a usage limit, a crash, a reboot, or a week passing all ended
+        the conversation for good, with the transcript sitting on disk and
+        nothing able to read it back (21 of 450 ledger jobs died that way on
+        a monthly spend limit alone). Owner's rule, 2026-08-13: the box never
+        goes away unless he clicks Finish.
+
+        Returns {job, resumed} — `job` is a NEW id when this resumed, so the
+        caller can follow the conversation to where it continued.
+        """
         text = (text or "").strip()
         if not text:
             raise ValueError("empty message")
-        h = self._require_live(jid)
-        jobfiles.append_control(h.dir, {"op": "say", "text": text})
+        obj = self.sessions.get(jid)
+        if (obj is not None and obj.kind == "detached"
+                and obj.status() == "running"):
+            jobfiles.append_control(obj.dir, {"op": "say", "text": text})
+            return {"job": jid, "resumed": False}
+        return self._resume_ended(jid, text)
+
+    def _resume_ended(self, jid, text):
+        """Continue a session whose runner is gone. Every refusal is NAMED:
+        the owner is typing into a box that looked live, so "nothing
+        happened" is the one outcome that must not be possible."""
+        row = joblog.get_record(jid)
+        if not row:
+            raise KeyError(jid)
+        sid = (row.get("session_id") or "").strip()
+        if not sid:
+            # No conversation was ever recorded — a legacy one-shot, or a run
+            # that died before the CLI's init event. There is nothing to
+            # continue, and starting a FRESH session wearing this one's id
+            # would silently discard the context the owner is replying to.
+            raise ValueError(
+                "this run recorded no conversation to continue — it ended "
+                "before the model session started. Dispatch it again instead.")
+        cwd = (row.get("cwd") or "").strip()
+        if not cwd or not Path(cwd).is_dir():
+            # Its worktree was tidied away, or the directory moved. Resuming
+            # elsewhere would drop the session into an unrelated tree — with
+            # the branch-first guard armed from THAT tree, which is worse
+            # than refusing.
+            raise ValueError(
+                f"the directory this session ran in is gone ({cwd or 'unset'})"
+                " — recreate it before continuing this conversation.")
+        if os.environ.get("VIRA_PASSIVE"):
+            raise ValueError(
+                "this is a passive test instance — it runs no supervisor, so "
+                "a resumed session here would never start")
+        # cwd carries the placement: launch() detects an existing worktree and
+        # re-arms worktree/branch/live_root from it (the orphan-work Resume
+        # path), so a resumed session lands back on its own branch and the
+        # guard stays armed rather than minting a second worktree.
+        #
+        # The machine markers are deliberately NOT carried. meta.machine /
+        # routine_id / circuit_run keep a run from parking at its turn end,
+        # which is right for a dispatch nobody is watching — and wrong here
+        # by definition, because the owner just typed into it. Continuing a
+        # scoring sweep by hand makes it an owner session.
+        new = self.launch(
+            prompt=text,
+            cwd=cwd,
+            model=row.get("model") or None,
+            provider=row.get("provider") or None,
+            mode=row.get("mode") or None,
+            permission_mode=row.get("permission_mode") or None,
+            read_only=bool(row.get("read_only")),
+            publish_plan=bool(row.get("publish_plan")),
+            idea_id=row.get("idea_id") or None,
+            meta={"kind": "resume", "resumed_from": jid},
+            resume_session=sid,
+            resumed_from=jid,
+        )
+        return {"job": new, "resumed": True, "from": jid}
 
     def permission(self, jid, req_id, allow, scope="once", reason=None):
         """Resolve a pending Approve/Deny card."""

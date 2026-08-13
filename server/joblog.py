@@ -313,13 +313,23 @@ def record_session(jid, session_id):
     _mutate(fn)
 
 
-def record_finish(jid, status, result_text=""):
+def record_finish(jid, status, result_text="", finished_by_owner=False):
+    """`finished_by_owner` is persisted because the compose bar reads the
+    LEDGER once a session leaves the live registry, and it is the one thing
+    that decides whether that bar still offers to continue the conversation
+    (session.resumable). Status cannot answer it: a run killed by a usage
+    limit and one the owner deliberately closed both end "not running", and
+    only the second is finished. Job dirs prune at ~400, so deriving it from
+    state.json would silently start answering False on older sessions — the
+    same shape as the provider grade that regraded itself after forty
+    minutes."""
     def fn(s):
         r = next((r for r in s["jobs"] if r["id"] == jid), None)
         if r:
             r["status"] = status
             r["finished"] = _now()
             r["result"] = (result_text or "")[:RESULT_CAP]
+            r["finished_by_owner"] = bool(finished_by_owner)
             return True
         return False
     _mutate(fn)

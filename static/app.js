@@ -7833,6 +7833,8 @@ function createJobTerm(jid, refs) {
     jid, refs, poll: null, permKey: "", banded: false,
     busy: false, queued: false,
     wasStuck: false,     // was a card/park already on screen last poll?
+    carry: "",           // transcripts of the runs this conversation left
+    lastOutput: "",      // this run's transcript, folded into carry on resume
     schedule() {
       if (this.busy) { this.queued = true; return; }
       this.busy = true;
@@ -7901,7 +7903,14 @@ function createJobTerm(jid, refs) {
       const atBottom = scroller.scrollHeight - scroller.scrollTop
         - scroller.clientHeight < 60;
       r.output.innerHTML = "";
-      const out = (j.output || "").replace(/\n+$/, "");
+      // `carry` is the transcript of the runs this conversation already
+      // passed through. The SERVER keeps one transcript per job on purpose
+      // — a shared one would make "which run wrote this line" unanswerable
+      // across the ledger — so the continuity is assembled HERE, for
+      // reading only. Without it a resume blanks the pane and re-fills it
+      // with a few lines, which reads as having lost the work.
+      this.lastOutput = j.output || "";
+      const out = ((this.carry || "") + (j.output || "")).replace(/\n+$/, "");
       if (out.trim()) out.split("\n").forEach((ln) =>
         r.output.appendChild(renderTermLine(ln)));
       if (j.status === "running" && !waiting && !replying)
@@ -7945,11 +7954,27 @@ function createJobTerm(jid, refs) {
       // nothing left to cut — it just closes the door.
       const replying = live
         && (j.awaiting === "reply" || j.awaiting === "paused");
+      // THE BOX OUTLIVES THE PROCESS. Owner's rule, 2026-08-13: it goes
+      // away only when he clicks Finish. The reply window holds a session
+      // open while its RUNNER lives, which covers a finished turn and
+      // nothing else — a usage limit, a crash, a reboot or a week passing
+      // all used to end the conversation for good with its transcript
+      // sitting on disk. Typing here starts a fresh runner that resumes the
+      // same conversation (session.resumable decides; never recomputed
+      // client-side, or the two rules would drift).
+      const ended = !live && !!j.resumable;
+      const canTalk = live || ended;
       const r = this.refs;
-      r.composebar.classList.toggle("off", !live);
-      r.composebar.classList.toggle("replying", replying);
-      r.say.disabled = r.send.disabled = r.stopBtn.disabled = !live;
-      r.say.placeholder = j.awaiting === "paused"
+      r.composebar.classList.toggle("off", !canTalk);
+      r.composebar.classList.toggle("replying", replying || ended);
+      r.say.disabled = r.send.disabled = !canTalk;
+      // Nothing is running, so there is nothing to stop — a lit control
+      // that cannot act is the failure mode this repo keeps writing down.
+      r.stopBtn.disabled = !live;
+      r.stopBtn.style.display = live ? "" : "none";
+      r.say.placeholder = ended
+        ? "Pick this up — it resumes with its full context"
+        : j.awaiting === "paused"
         ? "Stopped — tell it what to do instead, or Finish to close it"
         : replying
         ? "Reply — this session is holding open for you"
@@ -7982,10 +8007,13 @@ function createJobTerm(jid, refs) {
     if (!text) return;
     refs.send.disabled = true;
     try {
-      await post("/api/session/" + jid + "/say", { text });
+      // t.jid, never the closure `jid` — a resumed conversation moves to a
+      // new run and the next message has to reach THAT one.
+      const res = await post("/api/session/" + t.jid + "/say", { text });
       refs.say.value = "";
+      if (res && res.resumed && res.job) followResume(t, res.job);
     } catch (e) {
-      alert("Send failed: " + e.message);
+      toast(errText(e));
     } finally {
       refs.send.disabled = false;
       refs.say.focus();
@@ -7994,12 +8022,36 @@ function createJobTerm(jid, refs) {
   refs.say.onkeydown = (e) => { if (e.key === "Enter") refs.send.onclick(); };
   refs.stopBtn.onclick = async () => {
     try {
-      await post("/api/session/" + jid + "/interrupt", {});
+      await post("/api/session/" + t.jid + "/interrupt", {});
     } catch (e) {
-      alert("Stop failed: " + e.message);
+      toast(errText(e));
     }
   };
   return t;
+}
+
+// A resumed conversation continues in a NEW run, so the terminal follows it
+// rather than polling one that will never speak again. Everything keyed by
+// job id moves across — the poll, activeTerms, the window registry — or a
+// second window would open for the same conversation the next time it is
+// addressed by id.
+function followResume(term, newJid) {
+  if (!newJid || newJid === term.jid) return;
+  const old = term.jid;
+  term.stop();                       // drops activeTerms[old], stops polling
+  term.carry = (term.carry || "") + (term.lastOutput || "");
+  if (term.carry && !term.carry.endsWith("\n")) term.carry += "\n";
+  term.jid = newJid;
+  term.banded = false;               // the banner names a run; this is a new one
+  term.permKey = "";
+  term.wasStuck = false;
+  const w = jobWindows[old];
+  if (w && w.term === term) {
+    delete jobWindows[old];
+    jobWindows[newJid] = w;
+    w.win.dataset.jobId = newJid;    // the close button reads this, not a const
+  }
+  term.start();
 }
 
 // ----- mobile: the single slide-in terminal panel -----
@@ -8240,6 +8292,7 @@ function openJobWindow(jid) {
     onName: (n) => { win.dataset.wname = n; },
   });
   jobWindows[jid] = { win, term };
+  win.dataset.jobId = jid;
   // The newcomer joins the tiling last — registered above first, or the
   // reflow cannot see it. The already-parked windows make room for it NOW,
   // so the desk behind the centered card is already arranged by the time
@@ -8253,7 +8306,10 @@ function openJobWindow(jid) {
     termUnhome(win);
     win.classList.remove("open");
     setTimeout(() => win.remove(), 220);
-    delete jobWindows[jid];
+    // Read the CURRENT id, never the one this window opened on: a resumed
+    // conversation re-keys the registry (followResume), and closing by the
+    // stale const would leave the new key pointing at a removed window.
+    delete jobWindows[win.dataset.jobId || jid];
     // the closed window's tile heals — survivors re-spread into the room
     reflowTermHomes();
   });

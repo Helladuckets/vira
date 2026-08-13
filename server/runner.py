@@ -129,6 +129,12 @@ class Runner:
         self.client = None
         self.exec_proc = None            # the CLI-exec child, when that path runs
         self.closing = False
+        # The owner deliberately ended it (Finish, or the close control) —
+        # as opposed to a failure, a timeout, or a signal. This is the ONE
+        # thing that takes the compose box away, so it must not be inferred
+        # from status: a session that died on a usage limit and one the owner
+        # shut both end "not running", and only one of them is finished.
+        self.finished_by_owner = False
         self.interrupted = False
         self.reply_window = float(self.spec.get("reply_window") or 43200)
         self.awaiting_reply = False      # parked at a turn boundary
@@ -247,6 +253,7 @@ class Runner:
                 # The turn is already over — Stop here is the Finish button,
                 # "I have nothing to add", not an abandoned run.
                 self.append("[vira] session finished by the owner\n")
+                self.finished_by_owner = True
                 self.inbox.put_nowait(_END)
                 return
             self.interrupted = True
@@ -256,6 +263,13 @@ class Runner:
             await self.do_interrupt()
         elif op == "close":
             self.closing = True
+            # Who closed it decides whether the conversation stays reachable.
+            # A control-file close is the owner saying "done with this one";
+            # the SIGTERM path routes through here too (system shutdown, a
+            # manual kill) and must NOT read as a deliberate ending, or a
+            # reboot would quietly make every open session unresumable.
+            if cmd.get("why") != "signal":
+                self.finished_by_owner = True
             while not self.inbox.empty():
                 try:
                     self.inbox.get_nowait()
@@ -647,6 +661,18 @@ class Runner:
         ok = False
         try:
             self.append(spec.get("branch_note") or "")
+            # A resumed run is a NEW job with its own transcript, deliberately:
+            # output.log is the record of what THIS process did, and copying
+            # the prior one forward would make "which job wrote this line"
+            # unanswerable across the ledger. So the continuity is stated
+            # instead — the owner reads which conversation this picks up, and
+            # the earlier transcript stays reachable under its own job.
+            if spec.get("resume_session"):
+                prior = spec.get("resumed_from") or ""
+                self.append(
+                    f"[vira] continuing session {spec['resume_session'][:8]}"
+                    + (f" (earlier transcript: job {prior})" if prior else "")
+                    + " — the model has its full prior context\n")
             if self.disarmed:
                 # Fail closed — see _disarmed_guard. This must raise BEFORE
                 # any engine starts; a session that gets as far as its first
@@ -673,6 +699,17 @@ class Runner:
                 cwd=spec["cwd"],
                 model=spec.get("model_resolved") or spec.get("model"),
                 env=_sdk_env(),
+                # CONTINUE an earlier conversation rather than starting one.
+                # This is what makes a session outlive its own process: the
+                # reply window (await_reply) only holds a session open while
+                # the runner is alive, so a usage limit, a crash, a reboot or
+                # simply a week passing used to end the conversation for good
+                # — the transcript survived on disk with nothing able to read
+                # it back. `resume` hands the CLI the recorded session id and
+                # the model arrives with its full prior context.
+                #
+                # Empty means a fresh session, which is every ordinary launch.
+                resume=spec.get("resume_session") or None,
                 # The SDK default is a near-empty system prompt; opt into the
                 # full Claude Code harness prompt, with the Vira preamble
                 # appended — the deep Vira connection.
@@ -801,6 +838,7 @@ class Runner:
                   else "error")
         self.awaiting_reply = False
         self.state["status"] = status
+        self.state["finished_by_owner"] = self.finished_by_owner
         self.state["awaiting"] = None
         self.state["pending"] = []
         self.state["finished"] = time.time()
@@ -811,7 +849,8 @@ class Runner:
                         "output": self.output_tail},
                        ok and not aborted, interrupted=aborted)
         joblog.record_finish(spec["id"], status,
-                             result_text or self.state["error"])
+                             result_text or self.state["error"],
+                             finished_by_owner=self.finished_by_owner)
         self.flush_state()
 
     async def run(self):
@@ -821,7 +860,7 @@ class Runner:
             # finalizes state instead of leaving a running-forever record.
             loop.add_signal_handler(
                 sig, lambda: asyncio.ensure_future(
-                    self.handle({"op": "close"})))
+                    self.handle({"op": "close", "why": "signal"})))
         hb = asyncio.ensure_future(self.heartbeat_loop())
         ctl = asyncio.ensure_future(self.control_loop())
         try:
