@@ -406,6 +406,193 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
         self.assertIn("add gate-grounded evidence", out["text"])
         self.assertIn("Planning notes are drafting instructions", out["text"])
 
+    # ---- taking a document dropped onto an empty lane
+
+    COVER_MD = ("I lead end-to-end launch programs across research and "
+                "engineering, tracking risks and dependencies and "
+                "communicating status to leadership.\n\n"
+                "I bring structure to ambiguous, fast-moving technical work "
+                "and build repeatable playbooks that scale.\n")
+
+    def _empty_the_cover_lane(self):
+        """The fixture's cover letter is a root .docx; remove it so the lane
+        reads exactly as it does when a package is missing that artifact."""
+        (self.package / "cover-letter.docx").unlink()
+        columns = {c["id"]: c for c in applicationmap.build(self.role)["columns"]}
+        self.assertEqual(columns["cover"]["nodes"], [])
+        return columns
+
+    def test_a_canonical_name_is_matched_against_the_lanes_own_globs(self):
+        # One table decides what a lane READS and what it will TAKE.
+        self.assertEqual(
+            applicationmap.canonical_drop_name("resume", "2026_cv_lead.md"),
+            "2026_cv_lead.md")
+        self.assertEqual(
+            applicationmap.canonical_drop_name("cover", "cover-letter.md"),
+            "cover-letter.md")
+        self.assertEqual(
+            applicationmap.canonical_drop_name("cover", "cover-letter.txt"),
+            "cover-letter.txt")
+        self.assertEqual(
+            applicationmap.canonical_drop_name("narrative", "answers.md"),
+            "answers.md")
+        for foreign in ("notes.md", "my-cover.md", "resume.md"):
+            self.assertEqual(
+                applicationmap.canonical_drop_name("cover", foreign), "")
+
+    def test_a_canonically_named_drop_reconnects_the_lane(self):
+        self._empty_the_cover_lane()
+        out = applicationmap.attach_material(
+            self.role, "cover", "cover-letter.md", self.COVER_MD)
+        self.assertTrue(out["applied"])
+        self.assertEqual(out["action"], "reconnected")
+        self.assertEqual(Path(out["path"]),
+                         self.package / "V2" / "cover-letter.md")
+        columns = {c["id"]: c for c in applicationmap.build(self.role)["columns"]}
+        self.assertTrue(columns["cover"]["nodes"])
+        self.assertEqual(columns["cover"]["subtitle"], "cover-letter.md")
+
+    def test_a_reconnect_over_different_bytes_keeps_a_backup(self):
+        version = self.package / "V2"
+        (version / "cover-letter.md").write_text("Older wording.\n",
+                                                 encoding="utf-8")
+        out = applicationmap.attach_material(
+            self.role, "cover", "cover-letter.md", self.COVER_MD)
+        self.assertTrue(out["backup"])
+        keep = version / out["backup"]
+        self.assertEqual(keep.read_text(encoding="utf-8"), "Older wording.\n")
+        self.assertEqual((version / "cover-letter.md").read_text(
+            encoding="utf-8"), self.COVER_MD)
+
+    def test_an_unplaceable_drop_writes_nothing_until_it_is_confirmed(self):
+        before = sorted(p.name for p in (self.package / "V2").iterdir())
+        out = applicationmap.attach_material(
+            self.role, "cover", "letter-draft.md", self.COVER_MD)
+        self.assertFalse(out["applied"])
+        self.assertEqual(out["action"], "needs_session")
+        self.assertIn("cover-letter.md", out["message"])
+        self.assertEqual(sorted(p.name for p in (self.package / "V2").iterdir()),
+                         before)
+
+    def test_a_confirmed_unplaceable_drop_stages_and_asks_for_a_session(self):
+        out = applicationmap.attach_material(
+            self.role, "cover", "letter-draft.md", self.COVER_MD, confirm=True)
+        self.assertFalse(out["applied"])
+        self.assertEqual(out["action"], "session")
+        staged = Path(out["path"])
+        self.assertEqual(staged, self.package / "V2" / "inbox" /
+                         "letter-draft.md")
+        self.assertEqual(staged.read_text(encoding="utf-8"), self.COVER_MD)
+        self.assertIn(str(staged), out["prompt"])
+        self.assertIn("cover-letter.md", out["prompt"])
+        # It edits an outward artifact, so it carries the claim gate — the
+        # same lines apply_prompt embeds, from the one shared source.
+        for line in applications.ground_rules():
+            self.assertIn(line, out["prompt"])
+
+    def test_staged_material_is_invisible_to_the_map_until_a_session_folds_it(self):
+        self._empty_the_cover_lane()
+        applicationmap.attach_material(
+            self.role, "cover", "letter-draft.md", self.COVER_MD, confirm=True)
+        columns = {c["id"]: c for c in applicationmap.build(self.role)["columns"]}
+        self.assertEqual(columns["cover"]["nodes"], [])
+        self.assertEqual(columns["cover"]["subtitle"], "No resolved cover letter")
+
+    def test_a_drop_is_refused_by_name_rather_than_guessed_at(self):
+        bad = [
+            ("cover", "shot.png", self.COVER_MD),
+            ("cover", "cover-letter.docx", self.COVER_MD),
+            ("cover", "cover-letter.md", "   \n"),
+            ("cover", "", self.COVER_MD),
+            ("self", "cover-letter.md", self.COVER_MD),
+            ("cover", "big.md", "x" * (applicationmap.MAX_DROP_BYTES + 1)),
+        ]
+        for lane, name, text in bad:
+            with self.assertRaises(ValueError, msg=f"{lane}/{name}"):
+                applicationmap.attach_material(self.role, lane, name, text)
+
+    def test_a_traversing_name_can_only_ever_land_in_the_package(self):
+        # Only the BARE name is ever written, on both write paths, so a
+        # dropped path cannot address anything outside the package.
+        out = applicationmap.attach_material(
+            self.role, "cover", "sub/dir/cover-letter.md", self.COVER_MD)
+        self.assertEqual(Path(out["path"]).parent, self.package / "V2")
+        out = applicationmap.attach_material(
+            self.role, "cover", "../../escape.md", self.COVER_MD, confirm=True)
+        self.assertEqual(Path(out["path"]),
+                         self.package / "V2" / "inbox" / "escape.md")
+
+    def test_a_role_with_no_package_is_refused_by_name(self):
+        role = {**self.role, "uid": "a-000", "company": "Nobody",
+                "title": "Nothing"}
+        with self.assertRaises(ValueError) as caught:
+            applicationmap.attach_material(role, "cover", "cover-letter.md",
+                                           self.COVER_MD)
+        self.assertIn("write the application first", str(caught.exception))
+
+    def test_a_passive_instance_never_writes_the_owners_package(self):
+        before = sorted(p.name for p in (self.package / "V2").iterdir())
+        with mock.patch.dict(os.environ, {"VIRA_PASSIVE": "1"}):
+            with self.assertRaises(PermissionError):
+                applicationmap.attach_material(
+                    self.role, "cover", "cover-letter.md", self.COVER_MD)
+        self.assertEqual(sorted(p.name for p in (self.package / "V2").iterdir()),
+                         before)
+
+    def test_the_material_route_refuses_and_reports_in_the_clients_terms(self):
+        from fastapi import HTTPException
+        from server import main
+        req = main.AppMapMaterialReq(lane="cover", filename="cover-letter.md",
+                                     text=self.COVER_MD)
+        with mock.patch.object(applications, "find_role", return_value=None):
+            with self.assertRaises(HTTPException) as caught:
+                main.api_applications_evidence_map_material("a-000", req)
+            self.assertEqual(caught.exception.status_code, 404)
+        with (mock.patch.object(applications, "find_role",
+                                return_value=self.role),
+              mock.patch.object(applicationmap, "attach_material",
+                                side_effect=PermissionError("passive"))):
+            with self.assertRaises(HTTPException) as caught:
+                main.api_applications_evidence_map_material(
+                    self.role["uid"], req)
+            self.assertEqual(caught.exception.status_code, 403)
+        with (mock.patch.object(applications, "find_role",
+                                return_value=self.role),
+              mock.patch.object(applicationmap, "attach_material",
+                                side_effect=ValueError("not markdown"))):
+            with self.assertRaises(HTTPException) as caught:
+                main.api_applications_evidence_map_material(
+                    self.role["uid"], req)
+            self.assertEqual(caught.exception.status_code, 400)
+
+    def test_the_material_route_launches_only_for_a_staged_drop(self):
+        from server import main
+        staged = {"applied": False, "action": "session", "name": "d.md",
+                  "prompt": "connect-x", "path": "/tmp/d.md"}
+        with (mock.patch.object(applications, "find_role",
+                                return_value=self.role),
+              mock.patch.object(applicationmap, "attach_material",
+                                return_value=dict(staged)),
+              mock.patch.object(main.jobs, "launch",
+                                return_value="job1") as launch):
+            out = main.api_applications_evidence_map_material(
+                self.role["uid"], main.AppMapMaterialReq(
+                    lane="cover", filename="d.md", text="x", confirm=True))
+            self.assertEqual(out["job_id"], "job1")
+            self.assertNotIn("prompt", out)     # never echoed to the client
+            launch.assert_called_once()
+        applied = {"applied": True, "action": "reconnected", "name": "c.md"}
+        with (mock.patch.object(applications, "find_role",
+                                return_value=self.role),
+              mock.patch.object(applicationmap, "attach_material",
+                                return_value=dict(applied)),
+              mock.patch.object(main.jobs, "launch") as launch):
+            out = main.api_applications_evidence_map_material(
+                self.role["uid"], main.AppMapMaterialReq(
+                    lane="cover", filename="c.md", text="x"))
+            launch.assert_not_called()
+            self.assertIn("columns", out["map"])   # the repaint rides back
+
     def test_routes_resolve_the_catalog_role(self):
         from server import main
         expected = {"role": {"uid": self.role["uid"]}}
@@ -453,8 +640,25 @@ class ApplicationMapUiContractTest(unittest.TestCase):
                         "app-map-maximize"):
             self.assertIn(f'id="{control}"', self.html)
             self.assertIn(f'$("#{control}")', self.app)
-        self.assertIn('head.addEventListener("dblclick"', self.app)
+
+    def test_both_workspace_sheets_wear_the_shared_window_chrome(self):
+        # Resize, double-click-to-maximize and the traffic light are ONE
+        # implementation. Asserting the helper exists proves nothing on its
+        # own — what matters is that each card is actually handed to it, and
+        # that each head really carries a close button to hand over.
+        self.assertIn("function sheetWindowChrome(", self.app)
+        self.assertIn("function sheetToggleMax(", self.app)
         self.assertIn("makeResizable(card", self.app)
+        self.assertIn('head.addEventListener("dblclick"', self.app)
+        for sel in ('#app-map-sheet .app-map-card',
+                    '#app-compare-sheet .app-compare-card'):
+            self.assertIn(f'sheetWindowChrome($("{sel}")', self.app)
+        for x in ("app-map-x", "app-compare-x"):
+            self.assertIn(f'id="{x}"', self.html)
+            self.assertIn(f'$("#{x}")', self.app)
+        # The grips resolve against the card, never the full-viewport scrim.
+        self.assertIn(".app-compare-card, .app-map-card { position: relative; }",
+                      self.style)
 
     def test_overview_preserves_full_requirement_text(self):
         self.assertIn(".app-map-card.map-overview .app-map-node-text", self.style)

@@ -13,11 +13,14 @@ met.  The owner can therefore inspect every line behind every connection.
 """
 from __future__ import annotations
 
+import fnmatch
 import hashlib
 import json
 import math
+import os
 import re
 import zipfile
+from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -26,6 +29,27 @@ from . import evidence, jobcompare, jobdesc, settings
 MAX_ARTIFACT_NODES = 44
 MAX_SELF_NODES = 72
 MAX_TEXT = 520
+
+# The ONE table naming each lane's artifact files.  build() and the narrative
+# reader consume it, and a DROPPED file is accepted through it as well
+# (attach_material), so "what this lane is made of" and "what this lane will
+# take" cannot drift apart.  Each entry is (root_globs, version_names): the
+# .docx the package keeps at its top level, and the plain-text copy inside
+# V<N>/ — which is the half a drop can write.
+LANE_ARTIFACTS = {
+    "resume": ((("*_cv_*.docx",), ("*_cv_*.md",)),),
+    "cover": ((("cover-letter.docx",),
+               ("cover-letter.md", "cover-letter.txt")),),
+    "narrative": ((("interview-prep.docx",), ("interview-prep.md",)),
+                  (("answers.docx",), ("answers.md", "answers.txt"))),
+}
+LANE_TITLES = {"resume": "resume", "cover": "cover letter",
+               "narrative": "narratives"}
+# A drop is a document, never a binary.  .docx is deliberately excluded: the
+# root .docx is what the owner edits by hand and what resumeview renders, so
+# replacing it from a drag gesture is a different and much larger decision.
+DROP_SUFFIXES = (".md", ".markdown", ".txt")
+MAX_DROP_BYTES = 400_000
 
 WORD_RE = re.compile(r"[a-z0-9]+(?:'[a-z]+)?", re.I)
 HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
@@ -463,6 +487,17 @@ def _read_artifact(package, lane, root_globs, version_names):
     return [], None
 
 
+def _lane_artifact(package, lane):
+    """Every artifact this lane reads, through LANE_ARTIFACTS. (nodes, path)."""
+    nodes, first = [], None
+    for root_globs, version_names in LANE_ARTIFACTS.get(lane, ()):
+        found, path = _read_artifact(package, lane, root_globs, version_names)
+        nodes.extend(found)
+        if path is not None and first is None:
+            first = path
+    return nodes, first
+
+
 def _job_concepts_from_text(role, text, source):
     """Extract every substantive logical line from one JD representation."""
     # Short requirements count too ("Move fast.", "Be curious.").  The
@@ -619,13 +654,7 @@ def _approved_story_nodes():
 
 
 def _story_nodes(package):
-    nodes = []
-    for root_globs, version_names in (
-            (("interview-prep.docx",), ("interview-prep.md",)),
-            (("answers.docx",), ("answers.txt",))):
-        found, _path = _read_artifact(package, "narrative", root_globs,
-                                      version_names)
-        nodes.extend(found)
+    nodes, _path = _lane_artifact(package, "narrative")
     nodes.extend(_approved_story_nodes())
     return nodes
 
@@ -797,10 +826,8 @@ def build(role):
     """Compose the map from source material plus explicit planning notes."""
     package = find_package(role)
     concepts = _job_concepts(role, package)
-    resume, resume_path = _read_artifact(
-        package, "resume", ("*_cv_*.docx",), ("*_cv_*.md",))
-    cover, cover_path = _read_artifact(
-        package, "cover", ("cover-letter.docx",), ("cover-letter.txt",))
+    resume, resume_path = _lane_artifact(package, "resume")
+    cover, cover_path = _lane_artifact(package, "cover")
     narratives = _story_nodes(package)
     self_nodes = _self_nodes()
 
@@ -876,6 +903,161 @@ def build(role):
                    "Master History endnotes remain the claim authority; "
                    "renderings never become sources."),
     }
+
+
+# ------------------------------------------------- taking a dropped document
+#
+# A lane reads "No connected material found" when the package's own artifact
+# is absent or unreadable.  Dropping a markdown file on that lane is the
+# owner saying "this belongs here", and the FILENAME decides what happens
+# next — never a model:
+#
+#   * a name the lane already looks for is a RECONNECT.  The file was meant
+#     to be in the package and was not found, so it is written where the map
+#     reads from and the lane fills on the next build.  Deterministic,
+#     immediate, no session.
+#   * any other name is material Vira cannot place on its own.  NOTHING is
+#     written until the owner confirms; then the file is staged in the
+#     package's own inbox and a session is dispatched to fold it into the
+#     canonical artifact.  A drag gesture must not silently start an agent
+#     rewriting the owner's resume.
+
+
+def _refuse_if_passive():
+    if os.environ.get("VIRA_PASSIVE"):
+        raise PermissionError(
+            "passive instance: application packages are the owner's real "
+            "files, outside this clone")
+
+
+def _version_names(lane):
+    """Every canonical V<N>/ filename this lane reads, in read order."""
+    return [name for _root, names in LANE_ARTIFACTS.get(lane, ())
+            for name in names]
+
+
+def canonical_drop_name(lane, filename):
+    """The canonical name a dropped file already carries, or "".
+
+    Matched against the same table `_read_artifact` reads, so "this is the
+    file that should have been picked up" means exactly "this is a file the
+    lane looks for" — one definition, no second list to drift.
+    """
+    name = Path(str(filename or "")).name
+    for pattern in _version_names(lane):
+        if fnmatch.fnmatch(name.casefold(), pattern.casefold()):
+            return name
+    return ""
+
+
+def _writable_version(package):
+    """The V<N>/ a drop writes into, created when the package has none."""
+    version = _latest_version(package)
+    if version == package:
+        version = package / "V1"
+    version.mkdir(parents=True, exist_ok=True)
+    return version
+
+
+def _safe_drop(lane, filename, text):
+    """Validate a drop and return its bare filename. Raises ValueError."""
+    if lane not in LANE_ARTIFACTS:
+        raise ValueError(f"{lane} does not take dropped material")
+    name = Path(str(filename or "")).name.strip()
+    if not name or name.startswith("."):
+        raise ValueError("that file has no usable name")
+    if Path(name).suffix.casefold() not in DROP_SUFFIXES:
+        raise ValueError("Vira takes Markdown or plain text here "
+                         "(.md, .markdown, .txt)")
+    body = str(text or "")
+    if not body.strip():
+        raise ValueError("that file is empty")
+    if len(body.encode("utf-8")) > MAX_DROP_BYTES:
+        raise ValueError("that file is larger than this drop accepts "
+                         f"({MAX_DROP_BYTES // 1000}KB)")
+    return name
+
+
+def connect_prompt(role, lane, staged, package):
+    """The dispatch that folds an unplaceable document into the package."""
+    from . import applications
+    version = _writable_version(package)
+    targets = " or ".join(_version_names(lane)) or "its own artifact"
+    return "\n".join([
+        f"connect-{applications.session_slug(role)}-{lane}",
+        "",
+        f"The owner dropped a document onto the {LANE_TITLES[lane]} lane of "
+        f"this role's evidence map. Vira could not place it: the filename is "
+        f"not one this lane reads, so it is staged UNREAD at",
+        f"  {staged}",
+        "",
+        f"Fold its material into this package's own {LANE_TITLES[lane]} "
+        f"artifact in {version} — the file the evidence map reads is "
+        f"{targets}. Create that file if it does not exist; revise it in "
+        "place if it does. Then delete the staged copy, since it is an inbox "
+        "and not a source.",
+        "",
+        "The dropped document is the owner's material, not a claim licence: "
+        "every sentence that reaches the artifact still has to clear the "
+        "gate below. If the document says something the record does not "
+        "support, leave it out and say so plainly at the end.",
+        "",
+        *applications.ground_rules(),
+        "",
+        "PACKAGE:",
+        f"  {package}",
+        "ROLE:",
+        json.dumps({k: role.get(k) for k in ("uid", "company", "title", "url")},
+                   indent=1, ensure_ascii=False),
+    ])
+
+
+def attach_material(role, lane, filename, text, confirm=False):
+    """Take a dropped document into this role's package.
+
+    Returns a dict the route serves. `applied` means the package changed;
+    `prompt` means the caller should dispatch a session (the route owns the
+    launch, exactly as the Apply route does).
+    """
+    _refuse_if_passive()
+    name = _safe_drop(lane, filename, text)
+    package = find_package(role)
+    if package is None:
+        raise ValueError(
+            "no application package for this role yet — write the "
+            "application first, then drop material onto it")
+    body = str(text)
+    canonical = canonical_drop_name(lane, name)
+    if canonical:
+        version = _writable_version(package)
+        target = version / canonical
+        backup = ""
+        if target.exists() and target.read_bytes() != body.encode("utf-8"):
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            keep = target.with_suffix(target.suffix + f".{stamp}.bak")
+            keep.write_bytes(target.read_bytes())
+            backup = keep.name
+        target.write_text(body, encoding="utf-8")
+        return {"applied": True, "action": "reconnected", "lane": lane,
+                "path": str(target), "name": canonical, "backup": backup,
+                "message": (f"{canonical} filed into {version.name} — the "
+                            f"{LANE_TITLES[lane]} lane reads it now")}
+    if not confirm:
+        targets = " or ".join(_version_names(lane))
+        return {"applied": False, "action": "needs_session", "lane": lane,
+                "name": name,
+                "message": (f"{name} is not a name this lane reads "
+                            f"({targets}). Vira can open a session to fold "
+                            f"it into the {LANE_TITLES[lane]} — nothing is "
+                            "written until you say so.")}
+    inbox = _writable_version(package) / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    staged = inbox / name
+    staged.write_text(body, encoding="utf-8")
+    return {"applied": False, "action": "session", "lane": lane,
+            "name": name, "path": str(staged),
+            "prompt": connect_prompt(role, lane, staged, package),
+            "message": f"{name} staged — opening a session to connect it"}
 
 
 def save_note(role, concept_key, lane, text):
