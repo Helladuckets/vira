@@ -57,7 +57,7 @@ Local-first by design, with every egress path named and opt-in:
 - **Notifications** - Vira texts you (over iMessage, to your own number)
   when an active-tier contact emails. Your phone already covers iMessage.
 - **Brain** - grounded chat over your notes vault, powered by
-  [qocha](https://github.com/Helladuckets/qocha) (the vault engine
+  [qocha](https://github.com/MattaDurham/qocha) (the vault engine
   extracted from this module): hybrid FTS + local-embedding retrieval,
   answers that cite the notes they came from, citation chips that open
   the note in place. Vault knowledge also surfaces on person pages and
@@ -113,14 +113,14 @@ One command - it picks a python, creates the venv, installs dependencies,
 serves http://localhost:8377, and opens the app:
 
 ```sh
-git clone https://github.com/Helladuckets/vira.git vira && cd vira
+git clone https://github.com/MattaDurham/vira.git vira && cd vira
 bash scripts/agent-install.sh
 ```
 
 Or the same steps by hand:
 
 ```sh
-git clone https://github.com/Helladuckets/vira.git vira && cd vira
+git clone https://github.com/MattaDurham/vira.git vira && cd vira
 python3 -m venv --copies .venv
 .venv/bin/pip install -r requirements.txt
 ./run.sh                      # serves http://localhost:8377
@@ -165,7 +165,7 @@ radar, the cockpit's live agent sessions, and in-app updates.
 2. Clone and run, in a regular PowerShell window:
 
    ```powershell
-   git clone https://github.com/Helladuckets/vira.git vira
+   git clone https://github.com/MattaDurham/vira.git vira
    cd vira
    powershell -ExecutionPolicy Bypass -File scripts\run.ps1
    ```
@@ -227,7 +227,7 @@ PC the wizard skips what does not exist there - see **Windows** above):
 4. **Wire the Brain** - point Vira at a notes vault you already have
    (Obsidian or any folder of markdown), or click "Start a new vault
    here" to seed a fresh one with the bundled
-   [qocha](https://github.com/Helladuckets/qocha) engine. Semantic
+   [qocha](https://github.com/MattaDurham/qocha) engine. Semantic
    indexing wants [Ollama](https://ollama.com) with `nomic-embed-text`
    pulled; without it the Brain still answers from full-text search.
 5. **Mail** - Gmail/IMAP: app password in the Keychain (service
@@ -350,7 +350,7 @@ narrative, search question parsing, and cockpit jobs.
 Python deps beyond FastAPI are optional and feature-scoped: the semantic
 search index pulls in torch/transformers/insightface/mlx-whisper the first
 time you build it (see `server/mediaindex.py`); nothing else needs them.
-The vault engine is [qocha](https://github.com/Helladuckets/qocha), a
+The vault engine is [qocha](https://github.com/MattaDurham/qocha), a
 standalone package extracted from this codebase.
 
 ## Provenance

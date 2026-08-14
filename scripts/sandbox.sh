@@ -65,7 +65,7 @@ set -eu
 # read from a path captured at file scope.
 SELF=${0:A}
 
-REPO_URL=${VIRA_SANDBOX_REPO:-https://github.com/Helladuckets/vira.git}
+REPO_URL=${VIRA_SANDBOX_REPO:-https://github.com/MattaDurham/vira.git}
 ROOT=${VIRA_SANDBOX_ROOT:-$HOME/vira-sandbox}
 APP=$ROOT/app
 FAKE_HOME=$ROOT/home

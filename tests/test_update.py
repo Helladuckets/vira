@@ -35,7 +35,7 @@ class ReqNameTests(unittest.TestCase):
                          "claude-agent-sdk")
         self.assertEqual(
             update._req_name(
-                "qocha @ git+https://github.com/Helladuckets/qocha@v0.2.0"),
+                "qocha @ git+https://github.com/MattaDurham/qocha@v0.2.0"),
             "qocha")
 
     def test_blank_and_comment_lines_are_none(self):
