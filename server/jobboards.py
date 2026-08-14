@@ -109,6 +109,8 @@ def add_board(company, ats, slug="", query="", location="", note=""):
         raise ValueError(f"{ats} boards need a slug")
     if ats in ("microsoft", "google") and not query.strip():
         raise ValueError(f"{ats} boards need a query")
+    if ats == "workday":
+        _wd_parts(slug)   # raises with the expected shape named
     with _lock:
         reg = load_registry()
         key = _board_key({"company": company, "ats": ats,
@@ -297,7 +299,15 @@ def fetch_microsoft(board):
     (a company-wide sweep is 10k+ roles); the registry's `location` narrows
     server-side and a second remote pass catches work-from-home roles."""
     query = board.get("query") or ""
+    # The second pass is what catches US-remote roles filed outside the
+    # narrowed city. It was described here from the day the fetcher
+    # shipped and never actually run — `passes` was a one-element list —
+    # so a work-from-home role at a query board was invisible unless it
+    # also carried the city. A board that wants only the city pass can
+    # say so with `remote_pass: false` in its registry entry.
     passes = [board.get("location") or "New York"]
+    if board.get("remote_pass") is not False:
+        passes.append("Remote")
     out, seen = [], set()
     for loc in passes:
         start, total = 0, None
@@ -392,13 +402,232 @@ def fetch_google(board):
     return out
 
 
+WD_PAGE = 20          # the cxs API's own page size
+WD_PAGE_CAP = 25      # at most 500 listings walked per board per sweep
+WD_DETAIL_CAP = 80    # per-sweep budget for per-role detail fetches
+
+# "5 Locations" — Workday's listing collapse for a multi-site posting.
+_WD_MULTI = re.compile(r"^\s*\d+\s+locations?\s*$", re.I)
+
+
+def _wd_parts(slug):
+    parts = [p for p in (slug or "").split("/") if p]
+    if len(parts) != 3:
+        raise ValueError(
+            "a workday slug is <host>/<tenant>/<site>, e.g. "
+            "nvidia.wd5.myworkdayjobs.com/nvidia/NVIDIAExternalCareerSite")
+    return parts[0], parts[1], parts[2]
+
+
+def fetch_workday(board):
+    """Workday's cxs API — the ATS behind most large enterprises.
+
+    A QUERY board deliberately, and never in FULL_BOARD: both walks below
+    are capped, so a posting missing from one sweep is evidence only about
+    what this board has served before, never proof the posting is gone.
+
+    Two facts about the API decide the shape. (a) The listing endpoint is
+    cheap but collapses a multi-site posting's location to "5 Locations",
+    which no location rule can read — and judging that ineligible would
+    silently hide exactly the roles posted in the most places, New York
+    among them. (b) It carries no description and no real date: `postedOn`
+    is prose ("Posted 24 Days Ago"). Real location, real `startDate` and
+    the description all live on the per-role detail endpoint.
+
+    So the listing walk PREFILTERS on the location text it can actually
+    read, keeps every ambiguous one, and pays for detail only on the
+    survivors — and REPORTS what a cap dropped rather than handing back a
+    short list that looks complete.
+
+    A board wants a `query` (the cxs `searchText`): an unnarrowed walk of
+    a 2,000-role tenant reaches its page cap long before the roles worth
+    reading, and the note says so when it does.
+    """
+    host, tenant, site = _wd_parts(board.get("slug"))
+    base = f"https://{host}/wday/cxs/{tenant}/{site}"
+    rule = location_rule()
+    listed, seen, notes = [], set(), []
+    total = None
+    for page in range(WD_PAGE_CAP):
+        offset = page * WD_PAGE
+        if total and offset >= total:
+            break
+        data = jobshared.http_post_json(f"{base}/jobs", {
+            "appliedFacets": {}, "limit": WD_PAGE, "offset": offset,
+            "searchText": board.get("query") or ""}, timeout=TIMEOUT)
+        # `total` comes back on the FIRST page only — every later page
+        # reports 0. Reading it each time ends the walk after two pages
+        # (offset 40 >= 0) AND silences the cap note with it, so a
+        # 2,000-role board reports 40 roles and claims full coverage.
+        # Caught by a live run against NVIDIA; a fixture that returns
+        # total on every page cannot see it.
+        if total is None:
+            total = data.get("total") or 0
+        posts = data.get("jobPostings") or []
+        if not posts:
+            break
+        for p in posts:
+            path = p.get("externalPath") or ""
+            jid = (p.get("bulletFields") or [None])[0] or path.rsplit("_", 1)[-1]
+            if not path or not jid or jid in seen:
+                continue
+            seen.add(jid)
+            loc = (p.get("locationsText") or "").strip()
+            # keep what reads as eligible, and everything the listing
+            # cannot answer for — the detail fetch is what decides those
+            ambiguous = (not loc) or bool(_WD_MULTI.match(loc))
+            if not ambiguous and not eligible_location({"locations": [loc]},
+                                                       rule):
+                continue
+            listed.append((jid, path, p.get("title") or "", loc))
+    if total and len(seen) < total:
+        notes.append(f"walked {len(seen)} of {total} listings "
+                     f"(page cap {WD_PAGE_CAP})")
+
+    out = []
+    for jid, path, title, loc in listed[:WD_DETAIL_CAP]:
+        try:
+            det = jobshared.http_get(f"{base}{path}", timeout=TIMEOUT)
+        except Exception:  # noqa: BLE001 — one dead posting is not a dead board
+            continue
+        info = det.get("jobPostingInfo") or {}
+        locs = [x for x in [info.get("location")] if x]
+        for extra in info.get("additionalLocations") or []:
+            if isinstance(extra, str) and extra:
+                locs.append(extra)
+        if not locs and loc and not _WD_MULTI.match(loc):
+            locs = [loc]
+        out.append(_norm(
+            board, uid=jobshared.board_uid("workday", jid, tenant),
+            title=info.get("title") or title,
+            locations=locs,
+            url=info.get("externalUrl") or f"https://{host}/{site}{path}",
+            published=(info.get("startDate") or "")[:10],
+            jd=_strip_html(info.get("jobDescription") or "")[:JD_CAP]))
+    if len(listed) > WD_DETAIL_CAP:
+        notes.append(f"read {WD_DETAIL_CAP} of {len(listed)} candidate "
+                     f"postings (detail cap)")
+    return out, "; ".join(notes)
+
+
 FETCHERS = {
     "greenhouse": fetch_greenhouse,
     "ashby": fetch_ashby,
     "lever": fetch_lever,
     "microsoft": fetch_microsoft,
     "google": fetch_google,
+    "workday": fetch_workday,
 }
+
+
+# ------------------------------------------------------- careers-URL parse
+
+# Registering a company used to mean KNOWING its ATS and its board slug and
+# typing both into a prompt chain — so expanding the universe was research
+# per company rather than a paste. These read the slug back out of the
+# careers URL the owner already has in front of him.
+URL_PATTERNS = (
+    ("greenhouse", re.compile(
+        r"(?:boards|job-boards)\.greenhouse\.io/(?:embed/job_board\?for=)?"
+        r"([a-z0-9_.-]+)", re.I)),
+    ("greenhouse", re.compile(r"([a-z0-9_-]+)\.greenhouse\.io", re.I)),
+    ("ashby", re.compile(r"(?:jobs\.)?ashbyhq\.com/([a-z0-9_.-]+)", re.I)),
+    ("lever", re.compile(r"jobs\.lever\.co/([a-z0-9_.-]+)", re.I)),
+)
+
+# tenant.wdN.myworkdayjobs.com[/locale]/<site>  — the locale segment is
+# optional and is NOT the site, which is the trap in reading these by eye.
+WORKDAY_URL = re.compile(
+    r"([a-z0-9_-]+)\.(wd\d+)\.myworkdayjobs\.com((?:/[A-Za-z0-9_-]+)*)", re.I)
+_LOCALE = re.compile(r"^[a-z]{2}(-[A-Za-z]{2})?$")
+
+
+def parse_board_url(url):
+    """A careers URL -> the registry fields for it, or None.
+
+    Parsing ONLY — it never touches the network, so it stays safe to call
+    on every keystroke and its answer is a claim about the URL's shape,
+    not about whether the board exists. `resolve_board_url` is what asks
+    the board itself.
+    """
+    url = (url or "").strip()
+    if not url:
+        return None
+    m = WORKDAY_URL.search(url)
+    if m:
+        tenant, wd, path = m.group(1), m.group(2), m.group(3) or ""
+        segs = [s for s in path.split("/") if s and not _LOCALE.match(s)]
+        # a job URL carries .../<site>/job/<...>; the site is the first
+        # segment either way
+        site = segs[0] if segs else ""
+        if not site:
+            return None
+        return {"ats": "workday", "query": "",
+                "slug": f"{tenant}.{wd}.myworkdayjobs.com/{tenant}/{site}",
+                "company": tenant.replace("-", " ").title()}
+    for ats, pat in URL_PATTERNS:
+        m = pat.search(url)
+        if not m:
+            continue
+        slug = m.group(1)
+        if slug.lower() in ("www", "jobs", "boards", "job-boards", "embed"):
+            continue
+        return {"ats": ats, "slug": slug, "query": "",
+                "company": re.sub(r"[._-]+", " ", slug).strip().title()}
+    if re.search(r"careers\.google\.com|google\.com/about/careers", url, re.I):
+        return {"ats": "google", "slug": "", "query": "",
+                "company": "", "needs_query": True}
+    if re.search(r"careers\.microsoft\.com", url, re.I):
+        return {"ats": "microsoft", "slug": "", "query": "",
+                "company": "", "needs_query": True}
+    return None
+
+
+def resolve_board_url(url):
+    """Parse a careers URL AND confirm the board answers, reporting how
+    many roles it serves.
+
+    The confirmation is the point. A slug read off a URL is a guess, and a
+    guess registered as a board is a company that silently contributes
+    nothing to every future sweep — the failure mode is a board that looks
+    registered and is not. Query boards (google/microsoft) cannot be
+    confirmed this way and say so instead of claiming a count.
+    """
+    got = parse_board_url(url)
+    if not got:
+        return {"ok": False,
+                "reason": "that URL matches no ATS Vira can read — "
+                          "supported: greenhouse, ashby, lever, workday"}
+    if got.get("needs_query"):
+        return {"ok": True, "confirmed": False, **got,
+                "note": f"{got['ats']} boards are searched, not listed — "
+                        f"this one needs a query (e.g. \"DeepMind\")"}
+    board = {"company": got["company"], "ats": got["ats"],
+             "slug": got["slug"], "query": ""}
+    try:
+        if got["ats"] == "workday":
+            # ONE listing page, not the fetcher: a real workday sweep is a
+            # hundred-odd requests, and confirming a pasted URL must not
+            # cost that. `total` is the board's own count, so the answer
+            # is better than the fetcher's capped one anyway.
+            host, tenant, site = _wd_parts(got["slug"])
+            data = jobshared.http_post_json(
+                f"https://{host}/wday/cxs/{tenant}/{site}/jobs",
+                {"appliedFacets": {}, "limit": 1, "offset": 0,
+                 "searchText": ""}, timeout=TIMEOUT)
+            count = data.get("total") or 0
+            if not count:
+                raise ValueError("board answered with no postings")
+        else:
+            fetched = FETCHERS[got["ats"]](board)
+            if isinstance(fetched, tuple):
+                fetched = fetched[0]
+            count = len(fetched)
+    except Exception as e:  # noqa: BLE001 — an unreachable board is an answer
+        return {"ok": False, **got,
+                "reason": f"read {got['ats']} slug '{got['slug']}' from that "
+                          f"URL, but the board did not answer ({type(e).__name__})"}
+    return {"ok": True, "confirmed": True, "count": count, **got}
 
 # Which fetchers return the COMPLETE board, so absence is proof a posting
 # is gone. greenhouse/ashby/lever hand back every listed role; microsoft
@@ -657,6 +886,13 @@ def poll_once(notify_new=True):
                                "ats": b.get("ats"), "ok": False,
                                "error": str(e)[:200], "at": now}
             continue
+        # A fetcher that BOUNDS its own coverage returns (roles, note) so
+        # the cap is reported rather than silently handing back a short
+        # list that reads as the whole board. Everything else returns a
+        # plain list and says nothing, which is the honest answer there.
+        fetch_note = ""
+        if isinstance(fetched, tuple):
+            fetched, fetch_note = fetched
         fetched_uids = set()
         for rec in fetched:
             evaluate(rec, adj)
@@ -716,6 +952,8 @@ def poll_once(notify_new=True):
                               b["ats"], b.get("slug") or "")}
         board_meta[bid] = {"company": b.get("company"), "ats": b.get("ats"),
                            "ok": True, "count": len(fetched_uids), "at": now}
+        if fetch_note:
+            board_meta[bid]["partial"] = fetch_note
 
     eligible_new = [roles[u] for u in new_uids
                     if roles[u].get("eligible") and not roles[u].get("cut")]

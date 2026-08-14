@@ -4225,6 +4225,31 @@ button.cir-chip { font: inherit; color: inherit; text-align: left; }
   color: var(--red); border-color: var(--red-line); background: var(--red-soft);
 }
 
+/* add companies by pasting careers URLs */
+.addboard-pop { gap: 7px; flex-direction: column; align-items: stretch;
+  max-width: min(520px, calc(100vw - 32px)); }
+.addboard-pop .cp-line {
+  font-size: 12px; color: var(--text-dim); line-height: 1.5; padding: 0 2px;
+}
+.ab-input {
+  width: 100%; min-width: 0; box-sizing: border-box; resize: vertical;
+  background: var(--bg-raised); border: 1px solid var(--line-warm);
+  border-radius: 3px; color: var(--text); padding: 7px 8px;
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.5;
+}
+.ab-input:focus { outline: none; border-color: var(--accent-line); }
+.ab-out:empty { display: none; }
+.ab-out { display: flex; flex-direction: column; gap: 3px; max-height: 190px;
+  overflow-y: auto; }
+.ab-row { display: flex; gap: 8px; align-items: baseline;
+  font-size: 11.5px; line-height: 1.45; }
+.ab-url { font-family: var(--mono); color: var(--text-dim);
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.ab-note { flex: 1 1 auto; min-width: 0; color: var(--text-dim); }
+.ab-row.good .ab-note { color: var(--green); }
+.ab-row.bad .ab-note { color: var(--red); }
+
 /* proposed ideas — the approval bar */
 .idea-proposed .idea-text { color: var(--text); }
 .idea-approve-bar { align-items: center; }

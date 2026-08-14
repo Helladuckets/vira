@@ -611,5 +611,220 @@ class AutoScore(PollDiffAndNotify):
         self.assertTrue(s["scoring"]["live"])
 
 
+WD_SLUG = "acme.wd5.myworkdayjobs.com/acme/AcmeCareers"
+WD_BOARD = {"company": "Acme", "ats": "workday", "slug": WD_SLUG}
+
+
+def _wd_listing(*rows):
+    """rows: (jid, locationsText) -> one page of the cxs listing shape."""
+    return {"total": len(rows), "jobPostings": [
+        {"title": f"Engineer {jid}", "bulletFields": [jid],
+         "locationsText": loc,
+         "externalPath": f"/job/Somewhere/Engineer_{jid}"}
+        for jid, loc in rows]}
+
+
+class WorkdayFetch(unittest.TestCase):
+    """The cxs walk. Its two caps and its location prefilter are the whole
+    design, so they are what these pin."""
+
+    def setUp(self):
+        p = mock.patch.object(jobboards.settings, "raw",
+                              return_value=NYC_CONFIG)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _run(self, listing, detail_for):
+        """detail_for: jid -> jobPostingInfo. Records which jids were
+        detail-fetched, which is what proves the prefilter saved the call."""
+        self.fetched = []
+
+        def fake_get(url, *a, **kw):
+            jid = url.rsplit("_", 1)[-1]
+            self.fetched.append(jid)
+            return {"jobPostingInfo": detail_for[jid]}
+
+        def fake_post(url, payload, *a, **kw):
+            off = payload.get("offset", 0)
+            page = listing["jobPostings"][off:off + payload.get("limit", 20)]
+            # FAITHFUL TO THE REAL API: Workday reports `total` on the
+            # FIRST page only and 0 on every page after. Reading it each
+            # time ends the walk at offset 40 (40 >= 0) and silences the
+            # cap note with it — a 2,000-role board reporting 40 roles and
+            # claiming full coverage. A fixture that returns total on every
+            # page cannot see that, which is how it reached a live run.
+            return {"total": listing["total"] if off == 0 else 0,
+                    "jobPostings": page}
+
+        with mock.patch.object(jobboards.jobshared, "http_post_json",
+                               side_effect=fake_post), \
+                mock.patch.object(jobboards.jobshared, "http_get",
+                                  side_effect=fake_get):
+            return jobboards.fetch_workday(WD_BOARD)
+
+    def test_ambiguous_locations_are_kept_and_resolved_by_detail(self):
+        # "5 Locations" is what the listing says for a multi-site posting.
+        # Judging that ineligible would silently hide exactly the roles
+        # posted in the most places -- New York among them.
+        listing = _wd_listing(("A1", "5 Locations"), ("A2", "Munich, Germany"))
+        out, note = self._run(listing, {
+            "A1": {"title": "Engineer A1", "location": "New York, NY",
+                   "startDate": "2026-08-01", "jobDescription": "Build it."},
+        })
+        self.assertEqual(self.fetched, ["A1"])      # Munich never cost a call
+        self.assertEqual(len(out), 1)
+        self.assertEqual(out[0]["locations"], ["New York, NY"])
+        self.assertEqual(out[0]["published"], "2026-08-01")
+        self.assertTrue(jobboards.eligible_location(out[0], NYC_RULE()))
+        self.assertEqual(note, "")
+
+    def test_uid_namespace_is_the_tenant_not_the_slug(self):
+        # board_uid and uid_prefix must agree, or a board owns a namespace
+        # it never mints into -- the frontier-split failure, one ATS over.
+        uid = jobboards.jobshared.board_uid("workday", "A1", WD_SLUG)
+        prefix = jobboards.jobshared.uid_prefix("workday", WD_SLUG)
+        self.assertEqual(uid, "wd-acme-A1")
+        self.assertTrue(uid.startswith(prefix))
+
+    def test_a_capped_walk_reports_what_it_dropped(self):
+        rows = [(f"J{i}", "New York, NY") for i in range(120)]
+        detail = {f"J{i}": {"title": f"Engineer J{i}",
+                            "location": "New York, NY",
+                            "startDate": "2026-08-01",
+                            "jobDescription": "Build it."} for i in range(120)}
+        out, note = self._run(_wd_listing(*rows), detail)
+        self.assertEqual(len(out), jobboards.WD_DETAIL_CAP)
+        self.assertIn("detail cap", note)
+        self.assertIn(str(len(rows)), note)
+
+    def test_a_page_capped_walk_still_reports_the_listing_total(self):
+        # The regression for the live-caught bug, and it pins the NOTE
+        # rather than the walk: only page one carries `total`, so a fetcher
+        # that re-reads it each page ends up holding 0 and the listing note
+        # — "walked N of M" — silently never fires. The walk itself is
+        # rescued by the falsy-total guard, which is exactly why asserting
+        # on the roles alone passes against the bug.
+        n = jobboards.WD_PAGE_CAP * jobboards.WD_PAGE + 100
+        rows = [(f"J{i}", "New York, NY") for i in range(n)]
+        detail = {f"J{i}": {"title": f"Engineer J{i}",
+                            "location": "New York, NY",
+                            "startDate": "2026-08-01",
+                            "jobDescription": "Build it."} for i in range(n)}
+        out, note = self._run(_wd_listing(*rows), detail)
+        self.assertIn("listings", note)
+        self.assertIn(str(n), note)                       # the true total
+        self.assertEqual(len(out), jobboards.WD_DETAIL_CAP)
+
+    def test_workday_is_not_a_full_board(self):
+        # Both walks are capped, so absence from one sweep is never proof a
+        # posting closed. Being in FULL_BOARD would close real roles.
+        self.assertNotIn("workday", jobboards.FULL_BOARD)
+
+    def test_registry_validates_the_three_part_slug(self):
+        with self.assertRaises(ValueError):
+            jobboards._wd_parts("acme.wd5.myworkdayjobs.com")
+        self.assertEqual(jobboards._wd_parts(WD_SLUG),
+                         ("acme.wd5.myworkdayjobs.com", "acme", "AcmeCareers"))
+
+
+class BoardUrlParse(unittest.TestCase):
+
+    def test_reads_each_supported_ats_off_a_url(self):
+        cases = {
+            "https://job-boards.greenhouse.io/databricks": ("greenhouse", "databricks"),
+            "https://boards.greenhouse.io/figma/jobs/12345": ("greenhouse", "figma"),
+            "https://jobs.ashbyhq.com/sierra": ("ashby", "sierra"),
+            "https://jobs.ashbyhq.com/mistral.ai/some-role": ("ashby", "mistral.ai"),
+            "https://jobs.lever.co/palantir/abc-123": ("lever", "palantir"),
+        }
+        for url, (ats, slug) in cases.items():
+            got = jobboards.parse_board_url(url)
+            self.assertIsNotNone(got, url)
+            self.assertEqual((got["ats"], got["slug"]), (ats, slug), url)
+
+    def test_workday_locale_segment_is_not_the_site(self):
+        # .../en-US/NVIDIAExternalCareerSite -- reading the first path
+        # segment as the site is the trap, and it yields a dead board.
+        for url in ("https://acme.wd5.myworkdayjobs.com/AcmeCareers",
+                    "https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers",
+                    "https://acme.wd5.myworkdayjobs.com/en-US/AcmeCareers"
+                    "/job/New-York/Engineer_JR1"):
+            got = jobboards.parse_board_url(url)
+            self.assertEqual(got["slug"], WD_SLUG, url)
+            self.assertEqual(got["ats"], "workday")
+
+    def test_unknown_url_is_refused_not_guessed(self):
+        self.assertIsNone(jobboards.parse_board_url(
+            "https://example.com/careers"))
+        self.assertIsNone(jobboards.parse_board_url(""))
+
+    def test_resolve_refuses_a_board_that_does_not_answer(self):
+        with mock.patch.dict(jobboards.FETCHERS, {
+                "ashby": mock.Mock(side_effect=OSError("nope"))}):
+            r = jobboards.resolve_board_url("https://jobs.ashbyhq.com/nope")
+        self.assertFalse(r["ok"])
+        self.assertIn("did not answer", r["reason"])
+
+    def test_resolve_confirms_with_a_count(self):
+        with mock.patch.dict(jobboards.FETCHERS, {
+                "ashby": mock.Mock(return_value=[{}, {}, {}])}):
+            r = jobboards.resolve_board_url("https://jobs.ashbyhq.com/sierra")
+        self.assertTrue(r["ok"] and r["confirmed"])
+        self.assertEqual(r["count"], 3)
+        self.assertEqual(r["slug"], "sierra")
+
+
+class QueryBoardRemotePass(unittest.TestCase):
+    """The second pass is what catches US-remote roles filed outside the
+    narrowed city. It was described in the docstring from day one and never
+    ran, so a work-from-home role was invisible unless it also carried the
+    city."""
+
+    def _locations(self, board):
+        seen = []
+
+        def fake_get(url, *a, **kw):
+            seen.append(url)
+            return {"data": {"count": 0, "positions": []}}
+        with mock.patch.object(jobboards, "_get", side_effect=fake_get):
+            jobboards.fetch_microsoft(board)
+        return seen
+
+    def test_a_narrowed_board_also_sweeps_remote(self):
+        urls = self._locations({"company": "MS AI", "ats": "microsoft",
+                                "query": "AI", "location": "New York"})
+        self.assertTrue(any("New%20York" in u for u in urls))
+        self.assertTrue(any("Remote" in u for u in urls))
+
+    def test_a_board_can_opt_out(self):
+        urls = self._locations({"company": "MS AI", "ats": "microsoft",
+                                "query": "AI", "location": "New York",
+                                "remote_pass": False})
+        self.assertFalse(any("Remote" in u for u in urls))
+
+
+class PartialCoverageIsReported(PollDiffAndNotify):
+    """A fetcher that bounds its own coverage returns (roles, note); the
+    sweep must carry that note onto the board rather than presenting a
+    capped list as the whole board."""
+
+    def test_poll_records_a_fetchers_cap_note(self):
+        (self.dir / "boards.json").write_text(
+            json.dumps({"boards": [dict(WD_BOARD)]}), encoding="utf-8")
+        role = jobboards._norm(WD_BOARD, uid="wd-acme-A1", title="Engineer",
+                               locations=["New York, NY"],
+                               url="https://x/y", published="2026-08-01",
+                               jd="Build it.")
+        with mock.patch.dict(jobboards.FETCHERS, {
+                "workday": mock.Mock(return_value=([role], "detail cap hit"))}):
+            with mock.patch("server.notify.agent_ping", return_value=True):
+                jobboards.poll_once()
+        snap = json.loads(
+            (self.dir / "snapshot.json").read_text(encoding="utf-8"))
+        meta = snap["boards"][jobboards._board_id(WD_BOARD)]
+        self.assertTrue(meta["ok"])
+        self.assertEqual(meta["partial"], "detail cap hit")
+
+
 if __name__ == "__main__":
     unittest.main()

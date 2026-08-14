@@ -144,7 +144,7 @@ class UidParityTests(unittest.TestCase):
     def test_ats_kinds_derive_from_the_table(self):
         self.assertEqual(jobboards.ATS_KINDS,
                          ("greenhouse", "ashby", "lever", "microsoft",
-                          "google", "manual"))
+                          "google", "workday", "manual"))
 
 
 class LoadScoresTests(unittest.TestCase):

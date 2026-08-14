@@ -465,10 +465,14 @@ def _applications_prompt(answers):
         "obvious peers they did not — the point is a real feed, not an "
         "echo of the prompt. For each company, find its actual applicant "
         "tracking system and board identifier. Supported kinds: "
-        "greenhouse, ashby, lever, microsoft, google, and `manual` for a "
-        "board that cannot be fetched (it will be shown as manual, never "
-        "silently dropped). Verify the board slug resolves — a guessed "
-        "slug is a board that returns nothing forever.",
+        "greenhouse, ashby, lever, workday, microsoft, google, and "
+        "`manual` for a board that cannot be fetched (it will be shown as "
+        "manual, never silently dropped). A greenhouse/ashby/lever slug is "
+        "the one path segment in the board URL; a WORKDAY slug is three "
+        "fields, `<host>/<tenant>/<site>` (e.g. "
+        "acme.wd5.myworkdayjobs.com/acme/AcmeCareers) — the locale segment "
+        "some workday URLs carry is not the site. Verify the board slug "
+        "resolves — a guessed slug is a board that returns nothing forever.",
         "",
         "STEP 4 — APPLY THE CONFIGURATION",
         "Call mcp__vira__configure_applications ONCE with the full "

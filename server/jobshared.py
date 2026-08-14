@@ -40,6 +40,20 @@ def http_get(url, as_json=True, headers=None, timeout=HTTP_TIMEOUT):
     return r.json() if as_json else r.text
 
 
+def http_post_json(url, payload, headers=None, timeout=HTTP_TIMEOUT):
+    """The POST counterpart, for boards whose search is a POST body.
+    Workday's cxs API is the only caller today; `requests` is imported
+    here for the same reason http_get does it."""
+    import requests
+    h = {"User-Agent": UA, "Content-Type": "application/json",
+         "Accept": "application/json"}
+    if headers:
+        h.update(headers)
+    r = requests.post(url, json=payload, headers=h, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
 # ------------------------------------------------------------- uid scheme
 
 # ATS -> uid prefix: the one table both sides read. Fetcher-side uids
@@ -51,6 +65,7 @@ ATS_PREFIX = {
     "lever": "lv",
     "microsoft": "ms",
     "google": "gg",
+    "workday": "wd",
 }
 
 # Frontier teardown specials: the corpora's historical scheme (a-<id>
@@ -72,8 +87,26 @@ GH_URL = re.compile(r"greenhouse\.io/([a-z0-9_-]+)/jobs/(\d+)")
 ASHBY_URL = re.compile(r"ashbyhq\.com/([a-z0-9_-]+)/([0-9a-f-]{36})")
 
 
+def board_org(ats, slug):
+    """The org token a board's uids carry.
+
+    For every slug board that token IS the slug. A Workday board's slug is
+    `<host>/<tenant>/<site>` — three fields, because one company can run
+    several career sites on one tenant — and its uid namespace is the
+    TENANT alone. Both `board_uid` and `uid_prefix` route through here, so
+    the minting and the namespace spellings cannot drift the way the
+    frontier prefixes once did."""
+    if ats == "workday":
+        parts = [p for p in (slug or "").split("/") if p]
+        if len(parts) > 1:
+            return parts[1]
+        return parts[0] if parts else ""
+    return slug or ""
+
+
 def board_uid(ats, jid, org=""):
     """Fetcher-side uid for a board role (stable across polls)."""
+    org = board_org(ats, org)
     special = FRONTIER.get((ats, (org or "").lower()))
     if special:
         return f"{special}-{jid}"
@@ -86,6 +119,7 @@ def uid_prefix(ats, org=""):
     What lets a sweep ask "which known roles does this board own?" and so
     close a posting the snapshot never held (a universe role carried over
     from a frozen teardown corpus, which is most of them)."""
+    org = board_org(ats, org)
     special = FRONTIER.get((ats, (org or "").lower()))
     if special:
         return f"{special}-"

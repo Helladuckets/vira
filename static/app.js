@@ -17636,32 +17636,88 @@ $("#app-run-copy").addEventListener("click", async () => {
     }
   });
   const addBoard = $("#app-add-board");
-  if (addBoard) addBoard.addEventListener("click", async () => {
-    const company = (prompt("Company name (e.g. Thinking Machines):") || "")
-      .trim();
-    if (!company) return;
-    const ats = (prompt(
-      "ATS kind — greenhouse / ashby / lever / microsoft / google / manual:",
-      "greenhouse") || "").trim().toLowerCase();
-    if (!ats) return;
-    let slug = "", query = "";
-    if (["greenhouse", "ashby", "lever"].includes(ats)) {
-      slug = (prompt("Board slug (from the board URL, e.g. " +
-                     "jobs.ashbyhq.com/<slug>):") || "").trim();
-      if (!slug) return;
-    } else if (["microsoft", "google"].includes(ats)) {
-      query = (prompt("Search query (e.g. \"DeepMind\"):") || "").trim();
-      if (!query) return;
-    }
-    try {
-      await post("/api/jobboards/board", { company, ats, slug, query });
-      toast(`${company} registered — Refresh to sweep it now`);
-      loadBoardsStrip().catch(() => {});
-    } catch (e) {
-      toast("Add failed: " + e.message);
-    }
+  if (addBoard) addBoard.addEventListener("click", (e) => {
+    openAddBoards(e.clientX, e.clientY);
   });
 })();
+
+// Register companies by PASTING their careers URLs — one per line, so
+// widening the universe is a paste rather than research per company.
+// Every line is resolved and CONFIRMED against the board before anything
+// is registered: a slug read off a URL is a guess, and a guessed board is
+// a company that silently contributes nothing to every later sweep.
+function openAddBoards(x, y) {
+  closeCtxPops();
+  const pop = el("div", "ctx-pop addboard-pop");
+  pop.appendChild(el("div", "ctx-head", "Add companies"));
+  pop.appendChild(el("div", "cp-line",
+    "Paste careers URLs, one per line — Greenhouse, Ashby, Lever or "
+    + "Workday. Vira reads the slug and checks the board answers."));
+  const ta = el("textarea", "ab-input");
+  ta.rows = 5;
+  ta.placeholder = "https://jobs.ashbyhq.com/sierra\n"
+                 + "https://boards.greenhouse.io/databricks\n"
+                 + "https://nvidia.wd5.myworkdayjobs.com/NVIDIAExternalCareerSite";
+  pop.appendChild(ta);
+  const out = el("div", "ab-out");
+  pop.appendChild(out);
+  const acts = el("div", "ly-actions");
+  const cancel = el("button", "ly-btn", "Cancel");
+  cancel.addEventListener("click", () => pop.remove());
+  const go = el("button", "ly-btn primary", "Check and add");
+  acts.appendChild(cancel);
+  acts.appendChild(go);
+  pop.appendChild(acts);
+
+  go.addEventListener("click", async () => {
+    const urls = ta.value.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (!urls.length) return;
+    go.disabled = true;
+    go.textContent = "Checking...";
+    out.textContent = "";
+    let added = 0;
+    for (const url of urls) {
+      const row = el("div", "ab-row");
+      row.appendChild(el("span", "ab-url", url.replace(/^https?:\/\//, "")));
+      const note = el("span", "ab-note", "checking...");
+      row.appendChild(note);
+      out.appendChild(row);
+      let r;
+      try {
+        r = await post("/api/jobboards/resolve", { url });
+      } catch (err) {
+        row.classList.add("bad");
+        note.textContent = errText(err);
+        continue;
+      }
+      if (!r.ok || !r.confirmed) {
+        row.classList.add("bad");
+        note.textContent = r.reason || r.note || "could not read that URL";
+        continue;
+      }
+      try {
+        await post("/api/jobboards/board", {
+          company: r.company, ats: r.ats, slug: r.slug, query: r.query || "",
+        });
+        added += 1;
+        row.classList.add("good");
+        note.textContent = `${r.company} · ${r.ats} · ${r.count} roles`;
+      } catch (err) {
+        row.classList.add("bad");
+        note.textContent = errText(err);
+      }
+    }
+    go.disabled = false;
+    go.textContent = "Check and add";
+    if (added) {
+      toast(`${added} board${added === 1 ? "" : "s"} registered — `
+            + "Refresh to sweep them now");
+      loadBoardsStrip().catch(() => {});
+    }
+  });
+  placeCtxPop(pop, x, y);
+  ta.focus();
+}
 
 const WINDOWS = [
   { id: "launchpad", title: "Launchpad", w: 720,
