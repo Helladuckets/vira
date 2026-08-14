@@ -328,6 +328,21 @@ _PKG_CACHE: dict = {"key": None, "rows": []}
 UID_TOKEN_RE = re.compile(
     r"(?<![a-z0-9-])[a-z0-9]+(?:-[a-z0-9]+)+(?![a-z0-9-])", re.I)
 
+# A superseded package moved under `archive/` is still a written package —
+# it answers for a role that has no live successor — but it must never
+# outrank one.  Matched on a path COMPONENT, never a substring: a company
+# named "archive-labs" gets a flat folder at the root and is not an
+# archive.
+ARCHIVE_DIRS = {"archive"}
+
+
+def _is_archived(path, root):
+    try:
+        parts = path.relative_to(root).parts[:-2]  # drop V<N>/posting.md
+    except ValueError:
+        return False
+    return any(p.casefold() in ARCHIVE_DIRS for p in parts)
+
 
 def _package_rows():
     """Every versioned posting.md under the packages root, indexed.
@@ -389,6 +404,7 @@ def _package_rows():
             "path": str(path),
             "package": path.parent.parent,
             "version": int(VERSION_RE.match(path.parent.name).group(1)),
+            "archived": _is_archived(path, root),
             "mtime": mtime,
             "uids": {u for u in uids if u},
             "company": _slug(fields.get("company")),
@@ -421,18 +437,36 @@ def _match_score(row, uid, company, title):
 
 
 def match_package(role, rows=None):
-    """Best package for one role, or None. Deterministic, no model."""
+    """Best package for one role, or None. Deterministic, no model.
+
+    RANKED (score, live-before-archived, newest, version).  Version is a
+    WITHIN-package round counter, and ranking on it ACROSS packages was a
+    real defect: measured 2026-08-14, the active
+    `anthropic/staff-software-engineer-claude-code-2026-08-13` (V1, and
+    the newer file by mtime) lost role a-5383610008 to its own archived
+    predecessor, which had reached V3 — so the Map, the Read pane and the
+    WRITTEN chip all served the superseded August 7 package.  Both
+    postings name the uid, so both scored 100 and the tiebreak decided
+    it.  Two active packages with V1-only predecessors resolved correctly,
+    which is exactly why it read as fine.
+
+    Archive still ANSWERS, it just never outranks: eight roles have no
+    live package at all, and their archived one is the honest record that
+    the application was written.  Version stays as the last tiebreak,
+    where it can no longer reach across packages ahead of recency.
+    """
     rows = _package_rows() if rows is None else rows
     uid = (role.get("uid") or "").casefold()
     company = _slug(role.get("company"))
     title = _slug(role.get("title"))
-    best = (0, 0, 0.0, None)
+    best = (0, 0, 0.0, 0, None)
     for row in rows:
         score = _match_score(row, uid, company, title)
         if score:
-            best = max(best, (score, row["version"], row["mtime"],
+            best = max(best, (score, 0 if row.get("archived") else 1,
+                              row["mtime"], row["version"],
                               row["package"]))
-    return best[3]
+    return best[4]
 
 
 def find_package(role):

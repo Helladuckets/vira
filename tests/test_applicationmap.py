@@ -223,6 +223,61 @@ Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/321
             self.assertEqual(applicationmap.written_for([self.role]), {})
             self.assertIsNone(applicationmap.find_package(self.role))
 
+    # ---- an archived predecessor answers, but never outranks the live one.
+    # Measured 2026-08-14: the active Claude Code package (V1) lost its own
+    # role to the archived August 7 one, which had reached V3, so the Map,
+    # the Read pane and the WRITTEN chip all served the superseded package.
+
+    def _predecessor(self, *, version, uid, older=True, under="archive"):
+        """A second package for the same role, under the given folder."""
+        package = (self.packages / under / "example-labs"
+                   / f"launch-lead-2026-07-29")
+        posting = package / f"V{version}" / "posting.md"
+        posting.parent.mkdir(parents=True)
+        posting.write_text(
+            "# Launch Program Lead\n\nCompany: Example Labs\n"
+            f"Posting URL: https://job-boards.greenhouse.io/examplelabs/jobs/{uid}\n",
+            encoding="utf-8")
+        live = (self.package / "V2" / "posting.md").stat().st_mtime
+        os.utime(posting, (live - 900, live - 900) if older
+                 else (live + 900, live + 900))
+        return package
+
+    def test_an_archived_higher_version_never_outranks_the_live_package(self):
+        # The incident exactly: both postings name the uid, so both score
+        # 100 and the tiebreak decides.  Ranking on version picked the V3.
+        self._predecessor(version=3, uid="321")
+        self.assertEqual(applicationmap.find_package(self.role), self.package)
+        self.assertEqual(applicationmap.written_for([self.role]),
+                         {"g-examplelabs-321": self.package.name})
+
+    def test_archived_loses_even_when_its_posting_is_the_newer_file(self):
+        # Recency alone would not have been the fix: a package moved into
+        # the archive can be touched after the live one was written.
+        self._predecessor(version=3, uid="321", older=False)
+        self.assertEqual(applicationmap.find_package(self.role), self.package)
+
+    def test_an_archived_package_still_answers_a_role_with_no_live_one(self):
+        # Eight live roles have only an archived package, and it is the
+        # honest record that the application was written.  Demoting it must
+        # not hide it.
+        archived = self._predecessor(version=1, uid="654")
+        role = {"uid": "g-examplelabs-654", "company": "Example Labs",
+                "title": "Launch Program Lead"}
+        self.assertEqual(applicationmap.find_package(role), archived)
+        self.assertIn("g-examplelabs-654", applicationmap.written_for([role]))
+
+    def test_a_folder_merely_starting_with_archive_is_not_an_archive(self):
+        # Matched on a path COMPONENT: a company named "archive-labs" gets
+        # an ordinary flat folder and its packages rank normally.
+        live = self._predecessor(version=3, uid="654", under="archive-labs")
+        role = {"uid": "g-examplelabs-654", "company": "Example Labs",
+                "title": "Launch Program Lead"}
+        self.assertEqual(applicationmap.find_package(role), live)
+        rows = {r["path"]: r["archived"]
+                for r in applicationmap._package_rows()}
+        self.assertEqual(set(rows.values()), {False})
+
     # ---- a read that failed is not evidence that a package says nothing.
     # An Apply session rewrites these files under the reader, so a posting
     # the walk just listed can be unreadable an instant later.  Simulated by
