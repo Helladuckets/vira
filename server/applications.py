@@ -898,29 +898,21 @@ def session_slug(role, when=None):
     return "-".join(p for p in (company, title, day) if p)
 
 
-def apply_prompt(role, note=""):
-    """The prompt an Apply dispatch hands the agent session. cwd is the
-    self-record; on Claude its CLAUDE.md auto-loads, but the load-bearing
-    source ladder, claim gate, and confidentiality rules are EMBEDDED in the
-    prompt text so they survive every backend. Universe roles ride with their
-    adjudicated dossier read (tier, lane, why_fit, lead_with, caveat) — the
-    package build starts from that, then selects evidence from the whole career
-    rather than the smallest already-rendered subset."""
+def ground_rules():
+    """The claim gate, source ladder and walls, as prompt lines.
+
+    EMBEDDED rather than left to CLAUDE.md auto-load (the multi-model
+    instruction layer rule), and shared so every dispatch that can EDIT an
+    outward artifact carries the identical rules — apply_prompt builds a
+    package, applicationmap.connect_prompt folds dropped material into one,
+    and the two must not drift on what may be claimed.
+    """
     record = self_record()
     history = record / "canon" / "MASTER_HISTORY.md"
     voice = record / "canon" / "VOICE.md"
     freshness = record / "renderings" / "check_freshness.py"
     inventory = record / "INVENTORY.md"
-    lines = [
-        # Leads the prompt because joblog names the run from its first
-        # line — see session_slug. Company and title are also stated for
-        # real in the ROLE block below; this line is the label.
-        session_slug(role),
-        "",
-        "Run the application-package skill "
-        f"(read {SKILL_MD} and follow it end to end) for this role. "
-        "Build the FULL package. Draft only — never submit anything.",
-        "",
+    return [
         "GROUND RULES — these bind regardless of what else your harness "
         "loaded:",
         f"- Read {history} FRESH before selecting evidence. It is the "
@@ -958,6 +950,28 @@ def apply_prompt(role, note=""):
         "VP deals stand in for the entire career.",
         f"- The full rulebook is {record / 'CLAUDE.md'} — read it first "
         "if your harness did not load it for you.",
+    ]
+
+
+def apply_prompt(role, note=""):
+    """The prompt an Apply dispatch hands the agent session. cwd is the
+    self-record; on Claude its CLAUDE.md auto-loads, but the load-bearing
+    source ladder, claim gate, and confidentiality rules are EMBEDDED in the
+    prompt text so they survive every backend. Universe roles ride with their
+    adjudicated dossier read (tier, lane, why_fit, lead_with, caveat) — the
+    package build starts from that, then selects evidence from the whole career
+    rather than the smallest already-rendered subset."""
+    lines = [
+        # Leads the prompt because joblog names the run from its first
+        # line — see session_slug. Company and title are also stated for
+        # real in the ROLE block below; this line is the label.
+        session_slug(role),
+        "",
+        "Run the application-package skill "
+        f"(read {SKILL_MD} and follow it end to end) for this role. "
+        "Build the FULL package. Draft only — never submit anything.",
+        "",
+        *ground_rules(),
         "",
         "ROLE:",
         json.dumps({k: role.get(k) for k in

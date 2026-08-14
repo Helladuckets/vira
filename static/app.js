@@ -157,7 +157,8 @@ function bindSheet(sel, cancelSel) {
       const i = openSheets.indexOf(s);
       if (i >= 0) openSheets.splice(i, 1);
       if (card) {                    // next open docks where it always did
-        card.classList.remove("floating");
+        card.classList.remove("floating", "sheet-max");
+        card._sheetMaxRestore = null;
         card.style.cssText = "";
       }
     },
@@ -5507,8 +5508,8 @@ async function pasteImageFor(x, y, onFiles) {
 // composer would replace Vira with a PDF viewer and lose every open
 // window. So the guard is: took the drag, therefore own the drop, and
 // then say why nothing happened.
-function dropImages(node, onFiles) {
-  const over = (on) => node.classList.toggle("img-dropping", on);
+function dropFiles(node, { pick, refusal, onFiles, cls = "img-dropping" }) {
+  const over = (on) => node.classList.toggle(cls, on);
   const hasFiles = (e) =>
     Array.from(e.dataTransfer?.types || []).includes("Files");
   node.addEventListener("dragover", (e) => {
@@ -5527,14 +5528,60 @@ function dropImages(node, onFiles) {
     e.preventDefault();
     e.stopPropagation();      // a card's drop is not also the composer's
     over(false);
-    const files = imageFilesFrom(e.dataTransfer);
+    const files = pick(e.dataTransfer);
     if (!files.length) {
-      toast("That is not an image — Vira takes PNG, JPEG, GIF, WebP or HEIC");
+      toast(refusal);
       return;
     }
     onFiles(files);
   });
   return node;
+}
+
+function dropImages(node, onFiles) {
+  return dropFiles(node, {
+    pick: imageFilesFrom,
+    refusal: "That is not an image — Vira takes PNG, JPEG, GIF, WebP or HEIC",
+    onFiles,
+  });
+}
+
+// A dropped DOCUMENT is decided by its extension, never by `type`: browsers
+// report .md as "text/markdown", "text/plain" or "" depending on the OS, and
+// the extension is what the server validates on anyway.
+const DOC_DROP_EXT = /\.(md|markdown|txt)$/i;
+
+function docFilesFrom(src) {
+  const out = [];
+  if (!src) return out;
+  const push = (f) => {
+    if (f && DOC_DROP_EXT.test(f.name || "")) out.push(f);
+  };
+  if (src.files && src.files.length) Array.from(src.files).forEach(push);
+  if (!out.length && src.items) {
+    Array.from(src.items).forEach((i) => {
+      if (i.kind === "file") push(i.getAsFile());
+    });
+  }
+  return out;
+}
+
+function dropDocs(node, onFiles) {
+  return dropFiles(node, {
+    pick: docFilesFrom,
+    cls: "doc-dropping",
+    refusal: "Vira takes Markdown or plain text here (.md, .markdown, .txt)",
+    onFiles,
+  });
+}
+
+function readTextFile(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result || ""));
+    r.onerror = () => reject(new Error("could not read that file"));
+    r.readAsText(file);
+  });
 }
 
 // THE CATCH-ALL, and it is the load-bearing half of the rule above.
@@ -16285,6 +16332,7 @@ async function copyText(text) {
 }
 
 const appCompareSheet = bindSheet("#app-compare-sheet", "#app-compare-close");
+$("#app-compare-x")?.addEventListener("click", appCompareSheet.close);
 
 function appCompareRoleLabel(role) {
   return role.company ? `${role.title} · ${role.company}` : role.title;
@@ -16712,6 +16760,8 @@ async function runAppCompare() {
   $("#app-compare-sub").textContent =
     `${appsCompareSelected.size} selected roles`;
   appCompareSheet.open();
+  sheetWindowChrome($("#app-compare-sheet .app-compare-card"),
+                    { minW: 520, minH: 340 });
   try {
     const data = await post("/api/applications/compare",
                             { uids: [...appsCompareSelected] });
@@ -16740,6 +16790,7 @@ $("#app-compare-go")?.addEventListener("click", runAppCompare);
 // MASTER_HISTORY.md/self.json. The only writes are application-scoped planning notes;
 // they never become claim evidence or mutate the canonical self.
 const appMapSheet = bindSheet("#app-map-sheet", "#app-map-close");
+$("#app-map-x")?.addEventListener("click", appMapSheet.close);
 let appMapData = null;
 let appMapPinned = "";
 const appMapLanes = new Set(["resume", "cover", "narrative", "self"]);
@@ -16750,8 +16801,6 @@ let appMapCompact = false;
 let appMapOverview = false;
 let appMapDetailsVisible = true;
 let appMapDetailsExpanded = false;
-let appMapWorkspaceWired = false;
-let appMapMaxRestore = null;
 let appMapOverviewRestore = null;
 
 function appMapAllNodes() {
@@ -16774,7 +16823,7 @@ function appMapPaintControls() {
    ["#app-map-overview", appMapOverview],
    ["#app-map-detail-toggle", appMapDetailsVisible],
    ["#app-map-detail-size", appMapDetailsExpanded],
-   ["#app-map-maximize", !!card?.classList.contains("map-maximized")]]
+   ["#app-map-maximize", !!card?.classList.contains("sheet-max")]]
     .forEach(([sel, on]) => {
       const button = $(sel);
       button?.classList.toggle("on", on);
@@ -16785,7 +16834,7 @@ function appMapPaintControls() {
   $("#app-map-detail-size").textContent =
     appMapDetailsExpanded ? "Normal detail" : "Expand detail";
   $("#app-map-maximize").textContent =
-    card?.classList.contains("map-maximized") ? "Restore" : "Maximize";
+    card?.classList.contains("sheet-max") ? "Restore" : "Maximize";
 }
 
 function appMapRefreshLayout() {
@@ -16865,61 +16914,21 @@ function appMapToggleOverview() {
   }
 }
 
-function appMapToggleMaximize() {
-  const card = $("#app-map-sheet .app-map-card");
-  if (!card || !isDesktop) return;
-  if (card.classList.contains("map-maximized")) {
-    card.classList.remove("map-maximized");
-    const saved = appMapMaxRestore;
-    appMapMaxRestore = null;
-    if (saved?.floating) card.classList.add("floating");
-    else card.classList.remove("floating");
-    for (const key of ["left", "top", "width", "height", "zIndex"])
-      card.style[key] = saved?.[key] || "";
-  } else {
-    appMapMaxRestore = {
-      floating: card.classList.contains("floating"),
-      left: card.style.left, top: card.style.top,
-      width: card.style.width, height: card.style.height,
-      zIndex: card.style.zIndex,
-    };
-    card.classList.add("floating", "map-maximized");
-    focusWin(card);
-  }
+// The Maximize button and the head's double-click are the SAME act — both
+// route through the shared sheet chrome, so the button's label and the
+// gesture's state can never disagree.
+function appMapAfterGeometry() {
   appMapPaintControls();
   requestAnimationFrame(() => requestAnimationFrame(drawAppMapEdges));
 }
 
+function appMapToggleMaximize() {
+  sheetToggleMax($("#app-map-sheet .app-map-card"), appMapAfterGeometry);
+}
+
 function appMapWireWorkspace() {
-  if (appMapWorkspaceWired || !isDesktop) return;
-  const card = $("#app-map-sheet .app-map-card");
-  const head = card?.querySelector(".sheet-head");
-  if (!card || !head) return;
-  appMapWorkspaceWired = true;
-  // A resize grip must first lift a centered sheet into fixed positioning;
-  // otherwise left/top geometry is authored but flex centering still wins.
-  card.addEventListener("pointerdown", (event) => {
-    if (!event.target.closest(".rz")) return;
-    if (card.classList.contains("map-maximized")) appMapToggleMaximize();
-    if (card.classList.contains("floating")) return;
-    const rect = card.getBoundingClientRect();
-    card.style.left = rect.left + "px";
-    card.style.top = rect.top + "px";
-    card.style.width = rect.width + "px";
-    card.style.height = rect.height + "px";
-    card.classList.add("floating");
-  }, true);
-  // Maximized means the title bar is a restore target, not a drag target.
-  head.addEventListener("pointerdown", (event) => {
-    if (card.classList.contains("map-maximized") &&
-        !event.target.closest("button")) event.stopImmediatePropagation();
-  }, true);
-  head.addEventListener("dblclick", (event) => {
-    if (event.target.closest("button")) return;
-    event.preventDefault(); event.stopPropagation();
-    appMapToggleMaximize();
-  });
-  makeResizable(card, () => requestAnimationFrame(drawAppMapEdges), 720, 460);
+  sheetWindowChrome($("#app-map-sheet .app-map-card"),
+                    { minW: 720, minH: 460, onResize: appMapAfterGeometry });
 }
 
 function appMapConceptFor(node) {
@@ -17168,6 +17177,83 @@ function appMapCard(node, column) {
   return card;
 }
 
+// ---------- an empty lane takes a dropped document ----------
+// A lane reads "No connected material found" when the package's artifact is
+// missing or unreadable. Dropping a Markdown file there is the owner saying
+// it belongs to this application; the SERVER decides what that means from
+// the filename (a canonical name is a reconnect, anything else needs a
+// session), so the two answers can never disagree with what the map reads.
+const APP_MAP_DROP_LANES = new Set(["resume", "cover", "narrative"]);
+
+async function appMapPostDoc(lane, file, confirm) {
+  const uid = appMapData?.role?.uid;
+  if (!uid) throw new Error("this map is not loaded");
+  return post(`/api/applications/${encodeURIComponent(uid)}/evidence-map/material`,
+              { lane, filename: file.name || "dropped.md",
+                text: await readTextFile(file), confirm });
+}
+
+function appMapDropDone(out) {
+  toast(out.message || "Filed");
+  if (out.map) renderAppMap(out.map);
+  if (out.job_id) openSession(out.job_id);
+}
+
+// Vira could not place the file, so it ASKS before staging anything and
+// before an agent starts editing the package. Armed on the zone the drop
+// landed on, never a detached toast.
+function appMapArmConnect(zone, lane, file, message) {
+  zone.innerHTML = "";
+  zone.classList.add("armed");
+  zone.appendChild(el("div", "app-map-drop-ask", message));
+  const row = el("div", "app-map-drop-acts");
+  const cancel = el("button", "btn sm", "Cancel");
+  const go = el("button", "btn sm primary", "Connect with Vira");
+  cancel.addEventListener("click", () => renderAppMap(appMapData));
+  go.addEventListener("click", async () => {
+    go.disabled = true;
+    go.textContent = "Opening a session…";
+    try {
+      appMapDropDone(await appMapPostDoc(lane, file, true));
+    } catch (e) {
+      go.disabled = false;
+      go.textContent = "Connect with Vira";
+      toast("Could not connect it: " + errText(e));
+    }
+  });
+  row.appendChild(cancel);
+  row.appendChild(go);
+  zone.appendChild(row);
+}
+
+function appMapEmptyLane(column) {
+  const zone = el("div", "empty left app-map-empty");
+  if (column.id === "job") {
+    zone.textContent = "No role concepts are available.";
+    return zone;
+  }
+  zone.textContent = "No connected material found in this source.";
+  if (!APP_MAP_DROP_LANES.has(column.id)) return zone;
+  zone.classList.add("app-map-drop");
+  zone.appendChild(el("div", "app-map-drop-hint",
+    "Drop a Markdown file here to connect it to this application."));
+  dropDocs(zone, async (files) => {
+    const file = files[0];
+    zone.innerHTML = "";
+    zone.appendChild(el("div", "spin", `Reading ${file.name}…`));
+    try {
+      const out = await appMapPostDoc(column.id, file, false);
+      if (out.action === "needs_session")
+        appMapArmConnect(zone, column.id, file, out.message);
+      else appMapDropDone(out);
+    } catch (e) {
+      renderAppMap(appMapData);
+      toast("Could not take that file: " + errText(e));
+    }
+  });
+  return zone;
+}
+
 function renderAppMap(data) {
   appMapData = data;
   appMapPinned = "";
@@ -17204,9 +17290,7 @@ function renderAppMap(data) {
         list.appendChild(appMapCard(node, column));
       });
     }
-    else list.appendChild(el("div", "empty left app-map-empty",
-      column.id === "job" ? "No role concepts are available."
-        : "No connected material found in this source."));
+    else list.appendChild(appMapEmptyLane(column));
     lane.appendChild(list);
     board.appendChild(lane);
   });
@@ -17265,8 +17349,8 @@ $("#app-map-download")?.addEventListener("click", async () => {
 
 async function openAppMap(r) {
   const card = $("#app-map-sheet .app-map-card");
-  card?.classList.remove("map-maximized", "map-overview", "map-compact");
-  appMapMaxRestore = null;
+  card?.classList.remove("sheet-max", "map-overview", "map-compact");
+  if (card) card._sheetMaxRestore = null;
   appMapOverviewRestore = null;
   appMapOverview = false;
   appMapCompact = false;
@@ -18924,6 +19008,79 @@ function makeResizable(node, onEnd, minW = 340, minH = 240) {
       grip.addEventListener("pointercancel", up);
     });
     node.appendChild(grip);
+  });
+}
+
+// ---------- sheet window chrome ----------
+// Compare jobs and the evidence map are full workspaces that happen to open
+// as sheets, so they get what every floating module has: edge and corner
+// resize, double-click the head to fill the desk and again to restore, and
+// the red traffic light at the head's upper left. ONE implementation — the
+// evidence map carried its own copy of maximize before this, and two copies
+// of "what does this gesture mean" is two chances to disagree.
+//
+// Desktop only. A phone sheet is a bottom card with no drag, no grips and
+// its own Close button in the foot; `.sheet-close` is hidden there.
+
+function sheetFloat(card) {
+  // A grip must first lift a CENTERED sheet into fixed positioning, or
+  // left/top get authored while flex centering still decides where it sits.
+  if (card.classList.contains("floating")) return;
+  const r = card.getBoundingClientRect();
+  card.style.left = r.left + "px";
+  card.style.top = r.top + "px";
+  card.style.width = r.width + "px";
+  card.style.height = r.height + "px";
+  card.classList.add("floating");
+}
+
+function sheetToggleMax(card, onChange) {
+  if (!card || !isDesktop) return;
+  if (card.classList.contains("sheet-max")) {
+    const saved = card._sheetMaxRestore;
+    card._sheetMaxRestore = null;
+    card.classList.remove("sheet-max");
+    card.classList.toggle("floating", !!saved?.floating);
+    for (const k of ["left", "top", "width", "height", "zIndex"])
+      card.style[k] = saved?.[k] || "";
+  } else {
+    // The rect is restored from the INLINE style, not a measured one: the
+    // card may be mid-transition, and a frame of an animation is not where
+    // the owner put it.
+    card._sheetMaxRestore = {
+      floating: card.classList.contains("floating"),
+      left: card.style.left, top: card.style.top,
+      width: card.style.width, height: card.style.height,
+      zIndex: card.style.zIndex,
+    };
+    card.classList.add("floating", "sheet-max");
+    focusWin(card);
+  }
+  onChange?.();
+}
+
+function sheetWindowChrome(card, { minW = 480, minH = 320, onResize } = {}) {
+  if (!card || !isDesktop || card._sheetChrome) return;
+  card._sheetChrome = true;
+  card.addEventListener("pointerdown", (e) => {
+    if (!e.target.closest(".rz")) return;
+    if (card.classList.contains("sheet-max")) sheetToggleMax(card, onResize);
+    sheetFloat(card);
+  }, true);
+  makeResizable(card, () => onResize?.(), minW, minH);
+  const head = card.querySelector(".sheet-head");
+  if (!head) return;
+  head.addEventListener("pointerdown", (e) => {
+    // Maximized, the head is a restore target rather than a drag handle —
+    // dragging a card pinned to the desk would only fight the CSS.
+    if (card.classList.contains("sheet-max")
+        && !e.target.closest(CARD_CONTROL_SEL)) e.stopImmediatePropagation();
+  }, true);
+  head.addEventListener("dblclick", (e) => {
+    if (e.target.closest(CARD_CONTROL_SEL)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    sheetToggleMax(card, onResize);
   });
 }
 

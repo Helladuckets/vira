@@ -867,6 +867,47 @@ def api_applications_evidence_map_note(uid: str, req: AppMapNoteReq):
     return applicationmap.build(role)
 
 
+class AppMapMaterialReq(BaseModel):
+    lane: str
+    filename: str
+    text: str
+    confirm: bool = False
+
+
+@app.post("/api/applications/{uid}/evidence-map/material")
+def api_applications_evidence_map_material(uid: str, req: AppMapMaterialReq):
+    """Take a document dropped onto an empty lane of the evidence map.
+
+    A canonically-named file is filed into the package deterministically and
+    the rebuilt map comes back with it. Anything else writes NOTHING until
+    `confirm`, and then stages the file and dispatches the session that folds
+    it in — the launch lives here, as it does for Apply.
+    """
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    try:
+        out = applicationmap.attach_material(
+            role, req.lane, req.filename, req.text, confirm=req.confirm)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    prompt = out.pop("prompt", "")
+    if prompt:
+        try:
+            out["job_id"] = jobs.launch(prompt,
+                                        str(applications.self_record()))
+        except ValueError as e:
+            # The file is staged and harmless — no read path globs the inbox —
+            # so say what happened rather than pretending nothing did.
+            raise HTTPException(429, f"{out['name']} is staged, but no "
+                                     f"session could start: {e}")
+    if out.get("applied"):
+        out["map"] = applicationmap.build(role)
+    return out
+
+
 @app.get("/api/applications/{uid}/evidence-map/export")
 def api_applications_evidence_map_export(uid: str):
     role = applications.find_role(uid)

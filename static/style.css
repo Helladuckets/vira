@@ -587,7 +587,7 @@ h2 { font-size: 20px; font-weight: 500; letter-spacing: -0.01em; }
 
 /* Drop target feedback. Applied to the composer bar and to any idea card,
    so "this is where it will land" is the same signal in both places. */
-.img-dropping {
+.img-dropping, .doc-dropping {
   outline: 2px dashed var(--accent); outline-offset: 2px;
   background: var(--accent-soft);
 }
@@ -1830,7 +1830,11 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
 }
 .sheet-card h3 { font-size: 16px; margin-bottom: 14px; }
 .sheet-card h3.sheet-sub { margin-top: 20px; }
-/* the card's header doubles as its title bar (desktop drag) */
+/* The traffic light is DESKTOP chrome: a phone sheet is a bottom card with
+   no drag and no resize, and it keeps the Close button in its foot. Base
+   `display: none` is load-bearing — .fwin-close is only styled inside the
+   desktop block, so an unhidden one renders as a stray default button. */
+.sheet-close { display: none; }
 @media (min-width: 1100px) {
   /* Sheets rest CENTERED on the desk (owner's call, 2026-07-31): the
      bottom dock is the phone's shape, where the card rises to meet the
@@ -1845,6 +1849,43 @@ html { scrollbar-width: thin; scrollbar-color: var(--line-warm) transparent; }
   .sheet-head:active { cursor: grabbing; }
   /* dragged off the resting spot: pinned wherever the drag left it */
   .sheet-card.floating { position: fixed; }
+
+  /* ---- a sheet worn as a window (see sheetWindowChrome in app.js) ---- */
+  /* The card must be POSITIONED or its .rz grips resolve against the .sheet
+     backdrop — which is fixed to the whole viewport, so the edges to grab
+     would sit on the screen's edges rather than the card's. */
+  .app-compare-card, .app-map-card { position: relative; }
+  .app-compare-card .sheet-head, .app-map-card .sheet-head {
+    position: relative; padding-left: 24px;
+  }
+  .app-compare-card .sheet-close, .app-map-card .sheet-close {
+    display: block; position: absolute; left: 0; top: 4px;
+  }
+  /* Its own head carries the close now; the foot button is the phone's. */
+  .app-compare-card .close-fallback, .app-map-card .close-fallback {
+    display: none;
+  }
+  #app-compare-sheet .row-end { display: none; }
+  /* Once the owner owns the geometry, the authored ceiling stops applying —
+     otherwise a downward drag grows the inline size invisibly past a cap the
+     rendered card never crosses (the makeResizable overrun). */
+  .app-compare-card.floating, .app-map-card.floating {
+    max-width: none; max-height: none;
+  }
+  .sheet-card.sheet-max {
+    position: fixed !important; left: 12px !important; top: 48px !important;
+    width: calc(100vw - 24px) !important; height: calc(100vh - 64px) !important;
+    max-width: none; max-height: none; z-index: 1800 !important;
+  }
+  /* Resizing must actually reflow the comparison, not leave a taller card
+     with the same short column in it. */
+  .app-compare-card .app-compare-result { flex: 1 1 auto; min-height: 0; }
+  .app-compare-card.jdx-wide .app-compare-result {
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .app-compare-card.jdx-wide .jdx-scroll {
+    flex: 1 1 auto; min-height: 140px; max-height: none;
+  }
 }
 .mail-acct {
   display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
@@ -5251,6 +5292,27 @@ a.rm-name:hover { color: var(--accent); }
 .app-map-jump { max-width: 210px; overflow: hidden; text-overflow: ellipsis; }
 .app-map-method { flex: none; margin-top: 5px; font-size: 9.5px; }
 .app-map-empty { font-size: 10px; }
+/* An empty lane is also the drop target for material that belongs to it. */
+.app-map-drop {
+  border: 1px dashed var(--line-warm); border-radius: var(--radius);
+  padding: 12px 10px;
+}
+.app-map-drop-hint { margin-top: 6px; color: var(--text-faint); }
+.app-map-drop.armed {
+  border-style: solid; border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+.app-map-drop-ask { color: var(--text); line-height: 1.45; }
+.app-map-drop-acts {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+}
+/* Dragging a file is a desktop gesture, so a phone gets the plain empty
+   state rather than an instruction it cannot follow. AFTER the rules it
+   overrides: a media query adds no specificity, so source order decides. */
+@media (max-width: 1099px) {
+  .app-map-drop { border: none; padding: 0; }
+  .app-map-drop-hint { display: none; }
+}
 
 /* Compact keeps every requirement readable while spending less height on
    repeated chrome. The sticky section label already names a job group, so a
@@ -5293,11 +5355,6 @@ a.rm-name:hover { color: var(--accent); }
 
 @media (min-width: 1100px) {
   .app-map-card { min-width: 720px; min-height: 460px; }
-  .app-map-card.map-maximized {
-    position: fixed !important; left: 12px !important; top: 48px !important;
-    width: calc(100vw - 24px) !important; height: calc(100vh - 64px) !important;
-    max-width: none; max-height: none; z-index: 1800 !important;
-  }
 }
 
 @media (max-width: 720px) {
