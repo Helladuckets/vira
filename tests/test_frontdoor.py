@@ -341,9 +341,12 @@ class ConfigureApplicationsTest(unittest.TestCase):
         self.assertEqual(self.written["applications_locations"], [])
 
     def test_rejects_a_bad_ats(self):
+        # Deliberately a kind no ATS table will ever carry: this asserts
+        # the validation, and naming a real-but-unsupported ATS would make
+        # the test fail the day that one ships (as "workday" did here).
         with self.assertRaises(frontdoor.ConfigError) as cm:
             frontdoor.configure_applications(self.payload(
-                boards=[{"company": "X", "ats": "workday"}]))
+                boards=[{"company": "X", "ats": "not-an-ats"}]))
         self.assertIn("greenhouse", str(cm.exception))
 
     def test_rejects_no_boards(self):

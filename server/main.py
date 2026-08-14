@@ -1011,6 +1011,18 @@ def api_jobboards_board(req: BoardAddReq):
     return reg
 
 
+class BoardResolveReq(BaseModel):
+    url: str
+
+
+@app.post("/api/jobboards/resolve")
+def api_jobboards_resolve(req: BoardResolveReq):
+    """A careers URL -> the registry fields for it, confirmed against the
+    board. READ-ONLY: it registers nothing, so it is safe on a passive
+    instance, where reviewing what a paste would add is exactly the point."""
+    return jobboards.resolve_board_url(req.url)
+
+
 class BoardScoreReq(BaseModel):
     model: str | None = None
 
