@@ -16300,12 +16300,52 @@ function appCompareSection(host, title, hint = "") {
   return section;
 }
 
+// The comparison has two readings and they answer different questions.
+// SIDE BY SIDE is both postings whole, in their own order, marked and
+// connected — reading one against the other, which is only possible for a
+// pair. ANALYSIS is the summary over a set, and it is the only honest view
+// once a third role is selected, so the toggle only exists for two.
+let appCompareData = null;
+
+function appCompareView() {
+  if (!appCompareData?.alignment) return "analysis";
+  return lsGet("vira-compare-view", "sidebyside") === "analysis"
+    ? "analysis" : "sidebyside";
+}
+
 function renderAppCompare(data) {
+  appCompareData = data;
   const host = $("#app-compare-result");
   host.innerHTML = "";
   const roles = data.roles || [];
   $("#app-compare-sub").textContent = roles.map(appCompareRoleLabel).join(" / ");
 
+  if (data.alignment) {
+    const seg = el("div", "seg app-cmp-view");
+    [["sidebyside", "Side by side"], ["analysis", "Analysis"]].forEach(([id, label]) => {
+      const btn = el("button", "seg-btn" + (appCompareView() === id ? " on" : ""), label);
+      btn.type = "button";
+      btn.addEventListener("click", () => {
+        lsSet("vira-compare-view", id);
+        renderAppCompare(appCompareData);
+      });
+      seg.appendChild(btn);
+    });
+    host.appendChild(seg);
+  }
+
+  const sideBySide = appCompareView() === "sidebyside";
+  $("#app-compare-sheet .app-compare-card")
+    ?.classList.toggle("jdx-wide", sideBySide);
+  if (sideBySide) {
+    renderJdAlign(host, data);
+    return;
+  }
+  renderAppAnalysis(host, data);
+}
+
+function renderAppAnalysis(host, data) {
+  const roles = data.roles || [];
   const hero = el("div", "app-cmp-hero");
   const score = el("div", "app-cmp-score");
   score.appendChild(el("strong", null, `${data.overall.shared_pct}%`));
@@ -16449,6 +16489,219 @@ function renderAppCompare(data) {
   });
   uniqueSec.appendChild(uniqueGrid);
   host.appendChild(el("p", "hint app-cmp-method", data.method || ""));
+}
+
+// ---------- the marked-up side by side ----------
+// Both postings rendered whole and in their own order, every statement
+// tinted by what it is against the other posting, and matched statements
+// joined by a drawn line. Two columns cannot be read in step — the same
+// requirement lands in Responsibilities in one posting and in the good-fit
+// list in the other — so the LINE is what carries the pairing, exactly as
+// the evidence map draws its edges.
+
+let jdxPinned = "";
+let jdxObserver = null;
+
+function jdxOffsetIn(node, root) {
+  // Layout pixels, never getBoundingClientRect: the stage renders the whole
+  // app through a CSS transform, so measured rects are scaled while the SVG
+  // viewBox is in unscaled layout units and the two would disagree.
+  let x = 0, y = 0, n = node;
+  while (n && n !== root) { x += n.offsetLeft; y += n.offsetTop; n = n.offsetParent; }
+  return { x, y };
+}
+
+function jdxUnit(board, id) {
+  return id ? board.querySelector(`[data-jdx="${CSS.escape(id)}"]`) : null;
+}
+
+function jdxVisible(node) {
+  return !!node && !node.classList.contains("jdx-hidden");
+}
+
+function drawJdxLines(board) {
+  const svg = board?.querySelector(".jdx-lines");
+  if (!board || !svg) return;
+  const width = Math.max(1, board.offsetWidth);
+  const height = Math.max(1, board.offsetHeight);
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("width", width);
+  svg.setAttribute("height", height);
+  svg.innerHTML = "";
+  const ns = "http://www.w3.org/2000/svg";
+  (appCompareData?.alignment?.links || []).forEach((link) => {
+    const from = jdxUnit(board, link.left);
+    const to = jdxUnit(board, link.right);
+    if (!jdxVisible(from) || !jdxVisible(to)) return;
+    const a = jdxOffsetIn(from, board);
+    const b = jdxOffsetIn(to, board);
+    const x1 = a.x + from.offsetWidth;
+    const y1 = a.y + from.offsetHeight / 2;
+    const x2 = b.x;
+    const y2 = b.y + to.offsetHeight / 2;
+    const bend = Math.max(20, (x2 - x1) * .42);
+    const path = document.createElementNS(ns, "path");
+    path.setAttribute("d",
+      `M${x1},${y1} C${x1 + bend},${y1} ${x2 - bend},${y2} ${x2},${y2}`);
+    path.setAttribute("class", `jdx-edge ${link.kind}`);
+    path.dataset.left = link.left;
+    path.dataset.right = link.right;
+    const title = document.createElementNS(ns, "title");
+    title.textContent = link.kind === "same"
+      ? `The same statement — ${link.score}% of the wording matches`
+      : `Related statement — ${link.score}% of the wording matches`;
+    path.appendChild(title);
+    svg.appendChild(path);
+  });
+  jdxActivate(board, jdxPinned);
+}
+
+function jdxActivate(board, id) {
+  const partner = id ? (jdxUnit(board, id)?.dataset.link || "") : "";
+  const lit = new Set([id, partner].filter(Boolean));
+  board.querySelectorAll("[data-jdx]").forEach((node) => {
+    const on = lit.has(node.dataset.jdx);
+    node.classList.toggle("jdx-lit", on);
+    node.classList.toggle("jdx-faded", !!id && !on);
+  });
+  board.querySelectorAll(".jdx-edge").forEach((path) => {
+    const on = lit.has(path.dataset.left) && lit.has(path.dataset.right);
+    path.classList.toggle("jdx-lit", on);
+    path.classList.toggle("jdx-faded", !!id && !on);
+  });
+}
+
+function jdxReveal(board, from, to) {
+  // One scroller holds both columns, so a pair whose ends are a screen apart
+  // cannot both be shown. Centre the pair when it fits and the counterpart
+  // when it does not — landing on what was asked for either way.
+  const scroll = board.parentElement;
+  if (!scroll || !to) return;
+  const a = jdxOffsetIn(from, board).y;
+  const b = jdxOffsetIn(to, board).y;
+  const top = Math.min(a, b);
+  const bottom = Math.max(a + from.offsetHeight, b + to.offsetHeight);
+  const view = scroll.clientHeight;
+  const target = (bottom - top <= view)
+    ? (top + bottom) / 2 - view / 2
+    : b - view / 2;
+  scroll.scrollTo({ top: Math.max(0, target),
+                    behavior: REDUCED_MOTION ? "auto" : "smooth" });
+}
+
+function jdxRow(row, board) {
+  if (row.kind === "heading") return el("div", "jdx-head", row.text);
+  const node = el("div", `jdx-unit jdx-${row.state}`);
+  node.dataset.jdx = row.id;
+  node.dataset.link = row.link || "";
+  (row.parts || []).forEach((part) => {
+    node.appendChild(el("span", part.d ? "jdx-diff" : "jdx-shared", part.t));
+  });
+  const note = row.link
+    ? (row.state === "same"
+        ? `The same statement in the other posting — ${row.score}% of the wording matches`
+        : `Said differently in the other posting — ${row.score}% of the wording matches`)
+    : (row.near
+        ? "Only this posting says it — its closest wording is already paired with another line"
+        : "Only this posting says it");
+  node.title = note;
+  node.addEventListener("pointerenter", () => {
+    if (!jdxPinned) jdxActivate(board, row.id);
+  });
+  node.addEventListener("pointerleave", () => {
+    if (!jdxPinned) jdxActivate(board, "");
+  });
+  node.addEventListener("click", () => {
+    jdxPinned = jdxPinned === row.id ? "" : row.id;
+    jdxActivate(board, jdxPinned);
+    if (jdxPinned && row.link) jdxReveal(board, node, jdxUnit(board, row.link));
+  });
+  return node;
+}
+
+function jdxApplyFilter(board) {
+  const only = lsGet("vira-compare-diffs-only", false);
+  board.querySelectorAll("[data-jdx]").forEach((node) => {
+    const identical = node.classList.contains("jdx-same")
+      && !node.querySelector(".jdx-diff");
+    node.classList.toggle("jdx-hidden", only && identical);
+  });
+  drawJdxLines(board);
+}
+
+function renderJdAlign(host, data) {
+  const align = data.alignment;
+  const roles = data.roles || [];
+  jdxPinned = "";
+  jdxObserver?.disconnect();
+
+  const counts = align.counts || {};
+  const bar = el("div", "jdx-bar");
+  const legend = el("div", "jdx-legend");
+  [["same", `${counts.same || 0} the same`],
+   ["similar", `${counts.similar || 0} said differently`],
+   ["only", `${(counts.only_left || 0) + (counts.only_right || 0)} only one posting`]]
+    .forEach(([kind, label]) => {
+      const chip = el("span", `jdx-key jdx-${kind}`);
+      chip.appendChild(el("i", null, ""));
+      chip.appendChild(el("span", null, label));
+      legend.appendChild(chip);
+    });
+  bar.appendChild(legend);
+
+  const only = lsGet("vira-compare-diffs-only", false);
+  const filter = el("button", "btn sm" + (only ? " on" : ""),
+                    "Only what differs");
+  filter.type = "button";
+  filter.title = "Hide statements whose wording is identical in both postings";
+  bar.appendChild(filter);
+  host.appendChild(bar);
+
+  const scroll = el("div", "jdx-scroll");
+  const board = el("div", "jdx-board");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "jdx-lines");
+  board.appendChild(svg);
+
+  [["left", align.left], ["right", align.right]].forEach(([side, part], i) => {
+    const col = el("section", `jdx-col jdx-${side}`);
+    const head = el("div", "jdx-colhead");
+    head.appendChild(el("h4", null, roles[i] ? roles[i].title : part.uid));
+    const sub = [roles[i]?.company, (roles[i]?.locations || []).join(" / ")]
+      .filter(Boolean).join(" · ");
+    if (sub) head.appendChild(el("span", "hint", sub));
+    col.appendChild(head);
+    (part.rows || []).forEach((row) => col.appendChild(jdxRow(row, board)));
+    if (part.dropped) {
+      col.appendChild(el("p", "hint",
+        `${part.dropped} further lines are not shown — this posting is longer ` +
+        `than the comparison reads.`));
+    }
+    board.appendChild(col);
+  });
+
+  scroll.appendChild(board);
+  host.appendChild(scroll);
+  host.appendChild(el("p", "hint app-cmp-method", align.method || ""));
+
+  filter.addEventListener("click", () => {
+    lsSet("vira-compare-diffs-only", !lsGet("vira-compare-diffs-only", false));
+    filter.classList.toggle("on");
+    jdxApplyFilter(board);
+  });
+  scroll.addEventListener("click", (e) => {
+    if (!e.target.closest("[data-jdx]")) {
+      jdxPinned = "";
+      jdxActivate(board, "");
+    }
+  });
+
+  // The lines are drawn from laid-out positions, so they are redrawn whenever
+  // the board's size changes at all — a filter toggle, a font arriving, the
+  // sheet being resized. One observer, replaced on every render.
+  jdxObserver = new ResizeObserver(() => drawJdxLines(board));
+  jdxObserver.observe(board);
+  jdxApplyFilter(board);
 }
 
 async function runAppCompare() {
