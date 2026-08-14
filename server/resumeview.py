@@ -51,15 +51,24 @@ from . import applicationmap, applications, jsonstore, suggest
 
 STORE = Path(__file__).resolve().parent.parent / "data" / "resume-notes.json"
 
-KINDS = ("resume", "cover")
-KIND_LABEL = {"resume": "Resume", "cover": "Cover letter"}
+KINDS = ("resume", "resume1p", "cover")
+KIND_LABEL = {"resume": "Resume", "resume1p": "Resume (1 page)",
+              "cover": "Cover letter"}
 
 # Where each kind lives, in the same preference order _read_artifact uses:
 # the editable Word copy in the package root, then the round's source.
+#
+# `resume` and `resume1p` share a glob and are separated by
+# applicationmap.is_one_pager — the one rule both readers ask, rather than a
+# second pattern here that could drift from the Map's. Annotations are already
+# scoped by kind (block ids carry it), so the two resumes keep separate notes
+# and neither reports the other's as stale.
 ARTIFACT = {
     "resume": (("*_cv_*.docx",), ("*_cv_*.md",)),
+    "resume1p": (("*_cv_*.docx",), ("*_cv_*.md",)),
     "cover": (("cover-letter.docx",), ("cover-letter.txt",)),
 }
+ONE_PAGE_KINDS = ("resume1p",)
 
 MAX_TERM = 120
 MAX_NOTE = 4000
@@ -192,7 +201,8 @@ def document(role, kind):
                           "role yet.", "blocks": [], "path": "",
                 "package": ""}
     root_globs, version_names = ARTIFACT[kind]
-    text, path = _read_source(package, root_globs, version_names)
+    text, path = _read_source(package, root_globs, version_names,
+                              one_page=_one_page_filter(kind))
     if not path:
         return {"kind": kind, "label": KIND_LABEL[kind], "found": False,
                 "reason": f"The package folder has no {KIND_LABEL[kind].lower()}.",
@@ -211,14 +221,22 @@ def document(role, kind):
     }
 
 
-def _read_source(package, root_globs, version_names):
-    """Root .docx first — the copy the owner edits — then the round's source."""
+def _read_source(package, root_globs, version_names, one_page=None):
+    """Root .docx first — the copy the owner edits — then the round's source.
+
+    `one_page` picks which resume form to serve: True the one-page companion,
+    False the two-page record, None no filtering (the cover letter, which has
+    no variants).
+    """
     candidates = []
     for pattern in root_globs:
         candidates.extend(sorted(package.glob(pattern)))
     version = applicationmap._latest_version(package)
     for name in version_names:
         candidates.extend(sorted(version.glob(name)))
+    if one_page is not None:
+        candidates = [p for p in candidates
+                      if applicationmap.is_one_pager(p) is one_page]
     for path in candidates:
         if not path.is_file():
             continue
@@ -234,14 +252,25 @@ def _read_source(package, root_globs, version_names):
     return "", None
 
 
+def _one_page_filter(kind):
+    """Which resume form this kind serves; None for anything that has one."""
+    if kind in ONE_PAGE_KINDS:
+        return True
+    return False if kind == "resume" else None
+
+
 def _pdf_name(package, kind):
     """The PDF is the pixel-true render; the viewport links it rather than
     trying to reproduce Word's layout in HTML."""
     version = applicationmap._latest_version(package)
-    stem = "*_cv_*.pdf" if kind == "resume" else "cover-letter.pdf"
+    stem = "cover-letter.pdf" if kind == "cover" else "*_cv_*.pdf"
+    want = _one_page_filter(kind)
     for found in sorted(version.glob(stem)):
-        if found.is_file():
-            return found.name
+        if not found.is_file():
+            continue
+        if want is not None and applicationmap.is_one_pager(found) is not want:
+            continue
+        return found.name
     return ""
 
 

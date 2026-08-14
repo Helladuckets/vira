@@ -36,6 +36,32 @@ MAX_TEXT = 520
 # take" cannot drift apart.  Each entry is (root_globs, version_names): the
 # .docx the package keeps at its top level, and the plain-text copy inside
 # V<N>/ — which is the half a drop can write.
+# The resume ships in two forms: the two-page record and a one-page companion
+# distilled from it, told apart by a `_1p` suffix on an otherwise identical
+# name. ONE rule, here, because two readers consume it — this lane and
+# resumeview — and a second copy is a second chance for them to disagree about
+# which file "the resume" means.
+#
+# The two-pager is the primary everywhere by EXCLUSION, never by sort order.
+# `2026-08-14_cv_role.docx` does happen to sort before `..._role_1p.docx`
+# ("." is 46, "_" is 95), and depending on that is exactly the accident the
+# routinesrc backup names were bitten by.
+#
+# It is load-bearing beyond tidiness because `_read_artifact` takes the first
+# candidate that yields NODES, not the first that exists: an empty or
+# unreadable two-pager would fall straight through to the companion, and the
+# Map would then map the distillation while reporting on the record. That is a
+# silent substitution of a SUBSET for the whole, which is the one failure this
+# lane cannot notice on its own.
+ONE_PAGE_MARK = "_1p"
+ONE_PAGE_RE = re.compile(r"_1p(?=\.[^.]+$)", re.I)
+
+
+def is_one_pager(path):
+    """True for the one-page companion resume."""
+    return bool(ONE_PAGE_RE.search(Path(path).name))
+
+
 LANE_ARTIFACTS = {
     "resume": ((("*_cv_*.docx",), ("*_cv_*.md",)),),
     "cover": ((("cover-letter.docx",),
@@ -505,6 +531,8 @@ def _read_artifact(package, lane, root_globs, version_names):
     version = _latest_version(package)
     for name in version_names:
         candidates.extend(sorted(version.glob(name)))
+    if lane == "resume":
+        candidates = [p for p in candidates if not is_one_pager(p)]
     for path in candidates:
         if not path.is_file():
             continue

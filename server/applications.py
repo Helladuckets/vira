@@ -970,6 +970,10 @@ def apply_prompt(role, note=""):
         "Run the application-package skill "
         f"(read {SKILL_MD} and follow it end to end) for this role. "
         "Build the FULL package. Draft only — never submit anything.",
+        "- The resume ships in BOTH forms: the two-page record (primary) and "
+        "a one-page companion distilled from it. Same claim gate, same "
+        "typography; the one-pager is a selection, never the two-pager "
+        "shrunk to fit. Verify the page count of each against its own PDF.",
         "",
         *ground_rules(),
         "",
@@ -1039,6 +1043,14 @@ def apply_prompt(role, note=""):
         "exists; do not force every requirement into every artifact.",
         json.dumps(plan, indent=1, ensure_ascii=False),
     ]
+    # The employer's own page in the vault. Read-only and best-effort: a
+    # dispatch that cannot reach the vault still builds a package, it just
+    # says so instead of implying the company was researched.
+    try:
+        from . import companywiki
+        lines += companywiki.prompt_block(role.get("company"))
+    except Exception:  # noqa: BLE001 -- package dispatch is still usable
+        pass
     try:
         from . import research
         context = research.application_context(role=role, claim_limit=8)
