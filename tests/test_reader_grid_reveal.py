@@ -129,8 +129,11 @@ class EveryRevealObserverContract(unittest.TestCase):
     def test_the_sweep_actually_reaches_the_shipped_observers(self):
         # Guards the guard: a scan that silently matches nothing passes every
         # assertion above. Pin the count so a moved/renamed file is noticed.
+        # app.js x3: the library grid's reveal, its film-loop observer, and
+        # the Inflow's section reveal (2026-08-14).
         found = [n for n, _ in _observers()]
-        self.assertEqual(sorted(found), ["app.js", "app.js", "atlas.js"])
+        self.assertEqual(sorted(found),
+                         ["app.js", "app.js", "app.js", "atlas.js"])
 
 
 if __name__ == "__main__":

@@ -41,6 +41,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                docthumbs,
                readingroom,
                fixtures, groupchat, ideaimages, ideas, ideatags, imessage,
+               ingestfeed,
                jobboards,
                jobdesc,
                jobrescore,
@@ -1882,6 +1883,54 @@ def api_reading_thumb(item_id: str):
         raise HTTPException(404, "no thumbnail for that document")
     return FileResponse(p, media_type="image/png",
                         headers={"X-Content-Type-Options": "nosniff"})
+
+
+@app.get("/api/ingestfeed")
+def api_ingestfeed(sources: str = "", force: bool = False):
+    """The Inflow — the nightly ingest as one shelf.
+
+    `sources` is a comma-separated list of source ids; empty means the
+    routines this shelf is for. The payload always reports EVERY source's
+    count, including the ones that are off, so the UI can state what it is
+    not showing rather than implying the shelf is everything."""
+    want = [s.strip() for s in sources.split(",") if s.strip()] or None
+    with admission.cpu("ingestfeed"):
+        return ingestfeed.feed(sources=want, force=force)
+
+
+@app.get("/api/vault/asset")
+def api_vault_asset(path: str):
+    """One image out of the vault, by its vault-relative path.
+
+    The 12,002 `![[wiki/assets/...]]` embeds in this vault all carry a full
+    path and all resolve on disk, so no stem lookup is needed here — but the
+    path arrives from the REQUEST, which is why `asset_path` re-checks
+    containment against the resolved file rather than trusting the string."""
+    p = ingestfeed.asset_path(path)
+    if p is None:
+        raise HTTPException(404, "no such file in the vault")
+    return FileResponse(p, media_type=_guess_media(p),
+                        headers={"X-Content-Type-Options": "nosniff",
+                                 "Cache-Control": "private, max-age=86400"})
+
+
+@app.get("/api/vault/thumb")
+def api_vault_thumb(path: str):
+    """A grid-sized copy of a vault image. Falls back to the original where
+    no downscaler exists, so a tile always has a picture."""
+    p = ingestfeed.thumb_path(path)
+    if p is None:
+        raise HTTPException(404, "no such image in the vault")
+    return FileResponse(p, media_type=_guess_media(p),
+                        headers={"X-Content-Type-Options": "nosniff",
+                                 "Cache-Control": "private, max-age=86400"})
+
+
+def _guess_media(p: Path) -> str:
+    return {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png",
+            ".webp": "image/webp", ".gif": "image/gif", ".avif": "image/avif",
+            ".heic": "image/heic"}.get(p.suffix.lower(),
+                                       "application/octet-stream")
 
 
 @app.get("/api/reading/{name}/done")

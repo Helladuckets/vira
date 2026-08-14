@@ -12556,8 +12556,39 @@ function mdToHtml(md) {
     meta = `<div class="note-meta">${wiki(esc(fm[1])).replace(/\n/g, "<br>")}</div>`;
     text = text.slice(fm[0].length);
   }
-  const inline = (s) => wiki(s)
-    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+  // IMAGES RENDER. They never have: the markdown form was deleted outright
+  // and Obsidian's `![[path]]` embed fell through the wikilink rule above as
+  // a stray `!` beside a note-link pointing at a .jpg that resolve_ref would
+  // hand back as an asset and `/api/vault/note` would then read as text. So
+  // every chart, keyframe and extracted diagram the nightly ingest produces
+  // was invisible in Vira — 12,002 embeds in this vault, all present on
+  // disk. The resolver always knew where they were; nothing served the bytes
+  // and nothing emitted an <img>.
+  const IMG_EXT = /\.(jpe?g|png|webp|gif|avif|heic)$/i;
+  // The text is HTML-escaped before inline() runs, so entities have to come
+  // back off before the path is re-encoded for the query string.
+  const unesc = (v) => v.replace(/&amp;/g, "&").replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">");
+  const assetUrl = (rel) =>
+    "/api/vault/asset?path=" + encodeURIComponent(unesc(rel).trim());
+  const imgTag = (src, alt) => '<img class="note-img" loading="lazy" src="'
+    + src + '" alt="' + String(alt || "").replace(/"/g, "") + '">';
+  const inline = (s) => wiki(s
+    .replace(/!\[\[([^\]|\n]+?)(?:\|[^\]\n]*)?\]\]/g, (m, ref) =>
+      IMG_EXT.test(ref.trim()) ? imgTag(assetUrl(ref), "") : m))
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)[^)]*\)/g, (m, alt, url) => {
+      const u = unesc(url).trim();
+      if (/^https?:/i.test(u)) {
+        // A REMOTE non-image URL is not a picture — this vault's YouTube
+        // raws open on `![](https://www.youtube.com/watch?v=…)`, which is
+        // Obsidian's video embed. Rendering it as an <img> would put a
+        // broken-image icon at the top of every video note, so it keeps the
+        // old behaviour and is dropped.
+        return IMG_EXT.test(u.split("?")[0])
+          ? imgTag(u.replace(/"/g, "%22"), alt) : "";
+      }
+      return IMG_EXT.test(u) ? imgTag(assetUrl(u), alt) : "";
+    })
     .replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g,
       '<a href="$2" target="_blank" rel="noopener">$1</a>')
     .replace(/`([^`]+)`/g, "<code>$1</code>")
@@ -21381,6 +21412,8 @@ function readerShow(view) {
   const stage = view === "stage";
   $("#reader-room").style.display = view === "room" ? "" : "none";
   $("#reader-docs").style.display = view === "docs" ? "" : "none";
+  const inflow = $("#reader-inflow");
+  if (inflow) inflow.style.display = view === "inflow" ? "" : "none";
   $("#reader-stage").style.display = stage ? "" : "none";
   $("#reader-head").style.display = stage ? "none" : "";
   $("#reader-defs").style.display =
@@ -22388,6 +22421,7 @@ function selectReader(sel) {
   renderReaderHead();
   renderReaderDefs();
   if (sel === "docs") { readerShow("docs"); return; }
+  if (sel === "inflow") { readerShow("inflow"); loadInflow(); return; }
   const p = readerCurPage();
   if (!p) { readerShow("docs"); return; }
   if (p.native) openRoomNative(p);
@@ -22431,6 +22465,7 @@ function renderReaderHead() {
   host.innerHTML = "";
   const page = readerCurPage();
   const isDocs = readerSel === "docs";
+  const isInflow = readerSel === "inflow";
 
   // Rooms as TABS, browser-style (owner's call, 2026-07-27): every shelf
   // visible at once, the plus mints a new one.
@@ -22441,6 +22476,12 @@ function renderReaderHead() {
     t.addEventListener("click", () => selectReader("room:" + p.name));
     tabs.appendChild(t);
   });
+  // The Inflow leads the fixed tabs: it is the shelf that changes every
+  // night, so it is the one worth landing on when you open the Reader bored.
+  const it = el("button", "rdr-tab" + (isInflow ? " on" : ""), "The Inflow");
+  it.title = "Everything the nightly ingest routines brought in";
+  it.addEventListener("click", () => selectReader("inflow"));
+  tabs.appendChild(it);
   const dt = el("button", "rdr-tab" + (isDocs ? " on" : ""),
     "Vira's Documents");
   dt.addEventListener("click", () => selectReader("docs"));
@@ -22456,7 +22497,8 @@ function renderReaderHead() {
   const titleRow = el("div", "rdr-title-row");
   const sw = el("button", "rdr-switch" + (readerDefsOpen ? " open" : ""));
   sw.appendChild(el("span", "rdr-switch-t",
-    isDocs ? "Vira's Documents" : (page?.title || "Reader")));
+    isInflow ? "The Inflow"
+      : isDocs ? "Vira's Documents" : (page?.title || "Reader")));
   sw.appendChild(el("span", "rdr-caret", "▾"));
   sw.title = "Details — what this is, how it was derived, its instructions";
   sw.addEventListener("click", toggleReaderDefs);
@@ -22473,7 +22515,11 @@ function renderReaderHead() {
   // ONE description, in the slot every tab already uses. The docs view grew a
   // second paragraph of its own when it became the built-history library, and
   // two blurbs saying the same thing read as a bug.
-  const sub = isDocs
+  const sub = isInflow
+    ? "Everything the nightly routines pulled in — X, YouTube, voice memos, "
+      + "Plaud and Notes — read as Vira wrote it up, with the extracted "
+      + "charts and a way back to the original."
+    : isDocs
     ? "The story of how everything got built — the plan that proposed it, the "
       + "film of the session that made it, the retro of the night it shipped. "
       + "Grouped by the feature it belongs to; documents live wherever they "
@@ -22482,7 +22528,21 @@ function renderReaderHead() {
   if (sub) host.appendChild(el("div", "rdr-sub", sub));
 
   const bits = el("div", "rdr-bits");
-  if (page) {
+  if (isInflow) {
+    // Read progress ONLY. The count of what is on screen belongs next to the
+    // filters that decide it (.inf-count), and two lines saying nearly the
+    // same number read as a bug — the library's one-description-slot lesson.
+    // Counted off the ITEMS, never the payload's own `done` — an optimistic
+    // mark updates the item and cannot update a total the server computed,
+    // so reading the aggregate left the header saying "none read yet" beside
+    // a card that had just flipped.
+    const items = (infFeed && infFeed.items) || [];
+    const done = items.filter((i) => i.done).length;
+    if (infFeed) {
+      bits.appendChild(el("span", "rdr-bit",
+        done ? done + " of " + items.length + " read" : "none read yet"));
+    }
+  } else if (page) {
     const prog = (page.items != null)
       ? (page.done || 0) + " of " + page.items + " done" : "";
     [prog, page.built ? "refreshed " + page.built : "",
@@ -22677,12 +22737,486 @@ function rdrWatchEditor(state) {
   });
 }
 
+// ==================== The Inflow ====================
+// The nightly ingest as a browsing shelf. Five routines land raw captures in
+// the vault every night and the nightly full-ingest turns each into a wiki
+// summary — the takeaways, the extracted charts with their timestamps, the
+// link back to the original. This is where you read them.
+//
+// Modelled on Vira's Documents rather than a room: these are cards you graze,
+// not a ranked queue you work through. The one real difference is that a
+// capture usually HAS pictures, so the picture leads the card and the
+// lightbox is a first-class surface rather than an afterthought.
+
+const INFLOW_METHOD =
+  "Every night, five routines pull in what you saved: X bookmarks, YouTube "
+  + "subscriptions, Apple Voice Memos, Plaud recordings and the Notes app. "
+  + "The vault's own ingest turns each capture into a written summary — key "
+  + "takeaways, the charts and frames worth keeping, and a link back to the "
+  + "source. This shelf reads those summaries. Click a card for the full "
+  + "write-up, a picture to see it whole, or the source to watch it yourself.";
+
+const INF_GROUPS = [
+  ["month", "Month"], ["source", "Source"], ["topic", "Topic"],
+  ["", "Nothing (flat, newest first)"],
+];
+const INF_READS = [["unread", "To read"], ["read", "Read"], ["all", "Everything"]];
+const MONTHS = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+let infFeed = null;
+let infSrc = lsGet("vira-inflow-src", null);      // null = the server default
+let infRead = lsGet("vira-inflow-read", "all");
+let infGroup = lsGet("vira-inflow-group", "month");
+let infQ = lsGet("vira-inflow-q", "");
+let infObs = null;
+let infLoading = false;
+
+async function loadInflow(force) {
+  const list = $("#inf-list");
+  if (!list) return;
+  if (!infFeed) list.innerHTML = '<div class="spin">Reading the vault…</div>';
+  infLoading = true;
+  try {
+    const qs = [];
+    if (infSrc && infSrc.length) qs.push("sources=" + encodeURIComponent(infSrc.join(",")));
+    if (force) qs.push("force=1");
+    infFeed = await api("/api/ingestfeed" + (qs.length ? "?" + qs.join("&") : ""));
+  } catch (e) {
+    list.innerHTML = "";
+    list.appendChild(el("div", "empty", errText(e)));
+    return;
+  } finally { infLoading = false; }
+  renderInflow();
+  renderReaderHead();
+  renderReaderDefs();
+}
+
+// Every downstream count reads this ONE filtered set, so the count line, the
+// group headings and what is actually on screen can never disagree.
+function infFiltered() {
+  const items = (infFeed && infFeed.items) || [];
+  // Same folding rule as the Queue's search: punctuation is not a term, a
+  // quoted "phrase" stays one term, every term must appear as a substring.
+  const terms = (infQ.match(/"[^"]+"|\S+/g) || [])
+    .map((x) => searchFold(x.replace(/^"|"$/g, ""))).filter(Boolean);
+  return items.filter((it) => {
+    if (infRead === "unread" && it.done) return false;
+    if (infRead === "read" && !it.done) return false;
+    if (!terms.length) return true;
+    const hay = searchFold([it.title, it.blurb, it.kind, it.date,
+      (it.topics || []).join(" "), (it.images || [])
+        .map((im) => im.label + " " + im.caption).join(" ")].join(" "));
+    return terms.every((t) => hay.includes(t));
+  });
+}
+
+function infGroupKey(it) {
+  if (infGroup === "source") {
+    const s = (infFeed.sources || []).find((x) => x.id === it.source);
+    return s ? s.label : it.source;
+  }
+  if (infGroup === "topic") return (it.topics || [])[0] || " untagged";
+  if (infGroup === "month") {
+    const m = /^(\d{4})-(\d{2})/.exec(it.date || "");
+    return m ? MONTHS[+m[2] - 1] + " " + m[1] : " undated";
+  }
+  return "";
+}
+
+function infGroups(list) {
+  const map = new Map();
+  list.forEach((it) => {
+    const k = infGroupKey(it);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(it);
+  });
+  const out = [...map.entries()].map(([key, items]) => ({ key, items }));
+  if (infGroup === "month") return out;          // already newest-first
+  if (infGroup === "") return out;
+  // A bucket nothing could name sorts last, never hidden.
+  return out.sort((a, b) => {
+    if (a.key.startsWith(" ")) return 1;
+    if (b.key.startsWith(" ")) return -1;
+    return b.items.length - a.items.length;
+  });
+}
+
+function renderInflow() {
+  const bar = $("#inf-bar"), list = $("#inf-list");
+  if (!bar || !list || !infFeed) return;
+  bar.innerHTML = "";
+  list.innerHTML = "";
+
+  // --- source chips: what is on, and honestly what is off ---
+  const chips = el("div", "inf-chips");
+  (infFeed.sources || []).forEach((s) => {
+    if (!s.count) return;                         // a source with nothing
+    const c = el("button", "inf-chip" + (s.on ? " on" : ""),
+      s.label + " " + s.count);
+    c.title = s.on ? "Showing — click to hide" : "Hidden — click to include";
+    c.addEventListener("click", () => {
+      const on = (infFeed.sources || []).filter((x) => x.on).map((x) => x.id);
+      const next = s.on ? on.filter((id) => id !== s.id) : on.concat([s.id]);
+      infSrc = next;
+      lsSet("vira-inflow-src", next);
+      loadInflow();
+    });
+    chips.appendChild(c);
+  });
+  bar.appendChild(chips);
+
+  const row = el("div", "inf-controls");
+  row.appendChild(infSelect("Show", INF_READS, infRead, (v) => {
+    infRead = v; lsSet("vira-inflow-read", v); renderInflow(); renderReaderHead();
+  }));
+  row.appendChild(infSelect("Group by", INF_GROUPS, infGroup, (v) => {
+    infGroup = v; lsSet("vira-inflow-group", v); renderInflow();
+  }));
+  const search = el("input", "inf-search");
+  search.type = "search";
+  search.placeholder = "Search captures…";
+  search.value = infQ;
+  let searchT = null;
+  search.addEventListener("input", () => {
+    clearTimeout(searchT);
+    searchT = setTimeout(() => {
+      infQ = search.value.trim();
+      lsSet("vira-inflow-q", infQ);
+      renderInflow();
+    }, 180);
+  });
+  row.appendChild(search);
+  const refresh = el("button", "fchip sm", "Rescan");
+  refresh.title = "Re-read the vault now, instead of waiting for the cache";
+  refresh.addEventListener("click", () => loadInflow(true));
+  row.appendChild(refresh);
+  bar.appendChild(row);
+
+  const items = infFiltered();
+  const shown = infFeed.items.length;
+  const line = items.length === shown
+    ? shown + " captures"
+    : items.length + " of " + shown + " captures";
+  bar.appendChild(el("div", "inf-count",
+    line + " · " + items.reduce((n, i) => n + i.image_count, 0) + " images"));
+
+  if (!items.length) {
+    list.appendChild(el("div", "empty",
+      shown ? "Nothing matches those filters."
+        : "No captures yet — the nightly ingest fills this in."));
+    return;
+  }
+
+  // THRESHOLD 0. A ratio threshold is unsatisfiable for a section taller
+  // than scrollport/threshold, and this reveal GRANTS the class that makes
+  // a card visible at all — so a miss hides content forever rather than
+  // merely skipping an animation. (The library learned this the hard way,
+  // 2026-08-11.) If it ever needs to fire later, use rootMargin.
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (infObs) infObs.disconnect();
+  infObs = reduce ? null : new IntersectionObserver((ents) => {
+    ents.forEach((en) => {
+      if (!en.isIntersecting) return;
+      en.target.classList.add("rv");
+      infObs.unobserve(en.target);
+    });
+  }, { threshold: 0 });
+
+  const wrap = el("div", "inf-wrap" + (reduce ? "" : " anim"));
+  infGroups(items).forEach((g) => wrap.appendChild(infSection(g)));
+  list.appendChild(wrap);
+}
+
+function infSelect(label, opts, val, onChange) {
+  const pair = el("label", "inf-pair");
+  pair.appendChild(el("span", "inf-plabel", label));
+  const sel = el("select", "inf-select");
+  opts.forEach(([v, t]) => {
+    const o = el("option", "", t);
+    o.value = v;
+    if (v === val) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener("change", () => onChange(sel.value));
+  pair.appendChild(sel);
+  return pair;
+}
+
+function infSection(g) {
+  const sec = el("section", "inf-sec");
+  if (g.key) {
+    const head = el("header", "inf-sechead");
+    const kick = el("div", "inf-kicker");
+    kick.appendChild(el("span", "inf-count-n", String(g.items.length)));
+    kick.appendChild(el("span", "",
+      " capture" + (g.items.length === 1 ? "" : "s")));
+    const pics = g.items.reduce((n, i) => n + i.image_count, 0);
+    if (pics) kick.appendChild(el("span", "inf-kpic", pics + " images"));
+    head.appendChild(kick);
+    head.appendChild(el("h3", "inf-secname",
+      g.key.startsWith(" ") ? g.key.trim() : g.key));
+    head.appendChild(el("div", "inf-rule"));
+    sec.appendChild(head);
+  }
+  const grid = el("div", "inf-grid");
+  g.items.forEach((it, i) => grid.appendChild(infCard(it, i)));
+  sec.appendChild(grid);
+  if (infObs) infObs.observe(sec); else sec.classList.add("rv");
+  return sec;
+}
+
+function infCard(it, i) {
+  const card = el("article", "inf-card" + (it.done ? " read" : ""));
+  card.style.setProperty("--i", Math.min(i, 10));
+  card.dataset.infId = it.id;
+  card.dataset.notePath = it.path;
+
+  // THE PICTURE LEADS. A summary of a talk with a chart pulled out of it is
+  // mostly the chart; a wall of text with the chart at the bottom is the
+  // thing this shelf exists to stop being.
+  const imgs = it.images || [];
+  if (imgs.length) {
+    const cover = el("div", "inf-cover");
+    const img = el("img");
+    img.src = "/api/vault/thumb?path=" + encodeURIComponent(imgs[0].path);
+    img.loading = "lazy";
+    img.alt = imgs[0].label || "";
+    cover.appendChild(img);
+    if (imgs[0].at) cover.appendChild(el("span", "inf-at", imgs[0].at));
+    if (imgs.length > 1) {
+      cover.appendChild(el("span", "inf-more-n", "+" + (imgs.length - 1)));
+    }
+    cover.addEventListener("click", (e) => {
+      e.stopPropagation();
+      infLightbox(it, 0);
+    });
+    card.appendChild(cover);
+  }
+
+  const body = el("div", "inf-body");
+  const meta = el("div", "inf-meta");
+  const src = (infFeed.sources || []).find((s) => s.id === it.source);
+  meta.appendChild(el("span", "inf-src", src ? src.label : it.source));
+  if (it.date) meta.appendChild(el("span", "inf-date", it.date));
+  meta.appendChild(el("span", "inf-read",
+    it.duration || (it.minutes + " min read")));
+  if (it.done) meta.appendChild(el("span", "inf-donetag", "read"));
+  body.appendChild(meta);
+  body.appendChild(el("h4", "inf-title", it.title));
+  if (it.blurb) body.appendChild(el("p", "inf-blurb", it.blurb));
+
+  // The rest of the pictures as a strip — a contact sheet of what was
+  // pulled out, each one one click from full size.
+  if (imgs.length > 1) {
+    const strip = el("div", "inf-strip");
+    imgs.slice(1, 7).forEach((im, n) => {
+      const t = el("button", "inf-thumb");
+      const ti = el("img");
+      ti.src = "/api/vault/thumb?path=" + encodeURIComponent(im.path);
+      ti.loading = "lazy";
+      ti.alt = im.label || "";
+      t.appendChild(ti);
+      t.title = [im.at, im.label].filter(Boolean).join(" — ");
+      t.addEventListener("click", (e) => {
+        e.stopPropagation();
+        infLightbox(it, n + 1);
+      });
+      strip.appendChild(t);
+    });
+    if (imgs.length > 7) {
+      strip.appendChild(el("span", "inf-strip-more", "+" + (imgs.length - 7)));
+    }
+    body.appendChild(strip);
+  }
+
+  if ((it.topics || []).length) {
+    const tags = el("div", "inf-tags");
+    it.topics.slice(0, 5).forEach((t) => {
+      const chip = el("button", "inf-tag", t);
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        infQ = t;
+        lsSet("vira-inflow-q", t);
+        renderInflow();
+      });
+      tags.appendChild(chip);
+    });
+    body.appendChild(tags);
+  }
+
+  // THREE DOORS, and they are the three things you actually do here: read
+  // what Vira made of it, go watch the thing itself, or dig into the raw
+  // capture (a full transcript, for every video and every recording).
+  const acts = el("div", "inf-acts");
+  const read = el("button", "fchip sm", "Read the write-up");
+  read.addEventListener("click", (e) => { e.stopPropagation(); infOpen(it); });
+  acts.appendChild(read);
+  if (it.url) {
+    const orig = el("a", "fchip sm", infHost(it.url));
+    orig.href = it.url;
+    orig.target = "_blank";
+    orig.rel = "noopener";
+    orig.title = it.url;
+    orig.addEventListener("click", (e) => e.stopPropagation());
+    acts.appendChild(orig);
+  }
+  if ((it.raws || []).length) {
+    const raw = el("button", "fchip sm",
+      it.source === "youtube" || it.duration ? "Transcript" : "Raw capture");
+    raw.title = it.raws[0];
+    raw.addEventListener("click", (e) => {
+      e.stopPropagation();
+      spawnOrPeek(it.raws[0], it.raws[0].split("/").pop().replace(/\.md$/, ""));
+    });
+    acts.appendChild(raw);
+  }
+  const mark = el("button", "fchip sm", it.done ? "Mark unread" : "Mark read");
+  mark.addEventListener("click", (e) => { e.stopPropagation(); infMark(it); });
+  acts.appendChild(mark);
+  body.appendChild(acts);
+
+  card.appendChild(body);
+  // Whole-card activation, the house rule — the card opens the write-up.
+  cardAction(card, () => infOpen(it));
+  return card;
+}
+
+function infHost(url) {
+  try { return new URL(url).hostname.replace(/^www\./, "") + " ↗"; }
+  catch (e) { return "source ↗"; }
+}
+
+function infOpen(it) {
+  openNote(it.path, it.title);
+}
+
+// A raw capture is a note like any other — the peek on a phone, a window at
+// the desk (the lists-peek / notes-spawn rule applies to lists, and this is
+// a list, so it peeks).
+function spawnOrPeek(path, title) {
+  openNote(path, title);
+}
+
+async function infMark(it) {
+  const want = !it.done;
+  it.done = want;                                  // optimistic
+  renderInflow();
+  renderReaderHead();
+  try {
+    await post("/api/reading/inflow/done", { id: it.id, done: want });
+  } catch (e) {
+    it.done = !want;
+    renderInflow();
+    toast(errText(e));
+  }
+}
+
+// ---- the lightbox: an extracted chart, whole ----
+// This is the payoff of the images work. A card shows a 520px thumb; the
+// chart it came from is usually a dense diagram whose whole point is the
+// labels, so it needs the full file and the room to show it.
+let infBox = null;
+
+function infLightbox(it, idx) {
+  infCloseBox();
+  const imgs = it.images || [];
+  if (!imgs.length) return;
+  let at = Math.max(0, Math.min(idx, imgs.length - 1));
+
+  const box = el("div", "inf-box");
+  const stage = el("div", "inf-box-stage");
+  const img = el("img", "inf-box-img");
+  stage.appendChild(img);
+  const cap = el("div", "inf-box-cap");
+  box.appendChild(stage);
+  box.appendChild(cap);
+
+  const nav = (delta) => { at = (at + delta + imgs.length) % imgs.length; paint(); };
+  function paint() {
+    const im = imgs[at];
+    img.src = "/api/vault/asset?path=" + encodeURIComponent(im.path);
+    img.alt = im.label || "";
+    cap.innerHTML = "";
+    const head = el("div", "inf-box-head");
+    if (im.at) head.appendChild(el("span", "inf-box-at", im.at));
+    head.appendChild(el("span", "inf-box-label", im.label || it.title));
+    if (imgs.length > 1) {
+      head.appendChild(el("span", "inf-box-n",
+        (at + 1) + " / " + imgs.length));
+    }
+    cap.appendChild(head);
+    if (im.caption) cap.appendChild(el("p", "inf-box-text", im.caption));
+    const acts = el("div", "inf-box-acts");
+    if (im.link) {
+      // The deep link back to the exact second — what turns a contact sheet
+      // into "watch from here", which is the decision this shelf serves.
+      const go = el("a", "fchip sm",
+        im.at ? "Watch from " + im.at : "Open the source");
+      go.href = im.link;
+      go.target = "_blank";
+      go.rel = "noopener";
+      acts.appendChild(go);
+    }
+    const note = el("button", "fchip sm", "Read the write-up");
+    note.addEventListener("click", () => { infCloseBox(); infOpen(it); });
+    acts.appendChild(note);
+    if (imgs.length > 1) {
+      const prev = el("button", "fchip sm", "‹ prev");
+      prev.addEventListener("click", () => nav(-1));
+      const next = el("button", "fchip sm", "next ›");
+      next.addEventListener("click", () => nav(1));
+      acts.appendChild(prev);
+      acts.appendChild(next);
+    }
+    const close = el("button", "fchip sm", "Close");
+    close.addEventListener("click", infCloseBox);
+    acts.appendChild(close);
+    cap.appendChild(acts);
+  }
+  paint();
+
+  box.addEventListener("click", (e) => { if (e.target === box) infCloseBox(); });
+  document.body.appendChild(box);
+  infBox = { box, nav };
+  document.addEventListener("keydown", infBoxKeys, true);
+}
+
+function infBoxKeys(e) {
+  if (!infBox) return;
+  if (e.key === "Escape") { e.stopPropagation(); infCloseBox(); }
+  else if (e.key === "ArrowLeft") infBox.nav(-1);
+  else if (e.key === "ArrowRight") infBox.nav(1);
+}
+
+function infCloseBox() {
+  if (!infBox) return;
+  infBox.box.remove();
+  infBox = null;
+  document.removeEventListener("keydown", infBoxKeys, true);
+}
+
 function renderReaderDefs() {
   const host = $("#reader-defs");
   if (!host) return;
   host.innerHTML = "";
   if (!readerDefsOpen) return;
 
+  if (readerSel === "inflow") {
+    host.appendChild(el("p", "rdr-def-p", INFLOW_METHOD));
+    if (infFeed) {
+      const off = (infFeed.sources || []).filter((s) => !s.on && s.count);
+      if (off.length) {
+        host.appendChild(el("p", "rdr-def-p",
+          "Not shown: " + off.map((s) => s.count + " " + s.label).join(", ")
+          + ". Those are real ingest too — the chips above turn any of them "
+          + "on. They are off because Instagram alone is several times the "
+          + "size of the five routines this shelf is for, and it would bury "
+          + "them."));
+      }
+    }
+    return;
+  }
   if (readerSel === "docs") {
     host.appendChild(el("p", "rdr-def-p",
       "This queue registers every document Vira produces for you — audit "
