@@ -68,8 +68,11 @@ MUTE = "555555"         # Vira's own chrome
 #
 # The em-dash and curly-quote rows matter most for a hand-written draft:
 # Word inserts both by AUTOCORRECT, so they arrive without him typing them.
+TYPO_FIX = {"\u2014": "-", "\u2013": "-", "\u2018": "'",
+            "\u2019": "'", "\u201c": '"', "\u201d": '"'}
+
 BANS = (
-    (re.compile(r"[—–]"), "VOICE",
+    (re.compile(r"[\u2014\u2013]"), "VOICE",
      "Em or en dash - house style is a plain hyphen, or recast the sentence. "
      "Word's autocorrect inserts these; they are not yours."),
     (re.compile(r"[‘’“”]"), "VOICE",
@@ -194,18 +197,49 @@ def _finding(line_no, tag, note, colour=BLUE, rewrite=""):
             "rewrite": _norm(rewrite), "colour": colour}
 
 
+def _typo_fixed(line):
+    """The line with every banned character mapped to its house form.
+
+    Returns "" when nothing changed, so only a REAL correction is offered.
+    """
+    fixed = line
+    for bad, good in TYPO_FIX.items():
+        fixed = fixed.replace(bad, good)
+    return fixed if fixed != line else ""
+
+
 def ban_findings(lines):
-    """Deterministic voice findings. No model, no network, always right."""
+    """Deterministic voice findings. No model, no network, always right.
+
+    A TYPOGRAPHY ban carries its own rewrite - the substitution is certain,
+    so withholding it would make the owner retype what Vira already knows.
+    A PHRASE ban carries guidance instead: "state the conviction with an
+    object" has no single correct wording, and offering one would be Vira
+    writing his letter rather than checking it.
+    """
     out = []
     for i, line in enumerate(lines):
         for pat, tag, note in BANS:
             m = pat.search(line)
             if m:
-                out.append(_finding(i, tag, f"'{m.group(0)}' - {note}"))
+                out.append(_finding(i, tag, f"'{m.group(0)}' - {note}",
+                                    rewrite=_typo_fixed(line)))
         for pat, note in STOCK:
             if pat.search(line):
                 out.append(_finding(i, "STOCK", note, CLAY))
     return out
+
+
+def _term(word):
+    """A term with its trailing punctuation removed.
+
+    `python.` can never appear in a draft, so without this the LAST word
+    of every sentence in a posting reads as permanently missing - a
+    systematic false positive, and the "punctuation is not a search term"
+    trap the Queue's search hit in 2026-07-27.  Internal punctuation is
+    kept, because node.js and ci/cd are real terms.
+    """
+    return word.lower().strip(".,;:!?)('\"")
 
 
 def jd_terms(jd, limit=40):
@@ -216,8 +250,8 @@ def jd_terms(jd, limit=40):
     """
     counts = {}
     for w in _WORD.findall(str(jd or "")):
-        low = w.lower()
-        if low in _STOP or len(low) < 4:
+        low = _term(w)
+        if not low or low in _STOP or len(low) < 4:
             continue
         counts[low] = counts.get(low, 0) + 1
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -476,7 +510,8 @@ def _clean_model(raw, lines):
     except Exception:  # noqa: BLE001 -- a bad pass costs the model half only
         return [], {"parse": 1}
     out, dropped = [], {"range": 0, "tag": 0, "typography": 0, "invented": 0}
-    for row in (data.get("findings") or [])[:MAX_SUGGESTIONS]:
+    rows = data if isinstance(data, list) else (data.get("findings") or [])
+    for row in rows[:MAX_SUGGESTIONS]:
         try:
             i = int(row.get("line", -99))
         except (TypeError, ValueError):
@@ -558,8 +593,12 @@ def review(role, data, filename="", kind=""):
 
     findings = ban_findings(lines)
     findings += keyword_findings(lines, role.get("jd") or role.get("reason"))
+    # anchor_findings OWNS the refusal; this reads the same fact only to
+    # report it.  Gating here as well would be a second implementation of
+    # one guarantee - and it was: it made removing the real gate invisible
+    # to the suite, which is how a vacuous guard survives a mutation check.
     record = record_ready()
-    findings += anchor_findings(lines, kind) if record else []
+    findings += anchor_findings(lines, kind)
     model, dropped = model_findings(lines, role, kind, hiring)
     findings += model
     findings.sort(key=lambda f: (f["line"] if f["line"] >= 0 else 10 ** 6))
