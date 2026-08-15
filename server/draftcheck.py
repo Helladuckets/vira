@@ -224,8 +224,16 @@ def ban_findings(lines):
         for pat, tag, note in BANS:
             m = pat.search(line)
             if m:
+                # Only the ban that MATCHED a banned character may offer the
+                # corrected line. Letting every ban on the line offer it put
+                # three identical "TRY" rewrites under one sentence, two of
+                # them answering a phrase ban that the substitution does not
+                # touch - a correction presented as the fix for something
+                # else, which is worse than offering nothing.
+                mechanical = all(ch in TYPO_FIX for ch in m.group(0))
                 out.append(_finding(i, tag, f"'{m.group(0)}' - {note}",
-                                    rewrite=_typo_fixed(line)))
+                                    rewrite=_typo_fixed(line) if mechanical
+                                    else ""))
         for pat, note in STOCK:
             if pat.search(line):
                 out.append(_finding(i, "STOCK", note, CLAY))

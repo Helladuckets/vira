@@ -146,6 +146,18 @@ class Deterministic(Base):
         self.assertEqual(f[0]["rewrite"], "")
         self.assertIn("conviction", f[0]["note"])
 
+    def test_only_the_ban_that_matched_a_character_offers_the_correction(self):
+        """One line, three bans: three identical rewrites read as three
+        different answers, two of them fixing something else entirely."""
+        line = ("I am excited to apply for this role \u2014 I have a proven "
+                "track record.")
+        f = dc.ban_findings([line])
+        self.assertEqual(len(f), 3, "all three bans should still be reported")
+        withrw = [x for x in f if x["rewrite"]]
+        self.assertEqual(len(withrw), 1)
+        self.assertIn("\u2014", withrw[0]["note"])
+        self.assertNotIn("\u2014", withrw[0]["rewrite"])
+
     def test_a_curly_quote_is_corrected_too(self):
         f = dc.ban_findings(["He said \u201cno\u201d to it."])
         self.assertTrue(f)
