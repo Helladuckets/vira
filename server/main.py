@@ -4,6 +4,7 @@ Claude Code cockpit, served as one mobile-ready web app.
 Run: .venv/bin/uvicorn server.main:app --host 0.0.0.0 --port 8377
 """
 import asyncio
+import base64
 import json
 import mimetypes
 import os
@@ -31,6 +32,7 @@ from . import (actions, admission, agentbackend, aihealth, applecontacts,
                data as crm,
                define,
                designstudio,
+               draftcheck,
                evidence,
                feedstate,
                find,
@@ -906,6 +908,48 @@ def api_applications_evidence_map_material(uid: str, req: AppMapMaterialReq):
                                      f"session could start: {e}")
     if out.get("applied"):
         out["map"] = applicationmap.build(role)
+    return out
+
+
+class AppDraftCheckReq(BaseModel):
+    filename: str = ""
+    data: str = ""          # base64 - a .docx is bytes
+    kind: str = ""          # resume | cover; guessed when empty
+
+
+@app.post("/api/applications/{uid}/draft-check")
+def api_applications_draft_check(uid: str, req: AppDraftCheckReq):
+    """Check a hand-written draft against this role and mark it up.
+
+    His words come back verbatim in black; every suggestion is a coloured
+    line of Vira's beneath them.  The marked copy is returned as bytes (the
+    deliverable) and, where the role has a package folder, also written
+    beside it - a passive instance still returns the download and refuses
+    only that write.
+    """
+    role = applications.find_role(uid)
+    if role is None:
+        raise HTTPException(404, "unknown role")
+    try:
+        blob = base64.b64decode(req.data or "", validate=True)
+    except Exception:
+        raise HTTPException(400, "the upload was not readable")
+    try:
+        out = draftcheck.review(role, blob, req.filename, req.kind)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    marked = out.pop("docx")
+    out["name"] = draftcheck.marked_name(req.filename)
+    out["file"] = base64.b64encode(marked).decode("ascii")
+    try:
+        out["saved"] = draftcheck.save_beside_package(role, marked,
+                                                      req.filename)
+    except PermissionError as e:
+        out["saved"] = None
+        out["save_note"] = str(e)
+    except OSError as e:
+        out["saved"] = None
+        out["save_note"] = f"could not write it beside the package: {e}"
     return out
 
 
