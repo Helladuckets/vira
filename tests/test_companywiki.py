@@ -216,3 +216,134 @@ class PromptBlock(_VaultCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def claim_page(slug, claim, category, title, speaker="A Person"):
+    return (f'---\ntitle: "{title}"\ntype: concept\nstatus: generated\n'
+            f"claim_id: {claim}\ncategory: {category}\n"
+            f'organization: "[[{slug}]]"\ntags: [claim-graph]\n---\n\n'
+            f"# {title}\n\n- **{speaker}** - something they said.\n")
+
+
+class HiringSignals(_VaultCase):
+    """What the employer says it hires for, read off the claim graph.
+
+    Added 2026-08-14. The pipeline had never read hiring guidance at all
+    while a 27-page sourced claim graph sat in the owner's vault unused.
+    """
+
+    def claims(self, slug, rows):
+        for claim, category, title in rows:
+            (self.wiki / f"{slug}-claim-{claim}.md").write_text(
+                claim_page(slug, claim, category, title), encoding="utf-8")
+        atlasvault._cache["fp"] = None
+
+    def test_claim_pages_group_by_their_category_field(self):
+        self.rich("acme", "Acme")
+        self.claims("acme", [
+            ("odd-backgrounds", "hiring", "Values odd backgrounds"),
+            ("side-projects", "hiring", "Side projects are evidence"),
+            ("low-ego", "culture", "Low ego collaboration"),
+            ("tooling", "claude_code", "Tooling beliefs"),
+        ])
+        info = companywiki.resolve("Acme", root=self.root)
+        self.assertEqual(info["hiring"]["claims"],
+                         {"claude_code": 1, "culture": 1, "hiring": 2})
+        self.assertEqual(info["hiring"]["claim_count"], 4)
+
+    def test_only_hiring_and_culture_reach_the_letter(self):
+        """A claude_code claim is real and is not this document's business."""
+        self.rich("acme", "Acme")
+        self.claims("acme", [
+            ("odd", "hiring", "Values odd backgrounds"),
+            ("ego", "culture", "Low ego"),
+            ("tool", "claude_code", "Tooling"),
+            ("op", "operating_principles", "Principles"),
+        ])
+        info = companywiki.resolve("Acme", root=self.root)
+        titles = {r["title"] for r in info["hiring"]["letter_claims"]}
+        self.assertEqual(titles, {"Values odd backgrounds", "Low ego"})
+
+    def test_the_category_is_read_from_the_field_not_the_filename(self):
+        """Reading categories off filenames got both the count and the
+        membership wrong when this was first written by hand."""
+        self.rich("acme", "Acme")
+        self.claims("acme", [("hiring-sounding-name", "culture", "Culture")])
+        info = companywiki.resolve("Acme", root=self.root)
+        self.assertEqual(info["hiring"]["claims"], {"culture": 1})
+
+    def test_another_companys_claim_pages_are_never_read(self):
+        self.rich("acme", "Acme")
+        self.rich("other", "Other")
+        self.claims("other", [("odd", "hiring", "Other's signal")])
+        info = companywiki.resolve("Acme", root=self.root)
+        self.assertEqual(info["hiring"]["claim_count"], 0)
+
+    def test_a_page_section_is_recognised_by_its_aliases(self):
+        self.write("acme", page("entity", "Acme", sections=(
+            "What they do", "Mission and stated values", "Positions and claims",
+            "Recent developments", "How we hire"), filler=900))
+        info = companywiki.resolve("Acme", root=self.root)
+        self.assertTrue(info["hiring"]["section"])
+
+    def test_hiring_is_never_folded_into_the_letter_coverage_math(self):
+        """MIN_COVERS is the corpus's own natural break, measured across
+        eleven employers. A fifth section would silently weaken it."""
+        self.assertNotIn(companywiki.HIRING_SECTION,
+                         companywiki.LETTER_SECTIONS)
+        self.rich("acme", "Acme")
+        before = companywiki.resolve("Acme", root=self.root)
+        self.claims("acme", [("odd", "hiring", "Values odd backgrounds")])
+        after = companywiki.resolve("Acme", root=self.root)
+        self.assertEqual(before["verdict"], after["verdict"])
+        self.assertEqual(before["covers"], after["covers"])
+
+    def test_the_house_shape_asks_for_a_hiring_section(self):
+        self.assertIn(companywiki.HIRING_SECTION, companywiki.SKELETON)
+
+    def test_the_prompt_names_the_claim_pages_to_read(self):
+        self.rich("acme", "Acme")
+        self.claims("acme", [("odd", "hiring", "Values odd backgrounds")])
+        text = "\n".join(companywiki.prompt_block("Acme", root=self.root))
+        self.assertIn("WHAT ACME SAYS IT HIRES FOR", text)
+        self.assertIn("wiki/acme-claim-odd.md", text)
+
+    def test_an_absent_graph_asks_for_the_research_rather_than_going_quiet(self):
+        """Silence is the one output that cannot be right here — a pipeline
+        that never mentions hiring guidance is the defect being closed."""
+        self.rich("acme", "Acme")
+        text = "\n".join(companywiki.prompt_block("Acme", root=self.root))
+        self.assertIn("WHAT ACME SAYS IT HIRES FOR", text)
+        self.assertIn("No claim-graph pages exist", text)
+        self.assertIn("GATHER IT AS PART OF WRITING THE LETTER", text)
+        self.assertIn(companywiki.HIRING_SECTION, text)
+
+    def test_every_prompt_states_the_selection_not_claim_bound(self):
+        """The bound travels with the guidance, in both branches, or the
+        block becomes permission to write what an employer wants to hear."""
+        self.rich("acme", "Acme")
+        bare = "\n".join(companywiki.prompt_block("Acme", root=self.root))
+        self.claims("acme", [("odd", "hiring", "Odd")])
+        with_graph = "\n".join(companywiki.prompt_block("Acme", root=self.root))
+        for text in (bare, with_graph):
+            self.assertIn("SELECTION input, never a claim input", text)
+            self.assertIn("claim gate is untouched", text)
+
+    def test_a_parent_page_still_reports_its_hiring_signals(self):
+        """The payload already says the page is the parent; its claim graph
+        is still the closest published account of how that family hires."""
+        self.rich("acme", "Acme")
+        self.claims("acme", [("odd", "hiring", "Values odd backgrounds")])
+        info = companywiki.resolve("Acme AI", root=self.root)
+        self.assertEqual(info["match"], "parent")
+        self.assertEqual(info["hiring"]["claim_count"], 1)
+
+    def test_an_unreadable_claim_page_is_skipped_not_fatal(self):
+        self.rich("acme", "Acme")
+        self.claims("acme", [("odd", "hiring", "Odd")])
+        bad = self.wiki / "acme-claim-broken.md"
+        bad.write_text("x", encoding="utf-8")
+        bad.chmod(0o000)
+        self.addCleanup(lambda: bad.chmod(0o644))
+        info = companywiki.resolve("Acme", root=self.root)
+        self.assertEqual(info["hiring"]["claims"].get("hiring"), 1)
