@@ -115,7 +115,7 @@ class TheOwnersTextIsHis(Base):
         paras = ["Dear Acme AI team,",
                  "I am excited to apply for this role.",
                  "I built a corrections ledger; it holds 400 entries.",
-                 "Sincerely, Matt"]
+                 "Sincerely, the applicant"]
         out = dc.review(self.role, docx_bytes(paras), "letter.docx")
         runs = runs_of(out["docx"])
         for para in paras:
