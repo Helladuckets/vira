@@ -16287,6 +16287,7 @@ function appRow(r) {
     actions.appendChild(sess);
   }
   row.appendChild(actions);
+  bindDraftDrop(row, r);
   // Clicking the row opens its dossier, same rule as everywhere else. The
   // "Why" button remains the visible affordance; a role with no dossier
   // read has nothing to expand, so its row stays inert.
@@ -17209,6 +17210,102 @@ function appMapCard(node, column) {
 }
 
 // ---------- an empty lane takes a dropped document ----------
+// ===================================================================
+// DRAFT CHECK - drop a hand-written resume or letter onto its role
+//
+// He writes some drafts by hand. Dropping one on the role it is for reads
+// it against THAT posting, THAT company's hiring page and his own career
+// record, and hands back a marked copy: his words verbatim in black, every
+// suggestion a coloured line of Vira's underneath.
+//
+// The gesture is ARMED, never immediate. A drop costs a model call and
+// writes a file beside his package; the armSkinApply pattern makes the
+// consequence visible on the row he dropped onto, and Cancel does nothing.
+// preventDefault is what keeps the document-level catch-all from stealing
+// it (see the stray-drop rule in §Idea images).
+const DRAFT_EXT = /\.(docx|md|markdown|txt)$/i;
+
+function bindDraftDrop(row, r) {
+  row.addEventListener("dragover", (e) => {
+    if (!e.dataTransfer?.types?.includes("Files")) return;
+    e.preventDefault();
+    row.classList.add("draft-over");
+  });
+  row.addEventListener("dragleave", (e) => {
+    if (e.target === row) row.classList.remove("draft-over");
+  });
+  row.addEventListener("drop", (e) => {
+    const file = e.dataTransfer?.files?.[0];
+    if (!file) return;
+    e.preventDefault();                 // ours now; the catch-all stands down
+    row.classList.remove("draft-over");
+    if (!DRAFT_EXT.test(file.name)) {
+      toast("Drop a .docx, .md or .txt draft - " + file.name + " is neither");
+      return;
+    }
+    armDraftCheck(row, r, file);
+  });
+}
+
+function armDraftCheck(row, r, file) {
+  row.querySelector(".draft-arm")?.remove();
+  const bar = el("div", "draft-arm");
+  bar.appendChild(el("span", "draft-q",
+    `Check ${file.name} against ${r.title}?`));
+  const go = el("button", "btn primary", "Check it");
+  go.addEventListener("click", () => { bar.remove(); runDraftCheck(r, file); });
+  const no = el("button", "btn", "Cancel");
+  no.addEventListener("click", () => bar.remove());
+  bar.appendChild(go);
+  bar.appendChild(no);
+  row.appendChild(bar);
+}
+
+async function runDraftCheck(r, file) {
+  toast("Reading " + file.name + "…");
+  try {
+    const buf = await file.arrayBuffer();
+    let bin = "";
+    const bytes = new Uint8Array(buf);
+    for (let i = 0; i < bytes.length; i += 8192)
+      bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+    const out = await post(
+      `/api/applications/${encodeURIComponent(r.uid)}/draft-check`,
+      { filename: file.name, data: btoa(bin) });
+    downloadDraftCheck(out);
+    showDraftCheck(r, file, out);
+  } catch (e) {
+    toast(errText(e));
+  }
+}
+
+function downloadDraftCheck(out) {
+  const bin = atob(out.file);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const url = URL.createObjectURL(new Blob([bytes], { type:
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
+  const a = document.createElement("a");
+  a.href = url; a.download = out.name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// The report says which halves ran. A thinner review must never be handed
+// back as a complete one - the model pass and the claim check each fail
+// independently, and each says so rather than going quiet.
+function showDraftCheck(r, file, out) {
+  const kinds = { resume: "a resume", cover: "a cover letter" };
+  const bits = [`read as ${kinds[out.kind] || out.kind}`,
+                `${out.findings.length} findings`];
+  if (!out.model_ran) bits.push("judgment pass did not run");
+  if (!out.record_read) bits.push("career record unreadable, so claims were "
+                                  + "not checked");
+  if (out.saved) bits.push("saved beside the package");
+  else if (out.save_note) bits.push(out.save_note);
+  toast(`${out.name} - ${bits.join("; ")}`);
+}
+
 // A lane reads "No connected material found" when the package's artifact is
 // missing or unreadable. Dropping a Markdown file there is the owner saying
 // it belongs to this application; the SERVER decides what that means from

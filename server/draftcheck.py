@@ -123,6 +123,8 @@ about into over under more most other some such only own same too very
 work working works role roles team teams year years experience
 company companies job jobs position positions candidate candidates
 applicant applicants please apply application applications
+every each been being were was does doing done make makes making
+help helps helping include includes including across within here
 """.split())
 
 
