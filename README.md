@@ -56,12 +56,14 @@ Local-first by design, with every egress path named and opt-in:
   sessions" below.
 - **Notifications** - Vira texts you (over iMessage, to your own number)
   when an active-tier contact emails. Your phone already covers iMessage.
-- **Brain** - grounded chat over your notes vault, powered by
+- **Brain** - grounded chat over one or more notes vaults, powered by
   [qocha](https://github.com/MattaDurham/qocha) (the vault engine
   extracted from this module): hybrid FTS + local-embedding retrieval,
   answers that cite the notes they came from, citation chips that open
-  the note in place. Vault knowledge also surfaces on person pages and
-  inside every agent session as native tools.
+  the note in place. One primary vault remains the write target; additional
+  named vaults are indexed and read without being modified. Vault knowledge
+  also surfaces on person pages and inside every agent session as native
+  tools.
 - **Radar** - who to talk to next, scored live with the reasons attached
   (owed replies, going-quiet decay, stale loops, birthdays), plus
   **groupings**: two to five of your contacts who share real ground, with
@@ -229,7 +231,10 @@ PC the wizard skips what does not exist there - see **Windows** above):
    here" to seed a fresh one with the bundled
    [qocha](https://github.com/MattaDurham/qocha) engine. Semantic
    indexing wants [Ollama](https://ollama.com) with `nomic-embed-text`
-   pulled; without it the Brain still answers from full-text search.
+   pulled; without it the Brain still answers from full-text search. Add
+   more named vaults in the same card when your notes live in separate
+   folders. Search and chat span all of them; only the primary vault receives
+   plans, definitions, and ingested notes.
 5. **Mail** - Gmail/IMAP: app password in the Keychain (service
    `vira-mail`, account = the address), then add the account to
    `data/mail-accounts.json`. Microsoft 365: IMAP basic auth is dead, so

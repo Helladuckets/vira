@@ -1962,7 +1962,7 @@ def api_vault_asset(path: str):
     path and all resolve on disk, so no stem lookup is needed here — but the
     path arrives from the REQUEST, which is why `asset_path` re-checks
     containment against the resolved file rather than trusting the string."""
-    p = ingestfeed.asset_path(path)
+    p = vault.asset_path(path)
     if p is None:
         raise HTTPException(404, "no such file in the vault")
     return FileResponse(p, media_type=_guess_media(p),
@@ -1974,7 +1974,8 @@ def api_vault_asset(path: str):
 def api_vault_thumb(path: str):
     """A grid-sized copy of a vault image. Falls back to the original where
     no downscaler exists, so a tile always has a picture."""
-    p = ingestfeed.thumb_path(path)
+    p = (ingestfeed.thumb_path(path) if vault.primary_path(path)
+         else vault.asset_path(path))
     if p is None:
         raise HTTPException(404, "no such image in the vault")
     return FileResponse(p, media_type=_guess_media(p),
@@ -2549,6 +2550,12 @@ class OnboardVaultReq(BaseModel):
     init: bool = False
 
 
+class VaultSourceReq(BaseModel):
+    path: str
+    name: str | None = ""
+    id: str | None = None
+
+
 class OnboardAiReq(BaseModel):
     provider: str                      # anthropic | openai
     api_key: str | None = None         # pasted key -> Keychain, never config
@@ -2710,6 +2717,27 @@ def api_onboard_vault(req: OnboardVaultReq):
         return onboard.vault_setup(req.path, req.init)
     except (RuntimeError, ValueError) as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/vault/sources")
+def api_vault_sources():
+    return {"sources": onboard.status()["vault"]["sources"]}
+
+
+@app.post("/api/vault/sources")
+def api_vault_source_set(req: VaultSourceReq):
+    try:
+        return onboard.vault_source_set(req.path, req.name or "", req.id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/vault/sources/{source_id}")
+def api_vault_source_remove(source_id: str):
+    try:
+        return onboard.vault_source_remove(source_id)
+    except KeyError:
+        raise HTTPException(404, "unknown vault source")
 
 
 @app.post("/api/onboard/fda-assist")
@@ -3193,9 +3221,9 @@ def api_vault_note(path: str):
 
 
 @app.get("/api/vault/resolve")
-def api_vault_resolve(ref: str):
+def api_vault_resolve(ref: str, from_path: str | None = None):
     """Resolve one [[wikilink]] the way Obsidian does — by exact stem."""
-    hit = vault.resolve_ref(ref)
+    hit = vault.resolve_ref(ref, from_path=from_path)
     if hit is None:
         raise HTTPException(404, "no note named " + ref)
     return hit

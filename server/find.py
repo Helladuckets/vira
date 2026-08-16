@@ -626,6 +626,8 @@ def _note_rows(hits, limit, literal=False):
             continue
         seen.add(h["path"])
         rows.append({"path": h["path"], "title": h["title"] or h["path"],
+                     "vault_id": h.get("vault_id", "primary"),
+                     "vault_name": h.get("vault_name"),
                      "heading": h.get("heading") or "",
                      "snippet": (h.get("text") or "")[:320],
                      "when": _iso_from_epoch(h.get("mtime")),
