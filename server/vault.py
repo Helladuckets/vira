@@ -19,6 +19,7 @@ seams exactly as they were:
 
 Everything else delegates to a lazily (re)built qocha.Vault.
 """
+import hashlib
 import re
 import threading
 import time
@@ -37,9 +38,12 @@ DB_PATH = ROOT / "data" / "vault-index.sqlite"
 
 VAULT_RESCAN_S = 300
 DEFAULT_DIRS = ["wiki", "Briefs", "Sessions", "retros", "brain-retros"]
+SOURCE_PREFIX = "@"
+SOURCE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 
 # shared with the active qocha.Vault so tests can reset the cache in place
 _vec_state = {"gen": -1, "ids": None, "mat": None}
+_extra_vec_states = {}
 
 
 def vault_root() -> Path:
@@ -53,6 +57,94 @@ def vault_root() -> Path:
 
 def vault_dirs():
     return list(settings.get("vault_dirs") or DEFAULT_DIRS)
+
+
+def _source_id(value, root):
+    """Stable, URL/path-safe source id for a configured vault."""
+    raw = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    if SOURCE_ID_RE.fullmatch(raw or ""):
+        return raw
+    base = raw[:36].strip("-") or "vault"
+    digest = hashlib.sha1(str(root).encode("utf-8")).hexdigest()[:8]
+    return f"{base}-{digest}"
+
+
+def _inside(path, root):
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _overlaps(a, b):
+    return _inside(a, b) or _inside(b, a)
+
+
+def source_specs():
+    """Every connected markdown source, primary first.
+
+    `vault_root` remains the one WRITE target used by plans, definitions and
+    ingestion. `vault_sources` adds read-only roots for Find and vault chat.
+    An old `vault_dirs` entry that points outside the primary root is promoted
+    in memory to an extra source; this migrates the pre-feature workaround
+    without indexing the same files twice or requiring a config rewrite.
+    """
+    primary_root = Path(vault_root()).expanduser()
+    raw_dirs = vault_dirs()
+    primary_dirs, legacy = [], []
+    for item in raw_dirs:
+        candidate = (primary_root / str(item)).expanduser()
+        if _inside(candidate, primary_root):
+            rel = candidate.resolve().relative_to(primary_root.resolve())
+            primary_dirs.append(rel.as_posix())
+        else:
+            legacy.append(candidate.resolve())
+
+    specs = [{
+        "id": "primary", "name": primary_root.name or "Primary vault",
+        "root": primary_root, "dirs": primary_dirs, "primary": True,
+        "db": Path(DB_PATH),
+    }]
+    configured = settings.get("vault_sources") or []
+    rows = list(configured) if isinstance(configured, list) else []
+    rows += [{"name": p.name, "root": str(p), "legacy": True}
+             for p in legacy]
+    connected_roots = [primary_root.resolve()]
+    used_ids = {"primary"}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_root = str(row.get("root") or "").strip()
+        if not raw_root:
+            continue
+        root = Path(raw_root).expanduser().resolve()
+        key = str(root)
+        if any(_overlaps(root, connected) for connected in connected_roots):
+            continue
+        connected_roots.append(root)
+        sid = _source_id(row.get("id") or row.get("name") or root.name, root)
+        if sid in used_ids:
+            sid = _source_id(f"{sid}-{hashlib.sha1(key.encode()).hexdigest()[:6]}",
+                             root)
+        used_ids.add(sid)
+        configured_dirs = row.get("dirs")
+        if isinstance(configured_dirs, list):
+            dirs = []
+            for item in configured_dirs:
+                candidate = (root / str(item)).expanduser()
+                if _inside(candidate, root):
+                    rel = candidate.resolve().relative_to(root.resolve())
+                    dirs.append(rel.as_posix())
+        else:
+            dirs = None
+        specs.append({
+            "id": sid, "name": str(row.get("name") or root.name or sid),
+            "root": root, "dirs": dirs, "primary": False,
+            "legacy": bool(row.get("legacy")),
+            "db": Path(DB_PATH).parent / "vault-indexes" / f"{sid}.sqlite",
+        })
+    return specs
 
 
 class _ViraEmbedder:
@@ -74,39 +166,117 @@ def _answer(prompt):
     return suggest.complete(prompt)
 
 
-_active = {"key": None, "vault": None}
+_active = {"key": None, "vault": None, "rows": []}
 _build_lock = threading.Lock()
 
 
-def _vault() -> _QochaVault:
-    """The active qocha.Vault, rebuilt when the settings that shape it
-    change (root, dirs, owner) or when a test patches DB_PATH."""
-    key = (str(vault_root()), tuple(vault_dirs()), str(DB_PATH),
+def _vault_rows():
+    """[{spec, vault}], rebuilt when any connected source changes."""
+    specs = source_specs()
+    key = (tuple((s["id"], str(s["root"]), tuple(s["dirs"] or ()),
+                  str(s["db"])) for s in specs),
            str(settings.get("owner_name") or ""))
     with _build_lock:
         if _active["key"] != key:
-            cfg = _QochaConfig(
-                root=vault_root(), dirs=vault_dirs(), db=DB_PATH,
-                owner=settings.get("owner_name") or "the owner")
-            v = _QochaVault(cfg.root, config=cfg,
-                            embedder=_ViraEmbedder(), answerer=_answer)
-            v._vec_state = _vec_state          # shared, test-resettable
-            _active.update(key=key, vault=v)
-        return _active["vault"]
+            built = []
+            for spec in specs:
+                cfg = _QochaConfig(
+                    root=spec["root"], dirs=spec["dirs"], db=spec["db"],
+                    owner=settings.get("owner_name") or "the owner")
+                v = _QochaVault(cfg.root, config=cfg,
+                                embedder=_ViraEmbedder(), answerer=_answer)
+                if spec["primary"]:
+                    v._vec_state = _vec_state      # public test/atlas seam
+                else:
+                    v._vec_state = _extra_vec_states.setdefault(
+                        spec["id"], {"gen": -1, "ids": None, "mat": None})
+                built.append({"spec": spec, "vault": v})
+            _active.update(key=key,
+                           vault=built[0]["vault"] if built else None,
+                           rows=built)
+        return _active["rows"]
+
+
+def _vault() -> _QochaVault:
+    """The primary vault (or first connected source when primary is absent)."""
+    rows = _vault_rows()
+    if not rows:
+        raise RuntimeError("no vault configured")
+    return rows[0]["vault"]
+
+
+def _public_path(spec, rel):
+    rel = str(rel).replace("\\", "/").lstrip("/")
+    return rel if spec["primary"] else f"{SOURCE_PREFIX}{spec['id']}/{rel}"
+
+
+def _source_path(path):
+    """(row, vault-relative path) for one public source-aware path."""
+    raw = str(path or "").strip().replace("\\", "/")
+    rows = _vault_rows()
+    if raw.startswith(SOURCE_PREFIX):
+        head, sep, rel = raw[1:].partition("/")
+        if not sep or not rel:
+            raise ValueError("invalid vault path")
+        row = next((r for r in rows if r["spec"]["id"] == head), None)
+        if row is None:
+            raise ValueError("unknown vault source")
+        return row, rel
+    if not rows:
+        raise ValueError("no vault configured")
+    return rows[0], raw
+
+
+def _hit(row, hit):
+    out = dict(hit)
+    spec = row["spec"]
+    out["path"] = _public_path(spec, hit.get("path") or "")
+    out["vault_id"] = spec["id"]
+    out["vault_name"] = spec["name"]
+    return out
 
 
 # ---------- the public surface (unchanged) ----------
 
 def scan_once():
-    return _vault().scan()
+    total = {"changed": 0, "removed": 0, "seen": 0, "vaults": []}
+    for row in _vault_rows():
+        spec = row["spec"]
+        try:
+            result = row["vault"].scan()
+        except Exception as exc:  # one disconnected disk never blocks others
+            result = {"error": str(exc)[:200]}
+        total["vaults"].append({"id": spec["id"], "name": spec["name"],
+                                **result})
+        for key in ("changed", "removed", "seen"):
+            total[key] += int(result.get(key) or 0)
+    return total
 
 
 def embed_pending(limit=2000):
-    return _vault().embed_pending(limit=limit)
+    total = 0
+    left = max(0, int(limit))
+    for row in _vault_rows():
+        if left <= 0:
+            break
+        done = int(row["vault"].embed_pending(limit=left) or 0)
+        total += done
+        left -= done
+    return total
 
 
 def search(q, limit=10):
-    return _vault().search(q, limit=limit)
+    hits = []
+    for row in _vault_rows():
+        if not row["spec"]["root"].is_dir():
+            continue
+        try:
+            hits.extend(_hit(row, h) for h in
+                        row["vault"].search(q, limit=max(limit * 2, 20)))
+        except Exception:  # a missing/unmounted source is an honest partial
+            continue
+    hits.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+    return hits[:limit]
 
 
 def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
@@ -119,10 +289,28 @@ def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
     With no query text this is a pure browse: newest (or oldest) notes in
     the window, one row per note.
     """
-    lo = _epoch(since)
-    hi = _epoch(until)
+    lo, hi = _epoch(since), _epoch(until)
     q = (q or "").strip()
-    con = _connect()
+    out = []
+    for row in _vault_rows():
+        if not row["spec"]["root"].is_dir():
+            continue
+        try:
+            out.extend(_search_filtered_one(row, q, max(limit, 1), lo, hi,
+                                            order))
+        except Exception:  # a disconnected source must not hide the others
+            continue
+    if order in ("recent", "oldest"):
+        out.sort(key=lambda h: h["mtime"] or 0, reverse=order == "recent")
+    elif q:
+        out.sort(key=lambda h: float(h.get("score") or 0), reverse=True)
+    else:
+        out.sort(key=lambda h: h["mtime"] or 0, reverse=True)
+    return out[:limit]
+
+
+def _search_filtered_one(row, q, limit, lo, hi, order):
+    con = row["vault"]._connect()
     try:
         _init(con)
         if not q:
@@ -141,18 +329,19 @@ def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
                 + " ORDER BY n.mtime " + ("ASC" if order == "oldest"
                                           else "DESC")
                 + " LIMIT ?", (*params, limit)).fetchall()
-            return [{"path": r["path"], "title": r["title"],
-                     "heading": r["heading"] or "", "text": r["text"] or "",
-                     "mtime": r["mtime"], "score": None} for r in rows]
+            return [_hit(row, {"path": r["path"], "title": r["title"],
+                                "heading": r["heading"] or "",
+                                "text": r["text"] or "",
+                                "mtime": r["mtime"], "score": None})
+                    for r in rows]
 
         # A filtered or re-ordered search has to over-fetch, and by a lot:
-        # "the newest note about X" means the newest of ALL the notes
-        # about X, not the newest of the ten the ranker happened to like
-        # best. A date window can cut the entire similarity head too.
+        # "the newest note about X" means the newest of ALL the notes about
+        # X, not the newest of the ten the ranker happened to like best.
         deep = (max(limit * 8, 200)
                 if (lo is not None or hi is not None or order != "relevance")
                 else limit)
-        hits = _vault().search(q, limit=deep)
+        hits = row["vault"].search(q, limit=deep)
         mt = {r["path"]: r["mtime"] for r in
               con.execute("SELECT path, mtime FROM notes")}
     finally:
@@ -160,15 +349,13 @@ def search_filtered(q, limit=10, since=None, until=None, order="relevance"):
 
     out = []
     for h in hits:
-        m = mt.get(h["path"])
-        if lo is not None and (m is None or m < lo):
+        mtime = mt.get(h["path"])
+        if lo is not None and (mtime is None or mtime < lo):
             continue
-        if hi is not None and (m is None or m >= hi):
+        if hi is not None and (mtime is None or mtime >= hi):
             continue
-        out.append(dict(h, mtime=m))
-    if order in ("recent", "oldest"):
-        out.sort(key=lambda h: h["mtime"] or 0, reverse=order == "recent")
-    return out[:limit]
+        out.append(_hit(row, dict(h, mtime=mtime)))
+    return out
 
 
 def grep_notes(text, limit=None, since=None, until=None, order="recent"):
@@ -188,40 +375,51 @@ def grep_notes(text, limit=None, since=None, until=None, order="recent"):
     if not text:
         return []
     lo, hi = _epoch(since), _epoch(until)
-    con = _connect()
+    out = []
+    for row in _vault_rows():
+        if not row["spec"]["root"].is_dir():
+            continue
+        try:
+            out.extend(_grep_one(row, text, lo, hi))
+        except Exception:
+            continue
+    out.sort(key=lambda h: h["mtime"] or 0, reverse=order != "oldest")
+    return out[:limit] if limit else out
+
+
+def _grep_one(row, text, lo, hi):
+    con = row["vault"]._connect()
     try:
         _init(con)
         sql = ("SELECT c.path, n.title, c.heading, c.text, n.mtime "
                "FROM chunks c JOIN notes n ON n.path = c.path "
-               "WHERE c.text LIKE ? ESCAPE '\\' OR n.title LIKE ? ESCAPE '\\' "
-               "   OR c.path LIKE ? ESCAPE '\\'")
-        params = []
+               "WHERE (c.text LIKE ? ESCAPE '\\' "
+               "OR n.title LIKE ? ESCAPE '\\' "
+               "OR c.path LIKE ? ESCAPE '\\')")
         pat = "%" + text.replace("\\", "\\\\").replace(
             "%", "\\%").replace("_", "\\_") + "%"
-        params.extend([pat, pat, pat])
+        params = [pat, pat, pat]
         if lo is not None:
             sql += " AND n.mtime >= ?"
             params.append(lo)
         if hi is not None:
             sql += " AND n.mtime < ?"
             params.append(hi)
-        sql += " ORDER BY n.mtime " + ("ASC" if order == "oldest" else "DESC")
-        if limit:
-            sql += " LIMIT ?"
-            params.append(limit)
         rows = con.execute(sql, params).fetchall()
     finally:
         con.close()
 
     out, seen = [], set()
-    for r in rows:
-        key = (r["path"], r["heading"])
+    for result in rows:
+        key = (result["path"], result["heading"])
         if key in seen:
             continue
         seen.add(key)
-        out.append({"path": r["path"], "title": r["title"],
-                    "heading": r["heading"] or "", "text": r["text"] or "",
-                    "mtime": r["mtime"], "score": None, "literal": True})
+        out.append(_hit(row, {
+            "path": result["path"], "title": result["title"],
+            "heading": result["heading"] or "", "text": result["text"] or "",
+            "mtime": result["mtime"], "score": None, "literal": True,
+        }))
     return out
 
 
@@ -237,7 +435,8 @@ def _epoch(iso):
 
 
 def ask(question, k=10, hits=None):
-    return _vault().ask(question, k=k, hits=hits)
+    merged = search(question, limit=k) if hits is None else hits
+    return _vault().ask(question, k=k, hits=merged)
 
 
 def note_text(path, cap=None):
@@ -246,7 +445,32 @@ def note_text(path, cap=None):
     `cap` is for context-window callers and truncates HONESTLY (the
     engine appends an in-band marker). See qocha's note_text docstring.
     """
-    return _vault().note_text(path, cap=cap)
+    row, rel = _source_path(path)
+    return row["vault"].note_text(rel, cap=cap)
+
+
+def asset_path(path):
+    """Resolve a source-aware asset path without ever leaving its vault."""
+    try:
+        row, rel = _source_path(path)
+    except ValueError:
+        return None
+    root = row["spec"]["root"].resolve()
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return None
+    return target if target.is_file() and target.suffix.lower() != ".md" else None
+
+
+def primary_path(path):
+    """Whether a public path belongs to the primary/write vault."""
+    try:
+        row, _ = _source_path(path)
+    except ValueError:
+        return False
+    return bool(row["spec"]["primary"])
 
 
 # ------------------------------------------------------- wikilink resolution
@@ -259,6 +483,7 @@ def note_text(path, cap=None):
 # exact match answers first and search is only ever a labelled fallback.
 
 _stem_cache = {"key": None, "map": None, "root": None, "at": 0.0}
+_extra_stem_caches = {}
 
 # The cache KEY is a filesystem walk, so computing it to decide whether to
 # rebuild cost as much as rebuilding — measured on the real vault, 1.4s of
@@ -331,7 +556,7 @@ def _best(a, b):
     return a if _rank(a)[:2] <= _rank(b)[:2] else b
 
 
-def _stem_map():
+def _stem_map(row=None):
     """{'exact': {stem: rel}, 'lower': {stem.lower(): rel}, 'assets': {...}}.
 
     Two maps, not one. The single map this replaced wrote both `p.stem` and
@@ -343,23 +568,31 @@ def _stem_map():
     opened a 0-byte stub. Keeping the two keyspaces apart lets the lookup
     compare ranks across them instead of racing them.
     """
-    root = Path(vault_root())
+    if row is None:
+        rows = _vault_rows()
+        row = rows[0] if rows else None
+    root = row["spec"]["root"] if row else Path(vault_root())
+    cache = (_stem_cache if not row or row["spec"]["primary"] else
+             _extra_stem_caches.setdefault(
+                 row["spec"]["id"],
+                 {"key": None, "map": None, "root": None, "at": 0.0}))
     # Setting `key` to None is still the explicit invalidation, so a test or a
     # caller that knows the vault changed can force a rebuild.
-    if (_stem_cache["key"] is not None
-            and _stem_cache["root"] == str(root)
-            and time.monotonic() - _stem_cache["at"] < _STEM_TTL):
-        return _stem_cache["map"]
+    if (cache["key"] is not None
+            and cache["root"] == str(root)
+            and time.monotonic() - cache["at"] < _STEM_TTL):
+        return cache["map"]
     if not root.exists():
-        return {"exact": {}, "lower": {}, "assets": {}, "assets_lower": {}}
+        return {"exact": {}, "lower": {}, "names": {}, "assets": {},
+                "assets_lower": {}}
     notes = list(_visible_notes(root))
     assets = list(_visible_assets(root))
     key = (str(root), len(notes), len(assets),
            max((p.stat().st_mtime_ns for _, p in notes), default=0),
            max((p.stat().st_mtime_ns for _, p in assets), default=0))
-    _stem_cache["root"], _stem_cache["at"] = str(root), time.monotonic()
-    if _stem_cache["key"] == key:
-        return _stem_cache["map"]
+    cache["root"], cache["at"] = str(root), time.monotonic()
+    if cache["key"] == key:
+        return cache["map"]
     m = {"exact": {}, "lower": {}, "names": {}, "assets": {}, "assets_lower": {}}
     for rel, _ in notes:
         # Best-ranked writer wins per key, so resolution is stable and a
@@ -378,7 +611,7 @@ def _stem_map():
         m["assets"][rel.name] = _best(m["assets"].get(rel.name), rel)
         low = rel.name.lower()
         m["assets_lower"][low] = _best(m["assets_lower"].get(low), rel)
-    _stem_cache["key"], _stem_cache["map"] = key, m
+    cache["key"], cache["map"] = key, m
     return m
 
 
@@ -396,7 +629,7 @@ def _clean_ref(ref, keep_ext=False):
     return r.strip("/ ")
 
 
-def resolve_ref(ref):
+def _resolve_ref_one(row, ref):
     """{path, exact} for a wikilink, or None.
 
     `exact` False means this came from the search fallback and the caller
@@ -406,8 +639,8 @@ def resolve_ref(ref):
     r = _clean_ref(ref)
     if not r:
         return None
-    root = Path(vault_root())
-    m = _stem_map()
+    root = row["spec"]["root"]
+    m = _stem_map(row)
     rel = None
     if "/" not in raw_ref and raw_ref != r:
         # An explicitly-typed `.md`, matched case-sensitively on the whole
@@ -442,10 +675,42 @@ def resolve_ref(ref):
     if rel is None:
         rel = m["assets"].get(r) or m["assets_lower"].get(r.lower())
     if rel is not None:
-        return {"path": rel.as_posix(), "exact": True}
-    found = search(r, limit=1) or []
+        hit = {"path": _public_path(row["spec"], rel.as_posix()),
+               "exact": True}
+        if not row["spec"]["primary"]:
+            hit.update(vault_id=row["spec"]["id"],
+                       vault_name=row["spec"]["name"])
+        return hit
+    return None
+
+
+def resolve_ref(ref, from_path=None):
+    """Resolve within the current note's source first, then every other.
+
+    A source context prevents `[[index]]` in a secondary vault from opening
+    the primary vault's same-named note. Without context, the primary vault
+    keeps the historical precedence.
+    """
+    if not _clean_ref(ref):
+        return None
+    rows = list(_vault_rows())
+    if from_path:
+        try:
+            context, _ = _source_path(from_path)
+            rows = [context] + [r for r in rows if r is not context]
+        except ValueError:
+            pass
+    for row in rows:
+        if not row["spec"]["root"].is_dir():
+            continue
+        hit = _resolve_ref_one(row, ref)
+        if hit is not None:
+            return hit
+    found = search(_clean_ref(ref), limit=1) or []
     if found:
-        return {"path": found[0]["path"], "exact": False}
+        return {"path": found[0]["path"], "exact": False,
+                "vault_id": found[0].get("vault_id", "primary"),
+                "vault_name": found[0].get("vault_name", "Primary vault")}
     return None
 
 
@@ -458,19 +723,47 @@ def known_stems():
     tested as `anthropic`. Sending full paths instead would multiply the
     payload for a set the client would still have to normalise.
     """
-    if not Path(vault_root()).exists():
-        return []
     # Read straight off the resolver's own index rather than re-walking, so
     # this list cannot drift from what `resolve_ref` will actually accept —
     # the client dims links with it, and a list that disagreed would dim
     # links the server resolves fine and light up links it will refuse.
     # Assets are in here for that reason too: `![[chart.png]]` resolves.
-    m = _stem_map()
-    return sorted(set(m["exact"]) | set(m["assets"]))
+    names = set()
+    for row in _vault_rows():
+        if not row["spec"]["root"].exists():
+            continue
+        m = _stem_map(row)
+        names.update(m["exact"])
+        names.update(m["assets"])
+    return sorted(names)
 
 
 def status():
-    return _vault().status()
+    vaults = []
+    for row in _vault_rows():
+        spec = row["spec"]
+        try:
+            state = row["vault"].status()
+        except Exception as exc:
+            state = {"root": str(spec["root"]), "db": str(spec["db"]),
+                     "notes": 0, "chunks": 0, "vectors": 0,
+                     "last_scan": None, "available": False,
+                     "error": str(exc)[:200]}
+        vaults.append({**state, "id": spec["id"], "name": spec["name"],
+                       "primary": spec["primary"],
+                       "legacy": bool(spec.get("legacy"))})
+    first = vaults[0] if vaults else {}
+    return {
+        "root": first.get("root", str(vault_root())),
+        "db": first.get("db", str(DB_PATH)),
+        "notes": sum(int(v.get("notes") or 0) for v in vaults),
+        "chunks": sum(int(v.get("chunks") or 0) for v in vaults),
+        "vectors": sum(int(v.get("vectors") or 0) for v in vaults),
+        "last_scan": max((str(v.get("last_scan") or "") for v in vaults),
+                         default="") or None,
+        "available": any(v.get("available") for v in vaults),
+        "vaults": vaults,
+    }
 
 
 def person_notes(name, limit=6):
@@ -485,13 +778,15 @@ def person_notes(name, limit=6):
             by_path[h["path"]] = h
             order.append(h["path"])
     return [{"path": p, "title": by_path[p]["title"],
+             "vault_id": by_path[p].get("vault_id", "primary"),
+             "vault_name": by_path[p].get("vault_name"),
              "heading": by_path[p]["heading"],
              "snippet": by_path[p]["text"][:280]}
             for p in order[:limit]]
 
 
 def _connect():
-    """Raw connection to the index (atlas's FTS-only co-mention signal)."""
+    """Primary raw index connection (atlas's co-mention signal is local)."""
     return _vault()._connect()
 
 

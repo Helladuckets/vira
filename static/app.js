@@ -3227,7 +3227,7 @@ function renderNoteRows(box, rows) {
     const main = el("div", "link-main");
     main.appendChild(el("div", "link-title", r.title || r.path));
     main.appendChild(el("div", "link-sub",
-      [r.heading, r.when ? fmtDay(r.when) : null].filter(Boolean)
+      [r.vault_name, r.heading, r.when ? fmtDay(r.when) : null].filter(Boolean)
         .join(" · ")));
     if (r.snippet) main.appendChild(el("div", "link-ctx", r.snippet));
     row.appendChild(main);
@@ -11231,9 +11231,34 @@ function cardDossiers(card, step, st) {
 
 function cardBrain(card, step, st) {
   card.appendChild(el("p", "hint",
-    "Point Vira at a notes vault (Obsidian, or any folder of markdown) and " +
-    "the Brain answers questions grounded in your own notes, citing them. " +
-    "Indexed on this machine; nothing leaves it."));
+    "Connect one or more notes vaults (Obsidian, or any folder of markdown). " +
+    "Find and Chat with my Vault search them together and keep every citation " +
+    "attached to its source. Indexing stays on this machine."));
+  card.appendChild(el("div", "setup-sub", "Connected vaults"));
+  (st.vault.sources || []).forEach((source) => {
+    const tile = el("div", "setup-prov" + (source.connected ? " on" : ""));
+    const head = el("div", "setup-prov-head");
+    head.appendChild(el("span", "setup-prov-name", source.name));
+    head.appendChild(el("span", "setup-prov-state",
+      source.primary ? "primary · write target" : "connected · read only"));
+    if (source.removable) {
+      const remove = el("button", "btn vault-source-remove", "Disconnect");
+      remove.onclick = () => setupAct(remove,
+        () => api("/api/vault/sources/" + encodeURIComponent(source.id), {
+          method: "DELETE",
+        }), () => `${source.name} disconnected; its files were not changed`);
+      head.appendChild(remove);
+    }
+    tile.appendChild(head);
+    tile.appendChild(el("div", "hint",
+      `${source.root} · ${source.notes} ${source.notes === 1 ? "note" : "notes"}` +
+      (source.legacy ? " · connected through legacy vault_dirs" : "")));
+    card.appendChild(tile);
+  });
+  card.appendChild(el("div", "setup-sub", "Primary vault"));
+  card.appendChild(el("p", "hint",
+    "Plans, definitions, and ingested notes are written here. Secondary " +
+    "vaults below are searched and read, never modified."));
   const row = el("div", "setup-row");
   const vin = el("input");
   vin.className = "search";
@@ -11258,6 +11283,25 @@ function cardBrain(card, step, st) {
   row.appendChild(vb);
   row.appendChild(vnb);
   card.appendChild(row);
+
+  card.appendChild(el("div", "setup-sub", "Add a read-only vault"));
+  const add = el("div", "setup-row");
+  const name = el("input");
+  name.className = "search"; name.placeholder = "Name, e.g. Work notes";
+  const path = el("input");
+  path.className = "search";
+  path.placeholder = st.platform === "win"
+    ? "C:\\Users\\you\\Documents\\Work" : "~/Documents/Work";
+  const button = el("button", "btn", "Add vault");
+  button.onclick = () => setupAct(button,
+    () => api("/api/vault/sources", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name.value.trim(), path: path.value.trim() }),
+    }), (source) => `${source.name} connected — ${source.notes} ` +
+      `${source.notes === 1 ? "note" : "notes"}`);
+  add.appendChild(name); add.appendChild(path); add.appendChild(button);
+  card.appendChild(add);
 }
 
 function cardMail(card, step, st) {
@@ -12536,7 +12580,7 @@ async function doApplySkin(s) {
 
 // ----- vault note focus panel (Brain citation chips + person-page rows) -----
 
-function mdToHtml(md) {
+function mdToHtml(md, notePath) {
   // Minimal, safe markdown for vault notes: escape everything first, then
   // rebuild the handful of shapes notes actually use. [[wikilinks]] become
   // clickable note-links resolved through vault search.
@@ -12569,8 +12613,14 @@ function mdToHtml(md) {
   // back off before the path is re-encoded for the query string.
   const unesc = (v) => v.replace(/&amp;/g, "&").replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+  const sourcePath = (rel) => {
+    const clean = unesc(rel).trim();
+    const source = String(notePath || "").match(/^@([^/]+)\//);
+    return source && !clean.startsWith("@")
+      ? `@${source[1]}/${clean.replace(/^\/+/, "")}` : clean;
+  };
   const assetUrl = (rel) =>
-    "/api/vault/asset?path=" + encodeURIComponent(unesc(rel).trim());
+    "/api/vault/asset?path=" + encodeURIComponent(sourcePath(rel));
   const imgTag = (src, alt) => '<img class="note-img" loading="lazy" src="'
     + src + '" alt="' + String(alt || "").replace(/"/g, "") + '">';
   const inline = (s) => wiki(s
@@ -12650,7 +12700,7 @@ async function fillNote(host, path, spawn, anchor) {
   host.appendChild(el("div", "spin", "Loading note…"));
   try {
     const n = await api("/api/vault/note?path=" + encodeURIComponent(path));
-    const html = mdToHtml(n.text);
+    const html = mdToHtml(n.text, path);
     // AN EMPTY NOTE IS A STATE, AND IT SAYS SO. mdToHtml("") returns "", so a
     // note that exists on disk holding nothing painted a black void — a window
     // indistinguishable from a broken one, which is exactly how it was
@@ -12669,7 +12719,7 @@ async function fillNote(host, path, spawn, anchor) {
     }
     host.innerHTML = html;
     host.querySelectorAll(".note-link").forEach((a) =>
-      a.addEventListener("click", () => spawn(a.dataset.ref)));
+      a.addEventListener("click", () => spawn(a.dataset.ref, path)));
     markDeadLinks(host);
     applyNoteAnchor(host, anchor);
   } catch (e) {
@@ -12890,13 +12940,15 @@ function applyNoteAnchor(host, anchor) {
 // either way, because focus mode dims and blurs everything behind it and a
 // window spawned under that scrim is a window you cannot read. A plan panel
 // carries no notePath, so it closes without being promoted.
-async function spawnNoteRef(ref) {
+async function spawnNoteRef(ref, fromPath) {
   let hit;
   try {
     // EXACT resolution, not ranked search. A wikilink is a filename, and
     // taking search's top hit opened the wrong note for 27% of the links in
     // this vault that point at notes which genuinely exist.
-    hit = await api("/api/vault/resolve?ref=" + encodeURIComponent(ref));
+    let url = "/api/vault/resolve?ref=" + encodeURIComponent(ref);
+    if (fromPath) url += "&from_path=" + encodeURIComponent(fromPath);
+    hit = await api(url);
   } catch (e) {
     toast(e.status === 404 ? "No note named " + ref : "Note lookup failed");
     return;

@@ -5502,6 +5502,7 @@ a.rm-name:hover { color: var(--accent); }
 }
 .setup-prov.on { border-color: var(--green); }
 .setup-prov-head { display: flex; align-items: baseline; gap: 8px; }
+.setup-prov-head .vault-source-remove { margin-left: auto; padding: 4px 8px; }
 .setup-prov-name { font-weight: 600; color: var(--text-head); }
 .setup-prov-state {
   font-size: 11px; text-transform: uppercase; letter-spacing: .06em;

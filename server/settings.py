@@ -73,6 +73,10 @@ DEFAULTS = {
     "vault_root": "",                    # notes vault for the Brain index; empty = dormant
                                          # (set via Setup > Brain or config.json)
     "vault_dirs": [],                    # vault subdirs to index; empty = vault.DEFAULT_DIRS
+    "vault_sources": [],                 # additional read-only markdown vaults:
+                                         # [{id, name, root, dirs?}]; the
+                                         # primary vault_root remains the
+                                         # write target
     "reader_sources": [],                # folders connected to the Reader; empty = only
                                          # the places Vira writes itself
     "judge_model": "opus",               # fresh-eyes judge sessions (circuits + Jobs history)

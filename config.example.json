@@ -70,6 +70,8 @@
   "_reader_sources": "Folders outside Vira connected to the Reader, as a list of {path, kind, glob, label}. Each is READ and never written or copied: a matching file is one document, and a subdirectory holding index.html is one document too (a page plus its assets). kind is dossier | plan | retro | brief | walkthrough (default dossier); glob is a filename pattern inside the folder (default *.html); label names the source. Documents appear after the Reader's Scan. Removing a folder here immediately stops Vira serving anything out of it. Example: [{\"path\": \"~/workspace/crm/data/self/renderings/current\", \"kind\": \"dossier\", \"label\": \"Self-record renderings\"}]",
   "vault_dirs": [],
   "_vault_dirs": "Vault subdirectories to index (recursive), plus root-level .md files always. Empty = the default set (wiki, Briefs, Sessions, retros, brain-retros).",
+  "vault_sources": [],
+  "_vault_sources": "Additional read-only markdown vaults searched by Find and Chat with my Vault. Each entry is {id, name, root, dirs?}. The primary vault_root remains the write target for plans, definitions, and ingestion.",
   "site_root": "",
   "_site_root": "Checkout of the owner's public site repo (e.g. ~/workspace/thedurham-nyc). Used by the sitedocs migration (documents moved off the site into /docs/) and the blog publish pipeline (posts render into the site repo and push). Empty = both stay dormant.",
   "judge_model": "opus",

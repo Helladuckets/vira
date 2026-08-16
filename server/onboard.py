@@ -14,9 +14,10 @@ Deterministic movers, one model seam:
   summary, hooks, open loops), written to profiles/p_*.json. One model call
   per person, same privacy boundary as reply drafting. Skips people who
   already have a profile, so it is resumable and re-runnable.
-- vault_setup(path, init) — point vault_root at an existing notes vault, or
-  seed a fresh one with the bundled qocha CLI (`qocha init`), then write the
-  config so the Brain indexer picks it up without a restart.
+- vault_setup(path, init) — point vault_root at the primary notes vault, or
+  seed a fresh one with the bundled qocha CLI (`qocha init`).
+- vault_source_set/remove — connect named, read-only markdown vaults to the
+  same search/chat surface while leaving every write on the primary.
 
 Never touches the fixture copy: all writes go to the real crm_root."""
 import csv
@@ -458,6 +459,99 @@ def vault_setup(path, init=False):
             "notes": _md_count(p)}
 
 
+_VAULT_SOURCE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
+
+
+def _vault_source_id(value):
+    sid = re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+    return sid[:48].rstrip("-") or "vault"
+
+
+def _configured_vault_sources():
+    rows = settings.raw().get("vault_sources") or []
+    if not isinstance(rows, list):
+        return []
+    return [dict(row) for row in rows if isinstance(row, dict)]
+
+
+def _paths_overlap(a, b):
+    try:
+        a.relative_to(b)
+        return True
+    except ValueError:
+        try:
+            b.relative_to(a)
+            return True
+        except ValueError:
+            return False
+
+
+def vault_source_set(path, name="", source_id=None):
+    """Add or update one secondary, read-only markdown source."""
+    raw = str(path or "").strip()
+    if not raw:
+        raise ValueError("a vault path is required")
+    root = Path(raw).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"{root} is not a directory")
+    primary_raw = str(settings.get("vault_root") or "").strip()
+    if primary_raw and _paths_overlap(
+            root, Path(primary_raw).expanduser().resolve()):
+        raise ValueError("vault folders cannot overlap the primary vault")
+
+    rows = _configured_vault_sources()
+    sid = str(source_id or "").strip().lower()
+    if sid and not _VAULT_SOURCE_ID.fullmatch(sid):
+        raise ValueError("vault id must use lowercase letters, numbers, "
+                         "and hyphens")
+    existing = (next((row for row in rows if row.get("id") == sid), None)
+                if sid else None)
+    same_root = next((row for row in rows
+                      if str(Path(str(row.get("root") or "")).expanduser()
+                             .resolve()) == str(root)), None)
+    if same_root and existing is not same_root:
+        existing = same_root
+        sid = str(same_root.get("id") or "")
+    for row in rows:
+        if row is existing or not row.get("root"):
+            continue
+        other = Path(str(row["root"])).expanduser().resolve()
+        if _paths_overlap(root, other):
+            raise ValueError("connected vault folders cannot overlap")
+    if not sid:
+        base = _vault_source_id(name or root.name)
+        used = {str(row.get("id") or "") for row in rows}
+        sid = base
+        suffix = 2
+        while sid in used or sid == "primary":
+            tail = f"-{suffix}"
+            sid = base[:48 - len(tail)].rstrip("-") + tail
+            suffix += 1
+
+    item = {"id": sid, "name": str(name or root.name or sid).strip(),
+            "root": str(root)}
+    if existing is None:
+        rows.append(item)
+    else:
+        item["dirs"] = existing.get("dirs") if existing.get("dirs") else None
+        item = {k: v for k, v in item.items() if v is not None}
+        rows[rows.index(existing)] = item
+    config_set(vault_sources=rows)
+    return {**item, "primary": False, "read_only": True,
+            "notes": _md_count(root)}
+
+
+def vault_source_remove(source_id):
+    """Disconnect one configured secondary source; never delete its files."""
+    sid = str(source_id or "").strip().lower()
+    rows = _configured_vault_sources()
+    kept = [row for row in rows if str(row.get("id") or "") != sid]
+    if len(kept) == len(rows):
+        raise KeyError(sid)
+    config_set(vault_sources=kept)
+    return {"id": sid, "removed": True}
+
+
 # ---------- the one status payload the Setup window reads ----------
 
 def status():
@@ -471,8 +565,25 @@ def status():
     if (root / "profiles").is_dir():
         profiles = len(list((root / "profiles").glob("p_*.json")))
     vraw = str(settings.get("vault_root") or "").strip()
-    vroot = Path(vraw).expanduser() if vraw else None
-    vault_ok = bool(vroot and vroot.is_dir())
+    # Import here to keep onboarding's light import surface and avoid a
+    # module cycle at server startup.
+    from . import vault
+    vault_sources = []
+    for spec in vault.source_specs():
+        connected = spec["root"].is_dir()
+        vault_sources.append({
+            "id": spec["id"], "name": spec["name"],
+            "root": str(spec["root"]), "primary": spec["primary"],
+            "read_only": not spec["primary"], "connected": connected,
+            "legacy": bool(spec.get("legacy")),
+            "removable": not spec["primary"] and not spec.get("legacy"),
+            "notes": _md_count(spec["root"]) if connected else 0,
+        })
+    # The guided step is specifically the WRITE-target connection. A stray
+    # read-only source can make Find useful, but must not make Setup claim the
+    # Brain is fully wired while plans and ingestion still have nowhere to go.
+    vault_ok = any(row["primary"] and row["connected"]
+                   for row in vault_sources)
     mail_accounts = 0
     try:
         acc = json.loads((settings.ROOT / "data" /
@@ -496,7 +607,8 @@ def status():
         "feed": {"chat_db": sources.chatdb_state()},
         "contacts": {"apple_sources": len(sources.addressbook_dbs())},
         "vault": {"root": vraw, "connected": vault_ok,
-                  "notes": _md_count(vroot) if vault_ok else 0},
+                  "notes": sum(row["notes"] for row in vault_sources),
+                  "sources": vault_sources},
         "mail": {"accounts": mail_accounts},
         "dossiers": build,
         "sources": sources.discover(),
